@@ -1,0 +1,99 @@
+
+import React from 'react';
+import { Loader2, AlertTriangle, RotateCw } from 'lucide-react';
+import { ScanConfig, ScannerItem, COLUMN_WIDTH_CLASS } from './scannerTypes';
+import { List1Control } from './List1/Control';
+import { List1Item } from './List1/Item';
+
+interface Props {
+    scanConfig: ScanConfig;
+    setScanConfig: React.Dispatch<React.SetStateAction<ScanConfig>>;
+    isScanning: boolean;
+    scanStatusText: string;
+    list1: ScannerItem[];
+    onScan: () => void;
+    nextScanTime?: number; 
+    fixedModeView: 'MONITOR' | 'SEARCH';
+    setFixedModeView: (v: 'MONITOR' | 'SEARCH') => void;
+    scanInterval: number;
+    setScanInterval: (v: number) => void;
+    customSymbolSet: Set<string>;
+    onToggleSymbol: (symbol: string) => void;
+    onSelectAll: () => void;
+    onDeselectAll: () => void;
+    marketStats: any;
+}
+
+const List1_Selection: React.FC<Props> = ({ 
+    scanConfig, setScanConfig, isScanning, scanStatusText, list1, onScan, 
+    fixedModeView, setFixedModeView, scanInterval, setScanInterval, customSymbolSet,
+    onToggleSymbol, onSelectAll, onDeselectAll, marketStats, nextScanTime
+}) => {
+    return (
+        <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 ${COLUMN_WIDTH_CLASS}`}>
+            <List1Control
+                scanConfig={scanConfig} setScanConfig={setScanConfig} isScanning={isScanning} 
+                scanStatusText={scanStatusText} onScan={onScan} 
+                fixedModeView={fixedModeView} setFixedModeView={setFixedModeView} 
+                onClearWatchlist={() => setScanConfig(p => ({...p, customSymbols: ''}))} 
+                scanInterval={scanInterval} setScanInterval={setScanInterval}
+                marketStats={marketStats}
+                nextScanTime={nextScanTime}
+            />
+            <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between sticky top-0">
+                <div className="flex items-center gap-2">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase">1. 市场初筛</div>
+                    {scanConfig.useCustomOnly && fixedModeView === 'SEARCH' && (
+                        <div className="flex gap-1 animate-in fade-in">
+                            <button onClick={onSelectAll} className="text-[9px] bg-slate-800 border border-slate-700 px-1.5 py-0.5 rounded text-cyan-400 hover:bg-slate-700 transition-colors">全选</button>
+                            <button onClick={onDeselectAll} className="text-[9px] bg-slate-800 border border-slate-700 px-1.5 py-0.5 rounded text-slate-400 hover:text-white hover:bg-slate-700 transition-colors">取消</button>
+                        </div>
+                    )}
+                </div>
+                <div className="text-xs font-mono font-bold text-white">{list1.length}</div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar bg-slate-950/20">
+                {list1.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-slate-500 gap-3 animate-in fade-in">
+                        {isScanning ? (
+                            <>
+                                <Loader2 size={32} className="animate-spin text-indigo-500 opacity-80" />
+                                <span className="text-xs font-bold animate-pulse">正在获取数据...</span>
+                            </>
+                        ) : (
+                            <>
+                                <div className="p-3 bg-slate-900 rounded-full border border-slate-800">
+                                    <AlertTriangle size={24} className="opacity-50 text-amber-500" />
+                                </div>
+                                <div className="text-center">
+                                    <span className="text-xs font-bold block text-slate-400">暂无数据 / 获取失败</span>
+                                    <span className="text-[10px] opacity-60 block mt-1">请检查网络或点击重试</span>
+                                </div>
+                                <button 
+                                    onClick={onScan}
+                                    className="px-4 py-1.5 bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-400 rounded text-xs font-bold transition-all border border-slate-700 flex items-center gap-1.5 shadow-lg mt-2"
+                                >
+                                    <RotateCw size={12} /> 点击重试
+                                </button>
+                            </>
+                        )}
+                    </div>
+                ) : (
+                    list1.map((item, idx) => (
+                        <List1Item 
+                            key={idx}
+                            item={item}
+                            idx={idx}
+                            scanConfig={scanConfig}
+                            fixedModeView={fixedModeView}
+                            customSymbolSet={customSymbolSet}
+                            onToggleSymbol={onToggleSymbol}
+                        />
+                    ))
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default List1_Selection;

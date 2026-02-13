@@ -1,0 +1,12 @@
+import { SystemSettings } from '../../types';
+import React from 'react';
+
+export interface SystemCoreProps {
+    settings: SystemSettings;
+    onChange: (key: string, value: any) => void;
+    onOpenManual: () => void;
+    onViewSource: () => void;
+    onFactoryReset: () => void;
+    onExportSettings: () => void;
+    onImportSettings: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}
