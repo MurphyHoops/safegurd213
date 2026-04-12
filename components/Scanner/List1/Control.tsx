@@ -12,16 +12,19 @@ export const List1Control = React.memo<{
     setScanConfig: React.Dispatch<React.SetStateAction<ScanConfig>>;
     isScanning: boolean;
     scanStatusText: string;
+    isPaused: boolean;
+    setIsPaused: (v: boolean) => void;
     onScan: () => void;
     fixedModeView: 'MONITOR' | 'SEARCH';
     setFixedModeView: (v: 'MONITOR' | 'SEARCH') => void;
     onClearWatchlist?: () => void;
+    onClearBlacklist?: () => void;
     scanInterval: number;
     setScanInterval: (v: number) => void;
     marketStats: any;
     nextScanTime?: number;
 }>((props) => {
-    const { scanConfig, setScanConfig, isScanning, scanStatusText, onScan, fixedModeView, setFixedModeView, onClearWatchlist, scanInterval, setScanInterval, marketStats, nextScanTime } = props;
+    const { scanConfig, setScanConfig, isScanning, scanStatusText, isPaused, setIsPaused, onScan, fixedModeView, setFixedModeView, onClearWatchlist, onClearBlacklist, scanInterval, setScanInterval, marketStats, nextScanTime } = props;
     const [countdown, setCountdown] = useState('--:--');
     const [showRules, setShowRules] = useState(false);
 
@@ -72,6 +75,7 @@ export const List1Control = React.memo<{
                     fixedModeView={fixedModeView} 
                     setFixedModeView={setFixedModeView}
                     onClearWatchlist={onClearWatchlist}
+                    onClearBlacklist={onClearBlacklist}
                 />
                 
                 <FilterSection 
@@ -81,9 +85,13 @@ export const List1Control = React.memo<{
                 />
 
                 <ActionSection 
+                    scanConfig={scanConfig}
+                    setScanConfig={setScanConfig}
                     scanInterval={scanInterval}
                     setScanInterval={setScanInterval}
                     isScanning={isScanning}
+                    isPaused={isPaused}
+                    setIsPaused={setIsPaused}
                     countdown={countdown}
                     scanStatusText={scanStatusText}
                     onScan={onScan}

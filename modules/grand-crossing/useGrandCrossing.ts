@@ -1,5 +1,6 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import { List2Config, ScannerItem } from '../../components/Scanner/scannerTypes';
 import { analyzeList2Crossing } from '../../services/rules/list2_crossing';
 import { fetchWithFallback } from '../../services/apiService';
@@ -19,11 +20,22 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export const useGrandCrossing = (
     candidates: ScannerItem[],
-    initialConfig: List2Config
+    initialConfig: List2Config,
+    directMode: boolean = false,
+    onLog?: (type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => void
 ) => {
     // --- ATOMIC STATE ---
-    const [config, setConfig] = useState<List2Config>(initialConfig);
-    const [list2, setList2] = useState<ScannerItem[]>([]);
+    const [config, setConfig] = usePersistedState<List2Config>('SCANNER_LIST2_CONFIG', initialConfig);
+    const [list2, setList2] = useState<ScannerItem[]>(() => {
+        try {
+            const saved = localStorage.getItem('SCANNER_LIST2_CACHE_MAP');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                return Array.isArray(parsed) ? parsed.map((item: any) => item.value) : [];
+            }
+        } catch(e) {}
+        return [];
+    });
     const [status, setStatus] = useState<'IDLE' | 'SCANNING'>('IDLE');
     const [scanText, setScanText] = useState('监控中...');
     const [countdowns, setCountdowns] = useState<Record<string, string>>({});
@@ -31,82 +43,103 @@ export const useGrandCrossing = (
     
     // Track individual scanning timeframes for UI feedback
     const [activeScanTfs, setActiveScanTfs] = useState<Set<string>>(new Set());
+    const [lastScanTime, setLastScanTime] = useState<number | null>(null);
 
     // --- REFS ---
     const configRef = useRef(config); // For async access
-    const cacheRef = useRef<Map<string, ScannerItem>>(new Map());
+    const cacheRef = useRef<Map<string, ScannerItem>>(new Map(
+        (() => {
+            try {
+                const saved = localStorage.getItem('SCANNER_LIST2_CACHE_MAP');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    return Array.isArray(parsed) ? parsed.map((item: any) => [item.key, item.value]) : [];
+                }
+            } catch(e) {}
+            return [];
+        })()
+    ));
     const tfLastScanRef = useRef<Record<string, number>>({});
+    const candidatesRef = useRef(candidates);
+    
+    // --- THROTTLE REFS ---
+    const lastUpdateTimestampRef = useRef<number>(0);
+    const pendingUpdateRef = useRef<boolean>(false);
     
     // --- CONCURRENCY LOCK ---
-    // Critical: Prevents task stacking which causes crashes
     const isScanningRef = useRef(false);
     
-    // --- CAPTURED SIGNALS REF (The "Born" Registry) ---
-    // Stores IDs of signals that were detected at Lag 0 during this session.
-    // ID Format: `${symbol}-${tf}-${direction}-${timestamp}`
-    const capturedSignalsRef = useRef<Set<string>>(new Set());
-    
-    // Sync Ref
-    useEffect(() => { configRef.current = config; }, [config]);
-
-    // --- CLEANUP CACHE ---
-    useEffect(() => {
-        if (candidates.length > 0) {
-            const validSymbols = new Set(candidates.map(c => c.symbol));
-            let changed = false;
-            for (const key of cacheRef.current.keys()) {
-                const symbol = key.split('-')[0];
-                if (!validSymbols.has(symbol)) {
-                    cacheRef.current.delete(key);
-                    changed = true;
+    // --- CAPTURED SIGNALS REF ---
+    const capturedSignalsRef = useRef<Set<string>>(new Set(
+        (() => {
+            try {
+                const saved = localStorage.getItem('SCANNER_LIST2_CAPTURED_SIGNALS');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    return Array.isArray(parsed) ? parsed : [];
                 }
-            }
-            if (changed) updateOutputList();
-        }
-    }, [candidates]);
-
+            } catch(e) {}
+            return [];
+        })()
+    ));
+    
     // --- CORE: Update Output List (Logic Hub) ---
-    const updateOutputList = useCallback(() => {
+    const performUpdate = useCallback(() => {
+        const now = Date.now();
+        const lastUpdate = lastUpdateTimestampRef.current || now;
+        const timeDiffMs = now - lastUpdate;
+
         // Start with all cached items
         let items: ScannerItem[] = Array.from(cacheRef.current.values());
+        
+        // Update lag for each signal dynamically
+        items.forEach(item => {
+            item.groupedResults?.forEach(r => {
+                const tfMinutes = getTfMinutes(r.tf || '');
+                if (tfMinutes > 0) {
+                    const lagIncrease = timeDiffMs / (tfMinutes * 60 * 1000);
+                    r.lag += lagIncrease;
+                }
+            });
+        });
+
         const cfg = configRef.current;
         const sortMode = cfg.sortMode;
+        const currentCandidates = candidatesRef.current;
         
-        // --- 1. FILTERING LOGIC (Deep Filter) ---
+        // --- 0. UPDATE PRICES FROM CANDIDATES ---
+        items = items.map(item => {
+            const candidate = currentCandidates.find(c => c.symbol === item.symbol);
+            if (candidate) {
+                return { ...item, price: candidate.price, change: candidate.change, volume: candidate.volume };
+            }
+            return item;
+        });
+        
+        // --- 1. FILTERING LOGIC ---
         if (cfg.triggerMode === 'NEW') {
             const retention = cfg.newModeRetention ?? 9;
-            
-            // Map items to a new array where groupedResults are filtered appropriately
             items = items.map((item): ScannerItem | null => {
                 if (!item.groupedResults) return null;
-
-                // Deep Filter: strict check against capture registry
                 const validSignals = item.groupedResults.filter(r => {
-                    // Rule 1: If it's Lag 0 (Brand New), allow it (and it should be in capture list by now via runScan)
-                    if (r.lag === 0) return true;
-
-                    // Rule 2: If it's within retention window, CHECK if we captured it when it was young.
-                    if (r.lag <= retention) {
-                        // Reconstruct ID to check if this specific signal event was seen at birth
-                        // We use the latest crossing time associated with this group
-                        const signalTime = r.crossingTimes ? Math.max(...r.crossingTimes) : 0;
-                        const id = `${item.symbol}-${r.tf}-${r.direction}-${signalTime}`;
-                        
-                        if (capturedSignalsRef.current.has(id)) {
-                            return true; // It's a "known" signal growing old, keep it.
-                        }
+                    // 1. Strict Lag Check: If the oldest signal in the cluster is older than retention, it must disappear.
+                    console.log(`[List2 DEBUG] Symbol: ${item.symbol}, TF: ${r.tf}, Direction: ${r.direction}, Lag: ${r.lag}, Retention: ${retention}`);
+                    if (r.lag >= retention) {
+                        console.log(`[List2] Filtering out ${item.symbol} ${r.tf} ${r.direction} due to lag ${r.lag} >= retention ${retention}`);
+                        return false;
                     }
+
+                    // 2. If it's within retention, we keep it if it's a recent crossing OR if it's a captured signal.
+                    const hasRecentCrossing = r.crossingLags && r.crossingLags.some(l => l <= 1);
+                    if (hasRecentCrossing) return true;
+
+                    const signalTime = r.crossingTimes && r.crossingTimes.length > 0 ? Math.max(...r.crossingTimes) : 0;
+                    const id = `${item.symbol}-${r.tf}-${r.direction}-${signalTime}`;
+                    if (capturedSignalsRef.current.has(id)) return true;
                     
-                    // Rule 3: It's an old signal that existed before we started scanning (or wasn't caught at Lag 0).
-                    // HIDE IT.
                     return false;
                 });
-
-                // If no signals remain after filtering, drop the whole item
                 if (validSignals.length === 0) return null;
-
-                // Return a new object with filtered signals so we don't mutate the cache
-                // Also update the top-level 'direction' and 'tf' to match the primary new signal
                 return {
                     ...item,
                     groupedResults: validSignals,
@@ -116,7 +149,6 @@ export const useGrandCrossing = (
                 };
             }).filter((item): item is ScannerItem => item !== null);
         } else {
-            // ALL MODE: Just standard Lag Filter based on MaxLag
             const maxLag = cfg.maxLag;
             items = items.map((item): ScannerItem | null => {
                 if (!item.groupedResults) return null;
@@ -125,6 +157,9 @@ export const useGrandCrossing = (
                 return { ...item, groupedResults: validSignals };
             }).filter((item): item is ScannerItem => item !== null);
         }
+        
+        // Update cacheRef with filtered items
+        cacheRef.current = new Map(items.map(item => [item.symbol, item]));
 
         // --- 2. SORTING LOGIC ---
         items.sort((a, b) => {
@@ -133,17 +168,20 @@ export const useGrandCrossing = (
                 const countB = b.groupedResults?.length || 0;
                 if (countA !== countB) return countB - countA;
             }
-            // LATEST Logic (Primary for LATEST, Secondary for MOST)
-            const getMinLag = (item: ScannerItem) => 
-                item.groupedResults && item.groupedResults.length > 0 
-                ? Math.min(...item.groupedResults.map(r => r.lag || 999)) 
-                : 999;
+            const getMinLag = (item: ScannerItem) => {
+                if (!item.groupedResults || item.groupedResults.length === 0) return 999;
+                return Math.min(...item.groupedResults.map(r => {
+                    if (r.crossingLags && r.crossingLags.length > 0) {
+                        return Math.min(...r.crossingLags);
+                    }
+                    return r.lag || 999;
+                }));
+            };
             return getMinLag(a) - getMinLag(b);
         });
 
         setList2(items);
 
-        // Update TF Counts based on the FILTERED list
         const counts: Record<string, number> = {};
         items.forEach(item => {
             item.groupedResults?.forEach(r => {
@@ -151,138 +189,205 @@ export const useGrandCrossing = (
             });
         });
         setTfCounts(counts);
+        
+        // Persist to localStorage
+        try {
+            const cacheArray = Array.from(cacheRef.current.entries()).map(([key, value]) => ({ key, value }));
+            localStorage.setItem('SCANNER_LIST2_CACHE_MAP', JSON.stringify(cacheArray));
+            
+            // Clean up captured signals that are no longer relevant to prevent memory leak
+            const activeSymbols = new Set(Array.from(cacheRef.current.values()).map(item => item.symbol));
+            const activeSignals = Array.from(capturedSignalsRef.current).filter(id => {
+                const symbol = id.split('-')[0];
+                return activeSymbols.has(symbol);
+            });
+            capturedSignalsRef.current = new Set(activeSignals);
+            
+            localStorage.setItem('SCANNER_LIST2_CAPTURED_SIGNALS', JSON.stringify(activeSignals));
+        } catch (e) {
+            console.warn("Failed to persist List 2 cache", e);
+        }
+        
+        pendingUpdateRef.current = false;
+        lastUpdateTimestampRef.current = now;
     }, []);
+
+    // Sync Ref
+    useEffect(() => { configRef.current = config; }, [config]);
+    useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
+    useEffect(() => { performUpdate(); }, [config, candidates, performUpdate]);
+
+    // --- THROTTLE SCHEDULER ---
+    const scheduleUpdate = useCallback(() => {
+        const now = Date.now();
+        const timeSinceLast = now - lastUpdateTimestampRef.current;
+        const throttleMs = 2000; // Update UI at most every 2 seconds
+
+        if (timeSinceLast > throttleMs) {
+            performUpdate();
+        } else {
+            if (!pendingUpdateRef.current) {
+                pendingUpdateRef.current = true;
+                setTimeout(() => {
+                    performUpdate();
+                }, throttleMs - timeSinceLast);
+            }
+        }
+    }, [performUpdate]);
 
     // --- EFFECT: Trigger update immediately when config changes ---
     useEffect(() => {
-        updateOutputList();
-    }, [config, updateOutputList]);
+        performUpdate();
+    }, [config, performUpdate]);
+
+    // --- CLEANUP CACHE & UPDATE PRICES ---
+    useEffect(() => {
+        const currentCandidates = candidatesRef.current;
+        const validSymbols = new Set(currentCandidates.map(c => c.symbol));
+        let changed = false;
+        for (const [key, item] of cacheRef.current.entries()) {
+            const symbol = key.split('-')[0];
+            // Remove if not in candidates
+            if (!validSymbols.has(symbol)) {
+                cacheRef.current.delete(key);
+                changed = true;
+            }
+        }
+        // Always schedule update to reflect latest prices from candidates
+        scheduleUpdate();
+    }, [candidates, scheduleUpdate]);
 
     // --- CORE: Scan Logic ---
     const runScan = async (targetTfs: string[]) => {
-        if (candidates.length === 0) return;
-        if (isScanningRef.current) return; // REJECTION: PREVENT OVERLAP
+        const currentCandidates = candidatesRef.current;
+        if (currentCandidates.length === 0) return;
+        if (isScanningRef.current) return;
 
         isScanningRef.current = true;
         setStatus('SCANNING');
-        setScanText(`扫描周期 [${targetTfs.join(', ')}]...`);
         
-        // Mark these TFs as scanning
-        setActiveScanTfs(prev => {
-            const next = new Set(prev);
-            targetTfs.forEach(t => next.add(t));
-            return next;
-        });
-
-        const queue = [...candidates];
-        const batchSize = queue.length > 300 ? 10 : 20;
+        // Sort TFs from largest to smallest (e.g., 4h, 1h, 15m)
+        const sortedTfs = [...targetTfs].sort((a, b) => getTfMinutes(b) - getTfMinutes(a));
+        
+        setActiveScanTfs(new Set(sortedTfs));
+        setScanText(`扫描周期 [${sortedTfs.join(', ')}]...`);
+        
+        onLog?.('INFO', `[列表2] 触发扫描，目标周期: ${sortedTfs.join(', ')}，待扫描币种数: ${currentCandidates.length}`);
 
         try {
-            while (queue.length > 0) {
-                const batch = queue.splice(0, batchSize);
-                await Promise.all(batch.map(async (item) => {
-                    const analysisResults: any[] = [];
-                    
-                    for (const tf of targetTfs) {
-                        try {
-                            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${tf}&limit=150`;
-                            const res = await fetchWithFallback(url, {cache: 'no-store'}, (d) => Array.isArray(d));
-                            
-                            if (res.ok) {
-                                const klines = await res.json();
-                                const closes = klines.map((k: any) => parseFloat(k[4]));
-                                const highs = klines.map((k: any) => parseFloat(k[2]));
-                                const lows = klines.map((k: any) => parseFloat(k[3]));
-                                const opens = klines.map((k: any) => parseFloat(k[1]));
-                                const volumes = klines.map((k: any) => parseFloat(k[5]));
-                                const timestamps: number[] = klines.map((k: any) => Number(k[0]));
-
-                                const cfg = configRef.current;
-                                
-                                // IMPORTANT: We scan DEEP (maxLag or Retention) to get data.
-                                // But we use the Capture Registry to decide what's "valid" in NEW mode later.
-                                const scanDepth = Math.max(cfg.maxLag, cfg.newModeRetention || 9);
-
-                                const results = analyzeList2Crossing(
-                                    item.symbol, tf, closes, highs, lows, opens, volumes, timestamps, 
-                                    { ...cfg, triggerMode: 'ALL', maxLag: scanDepth }
-                                );
-                                
-                                // --- REGISTRATION LOGIC ---
-                                // Check if any result is "Fresh" (Lag 0) and register it.
-                                results.forEach(res => {
-                                    if (res.lag === 0) {
-                                        // Use the specific signal time for the ID
-                                        const signalTime = res.crossingTimes ? Math.max(...res.crossingTimes) : timestamps[timestamps.length-1];
-                                        const id = `${item.symbol}-${tf}-${res.direction}-${signalTime}`;
-                                        
-                                        if (!capturedSignalsRef.current.has(id)) {
-                                            capturedSignalsRef.current.add(id);
-                                        }
-                                    }
-                                });
-
-                                analysisResults.push(...results);
-                            }
-                        } catch (e) {
-                            // Silent fail
-                        }
-                    }
-
-                    // Merge & Cache Logic
-                    const cacheKey = `${item.symbol}-FULL`;
-                    const existing = cacheRef.current.get(cacheKey);
-                    
-                    if (analysisResults.length > 0) {
-                        // Update cache with new results
-                        const merged = existing ? [...(existing.groupedResults || [])] : [];
-                        
-                        // Remove old results for the current targetTfs to prevent stale data
-                        const cleanMerged = merged.filter(r => !targetTfs.includes(r.tf));
-                        
-                        cleanMerged.push(...analysisResults);
-                        
-                        if (cleanMerged.length > 0) {
-                            // Sort by lag
-                            cleanMerged.sort((a, b) => (a.lag || 0) - (b.lag || 0));
-
-                            cacheRef.current.set(cacheKey, { 
-                                ...item, 
-                                groupedResults: cleanMerged, 
-                                direction: cleanMerged[0].direction, 
-                                tf: cleanMerged[0].tf, 
-                                price: item.price
-                            });
-                        } else {
-                            cacheRef.current.delete(cacheKey);
-                        }
-                    } else if (existing) {
-                        // If no new results found for scanned TFs, clean up cache
-                        const cleanMerged = existing.groupedResults?.filter(r => !targetTfs.includes(r.tf)) || [];
-                        if (cleanMerged.length > 0) {
-                             cacheRef.current.set(cacheKey, { ...existing, groupedResults: cleanMerged });
-                        } else {
-                             cacheRef.current.delete(cacheKey);
-                        }
-                    }
-                }));
+            for (let i = 0; i < sortedTfs.length; i++) {
+                const tf = sortedTfs[i];
+                setScanText(`扫描周期 [${tf}]...`);
+                onLog?.('INFO', `[列表2] 开始扫描 ${tf} 周期...`);
                 
-                updateOutputList();
-                await delay(100); 
-            }
-        } finally {
-            // ALWAYS release lock and cleanup, even if error
-            isScanningRef.current = false;
-            
-            // Unmark these TFs
-            setActiveScanTfs(prev => {
-                const next = new Set(prev);
-                targetTfs.forEach(t => next.delete(t));
-                return next;
-            });
+                const queue = [...currentCandidates];
+                const batchSize = 40; // User requested 40 items per batch
+                let processedCount = 0;
 
+                while (queue.length > 0) {
+                    const batch = queue.splice(0, batchSize);
+                    onLog?.('INFO', `[列表2] ${tf} 周期: 正在扫描第 ${processedCount + 1} 到 ${processedCount + batch.length} 个币种...`);
+                    
+                    const concurrencyLimit = 3;
+                    for (let c = 0; c < batch.length; c += concurrencyLimit) {
+                        const chunk = batch.slice(c, c + concurrencyLimit);
+                        await Promise.all(chunk.map(async (item) => {
+                            try {
+                                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${tf}&limit=150&_t=${Date.now()}`;
+                                const res = await fetchWithFallback(url, {cache: 'no-store'}, (d) => Array.isArray(d), directMode);
+                                
+                                if (res.ok) {
+                                    const klines = await res.json();
+                                    const closes = klines.map((k: any) => parseFloat(k[4]) || 0);
+                                    const highs = klines.map((k: any) => parseFloat(k[2]) || 0);
+                                    const lows = klines.map((k: any) => parseFloat(k[3]) || 0);
+                                    const opens = klines.map((k: any) => parseFloat(k[1]) || 0);
+                                    const volumes = klines.map((k: any) => parseFloat(k[5]) || 0);
+                                    const timestamps: number[] = klines.map((k: any) => Number(k[0]));
+
+                                    const cfg = configRef.current;
+                                    const scanDepth = Math.max(cfg.maxLag, cfg.newModeRetention || 9);
+
+                                    const results = analyzeList2Crossing(
+                                        item.symbol, tf, closes, highs, lows, opens, volumes, timestamps, 
+                                        { ...cfg, triggerMode: 'ALL', maxLag: scanDepth }
+                                    );
+                                    
+                                    if (results.length > 0) {
+                                        console.log(`[List2] Found ${results.length} signals for ${item.symbol} ${tf}`);
+                                    }
+                                    
+                                    results.forEach(res => {
+                                        const hasRecentCrossing = res.crossingLags && res.crossingLags.some(l => l <= 1);
+                                        if (hasRecentCrossing) {
+                                            const signalTime = res.crossingTimes ? Math.max(...res.crossingTimes) : timestamps[timestamps.length-1];
+                                            const id = `${item.symbol}-${tf}-${res.direction}-${signalTime}`;
+                                            if (!capturedSignalsRef.current.has(id)) {
+                                                capturedSignalsRef.current.add(id);
+                                                console.log(`[List2] New signal detected: ${item.symbol} ${tf} ${res.direction}`);
+                                                onLog?.('SUCCESS', `[列表2] 发现新信号: ${item.symbol} ${tf} ${res.direction === 'LONG' ? '做多' : '做空'}`);
+                                            }
+                                        }
+                                    });
+
+                                    const cacheKey = `${item.symbol}-FULL`;
+                                    const existing = cacheRef.current.get(cacheKey);
+                                    const merged = existing ? [...(existing.groupedResults || [])] : [];
+                                    const cleanMerged = merged.filter(r => r.tf !== tf);
+                                    cleanMerged.push(...results);
+                                    
+                                    if (cleanMerged.length > 0) {
+                                        cleanMerged.sort((a, b) => (a.lag || 0) - (b.lag || 0));
+                                        cacheRef.current.set(cacheKey, { 
+                                            ...item, 
+                                            groupedResults: cleanMerged, 
+                                            direction: cleanMerged[0].direction, 
+                                            tf: cleanMerged[0].tf, 
+                                            price: item.price,
+                                            lastUpdated: Date.now()
+                                        });
+                                    } else {
+                                        cacheRef.current.delete(cacheKey);
+                                    }
+                                }
+                            } catch (e: any) {
+                                console.warn(`[GrandCrossing] Failed to fetch ${item.symbol} ${tf}:`, e.message);
+                                onLog?.('WARNING', `[列表2] 获取 ${item.symbol} ${tf} 数据失败: ${e.message}`);
+                            }
+                        }));
+                    }
+                    
+                    processedCount += batch.length;
+                    scheduleUpdate();
+                    
+                    if (queue.length > 0) {
+                        await delay(2000); // 每一批次扫描结束间隔2秒
+                    }
+                }
+                
+                onLog?.('SUCCESS', `[列表2] ${tf} 周期扫描完成，共处理 ${processedCount} 个币种`);
+                
+                setActiveScanTfs(prev => {
+                    const next = new Set(prev);
+                    next.delete(tf);
+                    return next;
+                });
+                
+                if (i < sortedTfs.length - 1) {
+                    onLog?.('INFO', `[列表2] 等待 5 秒后开始扫描下一个周期...`);
+                    await delay(5000); // 每个周期完成后，间隔5秒，再扫描次大的周期
+                }
+            }
+            onLog?.('SUCCESS', `[列表2] 本次所有目标周期扫描完毕`);
+        } catch (e: any) {
+            onLog?.('DANGER', `[列表2] 扫描过程发生异常: ${e.message}`);
+        } finally {
+            performUpdate();
+            isScanningRef.current = false;
+            setActiveScanTfs(new Set());
             setStatus('IDLE');
             setScanText('监控中...');
+            setLastScanTime(Date.now());
         }
     };
 
@@ -295,7 +400,10 @@ export const useGrandCrossing = (
 
             configRef.current.timeframes.forEach(tf => {
                 const tfMinutes = getTfMinutes(tf);
+                if (tfMinutes === 0) return;
                 const intervalMs = tfMinutes * 60 * 1000;
+                
+                // Calculate next close for UI countdown
                 const nextClose = Math.ceil(now / intervalMs) * intervalMs;
                 const diff = nextClose - now;
 
@@ -307,28 +415,38 @@ export const useGrandCrossing = (
                     newCountdowns[tf] = "SCAN";
                 }
 
+                // Calculate current candle start time
+                const currentCandleStart = Math.floor(now / intervalMs) * intervalMs;
                 const lastScan = tfLastScanRef.current[tf] || 0;
-                const scanWindowStart = nextClose - intervalMs;
                 
-                // Trigger logic: If current time is past 'start of new candle' AND we haven't scanned since then
-                // PLUS small buffer (2000ms) to allow exchange to settle data
-                if (now > scanWindowStart + 2000 && lastScan < scanWindowStart) {
+                // Only trigger if we haven't scanned since this candle started
+                if (lastScan < currentCandleStart) {
                     triggeredTimeframes.push(tf);
-                    tfLastScanRef.current[tf] = now;
                 }
             });
 
             setCountdowns(newCountdowns);
 
-            // Only trigger if we have candidates AND no scan is currently running (Double check)
-            if (triggeredTimeframes.length > 0 && candidates.length > 0 && !isScanningRef.current) {
-                runScan(triggeredTimeframes);
+            if (triggeredTimeframes.length > 0 && candidatesRef.current.length > 0 && !isScanningRef.current) {
+                // Update last scan time immediately so we don't re-trigger
+                triggeredTimeframes.forEach(tf => {
+                    tfLastScanRef.current[tf] = now;
+                });
+                
+                onLog?.('INFO', `[列表2] 检测到K线收盘，触发扫描周期: ${triggeredTimeframes.join(', ')}`);
+                
+                // SAFETY FIX: Added catch block to prevent unhandled rejections
+                runScan(triggeredTimeframes).catch(err => {
+                    console.warn("[GrandCrossing] Background scan error (safely caught):", err);
+                    onLog?.('DANGER', `[列表2] 后台扫描任务发生异常: ${err.message || err}`);
+                    isScanningRef.current = false;
+                });
             }
 
         }, 1000);
 
         return () => clearInterval(timer);
-    }, [candidates.length]);
+    }, []);
 
     return {
         config,
@@ -338,6 +456,7 @@ export const useGrandCrossing = (
         scanText,
         countdowns,
         tfCounts,
-        activeScanTfs 
+        activeScanTfs,
+        lastScanTime
     };
 };

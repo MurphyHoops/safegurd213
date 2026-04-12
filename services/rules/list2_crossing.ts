@@ -45,11 +45,11 @@ export function analyzeList2Crossing(
         // Check A Result
         if (flatCount >= flatThreshold) return [];
 
-        // Check B Result: If same High or Low repeats >= Threshold (default 5) times
+        // Check B Result: If same High or Low repeats >= Threshold * 3 times
         const maxRepeatedHigh = Math.max(...Object.values(highCounts));
         const maxRepeatedLow = Math.max(...Object.values(lowCounts));
 
-        if (maxRepeatedHigh >= flatThreshold || maxRepeatedLow >= flatThreshold) {
+        if (maxRepeatedHigh >= flatThreshold * 3 || maxRepeatedLow >= flatThreshold * 3) {
             return []; // Rejected: Price Pinning Detected
         }
     }
@@ -114,25 +114,40 @@ export function analyzeList2Crossing(
             }
 
             // The Grand Crossing Rule: High touches Max EMA, Low touches Min EMA (Physical Intersection)
-            if (!conflict && kHigh >= maxEma && kLow <= minEma) {
+            const isCrossing = kHigh >= maxEma && kLow <= minEma;
+            
+            if (!conflict) {
                 const candleRange = kHigh - kLow;
                 const amp = kOpen > 0 ? (candleRange / kOpen) * 100 : 0;
+                const bodySize = Math.abs(kClose - kOpen);
+                const bodyRatio = candleRange > 0 ? (bodySize / candleRange) * 100 : 0;
                 
-                if (amp >= squeezeThreshold && amp <= maxAmplitude) {
+                let isValid = false;
+                
+                // Check if crossing is required and met
+                const crossingValid = config.requireCrossing === false ? true : isCrossing;
+                
+                if (config.requireCrossing && isCrossing && !config.strictFiltering) {
+                    // User explicitly requested NOT to miss any EMA crossing signals.
+                    // Bypass strict volume/body filters if it physically crosses all 4 EMAs AND strict filtering is OFF.
+                    isValid = true;
+                } else if (crossingValid && amp >= squeezeThreshold && amp <= maxAmplitude) {
+                    // Original strict rules for non-crossing (squeeze) mode or if strict filtering is ON
                     const volSlice = volumes.slice(Math.max(0, checkIdx - 20), checkIdx);
                     const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
                     
                     if (volumes[checkIdx] >= Math.max(1, avgVol * volMultiplier)) {
-                        const bodySize = Math.abs(kClose - kOpen);
-                        const bodyRatio = candleRange > 0 ? (bodySize / candleRange) * 100 : 0;
-                        
                         if (bodyRatio >= minBodyRatio) {
-                            if (kClose >= kOpen) {
-                                longSignals.push({ lag, direction: 'LONG', amp, time: kTime });
-                            } else {
-                                shortSignals.push({ lag, direction: 'SHORT', amp, time: kTime });
-                            }
+                            isValid = true;
                         }
+                    }
+                }
+
+                if (isValid) {
+                    if (kClose >= kOpen) {
+                        longSignals.push({ lag, direction: 'LONG', amp, time: kTime });
+                    } else {
+                        shortSignals.push({ lag, direction: 'SHORT', amp, time: kTime });
                     }
                 }
             }
@@ -147,59 +162,66 @@ export function analyzeList2Crossing(
     longSignals.sort((a, b) => a.lag - b.lag);
     shortSignals.sort((a, b) => a.lag - b.lag);
 
-    // Determine eligibility based on Trigger Mode
-    const hasNewLong = longSignals.some(s => s.lag === 0);
-    const hasNewShort = shortSignals.some(s => s.lag === 0);
-    const hasAnyLong = longSignals.length > 0;
-    const hasAnyShort = shortSignals.length > 0;
-
-    let includeLong = false;
-    let includeShort = false;
-
-    if (triggerMode === 'NEW') {
-        includeLong = hasNewLong;
-        includeShort = hasNewShort;
-    } else {
-        // ALL mode
-        includeLong = hasAnyLong;
-        includeShort = hasAnyShort;
-    }
-
-    if (includeLong || (triggerMode === 'NEW' && includeShort) || (triggerMode === 'ALL' && hasAnyLong)) {
-         if (longSignals.length > 0) {
-             results.push({
-                tf,
-                lag: longSignals[0].lag, // Nearest lag
-                crossingCount: longSignals.length,
-                isSqueeze: false,
-                squeezeVal: longSignals[0].amp,
-                direction: 'LONG',
-                crossingLags: longSignals.map(s => s.lag),
-                crossingTimes: longSignals.map(s => s.time)
-            });
-         }
-    }
-    
-    if (includeShort || (triggerMode === 'NEW' && includeLong) || (triggerMode === 'ALL' && hasAnyShort)) {
-        if (shortSignals.length > 0) {
-            results.push({
-                tf,
-                lag: shortSignals[0].lag,
-                crossingCount: shortSignals.length,
-                isSqueeze: false,
-                squeezeVal: shortSignals[0].amp,
-                direction: 'SHORT',
-                crossingLags: shortSignals.map(s => s.lag),
-                crossingTimes: shortSignals.map(s => s.time)
-            });
+    // Helper to get ALL clusters of signals
+    const getAllClusters = (signals: {lag: number, direction: string, amp: number, time: number}[]) => {
+        if (signals.length === 0) return [];
+        const clusters = [];
+        let currentCluster = [signals[0]];
+        for (let i = 1; i < signals.length; i++) {
+            // If gap is <= 3 candles, consider it part of the same squeeze cluster
+            if (signals[i].lag - signals[i-1].lag <= 3) {
+                currentCluster.push(signals[i]);
+            } else {
+                clusters.push(currentCluster);
+                currentCluster = [signals[i]];
+            }
         }
-    }
+        clusters.push(currentCluster);
+        return clusters;
+    };
+
+    const longClusters = getAllClusters(longSignals);
+    const shortClusters = getAllClusters(shortSignals);
+
+    // Determine eligibility based on Trigger Mode
+    // For ALL mode, we include all clusters.
+    // For NEW mode, we only include clusters that have a signal with lag <= 1.
+    
+    longClusters.forEach(cluster => {
+        const hasNew = cluster.some(s => s.lag <= 1);
+        if (triggerMode === 'NEW' && !hasNew) return;
+
+        const oldestLag = cluster[cluster.length - 1].lag;
+        results.push({
+            tf,
+            lag: oldestLag, 
+            crossingCount: cluster.length,
+            isSqueeze: false,
+            squeezeVal: cluster[0].amp,
+            direction: 'LONG',
+            crossingLags: cluster.map(s => s.lag),
+            crossingTimes: cluster.map(s => s.time)
+        });
+    });
+
+    shortClusters.forEach(cluster => {
+        const hasNew = cluster.some(s => s.lag <= 1);
+        if (triggerMode === 'NEW' && !hasNew) return;
+
+        const oldestLag = cluster[cluster.length - 1].lag;
+        results.push({
+            tf,
+            lag: oldestLag,
+            crossingCount: cluster.length,
+            isSqueeze: false,
+            squeezeVal: cluster[0].amp,
+            direction: 'SHORT',
+            crossingLags: cluster.map(s => s.lag),
+            crossingTimes: cluster.map(s => s.time)
+        });
+    });
 
     // Final filter: If we found nothing relevant to the trigger mode, return empty
-    if (triggerMode === 'NEW' && !hasNewLong && !hasNewShort) {
-        return [];
-    }
-    
     if (results.length === 0) return [];
 
     return results;

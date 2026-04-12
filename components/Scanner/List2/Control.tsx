@@ -16,9 +16,10 @@ interface List2PanelProps {
     isLocked: boolean;
     onTfInteraction: (tf: string, type: 'SINGLE' | 'LONG_2' | 'LONG_3' | 'RESET') => void;
     activeScanTfs?: Set<string>;
+    pollingStatus?: string;
 }
 
-export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs }) => {
+export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, pollingStatus }) => {
     
     return (
         <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-3 shrink-0">
@@ -26,17 +27,33 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
                 <div className="flex items-center gap-2">
                     <Activity size={14} /> 2. 均线穿越 (Grand Crossing)
                 </div>
-                {/* Batch Input Moved Here */}
-                <div className="flex items-center gap-1">
-                    <span className="text-[9px] text-slate-500 font-bold">批次</span>
-                    <input 
-                        type="number" 
-                        min="1" 
-                        max="100" 
-                        value={scanConfig.batchSize} 
-                        onChange={(e) => setScanConfig(p => ({...p, batchSize: parseInt(e.target.value) || 40}))} 
-                        className="w-8 h-5 bg-slate-800 border border-slate-700 rounded text-center text-[10px] text-orange-400 outline-none font-bold select-text" 
-                    />
+                <div className="flex items-center gap-3">
+                    {/* Strict Filter Toggle */}
+                    <div className="flex items-center gap-1" title="开启后严格遵守参数条件（即使满足穿越）">
+                        <span className="text-[9px] text-slate-500 font-bold">严格过滤</span>
+                        <div onClick={() => setConfig(p => ({...p, strictFiltering: !p.strictFiltering}))} className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${config.strictFiltering ? 'bg-emerald-600' : 'bg-slate-700'}`}>
+                            <div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${config.strictFiltering ? 'translate-x-3' : ''}`} />
+                        </div>
+                    </div>
+                    {/* Crossing Toggle */}
+                    <div className="flex items-center gap-1" title="开启后必须满足均线穿越条件">
+                        <span className="text-[9px] text-slate-500 font-bold">穿越</span>
+                        <div onClick={() => setConfig(p => ({...p, requireCrossing: !p.requireCrossing}))} className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${config.requireCrossing !== false ? 'bg-amber-600' : 'bg-slate-700'}`}>
+                            <div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${config.requireCrossing !== false ? 'translate-x-3' : ''}`} />
+                        </div>
+                    </div>
+                    {/* Batch Input */}
+                    <div className="flex items-center gap-1">
+                        <span className="text-[9px] text-slate-500 font-bold">批次</span>
+                        <input 
+                            type="number" 
+                            min="1" 
+                            max="100" 
+                            value={Number.isNaN(scanConfig.batchSize) ? '' : scanConfig.batchSize} 
+                            onChange={(e) => setScanConfig(p => ({...p, batchSize: parseInt(e.target.value) || 40}))} 
+                            className="w-8 h-5 bg-slate-800 border border-slate-700 rounded text-center text-[10px] text-orange-400 outline-none font-bold select-text" 
+                        />
+                    </div>
                 </div>
             </div>
             
@@ -48,6 +65,7 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
                 isLocked={isLocked}
                 onTfInteraction={onTfInteraction}
                 activeScanTfs={activeScanTfs}
+                pollingStatus={pollingStatus}
             />
 
             <ConfigSection config={config} setConfig={setConfig} />

@@ -12,7 +12,7 @@ export const useLiveBattlefield = (
     const sortedPositions = useMemo(() => {
         // Helper: Calculate live PnL dynamically for sorting
         // This ensures the sort order responds immediately to price ticks
-        const getLivePnL = (p: Position) => {
+        const getLivePnLPercent = (p: Position) => {
             const currentPrice = realPrices[p.symbol] || p.markPrice || p.entryPrice;
             if (!currentPrice || !p.entryPrice) return 0;
             
@@ -20,19 +20,47 @@ export const useLiveBattlefield = (
                 ? currentPrice - p.entryPrice 
                 : p.entryPrice - currentPrice;
             
-            return diff * p.amount;
+            return (diff / p.entryPrice) * 100;
         };
+
+        // Group positions by symbol to find hedged pairs and calculate group PnL
+        const symbolStats: Record<string, { isHedged: boolean, maxPnlPercent: number }> = {};
+        
+        positions.forEach(p => {
+            if (!symbolStats[p.symbol]) {
+                symbolStats[p.symbol] = { isHedged: false, maxPnlPercent: -Infinity };
+            }
+            if (p.isHedged) {
+                symbolStats[p.symbol].isHedged = true;
+            }
+            const pnlPct = getLivePnLPercent(p);
+            if (pnlPct > symbolStats[p.symbol].maxPnlPercent) {
+                symbolStats[p.symbol].maxPnlPercent = pnlPct;
+            }
+        });
 
         // Sort logic
         return [...positions].sort((a, b) => {
-            const pnlA = getLivePnL(a);
-            const pnlB = getLivePnL(b);
-            
-            if (sortMode === 'DESC') {
-                return pnlB - pnlA; // High to Low
-            } else {
-                return pnlA - pnlB; // Low to High
+            const statsA = symbolStats[a.symbol];
+            const statsB = symbolStats[b.symbol];
+
+            // 1. Hedged pairs first
+            if (statsA.isHedged && !statsB.isHedged) return -1;
+            if (!statsA.isHedged && statsB.isHedged) return 1;
+
+            // 2. If they are different symbols, sort by the symbol's max PnL percent
+            if (a.symbol !== b.symbol) {
+                if (sortMode === 'DESC') {
+                    return statsB.maxPnlPercent - statsA.maxPnlPercent;
+                } else {
+                    return statsA.maxPnlPercent - statsB.maxPnlPercent;
+                }
             }
+
+            // 3. If same symbol (e.g. main and hedge), sort by PnL percent
+            const pnlA = getLivePnLPercent(a);
+            const pnlB = getLivePnLPercent(b);
+            return pnlB - pnlA; // Within the same symbol, highest PnL first
         });
     }, [positions, realPrices, sortMode]); // Added realPrices to dependencies
 

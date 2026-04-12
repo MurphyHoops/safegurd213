@@ -8,10 +8,11 @@ import List4_Momentum from '../../components/Scanner/List4_Momentum';
 interface Props {
     candidates: ScannerItem[]; // From List 3
     setChartData: (data: any) => void;
-    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string) => void;
+    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => void;
     list3Config: List3Config; 
     realPrices: Record<string, number>;
     activePositions: Position[];
+    onRemoveSignal?: (uniqueId: string) => void;
 }
 
 const DEFAULT_CONFIG: List4Config = { 
@@ -19,16 +20,18 @@ const DEFAULT_CONFIG: List4Config = {
     midlineThreshold: 90, 
     breakoutThreshold: 30, 
     directionFilter: 'BOTH', 
-    enableThresholds: false, 
+    enableThresholds: true, 
     enableAntiChase: false, 
     invalidRetentionMinutes: 10, 
+    removeInvalidCandles: 0,
+    removeTradedCandles: 0,
     antiChaseConfig: { maxChange24h: 30, maxRsi: 85, minRsi: 15, maxDeviation: 20, enableRev3K: false, enableStrictMAs: false }
 };
 
-export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData, executeTradeSafe, list3Config, realPrices, activePositions }) => {
+export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData, executeTradeSafe, list3Config, realPrices, activePositions, onRemoveSignal }) => {
     
     // PASS list3Config TO HOOK
-    const { config, setConfig, list4 } = useMomentumAudit(candidates, DEFAULT_CONFIG, list3Config, realPrices);
+    const { config, setConfig, list4 } = useMomentumAudit(candidates, DEFAULT_CONFIG, list3Config, realPrices, activePositions, onRemoveSignal);
     
     // Track executed signals to prevent duplicate orders for the same signal event
     const executedRef = useRef<Set<string>>(new Set());
@@ -55,12 +58,21 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                 if (!alreadyExecutedSession && !alreadyHasPosition) {
                     console.log(`[List4 Auto] Executing: ${uniqueId} @ ${item.price}`);
                     
+                    const signalCandle = item.structure ? {
+                        high: item.structure.signalHigh,
+                        low: item.structure.signalLow,
+                        close: item.structure.signalPrice,
+                        open: item.structure.signalPrice, // Approximate
+                        amplitude: (item.structure.signalHigh - item.structure.signalLow) / item.structure.signalLow
+                    } : undefined;
+
                     executeTradeSafe(
                         item.symbol, 
                         item.direction as PositionSide, 
                         item.price, 
                         `Auto L4 Breakout (${item.tf})`, 
-                        item.tf
+                        item.tf,
+                        signalCandle
                     );
                     
                     executedRef.current.add(uniqueId);

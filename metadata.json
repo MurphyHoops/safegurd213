@@ -2,6 +2,7 @@
   "name": "0211自动找币防爆仓救世之星",
   "description": "币安交易所终极风控系统 - 从绝对防守到主动出击的智能交易助手。",
   "requestFramePermissions": [
-    "microphone"
+    "microphone",
+    "screen-wake-lock"
   ]
 }

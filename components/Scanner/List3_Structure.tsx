@@ -1,8 +1,8 @@
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useRef } from 'react';
 import { Loader2, Search, Activity, Eye, ShieldCheck } from 'lucide-react';
 import { List3Config, ScannerItem, ActionConfig, COLUMN_WIDTH_CLASS, StructureScanStatus } from './scannerTypes';
-import { PositionSide } from '../../types';
+import { PositionSide, Position } from '../../types';
 import { List3Control } from './List3/Control';
 import { List3Item } from './List3/Item';
 
@@ -12,55 +12,67 @@ interface Props {
     countdowns: Record<string, string>;
     list3: ScannerItem[];
     setChartData: (data: any) => void;
-    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string) => void;
+    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => void;
     actionConfig: ActionConfig;
     scanningStatus: StructureScanStatus | null;
+    activePositions: Position[];
 }
 
-const List3_Structure: React.FC<Props> = ({ config, setConfig, countdowns, list3, setChartData, executeTradeSafe, actionConfig, scanningStatus }) => {
+const List3_Structure: React.FC<Props> = ({ config, setConfig, countdowns, list3, setChartData, executeTradeSafe, actionConfig, scanningStatus, activePositions }) => {
     
     // --- DYNAMIC FILTERING LOGIC ---
     const filteredList = useMemo(() => {
+        if (!list3) return [];
         return list3.map(item => {
-             const validResults = item.list3Results?.filter(r => {
-                 if (config.strictTrend && !r.structure.isStrictTrend) return false;
-                 if (config.checkCandleColor && !r.structure.isColorValid) return false;
-                 if (config.enableThrust && !r.structure.thrustValid) return false;
-                 
-                 if (config.enableResonance) {
-                     if (r.structure.locationPct > config.maxLocation) return false;
-                     if (r.structure.crossCount < config.minCrossCount) return false;
-                     if (r.structure.bbw > config.maxBBW) return false;
-                 }
-                 
-                 const rsi = r.structure.rsi;
-                 if (r.direction === 'LONG') {
-                     if (rsi < config.rsiLongMin || rsi > config.rsiLongMax) return false;
-                 } else {
-                     if (rsi < config.rsiShortMin || rsi > config.rsiShortMax) return false;
-                 }
-                 
-                 if (!config.timeframes.includes(r.tf)) return false;
+             // Defensive Check: Ensure item and list3Results exist
+             if (!item || !item.list3Results) return null;
 
-                 if (config.antiChase?.enabled && r.structure.periodChange !== undefined) {
-                     const change = r.structure.periodChange;
-                     if (r.direction === 'LONG') {
-                         if (change > config.antiChase.maxRise) return false;
-                     } else {
-                         if (change < -config.antiChase.maxFall) return false;
-                     }
-                 }
-
-                 return true;
-             }) || [];
+             const validResults = item.list3Results?.filter(r => r.latched) || [];
              
              if (validResults.length === 0) return null;
              return { ...item, list3Results: validResults };
         }).filter(Boolean) as ScannerItem[];
-    }, [list3, config]);
+    }, [list3]);
+
+    // --- AUTO EXECUTE LOGIC ---
+    const executedRef = useRef<Set<string>>(new Set());
+
+    useEffect(() => {
+        if (!config.autoSimOpen) return;
+
+        filteredList.forEach(item => {
+            if (!item.list3Results) return;
+            
+            item.list3Results.forEach(res => {
+                const side = res.direction === 'LONG' ? PositionSide.LONG : PositionSide.SHORT;
+                const uniqueId = `${item.symbol}-${side}-${res.tf}-${res.structure.signalTime || 0}`;
+                
+                // Check 1: Have we already executed this specific signal in this session?
+                const alreadyExecutedSession = executedRef.current.has(uniqueId);
+                
+                // Check 2: Do we ALREADY have an open position for this symbol + direction?
+                const alreadyHasPosition = activePositions.some(p => p.symbol === item.symbol && p.side === side);
+
+                if (!alreadyExecutedSession && !alreadyHasPosition) {
+                    console.log(`[List3 Auto] Executing: ${uniqueId} @ ${item.price}`);
+                    
+                    executeTradeSafe(
+                        item.symbol, 
+                        side, 
+                        item.price, 
+                        `Auto L3 Structure (${res.tf})`, 
+                        res.tf
+                    );
+                    
+                    executedRef.current.add(uniqueId);
+                }
+            });
+        });
+    }, [filteredList, config.autoSimOpen, executeTradeSafe, activePositions]);
 
     // Active Rules for Display (IDLE State)
     const activeRules = useMemo(() => {
+        if (!config) return "Loading...";
         const rules = [];
         if (config.strictTrend) rules.push("Strict Trend");
         if (config.enableThrust) rules.push("7K Thrust");
@@ -99,8 +111,8 @@ const List3_Structure: React.FC<Props> = ({ config, setConfig, countdowns, list3
                             <div className="flex justify-between items-center text-[9px] text-slate-400">
                                 <span className="italic opacity-80">{scanningStatus.currentAction || "Initializing..."}</span>
                                 <div className="flex gap-1 overflow-hidden max-w-[80px]">
-                                    {scanningStatus.symbols.slice(scanningStatus.current, scanningStatus.current + 2).map(s => (
-                                        <span key={s} className="font-mono text-white">{s.replace('USDT','')}</span>
+                                    {(scanningStatus.symbols || []).slice(scanningStatus.current, scanningStatus.current + 2).map((s, idx) => (
+                                        <span key={`${s}-${idx}`} className="font-mono text-white">{s.replace('USDT','')}</span>
                                     ))}
                                 </div>
                             </div>
@@ -136,7 +148,7 @@ const List3_Structure: React.FC<Props> = ({ config, setConfig, countdowns, list3
                 )}
                 {filteredList.map((item, idx) => (
                     <List3Item 
-                        key={idx}
+                        key={`${item.symbol}-${idx}`}
                         item={item}
                         results={item.list3Results} 
                         setChartData={setChartData}

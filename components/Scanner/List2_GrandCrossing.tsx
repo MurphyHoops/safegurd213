@@ -26,30 +26,31 @@ const List2_GrandCrossing: React.FC<Props> = ({ config, setConfig, scanConfig, s
     // View Mode State: ALL | LONG | SHORT
     const [viewMode, setViewMode] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
 
-    // Separate Lists
+    // Separate Lists (Defensive: ensure filteredList2 is an array)
     const { longs, shorts } = useMemo(() => {
         const l: ScannerItem[] = [];
         const s: ScannerItem[] = [];
         (filteredList2 || []).forEach(item => {
-            if (item.direction === 'LONG') l.push(item);
-            else if (item.direction === 'SHORT') s.push(item);
+            if (item && item.direction === 'LONG') l.push(item);
+            else if (item && item.direction === 'SHORT') s.push(item);
         });
         return { longs: l, shorts: s };
     }, [filteredList2]);
 
     // Determine display list
-    const displayList = viewMode === 'LONG' ? longs : viewMode === 'SHORT' ? shorts : filteredList2;
+    const displayList = viewMode === 'LONG' ? longs : viewMode === 'SHORT' ? shorts : (filteredList2 || []);
 
-    if (!config) return <div className="p-4 text-xs text-red-500">Config Error</div>;
+    // Defensive: Handle missing config
+    if (!config) return <div className="p-4 text-xs text-red-500">List 2 Config Error</div>;
 
     return (
         <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 ${COLUMN_WIDTH_CLASS}`}>
             
             {/* Polling Status Bar */}
-            {pollingStatus && pollingStatus !== 'IDLE' && (
+            {pollingStatus && (
                 <div className="bg-indigo-900/20 border-b border-indigo-500/20 px-2 py-1 text-[9px] text-indigo-300 flex items-center justify-center gap-1.5 animate-in fade-in">
-                    <Loader2 size={8} className="animate-spin"/>
-                    <span className="font-bold">基于时间切片轮询中:</span>
+                    {pollingStatus.includes('最后扫描') ? null : <Loader2 size={8} className="animate-spin"/>}
+                    <span className="font-bold">{pollingStatus.includes('最后扫描') ? '轮询待机中:' : '基于时间切片轮询中:'}</span>
                     <span className="opacity-80 truncate max-w-[120px]">{pollingStatus}</span>
                 </div>
             )}
@@ -60,6 +61,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ config, setConfig, scanConfig, s
                 countdowns={countdowns} tfCounts={tfCounts} 
                 activeFilterTf={activeFilterTf} isLocked={isLocked} onTfInteraction={onTfInteraction}
                 activeScanTfs={activeScanTfs}
+                pollingStatus={pollingStatus}
             />
             
             {/* Header & Filter Tabs */}
@@ -82,7 +84,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ config, setConfig, scanConfig, s
                             : 'bg-slate-800 text-slate-500 border-slate-700 hover:text-slate-300'
                         }`}
                     >
-                        <Layers size={10} /> 全部 ({filteredList2.length})
+                        <Layers size={10} /> 全部 ({(filteredList2 || []).length})
                     </button>
                     <button 
                         onClick={() => setViewMode('LONG')}
@@ -108,9 +110,9 @@ const List2_GrandCrossing: React.FC<Props> = ({ config, setConfig, scanConfig, s
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar bg-slate-950/20">
-                {(displayList || []).map((item, idx) => (
+                {displayList.map((item, idx) => (
                     <List2Item 
-                        key={item.symbol} 
+                        key={`${item.symbol}-${item.direction}-${item.tf}-${idx}`} 
                         item={item}
                         config={config}
                         activeFilterTf={activeFilterTf}

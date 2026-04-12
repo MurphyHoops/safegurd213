@@ -184,7 +184,18 @@ export function analyzeList3Structure(
     const curMid = (curUp + curLow) / 2;
     const bbw = curMid !== 0 ? (curUp - curLow) / curMid : 0;
 
-    // 7. Return Constructed Item with ALL Audit Data
+    // --- METRIC 7: Reverse 3K Check (Audit current momentum direction) ---
+    const last3Closes = closes.slice(-3);
+    const last3Opens = opens.slice(-3);
+    const last3Green = last3Closes.map((c, i) => c > last3Opens[i]);
+    let isReverse3K = false;
+    if (task.direction === 'LONG') {
+        if (last3Green.length === 3 && last3Green.every(g => !g)) isReverse3K = true;
+    } else {
+        if (last3Green.length === 3 && last3Green.every(g => g)) isReverse3K = true;
+    }
+
+    // 8. Return Constructed Item with ALL Audit Data
     // We do NOT return null here. We return the full profile.
     return {
         symbol: task.symbol,
@@ -206,7 +217,9 @@ export function analyzeList3Structure(
             signalHigh: signalHigh, 
             signalLow: signalLow,   
             postSignalExtreme: postSignalExtreme,
-            periodChange: task.periodChange // Pass-through
+            periodChange: task.periodChange, // Pass-through
+            isReverse3K,
+            ema80: getVal(ema80, signalIdx, 80)
         }
     };
 }

@@ -15,6 +15,7 @@ export interface List2GroupedResult {
 export interface List3SignalResult {
     tf: string;
     direction: 'LONG' | 'SHORT';
+    latched?: boolean; // Added to keep signal alive until List 2 drops
     structure: {
         rsi: number;
         bbw: number;
@@ -57,6 +58,7 @@ export interface ScannerItem {
         ema40: number;
         ema80: number;
     };
+    lastUpdated?: number;
     direction?: 'LONG' | 'SHORT' | 'NEUTRAL';
     candleShape?: {
         amplitude: number;
@@ -87,6 +89,7 @@ export interface ScannerItem {
         signalPrice?: number; 
         postSignalExtreme?: number; 
         periodChange?: number; 
+        isReverse3K?: boolean;
     };
     list3Results?: List3SignalResult[]; 
     momentum?: {
@@ -128,6 +131,8 @@ export interface List2Config {
     checkEma80Conflict: boolean;
     sortMode: 'LATEST' | 'MOST';
     triggerMode: 'NEW' | 'ALL';
+    requireCrossing: boolean;
+    strictFiltering: boolean;
 }
 
 export interface List3Config {
@@ -143,6 +148,7 @@ export interface List3Config {
     rsiLongMax: number;
     rsiShortMin: number;
     rsiShortMax: number;
+    enableRsi: boolean;
     autoSimOpen: boolean;
     maxBBW: number;
     validityPeriod: number;
@@ -163,6 +169,8 @@ export interface List4Config {
     enableThresholds: boolean;
     enableAntiChase: boolean;
     invalidRetentionMinutes: number; 
+    removeInvalidCandles?: number; // 结构破坏后多少根K线消除 (0 = 不消除)
+    removeTradedCandles?: number;  // 已开仓后多少根K线消除 (0 = 不消除)
     antiChaseConfig: {
         maxChange24h: number;
         maxRsi: number;
@@ -189,7 +197,8 @@ export interface ActionConfig {
 export interface ScanConfig {
     timeBasis: '8AM' | '24H'; 
     source: 'GAINERS' | 'LOSERS' | 'BOTH'; 
-    minVolume: number; 
+    minVolume: number;
+    maxVolume: number; 
     minChange: number;
     customSymbols: string;
     useCustomOnly: boolean;

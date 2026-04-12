@@ -6,11 +6,11 @@ import { PositionSide } from '../../../types';
 
 interface Props {
     item: ScannerItem;
-    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string) => void;
+    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => void;
     setChartData: (data: any) => void;
 }
 
-export const List4Item: React.FC<Props> = ({ item, executeTradeSafe, setChartData }) => {
+const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartData }) => {
     // Robust defensive check: Ensure item and its nested objects exist
     if (!item) return null;
 
@@ -59,7 +59,7 @@ export const List4Item: React.FC<Props> = ({ item, executeTradeSafe, setChartDat
     };
 
     return (
-        <div className={`bg-slate-800/60 border rounded overflow-hidden animate-in fade-in transition-all ${item.fuseBlocked ? 'border-slate-700 opacity-60 grayscale-[0.8]' : isInvalid ? 'border-red-500/30' : isTriggered ? 'border-amber-500/60 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'border-slate-600'}`}>
+        <div onClick={handleOpenChart} className={`bg-slate-800/60 border rounded overflow-hidden animate-in fade-in transition-all cursor-pointer hover:border-indigo-500/50 ${item.fuseBlocked ? 'border-slate-700 opacity-60 grayscale-[0.8]' : isInvalid ? 'border-red-500/30' : isTriggered ? 'border-amber-500/60 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'border-slate-600'}`}>
             {/* Header */}
             <div className={`p-2 flex justify-between items-center ${item.fuseBlocked ? 'bg-slate-800' : isInvalid ? 'bg-red-900/10' : isTriggered ? 'bg-amber-500/20' : 'bg-slate-900/50'}`}>
                 <div 
@@ -134,7 +134,17 @@ export const List4Item: React.FC<Props> = ({ item, executeTradeSafe, setChartDat
                         </div>
 
                         <button 
-                            onClick={() => executeTradeSafe(item.symbol, item.direction as any, item.price, 'Manual L4', tf)} 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const signalCandle = item.structure ? {
+                                    high: item.structure.signalHigh,
+                                    low: item.structure.signalLow,
+                                    close: item.structure.signalPrice,
+                                    open: item.structure.signalPrice, // Approximate
+                                    amplitude: (item.structure.signalHigh - item.structure.signalLow) / item.structure.signalLow
+                                } : undefined;
+                                executeTradeSafe(item.symbol, item.direction as any, item.price, "Manual L4 Force", tf, signalCandle);
+                            }} 
                             className={`w-full py-1.5 rounded text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-1.5 ${
                                 isTriggered 
                                 ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-900/40 cursor-pointer' 
@@ -153,3 +163,20 @@ export const List4Item: React.FC<Props> = ({ item, executeTradeSafe, setChartDat
         </div>
     );
 };
+
+// PERFORMANCE OPTIMIZATION: Only re-render if critical status changes or price moves significantly
+export const List4Item = React.memo(List4ItemComponent, (prev, next) => {
+    // 1. If symbol/ID different, re-render
+    if (prev.item.symbol !== next.item.symbol) return false;
+    
+    // 2. If status changed (PENDING -> TRIGGERED), re-render
+    if (prev.item.momentum?.status !== next.item.momentum?.status) return false;
+    
+    // 3. If price changed significantly (>0.1%), re-render to update "Distance to Trigger"
+    // Otherwise, skip render to save CPU
+    const priceDiff = Math.abs(prev.item.price - next.item.price);
+    const pctDiff = (priceDiff / prev.item.price) * 100;
+    if (pctDiff > 0.1) return false;
+
+    return true; // Props equal, skip render
+});

@@ -96,20 +96,41 @@ const HedgingModule: React.FC<Props> = ({ settings, onChange }) => {
                          </div>
                          
                          {settings.breakKLineEnabled && (
-                             <div className="flex items-center gap-2 animate-in fade-in">
-                                 <div className="flex-1">
-                                     <label className="text-[9px] text-slate-500 block mb-1">K线振幅比例 (%)</label>
-                                     <div className="relative">
-                                         <input 
-                                             type="number" 
-                                             className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-white font-bold text-center" 
-                                             value={settings.breakKLineRatio || 20} 
-                                             onChange={(e) => onChange('breakKLineRatio', parseFloat(e.target.value))} 
-                                         />
-                                         <span className="absolute right-6 top-1 text-[9px] text-slate-500">%</span>
+                             <div className="flex flex-col gap-2 animate-in fade-in">
+                                 <div className="flex items-center gap-2">
+                                     <div className="flex-1">
+                                         <label className="text-[9px] text-slate-500 block mb-1">K线振幅比例 (%)</label>
+                                         <div className="relative">
+                                             <input 
+                                                 type="number" 
+                                                 className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-white font-bold text-center" 
+                                                 value={settings.breakKLineRatio || 20} 
+                                                 onChange={(e) => onChange('breakKLineRatio', parseFloat(e.target.value))} 
+                                             />
+                                             <span className="absolute right-6 top-1 text-[9px] text-slate-500">%</span>
+                                         </div>
                                      </div>
                                  </div>
-                                 <div className="text-[9px] text-slate-500 w-2/3 leading-tight pt-3">
+                                 <div className="flex items-center justify-between gap-2 border-t border-slate-700 pt-2">
+                                     <label className="text-[10px] text-slate-500">亏损限制启动 (%)</label>
+                                     <div className="flex items-center gap-2">
+                                         <div 
+                                             onClick={() => onChange('combinedLossLimitEnabled', !settings.combinedLossLimitEnabled)} 
+                                             className={`w-6 h-3 rounded-full p-0.5 transition-colors cursor-pointer ${settings.combinedLossLimitEnabled ? 'bg-orange-600' : 'bg-slate-700'}`}
+                                         >
+                                             <div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${settings.combinedLossLimitEnabled ? 'translate-x-3' : 'translate-x-0'}`}/>
+                                         </div>
+                                         <input 
+                                             type="number" 
+                                             step="0.1"
+                                             className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-orange-400 focus:border-orange-500 font-mono font-bold" 
+                                             value={settings.combinedLossLimitPercent ?? 2} 
+                                             onChange={(e) => onChange('combinedLossLimitPercent', parseFloat(e.target.value))} 
+                                             disabled={!settings.combinedLossLimitEnabled}
+                                         />
+                                     </div>
+                                 </div>
+                                 <div className="text-[9px] text-slate-500 leading-tight">
                                      触发线 = 信号K线 ± (振幅 × {settings.breakKLineRatio || 20}%)<br/>
                                      <span className="text-[8px] opacity-60 text-orange-300 font-bold">* 信号K线：必须同时穿越 4根+ EMA均线 (10/20/30/40/80)</span>
                                  </div>

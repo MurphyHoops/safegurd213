@@ -96,7 +96,7 @@ export class StrategyAdvisor {
         let currentStrategy: any = 'NONE';
         if (currentSettings.hedgeProfitClear) currentStrategy = '4.2';
         else if (currentSettings.callbackProfitClear) currentStrategy = '4.3';
-        else if (currentSettings.originalProfitClear) currentStrategy = '4.1';
+        else if (currentSettings.amputationEnabled) currentStrategy = '4.1';
         // Note: Fuse is usually an additional safeguard, but here we treat it as a primary mode if recommended
         // If no primary active, check fuse
         if (currentStrategy === 'NONE' && currentSettings.fuseEnabled) currentStrategy = '4.4_WAIT'; 

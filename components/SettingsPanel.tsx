@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { AppSettings, SimulationSettings, StopLossSettings } from '../types';
-import { Target, Shield, AlertTriangle, RefreshCw, Settings, Info, X, BookOpen, Sun, Moon, Music, VolumeX, ShieldCheck } from 'lucide-react';
+import { Target, Shield, AlertTriangle, RefreshCw, Settings, Info, X, BookOpen, Sun, Moon, Music, VolumeX, ShieldCheck, History } from 'lucide-react';
 import { audioService } from '../services/audioService';
 
 // --- ATOMIC MODULES ---
@@ -10,6 +10,7 @@ import { HedgeGuardianModule } from '../modules/hedge-guardian';
 import { RescueTacticsModule } from '../modules/rescue-tactics';
 import { AutoPilotModule } from '../modules/auto-pilot';
 import { SystemCoreModule } from '../modules/system-core';
+import { BacktesterModule } from '../modules/backtester/BacktesterModule';
 
 import ModuleHeader from './Settings/ModuleHeader';
 
@@ -43,6 +44,62 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
     const [wakeLock, setWakeLock] = useState<any>(null);
     const [bgModeActive, setBgModeActive] = useState(false);
 
+    // Auto-enable on mount
+    useEffect(() => {
+        let lock: any = null;
+        let isMounted = true;
+        let isRequesting = false;
+
+        const requestWakeLock = async () => {
+            if (!isMounted || lock || isRequesting || !('wakeLock' in navigator)) return;
+            isRequesting = true;
+            try {
+                lock = await (navigator as any).wakeLock.request('screen');
+                if (isMounted) {
+                    setWakeLock(lock);
+                    lock.addEventListener('release', () => {
+                        lock = null;
+                        if (isMounted) setWakeLock(null);
+                    });
+                }
+            } catch (err: any) {
+                console.warn('Auto wake lock failed:', err.message);
+                // If it failed due to NotAllowedError, we can try again on first user interaction
+                if (err.name === 'NotAllowedError') {
+                    const handleInteraction = async () => {
+                        document.removeEventListener('click', handleInteraction);
+                        document.removeEventListener('touchstart', handleInteraction);
+                        await requestWakeLock();
+                    };
+                    document.addEventListener('click', handleInteraction);
+                    document.addEventListener('touchstart', handleInteraction);
+                }
+            } finally {
+                isRequesting = false;
+            }
+        };
+
+        const enableGuards = async () => {
+            // Enable background keep-alive
+            if (!bgModeActive) {
+                audioService.enableBackgroundMode();
+                setBgModeActive(true);
+            }
+            
+            // Enable screen wake lock
+            await requestWakeLock();
+        };
+        
+        enableGuards();
+        
+        return () => {
+            isMounted = false;
+            if (lock) {
+                lock.release().catch(console.error);
+            }
+        };
+    }, []);
+
     const toggleModule = (id: number) => {
         setExpandedModule(expandedModule === id ? null : id);
     };
@@ -60,20 +117,13 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
         const willEnable = !current[feature];
 
         if (willEnable) {
-            if (feature === 'originalProfitClear') {
-                handleChange('stopLoss', 'hedgeProfitClear', false);
-                handleChange('stopLoss', 'callbackProfitClear', false);
-                handleChange('stopLoss', 'amputationEnabled', false);
-            } else if (feature === 'hedgeProfitClear') {
-                handleChange('stopLoss', 'originalProfitClear', false);
+            if (feature === 'hedgeProfitClear') {
                 handleChange('stopLoss', 'callbackProfitClear', false);
                 handleChange('stopLoss', 'amputationEnabled', false);
             } else if (feature === 'callbackProfitClear') {
-                handleChange('stopLoss', 'originalProfitClear', false);
                 handleChange('stopLoss', 'hedgeProfitClear', false);
                 handleChange('stopLoss', 'amputationEnabled', false);
             } else if (feature === 'amputationEnabled') {
-                handleChange('stopLoss', 'originalProfitClear', false);
                 handleChange('stopLoss', 'hedgeProfitClear', false);
                 handleChange('stopLoss', 'callbackProfitClear', false);
             }
@@ -141,8 +191,10 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
         reader.onload = (event) => {
             try {
                 const json = JSON.parse(event.target?.result as string);
-                if (json.audio && json.profit) {
+                // Basic validation: check for core sections
+                if (json && typeof json === 'object' && (json.profit || json.hedging || json.stopLoss)) {
                     onRestoreSettings(json);
+                    audioService.speak("配置已成功导入");
                 } else {
                     audioService.speak("配置文件格式错误", true);
                 }
@@ -178,7 +230,7 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
                             </div>
                             <div className="bg-slate-800/50 p-2 rounded border border-slate-700">
                                 <span className="text-amber-400 font-bold block mb-1">3. 最终胜利 (Victory)</span>
-                                当【历史累计对冲盈利 + 当前对冲浮盈 + 原仓当前浮盈】 > 【最大债务 * (1+覆盖阈值)】时，执行全平。
+                                当【历史累计对冲盈利 + 当前对冲浮盈 + 原仓当前浮盈】 &gt; 【最大债务 * (1+覆盖阈值)】时，执行全平。
                             </div>
                         </div>
                         <button onClick={() => setShowStrategy43Info(false)} className="w-full mt-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs">关闭</button>
@@ -248,6 +300,7 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
                     isSimulating={isSimulating} 
                     onToggleSim={onToggleSim} 
                     onOpenScanner={onOpenScanner} 
+                    settings={settings}
                 />
             )}
 
@@ -286,6 +339,12 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* MODULE 7: BACKTESTER */}
+            <ModuleHeader id={7} icon={History} title="历史回测" subtitle="Backtesting Engine" active={expandedModule === 7} colorClass="bg-amber-900/50 text-amber-400" onClick={toggleModule} />
+            {expandedModule === 7 && (
+                <BacktesterModule settings={settings} />
             )}
         </div>
     );

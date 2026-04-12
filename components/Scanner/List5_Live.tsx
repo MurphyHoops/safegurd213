@@ -91,9 +91,9 @@ const List5_Live: React.FC<List5Props> = ({
                         <span className="text-[10px] font-bold">无符合条件的持仓</span>
                     </div>
                 )}
-                {filteredList.map((pos) => (
+                {filteredList.map((pos, idx) => (
                     <LivePositionRow 
-                        key={`${pos.symbol}-${pos.side}`} 
+                        key={`${pos.entryId}-${idx}`} 
                         position={pos} 
                         realPrice={realPrices[pos.symbol]}
                         setChartData={setChartData}

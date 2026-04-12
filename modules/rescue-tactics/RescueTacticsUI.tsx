@@ -3,7 +3,6 @@ import React from 'react';
 import { RescueTacticsProps } from './types';
 import { AlertTriangle } from 'lucide-react';
 // Imports now updated to local strategies
-import Strategy1_OriginalProfit from './strategies/Strategy1_OriginalProfit';
 import Strategy2_HedgeProfit from './strategies/Strategy2_HedgeProfit';
 import Strategy3_CallbackProfit from './strategies/Strategy3_CallbackProfit';
 import Strategy4_Amputation from './strategies/Strategy4_Amputation';
@@ -19,7 +18,6 @@ export const RescueTacticsModule: React.FC<RescueTacticsProps> = ({ settings, on
                 此功能需要有丰富交易经验的交易员，使用需谨慎。
             </div>
 
-            <Strategy1_OriginalProfit settings={settings} onChange={onChange} toggleFeature={toggleFeature} />
             <Strategy2_HedgeProfit settings={settings} onChange={onChange} toggleFeature={toggleFeature} />
             <Strategy3_CallbackProfit settings={settings} onChange={onChange} toggleFeature={toggleFeature} onShowStrategyInfo={onShowStrategyInfo} />
             <Strategy4_Amputation settings={settings} onChange={onChange} toggleFeature={toggleFeature} />

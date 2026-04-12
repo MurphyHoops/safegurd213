@@ -38,7 +38,7 @@ const SystemModule: React.FC<Props> = ({ settings, onChange, onOpenManual, onVie
                          <div className="text-lg font-mono font-bold text-white">{remainingDays} 天</div>
                      </div>
                      <button 
-                        onClick={() => window.location.reload()} // Trigger app reload to show modal again if expired
+                        onClick={() => alert("请联系管理员续费")} 
                         className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold rounded shadow-lg shadow-amber-900/20"
                      >
                          {remainingDays > 0 ? '立即续费' : '立即开通'}

@@ -322,7 +322,7 @@ const UserManualModal: React.FC<Props> = ({ onClose }) => {
                       <b>设置参数：</b>
                       <ul className="list-disc list-inside pl-4 mt-1 text-xs text-slate-500 space-y-1">
                         <li><b>补仓跌幅：</b> 跌多少加仓？（默认 1%）</li>
-                        <li><b>补仓倍数：</b> 每次加多少？（默认 1.5倍，即 100 -> 150 -> 225...）</li>
+                        <li><b>补仓倍数：</b> 每次加多少？（默认 1.5倍，即 100 &rarr; 150 &rarr; 225...）</li>
                         <li><b>最大次数：</b> 防止无限加仓爆仓（默认 5次）。</li>
                       </ul>
                     </li>

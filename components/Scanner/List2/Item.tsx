@@ -32,7 +32,9 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
             <div className="flex justify-between items-center mb-1"><div className="flex items-center gap-1">{isLong ? <span className="text-[9px] text-emerald-400 font-bold">T↑</span> : item.direction === 'SHORT' ? <span className="text-[9px] text-red-400 font-bold">T↓</span> : <span className="text-[9px] text-slate-500 font-bold">T-</span>}</div></div>
             <div className="flex flex-wrap gap-1">
                 {item.groupedResults?.map((res, rIdx) => {
-                    const lag = res.lag ?? 9; 
+                    // Use the most recent lag from the cluster for display purposes
+                    const rawLag = res.crossingLags && res.crossingLags.length > 0 ? Math.min(...res.crossingLags) : (res.lag ?? 9);
+                    const lag = isNaN(rawLag) ? 9 : rawLag;
                     const max = config.maxLag > 0 ? config.maxLag : 9;
                     const integrity = Math.max(5, 100 - (lag / max) * 100);
                     
@@ -42,7 +44,7 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                     let Icon = Shield;
                     let containerClass = "border-slate-700 bg-slate-900/60";
 
-                    if (lag === 0) {
+                    if (lag <= 1) {
                         statusText = 'NEW';
                         textColor = 'text-white font-bold';
                         barColor = 'bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]'; 
@@ -66,7 +68,7 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                     if (isFiltered) containerClass = "border-amber-500/60 bg-amber-900/30";
                     
                     return (
-                        <div key={rIdx} onClick={(e) => { 
+                        <div key={`${res.tf}-${res.direction}-${rIdx}`} onClick={(e) => { 
                             e.stopPropagation(); 
                             const signals: { time: number, type: 'LONG' | 'SHORT' }[] = [];
                             item.groupedResults?.forEach(r => {

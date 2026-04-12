@@ -1,7 +1,8 @@
 
-import React, { useMemo, useState, useRef } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { AccountData, Position, PositionSide } from '../../types';
-import { Play, Pause, Trash2, AlertCircle, List } from 'lucide-react';
+import { Play, Pause, Trash2, AlertCircle, List, RefreshCw, Activity } from 'lucide-react';
+import { binanceWs } from '../../services/binanceWs';
 
 interface Props {
     account: AccountData;
@@ -19,6 +20,14 @@ const DashboardHeader: React.FC<Props> = ({
 }) => {
     const [confirmClear, setConfirmClear] = useState(false);
     const confirmTimeoutRef = useRef<any>(null);
+    const [wsStatus, setWsStatus] = useState({ isConnected: false, lastMessageTime: 0 });
+
+    useEffect(() => {
+        const unsubscribe = binanceWs.subscribeStatus((status) => {
+            setWsStatus(status);
+        });
+        return () => unsubscribe();
+    }, []);
 
     // Calculate Real-time PnL & Margin
     const totalPnL = useMemo(() => {
@@ -31,7 +40,7 @@ const DashboardHeader: React.FC<Props> = ({
     
     const walletBalance = account.marginBalance; 
     const equity = walletBalance + totalPnL;   
-    const usedMargin = positions.reduce((sum, p) => (p.amount * p.entryPrice) / p.leverage, 0);
+    const usedMargin = positions.reduce((sum, p) => (p.amount * p.entryPrice), 0);
     const realAvailableMargin = Math.max(0, equity - usedMargin);
     const calculatedMarginRatio = walletBalance > 0 ? (realAvailableMargin / walletBalance * 100) : 0;
     const totalPnLPercentage = walletBalance > 0 ? (totalPnL / walletBalance) * 100 : 0;
@@ -48,6 +57,15 @@ const DashboardHeader: React.FC<Props> = ({
             if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
         }
     };
+
+    const handleForceReconnect = () => {
+        binanceWs.forceReconnect();
+    };
+
+    const timeSinceLastMessage = Date.now() - wsStatus.lastMessageTime;
+    const isHealthy = wsStatus.isConnected && timeSinceLastMessage < 3000;
+    const isWarning = wsStatus.isConnected && timeSinceLastMessage >= 3000 && timeSinceLastMessage < 10000;
+    const isError = !wsStatus.isConnected || timeSinceLastMessage >= 10000;
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-2 shrink-0">
@@ -99,13 +117,24 @@ const DashboardHeader: React.FC<Props> = ({
                     <button onClick={onToggleSimulation} className={`flex-1 py-1.5 rounded text-[10px] font-bold flex items-center justify-center gap-1 transition-all ${isSimulating ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-700 hover:bg-slate-600 text-slate-300'}`}>
                         {isSimulating ? <Pause size={12}/> : <Play size={12}/>} {isSimulating ? '暂停' : '启动'}
                     </button>
+                    
+                    {/* Connection Status / Watchdog Button */}
+                    <button 
+                        onClick={handleForceReconnect}
+                        title="点击强制刷新币安连接"
+                        className={`flex-1 py-1.5 rounded text-[10px] font-bold flex items-center justify-center gap-1 transition-all border
+                            ${isHealthy ? 'bg-emerald-900/20 text-emerald-400 border-emerald-800/50 hover:bg-emerald-900/40' : 
+                              isWarning ? 'bg-amber-900/20 text-amber-400 border-amber-800/50 hover:bg-amber-900/40' : 
+                              'bg-red-900/20 text-red-400 border-red-800/50 hover:bg-red-900/40'}`}
+                    >
+                        <RefreshCw size={12} className={isHealthy ? 'animate-spin-slow' : isWarning ? '' : 'animate-spin'} />
+                        {isHealthy ? '正常' : isWarning ? '延迟' : '断开'}
+                    </button>
+
                     <button onClick={handleBatchCloseWithConfirm} className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all flex items-center justify-center gap-1 border ${confirmClear ? 'bg-red-600 hover:bg-red-700 text-white border-red-400 animate-pulse' : 'bg-slate-800 hover:bg-red-900/50 text-slate-400 border-slate-700'}`}>
                         {confirmClear ? <AlertCircle size={12}/> : <Trash2 size={12}/>} {confirmClear ? '确认?' : '清仓'}
                     </button>
                 </div>
-                <button onClick={onOpenTradeModal} className="w-full py-1.5 rounded text-[10px] font-bold bg-[#1e2329] hover:bg-[#2b3139] text-slate-300 border border-slate-700 flex items-center justify-center gap-2">
-                    <List size={12}/> 交易历史流水 (Trade Logs)
-                </button>
             </div>
         </div>
     );

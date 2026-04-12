@@ -10,9 +10,12 @@ export function analyzeList4Momentum(
         if (!item.structure) return null;
 
         const rsi = item.structure.rsi || 50;
-        // const signalPrice = item.structure.signalPrice || item.price; // Deprecated for calculation
-        const extreme = item.structure.postSignalExtreme ?? item.price;
         const currentPrice = item.price;
+        
+        // Include current live price in the extreme calculation for real-time accuracy
+        const extreme = item.direction === 'LONG'
+            ? Math.min(item.structure.postSignalExtreme ?? currentPrice, currentPrice)
+            : Math.max(item.structure.postSignalExtreme ?? currentPrice, currentPrice);
         
         // --- LOGIC: Dynamic Amplitude-Based Thresholds ---
         
@@ -39,18 +42,16 @@ export function analyzeList4Momentum(
         
         if (item.direction === 'LONG') {
             // Defense Logic (Long):
-            // Anchor is Signal HIGH. We allow price to retrace down by X%.
-            // Formula: High - (Amplitude * Threshold)
-            // Example: High 1100, Low 1000, Thres 50%. Limit = 1100 - 50 = 1050.
+            // Anchor is Signal HIGH. We allow price to retrace down by X% of amplitude.
+            // Formula: High - (Amplitude * Threshold%)
             midPoint = signalHigh - defenseBuffer; 
             
             // Attack Trigger: Breakout above High
             entryTrigger = signalHigh + breakoutBuffer;
         } else {
             // Defense Logic (Short):
-            // Anchor is Signal LOW. We allow price to rebound up by X%.
-            // Formula: Low + (Amplitude * Threshold)
-            // Example: High 1000, Low 900, Thres 50%. Limit = 900 + 50 = 950.
+            // Anchor is Signal LOW. We allow price to rebound up by X% of amplitude.
+            // Formula: Low + (Amplitude * Threshold%)
             midPoint = signalLow + defenseBuffer;
             
             // Attack Trigger: Breakout below Low
@@ -61,37 +62,32 @@ export function analyzeList4Momentum(
         let momentumStatus: 'INVALID' | 'PENDING' | 'TRIGGERED' = 'PENDING';
         let invalidReason = '';
 
-        // Check if structure is broken (extreme price went beyond safety line)
-        if (item.direction === 'LONG') {
-            // For Long, if the Lowest Low detected AFTER signal is LOWER than Defense Line -> INVALID
-            // Note: postSignalExtreme tracks the lowest low for LONG signals
-            if (extreme < midPoint) {
-                momentumStatus = 'INVALID';
-                invalidReason = `结构破坏: 回撤(${extreme.toFixed(4)}) 跌破防守线(${midPoint.toFixed(4)})`;
-            }
-        } else {
-            // For Short, if the Highest High detected AFTER signal is HIGHER than Defense Line -> INVALID
-            // Note: postSignalExtreme tracks the highest high for SHORT signals
-            if (extreme > midPoint) {
-                momentumStatus = 'INVALID';
-                invalidReason = `结构破坏: 反弹(${extreme.toFixed(4)}) 突破防守线(${midPoint.toFixed(4)})`;
-            }
-        }
-
-        // If structure valid, check for Trigger (PRECISION UPDATE: Use >= and <=)
-        if (momentumStatus !== 'INVALID') {
+        // Only check thresholds if enabled
+        if (config.enableThresholds !== false) {
+            // Check if structure is broken (extreme price went beyond safety line)
             if (item.direction === 'LONG') {
-                if (currentPrice >= entryTrigger) {
+                // For Long, if the Lowest Low detected AFTER signal is LOWER than Defense Line -> INVALID
+                if (extreme < midPoint) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = `结构破坏: 回撤(${extreme.toFixed(4)}) 跌破防守线(${midPoint.toFixed(4)})`;
+                } else if (currentPrice >= entryTrigger) {
                     momentumStatus = 'TRIGGERED';
-                } else {
-                    momentumStatus = 'PENDING'; 
                 }
             } else {
-                if (currentPrice <= entryTrigger) {
+                // For Short, if the Highest High detected AFTER signal is HIGHER than Defense Line -> INVALID
+                if (extreme > midPoint) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = `结构破坏: 反弹(${extreme.toFixed(4)}) 突破防守线(${midPoint.toFixed(4)})`;
+                } else if (currentPrice <= entryTrigger) {
                     momentumStatus = 'TRIGGERED';
-                } else {
-                    momentumStatus = 'PENDING'; 
                 }
+            }
+        } else {
+            // If thresholds disabled, just check breakout for triggering
+            if (item.direction === 'LONG' && currentPrice >= entryTrigger) {
+                momentumStatus = 'TRIGGERED';
+            } else if (item.direction === 'SHORT' && currentPrice <= entryTrigger) {
+                momentumStatus = 'TRIGGERED';
             }
         }
 
@@ -99,16 +95,47 @@ export function analyzeList4Momentum(
         let fuseBlocked = false;
         let fuseReason = '';
         
-        const antiChase = config.antiChaseConfig || { maxRsi: 75, minRsi: 25 };
+        const antiChase = config.antiChaseConfig || { 
+            maxRsi: 75, 
+            minRsi: 25, 
+            maxChange24h: 15, 
+            maxDeviation: 10,
+            enableRev3K: true,
+            enableStrictMAs: false
+        };
 
         if (config.enableAntiChase) {
+            // A. RSI Check
             if (item.direction === 'LONG' && rsi > antiChase.maxRsi) {
                 fuseBlocked = true;
-                fuseReason = `RSI Overbought (${rsi.toFixed(1)})`;
+                fuseReason = `RSI 超买 (${rsi.toFixed(1)})`;
             }
             if (item.direction === 'SHORT' && rsi < antiChase.minRsi) {
                 fuseBlocked = true;
-                fuseReason = `RSI Oversold (${rsi.toFixed(1)})`;
+                fuseReason = `RSI 超卖 (${rsi.toFixed(1)})`;
+            }
+
+            // B. 24H Change Check
+            const change = Math.abs(item.change || 0);
+            if (change > antiChase.maxChange24h) {
+                fuseBlocked = true;
+                fuseReason = `24H 涨跌过大 (${change.toFixed(1)}% > ${antiChase.maxChange24h}%)`;
+            }
+
+            // C. EMA80 Deviation Check
+            if (item.structure?.ema80) {
+                const deviation = ((currentPrice - item.structure.ema80) / item.structure.ema80) * 100;
+                const absDev = Math.abs(deviation);
+                if (absDev > antiChase.maxDeviation) {
+                    fuseBlocked = true;
+                    fuseReason = `EMA80 乖离过大 (${absDev.toFixed(1)}% > ${antiChase.maxDeviation}%)`;
+                }
+            }
+
+            // D. Reverse 3K Check
+            if (antiChase.enableRev3K && item.structure?.isReverse3K) {
+                fuseBlocked = true;
+                fuseReason = `逆势三连K拦截 (Rev 3K)`;
             }
         }
 

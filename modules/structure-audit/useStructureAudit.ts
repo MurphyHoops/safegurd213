@@ -1,5 +1,6 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import { ScannerItem, List3Config, List3SignalResult, StructureScanStatus } from '../../components/Scanner/scannerTypes';
 import { analyzeList3Structure } from '../../services/rules/list3_structure';
 import { fetchWithFallback } from '../../services/apiService';
@@ -18,28 +19,74 @@ const getTfMinutes = (tf: string) => {
 export const useStructureAudit = (
     candidates: ScannerItem[], // Input from List 2
     initialConfig: List3Config,
-    realPrices: Record<string, number>
+    realPrices: Record<string, number>,
+    directMode: boolean = false
 ) => {
     // --- STATE ---
-    const [config, setConfig] = useState<List3Config>(initialConfig);
-    const [list3, setList3] = useState<ScannerItem[]>([]);
+    const [config, setConfig] = usePersistedState<List3Config>('SCANNER_LIST3_CONFIG', initialConfig);
+    const [list3, setList3] = useState<ScannerItem[]>(() => {
+        try {
+            const saved = localStorage.getItem('SCANNER_LIST3_CACHE_MAP');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed)) {
+                    const allItems = parsed.map((item: any) => item.value);
+                    allItems.sort((a: any, b: any) => (b.list3Results?.length || 0) - (a.list3Results?.length || 0));
+                    return allItems;
+                }
+            }
+        } catch(e) {}
+        return [];
+    });
     const [isScanning, setIsScanning] = useState(false);
     const [scanStatus, setScanStatus] = useState<StructureScanStatus | null>(null);
     const [countdowns, setCountdowns] = useState<Record<string, string>>({});
 
     // --- REFS ---
-    const cacheRef = useRef<Map<string, ScannerItem>>(new Map());
+    const cacheRef = useRef<Map<string, ScannerItem>>(new Map(
+        (() => {
+            try {
+                const saved = localStorage.getItem('SCANNER_LIST3_CACHE_MAP');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    return Array.isArray(parsed) ? parsed.map((item: any) => [item.key, item.value]) : [];
+                }
+            } catch(e) {}
+            return [];
+        })()
+    ));
     const configRef = useRef(config);
     const candidatesRef = useRef(candidates);
-    
-    // TRACKING: Concurrency Lock
     const isScanningRef = useRef(false);
-    
-    // TRACKING: Last scan time for each symbol+tf key
     const lastCandleScanRef = useRef<Map<string, number>>(new Map());
+    const expiredSignalCacheRef = useRef<Set<string>>(new Set()); // Track permanently removed signals
+    const structureHashRef = useRef<Map<string, string>>(new Map(
+        (() => {
+            try {
+                const saved = localStorage.getItem('SCANNER_LIST3_CACHE_MAP');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    return Array.isArray(parsed) ? parsed.map((item: any) => {
+                        const hash = item.value.groupedResults ? item.value.groupedResults.map((r: any) => `${r.tf}:${r.direction}:${r.crossingCount}`).join('|') : "";
+                        return [item.key, hash];
+                    }) : [];
+                }
+            } catch(e) {}
+            return [];
+        })()
+    ));
+    
+    // PERFORMANCE FIX: Use Ref for prices to prevent re-creating runAnalysisInternal on every tick
+    const realPricesRef = useRef(realPrices);
 
     useEffect(() => { configRef.current = config; }, [config]);
     useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
+    useEffect(() => { realPricesRef.current = realPrices; }, [realPrices]);
+
+    const getStructureHash = (item: ScannerItem) => {
+        if (!item.groupedResults) return "";
+        return item.groupedResults.map(r => `${r.tf}:${r.direction}:${r.crossingCount}`).join('|');
+    };
 
     // --- EFFECT: UI Countdowns ---
     useEffect(() => {
@@ -53,13 +100,9 @@ export const useStructureAudit = (
                     const intervalMs = tfMinutes * 60 * 1000;
                     const nextClose = Math.ceil(now / intervalMs) * intervalMs;
                     const diff = nextClose - now;
-                    if (diff > 0) {
-                        const m = Math.floor(diff / 60000).toString().padStart(2, '0');
-                        const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
-                        newCounts[tf] = `${m}:${s}`;
-                    } else {
-                        newCounts[tf] = "00:00";
-                    }
+                    newCounts[tf] = diff > 0 
+                        ? `${Math.floor(diff / 60000).toString().padStart(2, '0')}:${Math.floor((diff % 60000) / 1000).toString().padStart(2, '0')}`
+                        : "00:00";
                 }
             });
             setCountdowns(newCounts);
@@ -67,183 +110,279 @@ export const useStructureAudit = (
         return () => clearInterval(timer);
     }, []);
 
+    const updateList3FromCache = useCallback(() => {
+        const allItems: ScannerItem[] = Array.from(cacheRef.current.values());
+        allItems.sort((a, b) => (b.list3Results?.length || 0) - (a.list3Results?.length || 0));
+        setList3(allItems);
+        
+        // Persist to localStorage
+        try {
+            const cacheArray = Array.from(cacheRef.current.entries()).map(([key, value]) => ({ key, value }));
+            localStorage.setItem('SCANNER_LIST3_CACHE_MAP', JSON.stringify(cacheArray));
+        } catch (e) {
+            console.warn("Failed to persist List 3 cache", e);
+        }
+    }, []);
+
     // --- CORE LOGIC: Analysis ---
-    const runAnalysis = useCallback(async (triggerReason: string) => {
-        // Strict Concurrency Check
-        if (isScanningRef.current || candidatesRef.current.length === 0) return;
+    // PERFORMANCE CRITICAL: realPrices removed from dependency array
+    const runAnalysisInternal = useCallback(async (itemsToScan: ScannerItem[], triggerReason: string) => {
+        if (isScanningRef.current || itemsToScan.length === 0) return;
         
         isScanningRef.current = true;
         setIsScanning(true);
 
-        const relevantItems = candidatesRef.current.filter(i => i.groupedResults && i.groupedResults.length > 0);
-        
         setScanStatus({ 
-            symbols: relevantItems.map(i => i.symbol), 
+            symbols: itemsToScan.map(i => i.symbol), 
             tfs: configRef.current.timeframes, 
             current: 0, 
-            total: relevantItems.length,
+            total: itemsToScan.length,
             currentAction: triggerReason 
         });
 
         try {
             let hasChanges = false;
-            const batchSize = 10; 
+            const batchSize = 5; 
 
-            for (let i = 0; i < relevantItems.length; i += batchSize) {
+            for (let i = 0; i < itemsToScan.length; i += batchSize) {
                 if (candidatesRef.current.length === 0) break;
 
-                const batch = relevantItems.slice(i, i + batchSize);
+                const batch = itemsToScan.slice(i, i + batchSize);
                 
-                await Promise.all(batch.map(async (item) => {
-                    if (!item.groupedResults) return;
-                    
-                    const neededTFs = new Set<string>();
-                    item.groupedResults.forEach(r => { 
-                        if (configRef.current.timeframes.includes(r.tf)) neededTFs.add(r.tf); 
-                    });
-                    
-                    const livePrice = realPrices[item.symbol] || item.price;
+                const concurrencyLimit = 3;
+                for (let c = 0; c < batch.length; c += concurrencyLimit) {
+                    const chunk = batch.slice(c, c + concurrencyLimit);
+                    await Promise.all(chunk.map(async (item) => {
+                        if (!item.groupedResults) return;
+                        
+                        const neededTFs = new Set<string>();
+                        item.groupedResults.forEach(r => { 
+                            if (configRef.current.timeframes.includes(r.tf)) neededTFs.add(r.tf); 
+                        });
+                        
+                        if (neededTFs.size === 0) return;
 
-                    for (const tf of Array.from(neededTFs)) {
-                        try {
-                            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${tf}&limit=150`;
-                            const res = await fetchWithFallback(url, {cache: 'no-store'}, (d) => Array.isArray(d));
-                            
-                            if (res.ok) {
-                                const klines = await res.json();
-                                const closes = klines.map((k: any) => parseFloat(k[4]));
-                                const highs = klines.map((k: any) => parseFloat(k[2]));
-                                const lows = klines.map((k: any) => parseFloat(k[3]));
-                                const opens = klines.map((k: any) => parseFloat(k[1]));
-                                const volumes = klines.map((k: any) => parseFloat(k[5]));
-                                
-                                let periodChange = 0;
-                                if (closes.length > 0) periodChange = ((closes[closes.length-1] - closes[0]) / closes[0]) * 100;
+                        // USE REF HERE
+                        const livePrice = realPricesRef.current[item.symbol] || item.price;
 
-                                const resultsForTf = item.groupedResults!.filter(r => r.tf === tf);
+                        for (const tf of Array.from(neededTFs)) {
+                            // Update scan time immediately to prevent infinite retries on failure
+                            lastCandleScanRef.current.set(`${item.symbol}-${tf}`, Date.now());
+                            try {
+                                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${tf}&limit=500&_t=${Date.now()}`;
+                                const res = await fetchWithFallback(url, {cache: 'no-store'}, (d) => Array.isArray(d), directMode);
                                 
-                                for (const gr of resultsForTf) {
-                                    const latestTime = gr.crossingTimes ? Math.max(...gr.crossingTimes) : Number(klines[klines.length-1][0]);
+                                if (res.ok) {
+                                    const klines = await res.json();
+                                    const closes = klines.map((k: any) => parseFloat(k[4]) || 0);
+                                    const highs = klines.map((k: any) => parseFloat(k[2]) || 0);
+                                    const lows = klines.map((k: any) => parseFloat(k[3]) || 0);
+                                    const opens = klines.map((k: any) => parseFloat(k[1]) || 0);
+                                    const volumes = klines.map((k: any) => parseFloat(k[5]) || 0);
                                     
-                                    const result3 = analyzeList3Structure(
-                                        { symbol: item.symbol, tf, direction: gr.direction!, time: latestTime, price: livePrice, periodChange },
-                                        closes, highs, lows, opens, volumes, configRef.current, klines
-                                    );
+                                    let periodChange = 0;
+                                    if (closes.length > 0) periodChange = ((closes[closes.length-1] - closes[0]) / closes[0]) * 100;
 
-                                    if (result3) {
-                                        let cached: ScannerItem = cacheRef.current.get(item.symbol) || { ...item, list3Results: [] };
-                                        if (!cached.list3Results) cached.list3Results = [];
+                                    const resultsForTf = item.groupedResults!.filter(r => r.tf === tf).sort((a, b) => (b.lag || 0) - (a.lag || 0));
+                                    
+                                    for (const gr of resultsForTf) {
+                                        const uniqueId = `${item.symbol}-${tf}-${gr.direction}`;
+                                        if (expiredSignalCacheRef.current.has(uniqueId)) {
+                                            continue; // Skip permanently removed signals
+                                        }
+
+                                        const latestTime = gr.crossingTimes ? Math.max(...gr.crossingTimes) : Number(klines[klines.length-1][0]);
                                         
-                                        const entry: List3SignalResult = { 
-                                            tf: result3.tf!, 
-                                            direction: result3.direction! as any, 
-                                            structure: result3.structure! 
-                                        };
-                                        
-                                        const idx = cached.list3Results.findIndex(r => r.tf === entry.tf && r.direction === entry.direction);
-                                        if (idx >= 0) cached.list3Results[idx] = entry; else cached.list3Results.push(entry);
-                                        
-                                        cached.price = livePrice;
-                                        cacheRef.current.set(item.symbol, cached);
-                                        hasChanges = true;
-                                        
-                                        // Update Candle Scan Tracker
-                                        const now = Date.now();
-                                        lastCandleScanRef.current.set(`${item.symbol}-${tf}`, now);
+                                        const result3 = analyzeList3Structure(
+                                            { symbol: item.symbol, tf, direction: gr.direction!, time: latestTime, price: livePrice, periodChange },
+                                            closes, highs, lows, opens, volumes, configRef.current, klines
+                                        );
+
+                                        if (result3) {
+                                            let cached: ScannerItem = cacheRef.current.get(item.symbol) || { ...item, list3Results: [] };
+                                            if (!cached.list3Results) cached.list3Results = [];
+                                            
+                                            const entry: List3SignalResult = { 
+                                                tf: result3.tf!, 
+                                                direction: result3.direction! as any, 
+                                                structure: result3.structure! 
+                                            };
+                                            
+                                            // Evaluate if it passes current config
+                                            const s = entry.structure;
+                                            const cfg = configRef.current;
+                                            let passes = true;
+                                            if (cfg.strictTrend && !s.isStrictTrend) passes = false;
+                                            if (cfg.checkCandleColor && !s.isColorValid) passes = false;
+                                            if (cfg.enableThrust && !s.thrustValid) passes = false;
+                                            if (cfg.enableResonance) {
+                                                if (s.locationPct > cfg.maxLocation) passes = false;
+                                                if (s.crossCount < cfg.minCrossCount) passes = false;
+                                                if (s.bbw > cfg.maxBBW) passes = false;
+                                            }
+                                            if (cfg.enableRsi !== false) {
+                                                if (entry.direction === 'LONG') {
+                                                    if (s.rsi < cfg.rsiLongMin || s.rsi > cfg.rsiLongMax) passes = false;
+                                                } else {
+                                                    if (s.rsi < cfg.rsiShortMin || s.rsi > cfg.rsiShortMax) passes = false;
+                                                }
+                                            }
+                                            if (cfg.timeframes && cfg.timeframes.length > 0 && !cfg.timeframes.includes(entry.tf)) passes = false;
+                                            if (cfg.antiChase?.enabled && s.periodChange !== undefined) {
+                                                if (entry.direction === 'LONG') {
+                                                    if (s.periodChange > cfg.antiChase.maxRise) passes = false;
+                                                } else {
+                                                    if (s.periodChange < -cfg.antiChase.maxFall) passes = false;
+                                                }
+                                            }
+
+                                            const idx = cached.list3Results.findIndex(r => r.tf === entry.tf && r.direction === entry.direction);
+                                            if (idx >= 0) {
+                                                // If it was already latched, KEEP it latched. Otherwise, latch if it passes now.
+                                                entry.latched = cached.list3Results[idx].latched || passes;
+                                                cached.list3Results[idx] = entry; 
+                                            } else {
+                                                entry.latched = passes;
+                                                cached.list3Results.push(entry);
+                                            }
+                                            
+                                            cached.price = livePrice;
+                                            cacheRef.current.set(item.symbol, cached);
+                                            hasChanges = true;
+                                        }
                                     }
                                 }
-                            }
-                        } catch (e) {
-                            // ignore
+                            } catch (e) { /* ignore */ }
                         }
-                    }
-                }));
+                        structureHashRef.current.set(item.symbol, getStructureHash(item));
+                    }));
+                }
 
-                setScanStatus(p => p ? ({ 
-                    ...p, 
-                    current: Math.min(p.total, i + batchSize),
-                    currentAction: i % 2 === 0 ? "审计 K 线形态..." : "计算结构指标..."
-                }) : null);
+                if (i % 20 === 0 || i + batchSize >= itemsToScan.length) {
+                    setScanStatus(p => p ? ({ 
+                        ...p, 
+                        current: Math.min(p.total, i + batchSize),
+                        currentAction: "深度结构审计中..."
+                    }) : null);
+                }
                 
-                if (hasChanges) updateList3FromCache();
-                await delay(50);
+                if (hasChanges && i % 20 === 0) updateList3FromCache();
+                
+                // Binance limit is 2400 weight per minute (40/sec).
+                // A batch of 5 items * 4 TFs = 20 requests. We need to wait at least 2000ms.
+                await delay(2000);
             }
+            
+            if (hasChanges) updateList3FromCache();
+
         } finally {
-            // ALWAYS release lock
             isScanningRef.current = false;
             setIsScanning(false);
             setScanStatus(null);
         }
-    }, [realPrices]);
+    }, [updateList3FromCache]); // Removed realPrices from here
 
-    // --- TRIGGER 1: INSTANT (When Candidates Change) ---
+    // --- TRIGGERS ---
     useEffect(() => {
-        if (candidates.length > 0) {
-            // Cleanup cache
-            const candidateSymbols = new Set(candidates.map(c => c.symbol));
-            let cleaned = false;
-            for (const key of cacheRef.current.keys()) {
-                if (!candidateSymbols.has(key)) {
-                    cacheRef.current.delete(key);
-                    cleaned = true;
-                }
+        // Sync Cache Removal
+        const validSymbols = new Set(candidates.map(c => c.symbol));
+        let cleaned = false;
+        for (const key of cacheRef.current.keys()) {
+            if (!validSymbols.has(key)) {
+                cacheRef.current.delete(key);
+                structureHashRef.current.delete(key);
+                cleaned = true;
             }
-            if (cleaned) updateList3FromCache();
-
-            // Run Analysis Immediately
-            runAnalysis("检测到新信号 (Instant Trigger)");
-        } else {
-            setList3([]);
-            cacheRef.current.clear();
         }
-    }, [candidates]); 
 
-    // --- TRIGGER 2: PERIODIC (Candle Close Check) ---
+        // Identify New/Changed Candidates
+        const itemsToScan: ScannerItem[] = [];
+        candidates.forEach(c => {
+            const currentHash = getStructureHash(c);
+            const lastHash = structureHashRef.current.get(c.symbol);
+            
+            // If the item is in candidates but NOT in cache, we should add it to cache
+            // BUT we should preserve its list3Results if it already has them from localStorage
+            if (!cacheRef.current.has(c.symbol)) {
+                // Check if it has list3Results from a previous session
+                if (c.list3Results && c.list3Results.length > 0) {
+                    cacheRef.current.set(c.symbol, c);
+                    structureHashRef.current.set(c.symbol, currentHash);
+                    cleaned = true; // Trigger update
+                } else {
+                    itemsToScan.push(c);
+                }
+            } else if (currentHash !== lastHash) {
+                itemsToScan.push(c);
+            }
+        });
+
+        if (itemsToScan.length > 0) {
+            runAnalysisInternal(itemsToScan, `增量分析 (${itemsToScan.length})`);
+        } else if (cleaned) {
+            updateList3FromCache();
+        }
+    }, [candidates, runAnalysisInternal, updateList3FromCache]); 
+
     useEffect(() => {
         const checkTimer = setInterval(() => {
-            // Use ref check to avoid stacking
             if (isScanningRef.current || candidatesRef.current.length === 0) return;
-
             const now = Date.now();
-            let needScan = false;
+            const reScanCandidates: ScannerItem[] = [];
 
             candidatesRef.current.forEach(c => {
+                let needsUpdate = false;
                 c.groupedResults?.forEach(r => {
                     const tf = r.tf;
                     const intervalMs = getTfMinutes(tf) * 60000;
                     if (intervalMs === 0) return;
-
                     const currentCandleStart = Math.floor(now / intervalMs) * intervalMs;
                     const key = `${c.symbol}-${tf}`;
                     const lastScan = lastCandleScanRef.current.get(key) || 0;
-
-                    if (lastScan < currentCandleStart) {
-                        needScan = true;
-                    }
+                    if (lastScan < currentCandleStart) needsUpdate = true;
                 });
+                if (needsUpdate) reScanCandidates.push(c);
             });
 
-            if (needScan) {
-                runAnalysis("周期收盘复核 (Candle Close)");
+            if (reScanCandidates.length > 0) {
+                runAnalysisInternal(reScanCandidates, "周期收盘复核");
+            }
+        }, 2000); 
+        return () => clearInterval(checkTimer);
+    }, [runAnalysisInternal]);
+
+    // --- REMOVE SIGNAL ---
+    // Called by List 4 when a signal is permanently invalidated or traded
+    const removeSignal = useCallback((uniqueId: string) => {
+        // uniqueId format: "SYMBOL-TF-DIRECTION"
+        const parts = uniqueId.split('-');
+        if (parts.length < 3) return;
+        
+        // Add to expired cache so it doesn't get re-added on next scan
+        expiredSignalCacheRef.current.add(uniqueId);
+
+        const symbol = parts[0];
+        const tf = parts[1];
+        const direction = parts[2];
+
+        const cached = cacheRef.current.get(symbol);
+        if (cached && cached.list3Results) {
+            // Filter out the specific signal
+            cached.list3Results = cached.list3Results.filter(
+                r => !(r.tf === tf && r.direction === direction)
+            );
+
+            // If no signals left for this symbol, remove it entirely
+            if (cached.list3Results.length === 0) {
+                cacheRef.current.delete(symbol);
+            } else {
+                cacheRef.current.set(symbol, cached);
             }
 
-        }, 1000);
+            // Update UI
+            updateList3FromCache();
+        }
+    }, [updateList3FromCache]);
 
-        return () => clearInterval(checkTimer);
-    }, [runAnalysis]);
-
-    const updateList3FromCache = () => {
-        const allItems: ScannerItem[] = Array.from(cacheRef.current.values());
-        allItems.sort((a, b) => (b.list3Results?.length || 0) - (a.list3Results?.length || 0));
-        setList3(allItems);
-    };
-
-    return {
-        config,
-        setConfig,
-        list3,
-        isScanning,
-        scanStatus,
-        countdowns
-    };
+    return { config, setConfig, list3, isScanning, scanStatus, countdowns, removeSignal };
 };

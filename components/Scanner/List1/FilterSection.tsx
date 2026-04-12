@@ -18,13 +18,13 @@ export const FilterSection: React.FC<Props> = ({ scanConfig, setScanConfig, mark
                     onClick={() => setScanConfig(p => ({...p, timeBasis: '8AM'}))} 
                     className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-all ${scanConfig.timeBasis === '8AM' ? 'bg-slate-800 text-blue-400 border-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]' : 'bg-[#1e2329] text-slate-500 border-slate-700 hover:border-slate-600'}`}
                 >
-                    8AM (独立配置)
+                    配置 A (独立)
                 </button>
                 <button 
                     onClick={() => setScanConfig(p => ({...p, timeBasis: '24H'}))} 
                     className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-all ${scanConfig.timeBasis === '24H' ? 'bg-slate-800 text-orange-400 border-orange-500/50 shadow-[0_0_10px_rgba(249,115,22,0.3)]' : 'bg-[#1e2329] text-slate-500 border-slate-700 hover:border-slate-600'}`}
                 >
-                    24H (独立配置)
+                    配置 B (独立)
                 </button>
             </div>
             
@@ -36,28 +36,28 @@ export const FilterSection: React.FC<Props> = ({ scanConfig, setScanConfig, mark
                 ))}
             </div>
             
-            <div className="grid grid-cols-3 gap-2">
-                <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
-                    <span className="text-[9px] text-slate-500">成交 &gt; M</span>
-                    <SmartNumberInput 
-                        value={scanConfig.minVolume} 
-                        onChange={val => setScanConfig(p => ({...p, minVolume: val}))} 
-                        className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
-                    />
+            <div className="grid grid-cols-2 gap-2">
+                <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex flex-col justify-between px-2">
+                    <span className="text-[9px] text-slate-500">成交范围 (M)</span>
+                    <div className="flex items-center gap-1 mt-0.5">
+                         <SmartNumberInput
+                            value={scanConfig.minVolume}
+                            onChange={val => setScanConfig(p => ({...p, minVolume: val}))}
+                            className="w-full bg-transparent text-center font-mono text-white text-[10px] outline-none border-b border-slate-600 focus:border-indigo-500 p-0"
+                        />
+                        <span className="text-slate-500 text-[8px]">~</span>
+                        <SmartNumberInput
+                            value={scanConfig.maxVolume}
+                            onChange={val => setScanConfig(p => ({...p, maxVolume: val}))}
+                            className="w-full bg-transparent text-center font-mono text-white text-[10px] outline-none border-b border-slate-600 focus:border-indigo-500 p-0"
+                        />
+                    </div>
                 </div>
                 <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
                     <span className="text-[9px] text-slate-500">涨跌 &gt; %</span>
                     <SmartNumberInput 
                         value={scanConfig.minChange} 
                         onChange={val => setScanConfig(p => ({...p, minChange: val}))} 
-                        className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
-                    />
-                </div>
-                <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
-                    <span className="text-[9px] text-slate-500">数量限制</span>
-                    <SmartNumberInput 
-                        value={scanConfig.limit} 
-                        onChange={val => setScanConfig(p => ({...p, limit: val}))} 
                         className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
                     />
                 </div>

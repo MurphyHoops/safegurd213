@@ -1,6 +1,6 @@
 
 // Web Worker Code (Inline Blob)
-// This runs in a separate thread and sends a 'tick' message every 100ms.
+// This runs in a separate thread and sends a 'tick' message every 1000ms (1s).
 // Browser throttling affects workers much less than the main thread.
 const workerCode = `
 let intervalId;
@@ -9,7 +9,7 @@ self.onmessage = function(e) {
     if (intervalId) clearInterval(intervalId);
     intervalId = setInterval(() => {
       self.postMessage('tick');
-    }, 100); 
+    }, 1000); 
   } else if (e.data === 'stop') {
     clearInterval(intervalId);
   }
@@ -33,7 +33,8 @@ export class BackgroundTimer {
     } catch (e) {
         console.error("Worker creation failed, falling back to setInterval", e);
         // Fallback for environments that restrict blob workers (rare)
-        setInterval(onTick, 100);
+        // Set to 1000ms to align with worker and save CPU
+        setInterval(onTick, 1000);
     }
   }
 

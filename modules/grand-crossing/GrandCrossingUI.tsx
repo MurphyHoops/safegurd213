@@ -13,6 +13,8 @@ interface Props {
     
     // Initial Config
     initialConfig?: List2Config;
+    directMode?: boolean;
+    onLog?: (type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => void;
 }
 
 const DEFAULT_CONFIG: List2Config = {
@@ -26,19 +28,21 @@ const DEFAULT_CONFIG: List2Config = {
     enableFlatFilter: true,
     flatLookback: 50,
     flatThreshold: 5,
-    checkEma80Conflict: true,
+    checkEma80Conflict: false,
     sortMode: 'MOST',
-    triggerMode: 'NEW'
+    triggerMode: 'NEW',
+    requireCrossing: true,
+    strictFiltering: false
 };
 
 export const GrandCrossingModule: React.FC<Props> = ({ 
-    candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig 
+    candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog 
 }) => {
     
     // --- LOGIC HOOK ---
     const { 
-        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs
-    } = useGrandCrossing(candidates, initialConfig || DEFAULT_CONFIG);
+        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, lastScanTime
+    } = useGrandCrossing(candidates, initialConfig || DEFAULT_CONFIG, directMode, onLog);
 
     // --- SYNC OUTPUT ---
     useEffect(() => {
@@ -85,7 +89,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
             onTfInteraction={handleTfInteraction}
             filteredList2={filteredList}
             setChartData={setChartData}
-            pollingStatus={status === 'SCANNING' ? scanText : undefined}
+            pollingStatus={status === 'SCANNING' ? scanText : (lastScanTime ? `最后扫描: ${new Date(lastScanTime).toLocaleTimeString()}` : undefined)}
             activeScanTfs={activeScanTfs}
         />
     );

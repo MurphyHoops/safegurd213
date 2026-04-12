@@ -24,7 +24,7 @@ export const SmartNumberInput = ({ value, onChange, className }: { value: number
     return (
         <input 
             type="number"
-            value={localVal}
+            value={localVal === 'NaN' || Number.isNaN(localVal) ? '' : localVal}
             onChange={handleChange}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}

@@ -23,9 +23,14 @@ export const TacticalCommandModule: React.FC<Props> = ({
 }) => {
     const { config, setConfig } = useTacticalCommand();
 
-    // Sync config upwards
+    // Sync config upwards safely to avoid infinite loops
+    const prevConfigStrRef = React.useRef('');
     useEffect(() => {
-        onConfigUpdate(config);
+        const str = JSON.stringify(config);
+        if (str !== prevConfigStrRef.current) {
+            prevConfigStrRef.current = str;
+            onConfigUpdate(config);
+        }
     }, [config, onConfigUpdate]);
 
     return (

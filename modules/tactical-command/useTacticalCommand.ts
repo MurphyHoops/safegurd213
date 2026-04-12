@@ -1,5 +1,6 @@
 
 import { useState } from 'react';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import { ActionConfig } from '../../components/Scanner/scannerTypes';
 
 const DEFAULT_CONFIG: ActionConfig = { 
@@ -16,6 +17,6 @@ const DEFAULT_CONFIG: ActionConfig = {
 };
 
 export const useTacticalCommand = () => {
-    const [config, setConfig] = useState<ActionConfig>(DEFAULT_CONFIG);
+    const [config, setConfig] = usePersistedState<ActionConfig>('SCANNER_ACTION_CONFIG', DEFAULT_CONFIG);
     return { config, setConfig };
 };

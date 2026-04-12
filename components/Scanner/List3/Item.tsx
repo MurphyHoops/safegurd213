@@ -8,7 +8,7 @@ interface Props {
     item: ScannerItem;
     results?: List3SignalResult[]; // Optional prop for filtered results
     setChartData: (data: any) => void;
-    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string) => void;
+    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => void;
 }
 
 export const List3Item: React.FC<Props> = ({ item, results, setChartData, executeTradeSafe }) => {
@@ -22,8 +22,20 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
     const borderColor = isLongDominant && isShortDominant ? 'border-indigo-500/20' : isLongDominant ? 'border-emerald-500/20' : 'border-red-500/20';
     const hoverColor = isLongDominant && isShortDominant ? 'hover:border-indigo-500/40' : isLongDominant ? 'hover:border-emerald-500/40' : 'hover:border-red-500/40';
 
+    const handleRowClick = () => {
+        if (signals.length > 0) {
+            const res = signals[0];
+            setChartData({ 
+                symbol: item.symbol, 
+                tf: res.tf, 
+                signals: res.structure.signalTime ? [{ time: res.structure.signalTime, type: res.direction }] : [],
+                currentPrice: item.price
+            });
+        }
+    };
+
     return (
-        <div className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${borderColor} ${hoverColor}`}>
+        <div onClick={handleRowClick} className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${borderColor} ${hoverColor}`}>
             <div className="flex justify-between font-bold text-slate-300 mb-1 border-b border-slate-700/50 pb-1">
                 <span>{item.symbol.replace('USDT', '')}</span>
                 <span className="text-slate-500">{item.price.toFixed(8)}</span>
@@ -74,7 +86,7 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                         onClick={(e) => { 
                             e.stopPropagation(); 
                             const targetTf = signals.find(s => s.direction === 'LONG')?.tf;
-                            executeTradeSafe(item.symbol, PositionSide.LONG, item.price, 'Manual L3 Long', targetTf); 
+                            executeTradeSafe(item.symbol, PositionSide.LONG, item.price, "Manual L3 Long", targetTf); 
                         }}
                         className="flex-1 py-1 bg-emerald-600/80 hover:bg-emerald-500 text-white rounded text-[9px] font-bold"
                     >
@@ -86,7 +98,7 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                         onClick={(e) => { 
                             e.stopPropagation(); 
                             const targetTf = signals.find(s => s.direction === 'SHORT')?.tf;
-                            executeTradeSafe(item.symbol, PositionSide.SHORT, item.price, 'Manual L3 Short', targetTf); 
+                            executeTradeSafe(item.symbol, PositionSide.SHORT, item.price, "Manual L3 Short", targetTf); 
                         }}
                         className="flex-1 py-1 bg-red-600/80 hover:bg-red-500 text-white rounded text-[9px] font-bold"
                     >

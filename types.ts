@@ -1,4 +1,13 @@
 
+export interface KLine {
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+}
+
 export enum PositionSide {
     LONG = 'LONG',
     SHORT = 'SHORT'
@@ -18,7 +27,6 @@ export interface Position {
     entryPrice: number;
     markPrice: number;
     liquidationPrice: number;
-    leverage: number;
     unrealizedPnL: number;
     unrealizedPnLPercentage: number;
     entryId: string;
@@ -28,9 +36,28 @@ export interface Position {
     extremePrice?: number;
     cumulativeHedgeProfit?: number;
     cumulativeHedgeLoss?: number;
+    amputatedAmount?: number;
+    cumulativeAmputationLoss?: number;
+    hedgeRetries?: number;
     mainPositionId?: string;
     strategyId?: string;
-    signalTf?: string; // New: Store the timeframe of the signal that triggered this position
+    signalTf?: string;
+    signalCandle?: {
+        high: number;
+        low: number;
+        close: number;
+        open: number;
+        amplitude: number; // (High - Low) / Low
+    };
+    entryEmas?: {
+        ema10: number;
+        ema20: number;
+        ema40: number;
+        ema80: number;
+    };
+    triggerReason?: string;
+    isBacktestRecord?: boolean;
+    backtestEntryTime?: number;
 }
 
 export interface LogEntry {
@@ -51,11 +78,16 @@ export interface TradeLog {
     entry_timestamp: number;
     exit_timestamp?: number;
     direction: PositionSide;
-    leverage?: number;
     cost_usdt: number;
     entry_price: number;
     exit_price?: number;
     profit_percent?: number;
+    current_amount?: number; // Added to track position amount after partial close/refill
+    main_entry_id?: string; // Links a hedge to its main position
+    parent_entry_id?: string; // Links a partial close/refill to its original position
+    timeframe?: string; // Added timeframe field
+    last_stop_loss_time?: number; // Added last stop loss time
+    stop_loss_rule?: string; // Added stop loss rule
 }
 
 export interface SystemEvent {
@@ -111,8 +143,17 @@ export interface DynamicSettings {
     tiers: ProfitTier[];
 }
 
+export interface SmartProfitTier {
+    threshold: number;
+    callback: number;
+    expiry: number;
+}
+
 export interface SmartSettings {
+    minPosition: number;
     activationProfit: number;
+    conventionalEnabled: boolean;
+    tiers: SmartProfitTier[];
 }
 
 export interface GlobalSettings {
@@ -155,8 +196,11 @@ export interface HedgingSettings {
     boxThreshold: number;
     touchCount: number;
     trendHedgeEnabled: boolean;
+    trendHedgeEmaPeriod: number; // New: EMA Period (80, 40, 20, 10)
     breakKLineEnabled: boolean;
     breakKLineRatio: number;
+    combinedLossLimitEnabled?: boolean;
+    combinedLossLimitPercent?: number;
 }
 
 export interface AdvisorSettings {
@@ -166,9 +210,6 @@ export interface AdvisorSettings {
 }
 
 export interface StopLossSettings {
-    originalProfitClear: boolean;
-    hedgeStopLossPercent: number;
-    originalCoverPercent: number;
     hedgeProfitClear: boolean;
     hedgeOpenRatio: number;
     hedgeCoverPercent: number;
@@ -183,7 +224,6 @@ export interface StopLossSettings {
     amputationTriggerProfit: number;
     amputationRatio: number;
     amputationVictoryBuffer: number;
-    amputationRefillRetrace: number;
     fuseEnabled: boolean;
     maxHedgeRetries: number;
     fuseFailStopPercent: number;
@@ -202,6 +242,7 @@ export interface SystemSettings {
 
 export interface ScannerSettings {
     minVolume: number;
+    maxVolume?: number;
     minChange: number;
     source: 'GAINERS' | 'LOSERS' | 'BOTH';
     timeBasis: '8AM' | '24H';

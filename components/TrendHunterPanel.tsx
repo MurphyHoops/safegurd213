@@ -79,12 +79,8 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
             setCurrentScanTF("正在拉取全市场数据...");
             
             // Dynamic endpoint with correct caching strategy
-            let endpoint = '';
-            if (scanConfig.timeBasis === '8AM') {
-                endpoint = 'https://fapi.binance.com/fapi/v1/ticker/tradingDay';
-            } else {
-                endpoint = `https://fapi.binance.com/fapi/v1/ticker/24hr`;
-            }
+            // Note: Binance Futures (fapi) does not have a /tradingDay endpoint.
+            const endpoint = `https://fapi.binance.com/fapi/v1/ticker/24hr?_t=${Date.now()}`;
             
             // Use validator to ensure data is an array
             const validator = (data: any) => Array.isArray(data) && data.length > 0;
@@ -117,7 +113,6 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                 if (volVal < minVolRaw) return null;
 
                 // VERIFICATION: Manual Change Calc
-                // For tradingDay, priceChangePercent is provided.
                 const changePercent = parseFloat(t.priceChangePercent);
 
                 return {
@@ -264,7 +259,7 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                         <label className="text-[10px] text-slate-500 block mb-1">成交额 &gt; M</label>
                         <input 
                             type="number" 
-                            value={scanConfig.minVolume}
+                            value={Number.isNaN(scanConfig.minVolume) ? '' : scanConfig.minVolume}
                             onChange={e => setScanConfig(p => ({...p, minVolume: parseFloat(e.target.value)}))}
                             className="w-full bg-[#1e2329] border border-slate-700 rounded px-2 py-2 text-xs text-white text-center font-mono focus:border-orange-500 outline-none transition-colors"
                         />
@@ -273,7 +268,7 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                         <label className="text-[10px] text-slate-500 block mb-1">涨跌幅 &gt; %</label>
                         <input 
                             type="number" 
-                            value={scanConfig.minChange}
+                            value={Number.isNaN(scanConfig.minChange) ? '' : scanConfig.minChange}
                             onChange={e => setScanConfig(p => ({...p, minChange: parseFloat(e.target.value)}))}
                             className="w-full bg-[#1e2329] border border-slate-700 rounded px-2 py-2 text-xs text-white text-center font-mono focus:border-orange-500 outline-none transition-colors"
                         />
@@ -375,7 +370,7 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                     {/* List 1 Body */}
                     <div className="flex-1 overflow-y-auto p-0 custom-scrollbar bg-slate-950/20">
                         {stepLists.step1.map((item, idx) => (
-                            <div key={item.symbol} className="px-3 py-3 border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors group">
+                            <div key={`${item.symbol}-${idx}`} className="px-3 py-3 border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors group">
                                 <div className="flex justify-between items-center mb-1">
                                     <span className="text-sm font-bold text-slate-200 group-hover:text-white">{item.symbol.replace('USDT','')}</span>
                                     <span className={`text-sm font-mono font-bold ${item.change! > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -406,8 +401,8 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                             <div className="flex items-center gap-2 font-bold text-red-400 text-xs uppercase"><Flame size={14}/> 2. 动能筛选</div>
                             <div className="text-xs font-mono font-bold text-white">{stepLists.step2.length}</div>
                         </div>,
-                        (item) => (
-                            <div key={item.symbol} className="bg-slate-800/40 p-2 rounded border border-slate-700/50">
+                        (item, idx) => (
+                            <div key={`${item.symbol}-${idx}`} className="bg-slate-800/40 p-2 rounded border border-slate-700/50">
                                 <span className="text-xs font-bold text-slate-300">{item.symbol.replace('USDT','')}</span>
                             </div>
                         )
@@ -419,8 +414,8 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                             <div className="flex items-center gap-2 font-bold text-blue-400 text-xs uppercase"><Waves size={14}/> 3. 共振节点</div>
                             <div className="text-xs font-mono font-bold text-white">{stepLists.step3.length}</div>
                         </div>,
-                        (item) => (
-                            <div key={item.symbol} className="bg-slate-800/40 p-2 rounded border border-slate-700/50 flex justify-between">
+                        (item, idx) => (
+                            <div key={`${item.symbol}-${idx}`} className="bg-slate-800/40 p-2 rounded border border-slate-700/50 flex justify-between">
                                 <span className="text-xs font-bold text-slate-300">{item.symbol.replace('USDT','')}</span>
                                 <span className={`text-[10px] px-1 rounded ${item.direction === 'LONG' ? 'bg-emerald-900/30 text-emerald-400' : 'bg-red-900/30 text-red-400'}`}>{item.direction}</span>
                             </div>
@@ -433,8 +428,8 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                             <div className="flex items-center gap-2 font-bold text-orange-400 text-xs uppercase"><Target size={14}/> 4. 爆发猎杀</div>
                             <div className="text-xs font-mono font-bold text-white">{stepLists.step4.length}</div>
                         </div>,
-                        (item) => (
-                            <div key={item.symbol} className="bg-slate-800/40 p-2 rounded border border-slate-700/50 group hover:border-orange-500/30 transition-colors">
+                        (item, idx) => (
+                            <div key={`${item.symbol}-${idx}`} className="bg-slate-800/40 p-2 rounded border border-slate-700/50 group hover:border-orange-500/30 transition-colors">
                                 <div className="flex justify-between mb-2">
                                     <span className="text-xs font-bold text-slate-300">{item.symbol.replace('USDT','')}</span>
                                     <span className={`text-[10px] font-bold ${item.direction === 'LONG' ? 'text-emerald-400' : 'text-red-400'}`}>{item.direction}</span>
@@ -457,8 +452,8 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                             <div className="flex items-center gap-2 font-bold text-emerald-400 text-xs uppercase"><Activity size={14}/> 5. 战场实况</div>
                             <div className="text-xs font-mono font-bold text-white">{stepLists.step5.length}</div>
                         </div>,
-                        (p: Position) => (
-                            <div key={p.symbol} className="bg-slate-800/80 p-3 rounded border border-slate-700 relative overflow-hidden">
+                        (p: Position, idx: number) => (
+                            <div key={`${p.entryId}-${idx}`} className="bg-slate-800/80 p-3 rounded border border-slate-700 relative overflow-hidden shrink-0">
                                 <div className={`absolute left-0 top-0 bottom-0 w-1 ${p.unrealizedPnL >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
                                 <div className="flex justify-between items-center mb-1">
                                     <span className="text-xs font-bold text-white">{p.symbol}</span>

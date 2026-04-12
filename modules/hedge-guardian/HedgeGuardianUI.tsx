@@ -21,7 +21,7 @@ export const HedgeGuardianModule: React.FC<HedgeGuardianProps> = ({ settings, on
                             <input 
                                 type="number" 
                                 className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-white focus:border-indigo-500 font-mono" 
-                                value={settings.minPosition} 
+                                value={Number.isNaN(settings.minPosition) ? '' : settings.minPosition} 
                                 onChange={(e) => onChange('minPosition', parseFloat(e.target.value))} 
                             />
                          </div>
@@ -30,85 +30,105 @@ export const HedgeGuardianModule: React.FC<HedgeGuardianProps> = ({ settings, on
                             <input 
                                 type="number" 
                                 className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-white focus:border-indigo-500 font-mono" 
-                                value={settings.hedgeRatio} 
+                                value={Number.isNaN(settings.hedgeRatio) ? '' : settings.hedgeRatio} 
                                 onChange={(e) => onChange('hedgeRatio', parseFloat(e.target.value))} 
                             />
                          </div>
                      </div>
 
-                     {/* Row 2: Loss Trigger & Trend Hedge */}
-                     <div className="grid grid-cols-2 gap-3">
-                         <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                                <label className="text-[10px] text-slate-500">亏损触发值 (%)</label>
-                                {/* New Toggle for Loss Trigger */}
-                                <div 
-                                    onClick={() => onChange('triggerLossEnabled', !settings.triggerLossEnabled)} 
-                                    className={`w-6 h-3 rounded-full p-0.5 transition-colors cursor-pointer ${settings.triggerLossEnabled !== false ? 'bg-red-600' : 'bg-slate-700'}`}
-                                    title="开启/关闭基于亏损比例的对冲"
-                                >
-                                    <div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${settings.triggerLossEnabled !== false ? 'translate-x-3' : 'translate-x-0'}`}/>
+                     <div className="mt-4 space-y-3">
+                        <span className="text-[10px] font-bold text-slate-400 block border-b border-slate-800 pb-1">对冲触发方式：</span>
+                        
+                        {/* Method 1: Loss Trigger */}
+                        <div className="flex items-center justify-between bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-300">1. 亏损值触发</span>
+                                <div className="relative w-16">
+                                    <input 
+                                        type="number" 
+                                        step="0.1"
+                                        className="w-full bg-slate-800 border border-slate-600 rounded px-1 py-0.5 text-xs text-red-400 text-center font-bold" 
+                                        value={Number.isNaN(settings.triggerLossPercent) ? '' : settings.triggerLossPercent} 
+                                        onChange={(e) => onChange('triggerLossPercent', Math.abs(parseFloat(e.target.value)))} 
+                                    />
+                                    <span className="absolute right-1 top-0.5 text-[9px] text-slate-500">%</span>
                                 </div>
                             </div>
-                            <div className={`relative ${settings.triggerLossEnabled === false ? 'opacity-40 pointer-events-none' : ''}`}>
-                                <input 
-                                    type="number" 
-                                    step="0.1"
-                                    className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-red-400 focus:border-red-500 font-mono font-bold pl-5" 
-                                    value={settings.triggerLossPercent} 
-                                    onChange={(e) => onChange('triggerLossPercent', parseFloat(e.target.value))} 
-                                />
-                                <span className="absolute left-2 top-1.5 text-slate-500 text-xs">-</span>
+                            <div 
+                                onClick={() => onChange('triggerLossEnabled', !settings.triggerLossEnabled)} 
+                                className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.triggerLossEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                            >
+                                <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.triggerLossEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
                             </div>
-                         </div>
-                         
-                         <div className={`rounded border border-slate-700 p-1.5 flex flex-col justify-center transition-colors ${settings.trendHedgeEnabled ? 'bg-indigo-900/20 border-indigo-500/50' : 'bg-slate-900'}`}>
-                             <div className="flex items-center justify-between mb-0.5">
-                                 <span className={`text-[10px] font-bold ${settings.trendHedgeEnabled ? 'text-indigo-300' : 'text-slate-500'}`}>趋势防爆 (基础)</span>
-                                 <div onClick={() => onChange('trendHedgeEnabled', !settings.trendHedgeEnabled)} className={`w-7 h-3.5 rounded-full p-0.5 transition-colors cursor-pointer ${settings.trendHedgeEnabled ? 'bg-indigo-500' : 'bg-slate-700'}`}>
-                                     <div className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${settings.trendHedgeEnabled ? 'translate-x-3.5' : 'translate-x-0'}`}/>
-                                 </div>
-                             </div>
-                             <span className="text-[8px] text-slate-600 scale-90 origin-left block">
-                                 EMA80 简单穿越触发
-                             </span>
-                         </div>
-                     </div>
+                        </div>
 
-                     {/* Row 3: Break K-Line Logic (New) */}
-                     <div className="mt-2 bg-slate-900/50 p-2 rounded border border-slate-700/50">
-                         <div className="flex items-center justify-between mb-2">
-                             <span className={`text-[10px] font-bold flex items-center gap-1 ${settings.breakKLineEnabled ? 'text-orange-400' : 'text-slate-500'}`}>
-                                 <Activity size={10} /> 破K线防爆 (Grand Crossing)
-                             </span>
-                             <div 
+                        {/* Combined Loss Limit Setting */}
+                        <div className="flex items-center justify-between bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-400">亏损触发限制 (对趋势/破位有效)</span>
+                                <div className="relative w-16">
+                                    <input 
+                                        type="number" 
+                                        step="0.1"
+                                        className="w-full bg-slate-800 border border-slate-600 rounded px-1 py-0.5 text-xs text-red-400 text-center font-bold" 
+                                        value={Number.isNaN(settings.combinedLossLimitPercent) ? '' : (settings.combinedLossLimitPercent || 2)} 
+                                        onChange={(e) => onChange('combinedLossLimitPercent', Math.abs(parseFloat(e.target.value)))} 
+                                    />
+                                    <span className="absolute right-1 top-0.5 text-[9px] text-slate-500">%</span>
+                                </div>
+                            </div>
+                            <div 
+                                onClick={() => onChange('combinedLossLimitEnabled', !settings.combinedLossLimitEnabled)} 
+                                className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.combinedLossLimitEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                            >
+                                <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.combinedLossLimitEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                            </div>
+                        </div>
+
+                        {/* Method 2: Trend Firewall */}
+                        <div className="flex items-center justify-between bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-300">2. 趋势防火墙，价格突破 EMA</span>
+                                <select 
+                                    className="bg-slate-800 border border-slate-600 rounded px-1 py-0.5 text-xs text-indigo-400 font-bold"
+                                    value={settings.trendHedgeEmaPeriod || 80}
+                                    onChange={(e) => onChange('trendHedgeEmaPeriod', parseInt(e.target.value))}
+                                >
+                                    <option value={80}>80</option>
+                                    <option value={40}>40</option>
+                                    <option value={20}>20</option>
+                                    <option value={10}>10</option>
+                                </select>
+                            </div>
+                            <div 
+                                onClick={() => onChange('trendHedgeEnabled', !settings.trendHedgeEnabled)} 
+                                className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.trendHedgeEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                            >
+                                <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.trendHedgeEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                            </div>
+                        </div>
+
+                        {/* Method 3: Break K-Line */}
+                        <div className="flex items-center justify-between bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-300">3. 破位大K线，振幅</span>
+                                <div className="relative w-16">
+                                    <input 
+                                        type="number" 
+                                        className="w-full bg-slate-800 border border-slate-600 rounded px-1 py-0.5 text-xs text-orange-400 text-center font-bold" 
+                                        value={Number.isNaN(settings.breakKLineRatio) ? '' : (settings.breakKLineRatio || 40)} 
+                                        onChange={(e) => onChange('breakKLineRatio', parseFloat(e.target.value))} 
+                                    />
+                                    <span className="absolute right-1 top-0.5 text-[9px] text-slate-500">%</span>
+                                </div>
+                            </div>
+                            <div 
                                 onClick={() => onChange('breakKLineEnabled', !settings.breakKLineEnabled)} 
-                                className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.breakKLineEnabled ? 'bg-orange-600' : 'bg-slate-700'}`}
-                             >
-                                 <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.breakKLineEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
-                             </div>
-                         </div>
-                         
-                         {settings.breakKLineEnabled && (
-                             <div className="flex items-center gap-2 animate-in fade-in">
-                                 <div className="flex-1">
-                                     <label className="text-[9px] text-slate-500 block mb-1">K线振幅比例 (%)</label>
-                                     <div className="relative">
-                                         <input 
-                                             type="number" 
-                                             className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-white font-bold text-center" 
-                                             value={settings.breakKLineRatio || 20} 
-                                             onChange={(e) => onChange('breakKLineRatio', parseFloat(e.target.value))} 
-                                         />
-                                         <span className="absolute right-6 top-1 text-[9px] text-slate-500">%</span>
-                                     </div>
-                                 </div>
-                                 <div className="text-[9px] text-slate-500 w-2/3 leading-tight pt-3">
-                                     触发线 = 信号K线 ± (振幅 × {settings.breakKLineRatio || 20}%)<br/>
-                                     <span className="text-[8px] opacity-60 text-orange-300 font-bold">* 信号K线：必须同时穿越 4根+ EMA均线</span>
-                                 </div>
-                             </div>
-                         )}
+                                className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.breakKLineEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                            >
+                                <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.breakKLineEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                            </div>
+                        </div>
                      </div>
                      
                      {/* Safe Clear Logic */}
@@ -125,11 +145,11 @@ export const HedgeGuardianModule: React.FC<HedgeGuardianProps> = ({ settings, on
                                  <div className="grid grid-cols-2 gap-2">
                                      <div>
                                          <label className="text-[10px] text-slate-500 block mb-1">任一盈利 &ge; %</label>
-                                         <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400" value={settings.safeClearProfit} onChange={(e) => onChange('safeClearProfit', parseFloat(e.target.value))} />
+                                         <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400" value={Number.isNaN(settings.safeClearProfit) ? '' : settings.safeClearProfit} onChange={(e) => onChange('safeClearProfit', parseFloat(e.target.value))} />
                                      </div>
                                      <div>
                                          <label className="text-[10px] text-slate-500 block mb-1">任一亏损 &ge; %</label>
-                                         <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400" value={settings.safeClearLoss} onChange={(e) => onChange('safeClearLoss', parseFloat(e.target.value))} />
+                                         <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400" value={Number.isNaN(settings.safeClearLoss) ? '' : settings.safeClearLoss} onChange={(e) => onChange('safeClearLoss', parseFloat(e.target.value))} />
                                      </div>
                                  </div>
                              </>

@@ -9,4 +9,6 @@ export interface FinanceMonitorProps {
     onToggleSimulation: () => void;
     onBatchClose: () => void;
     onOpenTradeModal: () => void;
+    onResetBalance?: (amount: number) => void;
+    networkStatus: 'healthy' | 'delayed' | 'disconnected';
 }

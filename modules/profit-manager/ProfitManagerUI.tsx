@@ -2,7 +2,7 @@
 import React from 'react';
 import { ProfitManagerProps } from './types';
 import { useProfitManager } from './useProfitManager';
-import { TrendingUp, TrendingDown, Anchor, Globe } from 'lucide-react';
+import { TrendingUp, TrendingDown, Anchor, Globe, Zap } from 'lucide-react';
 
 export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
     const { settings, onChange, updateNested } = props;
@@ -63,21 +63,21 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                     <div className="grid grid-cols-2 gap-2">
                                         <div>
                                             <label className="text-[10px] text-slate-500 block mb-1">持仓大于 (U)</label>
-                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={settings.conventional.minPosition} onChange={(e) => updateNested('conventional', 'minPosition', parseFloat(e.target.value))} />
+                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={Number.isNaN(settings.conventional.minPosition) ? '' : settings.conventional.minPosition} onChange={(e) => updateNested('conventional', 'minPosition', parseFloat(e.target.value))} />
                                         </div>
                                         <div>
                                             <label className="text-[10px] text-slate-500 block mb-1">平仓比例 (%)</label>
-                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={settings.conventional.closePercent} onChange={(e) => updateNested('conventional', 'closePercent', parseFloat(e.target.value))} />
+                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={Number.isNaN(settings.conventional.closePercent) ? '' : settings.conventional.closePercent} onChange={(e) => updateNested('conventional', 'closePercent', parseFloat(e.target.value))} />
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2">
                                         <div>
                                             <label className="text-[10px] text-slate-500 block mb-1">盈利大于 (%)</label>
-                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400" value={settings.conventional.profitPercent} onChange={(e) => updateNested('conventional', 'profitPercent', parseFloat(e.target.value))} />
+                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400" value={Number.isNaN(settings.conventional.profitPercent) ? '' : settings.conventional.profitPercent} onChange={(e) => updateNested('conventional', 'profitPercent', parseFloat(e.target.value))} />
                                         </div>
                                         <div>
                                             <label className="text-[10px] text-slate-500 block mb-1">或回调大于 (%)</label>
-                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-amber-400" value={settings.conventional.callbackPercent} onChange={(e) => updateNested('conventional', 'callbackPercent', parseFloat(e.target.value))} />
+                                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-amber-400" value={Number.isNaN(settings.conventional.callbackPercent) ? '' : settings.conventional.callbackPercent} onChange={(e) => updateNested('conventional', 'callbackPercent', parseFloat(e.target.value))} />
                                         </div>
                                     </div>
                                 </div>
@@ -100,7 +100,7 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                                 type="number" 
                                                 step="0.1"
                                                 className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:border-indigo-500 font-bold" 
-                                                value={settings.atr?.multiplier ?? 3.0} 
+                                                value={Number.isNaN(settings.atr?.multiplier) ? '' : (settings.atr?.multiplier ?? 3.0)} 
                                                 onChange={(e) => updateNested('atr', 'multiplier', parseFloat(e.target.value))} 
                                             />
                                         </div>
@@ -110,7 +110,7 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                                 type="number" 
                                                 step="0.1"
                                                 className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-orange-400 focus:border-orange-500" 
-                                                value={settings.atr?.volatilityPercent ?? 1.0} 
+                                                value={Number.isNaN(settings.atr?.volatilityPercent) ? '' : (settings.atr?.volatilityPercent ?? 1.0)} 
                                                 onChange={(e) => updateNested('atr', 'volatilityPercent', parseFloat(e.target.value))} 
                                             />
                                         </div>
@@ -123,7 +123,7 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                 <div className="space-y-3">
                                     <div>
                                         <label className="text-[10px] text-slate-500 block mb-1">触发持仓门槛 (U)</label>
-                                        <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={settings.dynamic.minPosition} onChange={(e) => updateNested('dynamic', 'minPosition', parseFloat(e.target.value))} />
+                                        <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={Number.isNaN(settings.dynamic.minPosition) ? '' : settings.dynamic.minPosition} onChange={(e) => updateNested('dynamic', 'minPosition', parseFloat(e.target.value))} />
                                     </div>
                                     <div className="space-y-2">
                                         <div className="flex text-[9px] text-slate-500 px-1">
@@ -132,14 +132,17 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                             <span className="flex-1 text-center">回调 &ge; %</span>
                                             <span className="flex-1 text-right">平仓 %</span>
                                         </div>
-                                        {settings.dynamic.tiers.map((tier, idx) => (
+                                        {(settings.dynamic.tiers || []).map((tier, idx) => {
+                                            if (!tier || typeof tier !== 'object') return null;
+                                            return (
                                             <div key={idx} className="flex items-center gap-2">
                                                 <span className="text-[9px] text-slate-600 w-8">L{idx + 1}</span>
-                                                <input type="number" className="flex-1 w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-emerald-400 text-center" value={tier.profit} onChange={(e) => updateDynamicTier(idx, 'profit', parseFloat(e.target.value))} />
-                                                <input type="number" className="flex-1 w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-amber-400 text-center" value={tier.callback} onChange={(e) => updateDynamicTier(idx, 'callback', parseFloat(e.target.value))} />
-                                                <input type="number" className="flex-1 w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-white text-right" value={tier.close} onChange={(e) => updateDynamicTier(idx, 'close', parseFloat(e.target.value))} />
+                                                <input type="number" className="flex-1 w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-emerald-400 text-center" value={Number.isNaN(tier.profit) ? '' : (tier.profit || 0)} onChange={(e) => updateDynamicTier(idx, 'profit', parseFloat(e.target.value))} />
+                                                <input type="number" className="flex-1 w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-amber-400 text-center" value={Number.isNaN(tier.callback) ? '' : (tier.callback || 0)} onChange={(e) => updateDynamicTier(idx, 'callback', parseFloat(e.target.value))} />
+                                                <input type="number" className="flex-1 w-full bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-white text-right" value={Number.isNaN(tier.close) ? '' : (tier.close || 0)} onChange={(e) => updateDynamicTier(idx, 'close', parseFloat(e.target.value))} />
                                             </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 </div>
                             )}
@@ -147,13 +150,92 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                             {/* SMART */}
                             {settings.profitMode === 'SMART' && (
                                 <div className="space-y-3">
-                                    <div>
-                                        <label className="text-[10px] text-slate-500 block mb-1">启动盈利阈值 (%)</label>
-                                        <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400" value={settings.smart.activationProfit} onChange={(e) => updateNested('smart', 'activationProfit', parseFloat(e.target.value))} />
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="text-[10px] text-slate-500 block mb-1">触发持仓门槛 (U)</label>
+                                            <input 
+                                                type="number" 
+                                                className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" 
+                                                value={Number.isNaN(settings.smart?.minPosition) ? '' : (settings.smart?.minPosition ?? 100)} 
+                                                onChange={(e) => updateNested('smart', 'minPosition', parseFloat(e.target.value))} 
+                                            />
+                                        </div>
+                                        <div className="flex items-end">
+                                            <div className="flex items-center justify-between p-2 bg-slate-800/50 rounded border border-slate-700 w-full h-[30px]">
+                                                <div className="flex items-center gap-2">
+                                                    <Zap size={14} className="text-amber-400" />
+                                                    <span className="text-[10px] font-bold text-slate-300">常规阶梯平仓</span>
+                                                </div>
+                                                <div onClick={() => updateNested('smart', 'conventionalEnabled', !settings.smart?.conventionalEnabled)} className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.smart?.conventionalEnabled ? 'bg-amber-600' : 'bg-slate-700'}`}>
+                                                    <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.smart?.conventionalEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {settings.smart?.conventionalEnabled && (
+                                        <div className="space-y-2 animate-in slide-in-from-top-1">
+                                            <div className="grid grid-cols-3 gap-2 px-1">
+                                                <span className="text-[9px] text-slate-500 text-center">盈利阈值(%)</span>
+                                                <span className="text-[9px] text-slate-500 text-center">回调值(%)</span>
+                                                <span className="text-[9px] text-slate-500 text-center">失效值(%)</span>
+                                            </div>
+                                            {(settings.smart?.tiers || []).map((tier, idx) => (
+                                                <div key={idx} className="grid grid-cols-3 gap-2 bg-slate-900/30 p-1.5 rounded border border-slate-800">
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.1"
+                                                        className="w-full bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-emerald-400 text-center" 
+                                                        value={Number.isNaN(tier.threshold) ? '' : tier.threshold} 
+                                                        onChange={(e) => {
+                                                            const newTiers = [...(settings.smart?.tiers || [])];
+                                                            newTiers[idx] = { ...newTiers[idx], threshold: parseFloat(e.target.value) };
+                                                            updateNested('smart', 'tiers', newTiers);
+                                                        }} 
+                                                    />
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.1"
+                                                        className="w-full bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-amber-400 text-center" 
+                                                        value={Number.isNaN(tier.callback) ? '' : tier.callback} 
+                                                        onChange={(e) => {
+                                                            const newTiers = [...(settings.smart?.tiers || [])];
+                                                            newTiers[idx] = { ...newTiers[idx], callback: parseFloat(e.target.value) };
+                                                            updateNested('smart', 'tiers', newTiers);
+                                                        }} 
+                                                    />
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.1"
+                                                        className="w-full bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-red-400 text-center" 
+                                                        value={Number.isNaN(tier.expiry) ? '' : tier.expiry} 
+                                                        onChange={(e) => {
+                                                            const newTiers = [...(settings.smart?.tiers || [])];
+                                                            newTiers[idx] = { ...newTiers[idx], expiry: parseFloat(e.target.value) };
+                                                            updateNested('smart', 'tiers', newTiers);
+                                                        }} 
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    <div className="pt-2 border-t border-slate-800">
+                                        <label className="text-[10px] text-slate-500 block mb-1">智能平仓启动值 (%) <span className="text-red-400 text-[8px] ml-1">(达到此值常规平仓失效)</span></label>
+                                        <input 
+                                            type="number" 
+                                            step="0.1"
+                                            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-bold" 
+                                            value={Number.isNaN(settings.smart?.activationProfit) ? '' : (settings.smart?.activationProfit ?? 60)} 
+                                            onChange={(e) => updateNested('smart', 'activationProfit', parseFloat(e.target.value))} 
+                                        />
                                     </div>
                                     <div className="p-2 bg-indigo-900/20 rounded border border-indigo-500/20 text-[10px] text-slate-400 leading-relaxed">
-                                        <span className="text-indigo-400 font-bold block mb-1">智能动态逻辑：</span>
-                                        AI 自动根据 ADX/RSI 计算最佳回撤比例。
+                                        <span className="text-indigo-400 font-bold block mb-1">智能动态逻辑 (已锁定)：</span>
+                                        以“启动盈利阈值”为基础，平仓条件是：<br/>
+                                        <span className="text-emerald-400 font-mono">回调值 = 最高盈利 × (1 - 最高盈利)</span><br/>
+                                        例如：盈利 60% 时，回调 24% (即 60% × 40%)，锁定 36% 盈利；<br/>
+                                        盈利 90% 时，回调 9% (即 90% × 10%)，锁定 81% 盈利。
                                     </div>
                                 </div>
                             )}
@@ -171,11 +253,11 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                             <div className="space-y-1">
                                                 <div className="flex items-center justify-between">
                                                     <span className="text-[9px] text-emerald-500">盈:</span>
-                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-emerald-400 text-right" placeholder="0" value={settings.global.profitPercent} onChange={(e) => updateNested('global', 'profitPercent', parseFloat(e.target.value))} />
+                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-emerald-400 text-right" placeholder="0" value={Number.isNaN(settings.global.profitPercent) ? '' : (settings.global.profitPercent || '')} onChange={(e) => updateNested('global', 'profitPercent', parseFloat(e.target.value))} />
                                                 </div>
                                                 <div className="flex items-center justify-between">
                                                     <span className="text-[9px] text-red-500">亏:</span>
-                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-red-400 text-right" placeholder="0" value={settings.global.lossPercent} onChange={(e) => updateNested('global', 'lossPercent', parseFloat(e.target.value))} />
+                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-red-400 text-right" placeholder="0" value={Number.isNaN(settings.global.lossPercent) ? '' : (settings.global.lossPercent || '')} onChange={(e) => updateNested('global', 'lossPercent', parseFloat(e.target.value))} />
                                                 </div>
                                             </div>
                                         </div>
@@ -184,11 +266,11 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                             <div className="space-y-1">
                                                 <div className="flex items-center justify-between">
                                                     <span className="text-[9px] text-emerald-500">盈:</span>
-                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-emerald-400 text-right" placeholder="0" value={settings.global.profitAmount} onChange={(e) => updateNested('global', 'profitAmount', parseFloat(e.target.value))} />
+                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-emerald-400 text-right" placeholder="0" value={Number.isNaN(settings.global.profitAmount) ? '' : (settings.global.profitAmount || '')} onChange={(e) => updateNested('global', 'profitAmount', parseFloat(e.target.value))} />
                                                 </div>
                                                 <div className="flex items-center justify-between">
                                                     <span className="text-[9px] text-red-500">亏:</span>
-                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-red-400 text-right" placeholder="0" value={settings.global.lossAmount} onChange={(e) => updateNested('global', 'lossAmount', parseFloat(e.target.value))} />
+                                                    <input type="number" className="w-16 bg-slate-900 border border-slate-600 rounded px-1 py-0.5 text-xs text-red-400 text-right" placeholder="0" value={Number.isNaN(settings.global.lossAmount) ? '' : (settings.global.lossAmount || '')} onChange={(e) => updateNested('global', 'lossAmount', parseFloat(e.target.value))} />
                                                 </div>
                                             </div>
                                         </div>
@@ -216,16 +298,16 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                     <div className={`space-y-3 ${!settings.stopLoss.enabled && 'opacity-40 pointer-events-none'}`}>
                         <div>
                             <label className="text-[10px] text-slate-500 block mb-1">单币持仓大于 (U)</label>
-                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={settings.stopLoss.minPosition} onChange={(e) => updateNested('stopLoss', 'minPosition', parseFloat(e.target.value))} />
+                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={Number.isNaN(settings.stopLoss.minPosition) ? '' : settings.stopLoss.minPosition} onChange={(e) => updateNested('stopLoss', 'minPosition', parseFloat(e.target.value))} />
                         </div>
                         <div className="grid grid-cols-2 gap-3">
                             <div>
                                 <label className="text-[10px] text-slate-500 block mb-1">亏损大于 (%)</label>
-                                <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400" value={settings.stopLoss.lossPercent} onChange={(e) => updateNested('stopLoss', 'lossPercent', parseFloat(e.target.value))} />
+                                <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400" value={Number.isNaN(settings.stopLoss.lossPercent) ? '' : settings.stopLoss.lossPercent} onChange={(e) => updateNested('stopLoss', 'lossPercent', parseFloat(e.target.value))} />
                             </div>
                             <div>
                                 <label className="text-[10px] text-slate-500 block mb-1">平仓数量 (%)</label>
-                                <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={settings.stopLoss.closePercent} onChange={(e) => updateNested('stopLoss', 'closePercent', parseFloat(e.target.value))} />
+                                <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={Number.isNaN(settings.stopLoss.closePercent) ? '' : settings.stopLoss.closePercent} onChange={(e) => updateNested('stopLoss', 'closePercent', parseFloat(e.target.value))} />
                             </div>
                         </div>
                     </div>

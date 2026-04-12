@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { ScanConfig } from '../scannerTypes';
-import { Globe, Lock, List, PlusCircle, Target, Trash2 } from 'lucide-react';
+import { Globe, Lock, List, PlusCircle, Target, Trash2, RotateCcw } from 'lucide-react';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -9,9 +9,10 @@ interface Props {
     fixedModeView: 'MONITOR' | 'SEARCH';
     setFixedModeView: (v: 'MONITOR' | 'SEARCH') => void;
     onClearWatchlist?: () => void;
+    onClearBlacklist?: () => void;
 }
 
-export const WatchlistSection: React.FC<Props> = ({ scanConfig, setScanConfig, fixedModeView, setFixedModeView, onClearWatchlist }) => {
+export const WatchlistSection: React.FC<Props> = ({ scanConfig, setScanConfig, fixedModeView, setFixedModeView, onClearWatchlist, onClearBlacklist }) => {
     const [manualInput, setManualInput] = useState('');
 
     const handleAddSymbol = () => { 
@@ -53,7 +54,10 @@ export const WatchlistSection: React.FC<Props> = ({ scanConfig, setScanConfig, f
                             <textarea value={scanConfig.customSymbols} onChange={e => setScanConfig(p => ({...p, customSymbols: e.target.value}))} placeholder="BTC, ETH, SOL..." className="w-full bg-slate-900 border border-cyan-500/50 rounded p-2 text-xs text-white focus:outline-none h-16 font-mono resize-none focus:border-cyan-400 transition-colors"/>
                             <div className="flex justify-between items-center text-[9px] text-slate-500 mt-1 px-1">
                                 <span>数量: <span className="text-white font-mono">{scanConfig.customSymbols.split(',').filter(s=>s.trim()).length}</span></span>
-                                {onClearWatchlist && <button type="button" onClick={(e) => { e.preventDefault(); onClearWatchlist(); }} className="flex items-center gap-1 text-red-400 hover:text-red-300 transition-colors hover:bg-red-900/20 px-1.5 py-0.5 rounded active:scale-95"><Trash2 size={10}/> 清空</button>}
+                                <div className="flex gap-2">
+                                    {onClearBlacklist && <button type="button" onClick={(e) => { e.preventDefault(); if (window.confirm('确定要清空已删除列表吗？')) onClearBlacklist(); }} className="flex items-center gap-1 text-slate-400 hover:text-white transition-colors hover:bg-slate-800 px-1.5 py-0.5 rounded active:scale-95" title="清空已删除列表"><RotateCcw size={10}/> 恢复</button>}
+                                    {onClearWatchlist && <button type="button" onClick={(e) => { e.preventDefault(); onClearWatchlist(); }} className="flex items-center gap-1 text-red-400 hover:text-red-300 transition-colors hover:bg-red-900/20 px-1.5 py-0.5 rounded active:scale-95"><Trash2 size={10}/> 清空</button>}
+                                </div>
                             </div>
                         </div>
                     ) : (

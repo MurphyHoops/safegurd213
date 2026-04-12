@@ -33,7 +33,7 @@ const Strategy5_OscillationGuard: React.FC<Props> = ({ settings, onChange }) => 
                             min="1" 
                             max="10" 
                             className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:border-orange-500" 
-                            value={settings.maxHedgeRetries || 3} 
+                            value={Number.isNaN(settings.maxHedgeRetries) ? '' : (settings.maxHedgeRetries || 3)} 
                             onChange={(e) => onChange('maxHedgeRetries', parseFloat(e.target.value))} 
                          />
                      </div>
@@ -45,7 +45,7 @@ const Strategy5_OscillationGuard: React.FC<Props> = ({ settings, onChange }) => 
                          <input 
                             type="number" 
                             className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400 focus:border-red-500" 
-                            value={settings.fuseFailStopPercent || 30} 
+                            value={Number.isNaN(settings.fuseFailStopPercent) ? '' : (settings.fuseFailStopPercent || 30)} 
                             onChange={(e) => onChange('fuseFailStopPercent', parseFloat(e.target.value))} 
                          />
                          <p className="text-[9px] text-slate-600 mt-1">

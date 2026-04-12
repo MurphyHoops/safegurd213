@@ -28,25 +28,21 @@ const Strategy4_Amputation: React.FC<Props> = ({ settings, onChange, toggleFeatu
                     <div className="grid grid-cols-2 gap-2">
                         <div>
                             <label className="text-[10px] text-slate-500 block mb-1">触发断臂盈利率 (%)</label>
-                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-bold" value={settings.amputationTriggerProfit} onChange={(e) => onChange('amputationTriggerProfit', parseFloat(e.target.value))} />
+                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-400 font-bold" value={Number.isNaN(settings.amputationTriggerProfit) ? '' : settings.amputationTriggerProfit} onChange={(e) => onChange('amputationTriggerProfit', parseFloat(e.target.value))} />
                         </div>
                         <div>
                             <label className="text-[10px] text-slate-500 block mb-1">每次砍仓比例 (%)</label>
-                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400 font-bold" value={settings.amputationRatio} onChange={(e) => onChange('amputationRatio', parseFloat(e.target.value))} />
+                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400 font-bold" value={Number.isNaN(settings.amputationRatio) ? '' : settings.amputationRatio} onChange={(e) => onChange('amputationRatio', parseFloat(e.target.value))} />
                         </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2">
                         <div>
                             <label className="text-[10px] text-slate-500 block mb-1">盈利覆盖安全垫 (%)</label>
-                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={settings.amputationVictoryBuffer} onChange={(e) => onChange('amputationVictoryBuffer', parseFloat(e.target.value))} />
-                        </div>
-                        <div>
-                            <label className="text-[10px] text-slate-500 block mb-1">补仓回调触发 (%)</label>
-                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={settings.amputationRefillRetrace} onChange={(e) => onChange('amputationRefillRetrace', parseFloat(e.target.value))} />
+                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={Number.isNaN(settings.amputationVictoryBuffer) ? '' : settings.amputationVictoryBuffer} onChange={(e) => onChange('amputationVictoryBuffer', parseFloat(e.target.value))} />
                         </div>
                     </div>
                     <div className="text-[9px] text-slate-500 bg-slate-800/50 p-1.5 rounded leading-relaxed border border-slate-700/30">
-                        <strong>弃卒保车：</strong> 当顺势单大赚时，主动砍掉逆势单以释放保证金（断臂）。若行情回调或反转，则自动补回对冲（接回）。最终利用顺势利润覆盖所有断臂债务后清仓。
+                        <strong>弃卒保车：</strong> 当一方盈利达到触发标准时，砍掉亏损方一半仓位。若亏损方回本(亏损为0)，则补回之前砍掉的仓位。最终利用盈利覆盖所有砍仓亏损和历史止损后，双向清仓。
                     </div>
                 </div>
             )}

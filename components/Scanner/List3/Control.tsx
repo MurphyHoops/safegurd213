@@ -73,7 +73,7 @@ export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, cou
                                 <label className="text-[8px] text-slate-500 block mb-0.5">多头：最大涨幅 %</label>
                                 <input 
                                     type="number" 
-                                    value={antiChase.maxRise} 
+                                    value={Number.isNaN(antiChase.maxRise) ? '' : antiChase.maxRise} 
                                     onChange={e => setConfig(p => ({...p, antiChase: {...p.antiChase!, maxRise: parseFloat(e.target.value)}}))}
                                     className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-[10px] text-emerald-400 font-bold text-center outline-none focus:border-emerald-500"
                                 />
@@ -82,7 +82,7 @@ export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, cou
                                 <label className="text-[8px] text-slate-500 block mb-0.5">空头：最大跌幅 %</label>
                                 <input 
                                     type="number" 
-                                    value={antiChase.maxFall} 
+                                    value={Number.isNaN(antiChase.maxFall) ? '' : antiChase.maxFall} 
                                     onChange={e => setConfig(p => ({...p, antiChase: {...p.antiChase!, maxFall: parseFloat(e.target.value)}}))}
                                     className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-[10px] text-red-400 font-bold text-center outline-none focus:border-red-500"
                                 />
@@ -133,24 +133,53 @@ export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, cou
                 <div className={`grid grid-cols-4 gap-1 transition-opacity ${config.enableResonance ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
                     <div className="bg-slate-800/80 rounded border border-slate-700 px-1.5 py-1 flex items-center justify-between">
                         <span className="text-[9px] text-slate-500">回溯</span>
-                        <input type="number" value={config.lookback} onChange={(e) => setConfig(p => ({...p, lookback: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-white outline-none"/>
+                        <input type="number" value={Number.isNaN(config.lookback) ? '' : config.lookback} onChange={(e) => setConfig(p => ({...p, lookback: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-white outline-none"/>
                     </div>
                     <div className="bg-slate-800/80 rounded border border-slate-700 px-1.5 py-1 flex items-center justify-between">
                         <span className="text-[9px] text-slate-500">穿越</span>
-                        <input type="number" value={config.minCrossCount} onChange={(e) => setConfig(p => ({...p, minCrossCount: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-orange-400 outline-none"/>
+                        <input type="number" value={Number.isNaN(config.minCrossCount) ? '' : config.minCrossCount} onChange={(e) => setConfig(p => ({...p, minCrossCount: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-orange-400 outline-none"/>
                     </div>
                     <div className="bg-slate-800/80 rounded border border-slate-700 px-1.5 py-1 flex items-center justify-between">
                         <span className="text-[9px] text-slate-500">位置</span>
-                        <input type="number" value={config.maxLocation} onChange={(e) => setConfig(p => ({...p, maxLocation: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-blue-400 outline-none"/>
+                        <input type="number" value={Number.isNaN(config.maxLocation) ? '' : config.maxLocation} onChange={(e) => setConfig(p => ({...p, maxLocation: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-blue-400 outline-none"/>
                     </div>
                     <div className="bg-slate-800/80 rounded border border-slate-700 px-1.5 py-1 flex items-center justify-between">
                         <span className="text-[9px] text-slate-500">带宽</span>
-                        <input type="number" step="0.001" value={config.maxBBW} onChange={(e) => setConfig(p => ({...p, maxBBW: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-emerald-400 outline-none"/>
+                        <input type="number" step="0.001" value={Number.isNaN(config.maxBBW) ? '' : config.maxBBW} onChange={(e) => setConfig(p => ({...p, maxBBW: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-emerald-400 outline-none"/>
                     </div>
                 </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2"><div className="flex flex-col bg-slate-800 rounded border border-slate-700 p-1"><span className="text-[8px] text-slate-500 mb-0.5 flex items-center justify-center gap-1"><Activity size={8}/> RSI (多) 区间</span><div className="flex items-center justify-center gap-1"><input type="number" value={config.rsiLongMin} onChange={(e) => setConfig(p => ({...p, rsiLongMin: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/><span className="text-[8px] text-slate-600">-</span><input type="number" value={config.rsiLongMax} onChange={(e) => setConfig(p => ({...p, rsiLongMax: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/></div></div><div className="flex flex-col bg-slate-800 rounded border border-slate-700 p-1"><span className="text-[8px] text-slate-500 mb-0.5 flex items-center justify-center gap-1"><Activity size={8}/> RSI (空) 区间</span><div className="flex items-center justify-center gap-1"><input type="number" value={config.rsiShortMin} onChange={(e) => setConfig(p => ({...p, rsiShortMin: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/><span className="text-[8px] text-slate-600">-</span><input type="number" value={config.rsiShortMax} onChange={(e) => setConfig(p => ({...p, rsiShortMax: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/></div></div></div>
+            <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between bg-slate-800 rounded border border-slate-700 px-2 py-1.5">
+                    <div className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
+                        <Activity size={10} className="text-pink-500"/>
+                        启用 RSI 动能过滤
+                    </div>
+                    <div onClick={() => setConfig(p => ({...p, enableRsi: p.enableRsi === undefined ? false : !p.enableRsi}))} className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${config.enableRsi !== false ? 'bg-pink-600' : 'bg-slate-700'}`}>
+                        <div className={`w-2 h-2 bg-white rounded-full transition-transform shadow-sm ${config.enableRsi !== false ? 'translate-x-3' : ''}`} />
+                    </div>
+                </div>
+                
+                <div className={`grid grid-cols-2 gap-2 transition-opacity ${config.enableRsi !== false ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                    <div className="flex flex-col bg-slate-800 rounded border border-slate-700 p-1">
+                        <span className="text-[8px] text-slate-500 mb-0.5 flex items-center justify-center gap-1"><Activity size={8}/> RSI (多) 区间</span>
+                        <div className="flex items-center justify-center gap-1">
+                            <input type="number" value={Number.isNaN(config.rsiLongMin) ? '' : config.rsiLongMin} onChange={(e) => setConfig(p => ({...p, rsiLongMin: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/>
+                            <span className="text-[8px] text-slate-600">-</span>
+                            <input type="number" value={Number.isNaN(config.rsiLongMax) ? '' : config.rsiLongMax} onChange={(e) => setConfig(p => ({...p, rsiLongMax: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/>
+                        </div>
+                    </div>
+                    <div className="flex flex-col bg-slate-800 rounded border border-slate-700 p-1">
+                        <span className="text-[8px] text-slate-500 mb-0.5 flex items-center justify-center gap-1"><Activity size={8}/> RSI (空) 区间</span>
+                        <div className="flex items-center justify-center gap-1">
+                            <input type="number" value={Number.isNaN(config.rsiShortMin) ? '' : config.rsiShortMin} onChange={(e) => setConfig(p => ({...p, rsiShortMin: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/>
+                            <span className="text-[8px] text-slate-600">-</span>
+                            <input type="number" value={Number.isNaN(config.rsiShortMax) ? '' : config.rsiShortMax} onChange={(e) => setConfig(p => ({...p, rsiShortMax: parseFloat(e.target.value)}))} className="w-12 bg-slate-700 border border-slate-600 rounded text-center text-sm font-bold text-white outline-none"/>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     );
 };

@@ -11,8 +11,8 @@ interface Props {
     config: List4Config;
     setConfig: React.Dispatch<React.SetStateAction<List4Config>>;
     list4: ScannerItem[];
-    list3Config: List3Config; // Receive List 3 config for subset filtering
-    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string) => void;
+    list3Config: List3Config | null; // Receive List 3 config, can be null initially
+    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => void;
     setChartData: (data: any) => void;
 }
 
@@ -20,51 +20,14 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
     
     // --- DYNAMIC SUBSET FILTERING ---
     const filteredList = useMemo(() => {
-        // Defensive check: If list3Config is missing, we default to strict filtering safety
-        const safeStrictTrend = list3Config?.strictTrend ?? true; 
-        const safeTfs = list3Config?.timeframes || [];
-
-        return list4.filter(item => {
-            const s = item.structure;
-            if (!s) return false; 
-
-            // 1. Timeframe Check
-            if (safeTfs.length > 0 && !safeTfs.includes(item.tf || '')) return false;
-
-            // 2. Strict Trend Check (Critical Fix: Enforce if config is true or undefined)
-            if (safeStrictTrend && !s.isStrictTrend) return false;
-
-            // 3. Color Check
-            if (list3Config?.checkCandleColor && !s.isColorValid) return false;
-
-            // 4. Thrust Check
-            if (list3Config?.enableThrust && !s.thrustValid) return false;
-
-            // 5. Resonance Checks
-            if (list3Config?.enableResonance) {
-                if (s.locationPct > list3Config.maxLocation) return false;
-                if (s.crossCount < list3Config.minCrossCount) return false;
-                if (s.bbw > list3Config.maxBBW) return false;
-            }
-
-            // 6. RSI Checks
-            const rsi = s.rsi;
-            if (list3Config) {
-                if (item.direction === 'LONG') {
-                    if (rsi < list3Config.rsiLongMin || rsi > list3Config.rsiLongMax) return false;
-                } else {
-                    if (rsi < list3Config.rsiShortMin || rsi > list3Config.rsiShortMax) return false;
-                }
-            }
-
-            return true;
-        });
-    }, [list4, list3Config]);
+        if (!list4) return [];
+        return list4; // Items are already latched upstream in useMomentumAudit
+    }, [list4]);
 
     if (!list3Config) {
         return (
             <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 ${COLUMN_WIDTH_CLASS} items-center justify-center`}>
-                <span className="text-xs text-slate-500 flex items-center gap-2"><AlertTriangle size={12}/> 初始化配置中...</span>
+                <span className="text-xs text-slate-500 flex items-center gap-2"><AlertTriangle size={12}/> 等待上游模块初始化...</span>
             </div>
         );
     }
@@ -82,7 +45,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                 <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar bg-amber-900/5">
                     {filteredList.map((item, idx) => (
                         <List4Item 
-                            key={idx}
+                            key={`${item.symbol}-${idx}`}
                             item={item}
                             executeTradeSafe={executeTradeSafe}
                             setChartData={setChartData}

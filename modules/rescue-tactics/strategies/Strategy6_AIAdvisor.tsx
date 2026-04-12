@@ -48,7 +48,7 @@ const Strategy6_AIAdvisor: React.FC<Props> = ({ settings, onChange }) => {
                             type="number" 
                             min="1" max="100" 
                             className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white font-bold" 
-                            value={advisorSettings.minConfidence} 
+                            value={Number.isNaN(advisorSettings.minConfidence) ? '' : advisorSettings.minConfidence} 
                             onChange={(e) => updateAdvisor('minConfidence', parseFloat(e.target.value))} 
                         />
                     </div>

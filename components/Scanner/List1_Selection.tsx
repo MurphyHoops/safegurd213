@@ -10,6 +10,8 @@ interface Props {
     setScanConfig: React.Dispatch<React.SetStateAction<ScanConfig>>;
     isScanning: boolean;
     scanStatusText: string;
+    isPaused: boolean;
+    setIsPaused: (v: boolean) => void;
     list1: ScannerItem[];
     onScan: () => void;
     nextScanTime?: number; 
@@ -21,21 +23,29 @@ interface Props {
     onToggleSymbol: (symbol: string) => void;
     onSelectAll: () => void;
     onDeselectAll: () => void;
+    onDeleteSymbol: (symbol: string) => void;
+    onClearBlacklist: () => void;
     marketStats: any;
+    setChartData: (data: any) => void;
+    mode?: 'LIVE' | 'BACKTEST';
+    downloadProgressMap?: Record<string, number>;
+    onDownload?: (symbol: string) => void;
 }
 
 const List1_Selection: React.FC<Props> = ({ 
-    scanConfig, setScanConfig, isScanning, scanStatusText, list1, onScan, 
+    scanConfig, setScanConfig, isScanning, scanStatusText, isPaused, setIsPaused, list1, onScan, 
     fixedModeView, setFixedModeView, scanInterval, setScanInterval, customSymbolSet,
-    onToggleSymbol, onSelectAll, onDeselectAll, marketStats, nextScanTime
+    onToggleSymbol, onSelectAll, onDeselectAll, onDeleteSymbol, onClearBlacklist, marketStats, nextScanTime, setChartData,
+    mode = 'LIVE', downloadProgressMap = {}, onDownload
 }) => {
     return (
         <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 ${COLUMN_WIDTH_CLASS}`}>
             <List1Control
                 scanConfig={scanConfig} setScanConfig={setScanConfig} isScanning={isScanning} 
-                scanStatusText={scanStatusText} onScan={onScan} 
+                scanStatusText={scanStatusText} isPaused={isPaused} setIsPaused={setIsPaused} onScan={onScan} 
                 fixedModeView={fixedModeView} setFixedModeView={setFixedModeView} 
                 onClearWatchlist={() => setScanConfig(p => ({...p, customSymbols: ''}))} 
+                onClearBlacklist={onClearBlacklist}
                 scanInterval={scanInterval} setScanInterval={setScanInterval}
                 marketStats={marketStats}
                 nextScanTime={nextScanTime}
@@ -81,13 +91,18 @@ const List1_Selection: React.FC<Props> = ({
                 ) : (
                     list1.map((item, idx) => (
                         <List1Item 
-                            key={idx}
+                            key={`${item.symbol}-${idx}`}
                             item={item}
                             idx={idx}
                             scanConfig={scanConfig}
                             fixedModeView={fixedModeView}
                             customSymbolSet={customSymbolSet}
                             onToggleSymbol={onToggleSymbol}
+                            onDeleteSymbol={onDeleteSymbol}
+                            setChartData={setChartData}
+                            mode={mode}
+                            downloadProgress={downloadProgressMap[item.symbol]}
+                            onDownload={onDownload}
                         />
                     ))
                 )}

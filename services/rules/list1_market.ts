@@ -11,7 +11,8 @@ export interface MarketStats {
 export function processMarketData(
     rawData: any[], 
     config: ScanConfig,
-    customSymbolSet: Set<string>
+    customSymbolSet: Set<string>,
+    fixedModeView: 'MONITOR' | 'SEARCH' = 'MONITOR'
 ): { list1: ScannerItem[], stats: MarketStats } {
     
     let up = 0, down = 0, btcChange = 0;
@@ -29,15 +30,14 @@ export function processMarketData(
     rawData.forEach((t: any) => {
         if (!t.symbol || !t.symbol.endsWith('USDT')) return;
 
-        const price = parseFloat(t.lastPrice);
-        const volume = parseFloat(t.quoteVolume); // Raw volume
+        const price = parseFloat(t.lastPrice) || 0;
+        const volume = parseFloat(t.quoteVolume) || 0; // Raw volume
 
         // SANITATION
         if (isNaN(price) || price <= 0) return;
 
-        // Use API provided change percent directly (Handles both 24hr and tradingDay logic automatically)
-        // tradingDay endpoint returns 'priceChangePercent' relative to 00:00 UTC
-        const change = parseFloat(t.priceChangePercent);
+        // Use API provided change percent directly
+        const change = parseFloat(t.priceChangePercent) || 0;
         
         // Convert Volume to Millions
         const volumeM = volume / 1000000;
@@ -61,6 +61,10 @@ export function processMarketData(
     // 2. Filter Logic
     let filtered = allCandidates.filter(i => (i.volume24h || 0) >= config.minVolume);
 
+    if (config.maxVolume > 0) {
+        filtered = filtered.filter(i => (i.volume24h || 0) <= config.maxVolume);
+    }
+
     if (config.source === 'GAINERS') {
         filtered = filtered.filter(i => (i.change || 0) > 0);
     } else if (config.source === 'LOSERS') {
@@ -71,7 +75,7 @@ export function processMarketData(
     filtered = filtered.filter(i => Math.abs(i.change || 0) >= config.minChange);
 
     // Custom Symbol Filter
-    if (config.useCustomOnly) {
+    if (config.useCustomOnly && fixedModeView !== 'SEARCH') {
         filtered = filtered.filter(i => {
             const rawSym = i.symbol.replace('USDT', '');
             return customSymbolSet.has(rawSym);

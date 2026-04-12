@@ -24,7 +24,7 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                         <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">消失</span>
                         <input 
                             type="number" 
-                            value={config.newModeRetention ?? 9} 
+                            value={Number.isNaN(config.newModeRetention) ? '' : (config.newModeRetention ?? 9)} 
                             onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, newModeRetention: parseInt(e.target.value) || 0})); }} 
                             className="w-8 bg-transparent text-center text-[10px] font-bold text-orange-400 outline-none p-0 border-b border-orange-500/30 focus:border-orange-500" 
                         />
@@ -42,7 +42,7 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                         <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">回溯</span>
                         <input 
                             type="number" 
-                            value={config.maxLag} 
+                            value={Number.isNaN(config.maxLag) ? '' : config.maxLag} 
                             onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, maxLag: parseInt(e.target.value) || 0})); }} 
                             className="w-8 bg-transparent text-center text-[10px] font-bold text-white outline-none p-0 border-b border-slate-600 focus:border-indigo-500" 
                         />
@@ -101,22 +101,22 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                     <div className="space-y-1 relative group">
                         <div className="absolute -top-1 -right-1 text-[6px] bg-amber-500 text-black px-0.5 rounded font-bold">MIN</div>
                         <label className="text-[8px] text-slate-500 block text-center">振幅 &ge;</label>
-                        <input type="number" step="0.1" value={config.squeezeThreshold} onChange={e => setConfig(p => ({...p, squeezeThreshold: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-amber-500/50 rounded text-center text-[10px] text-amber-400 outline-none py-1 font-bold shadow-[0_0_5px_rgba(245,158,11,0.2)]" />
+                        <input type="number" step="0.1" value={Number.isNaN(config.squeezeThreshold) ? '' : config.squeezeThreshold} onChange={e => setConfig(p => ({...p, squeezeThreshold: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-amber-500/50 rounded text-center text-[10px] text-amber-400 outline-none py-1 font-bold shadow-[0_0_5px_rgba(245,158,11,0.2)]" />
                     </div>
                     <div className="space-y-1 relative group">
                         <div className="absolute -top-1 -right-1 text-[6px] bg-amber-500 text-black px-0.5 rounded font-bold">MAX</div>
                         <label className="text-[8px] text-slate-500 block text-center">振幅 &le;</label>
-                        <input type="number" step="0.1" value={config.maxAmplitude} onChange={e => setConfig(p => ({...p, maxAmplitude: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-amber-500/50 rounded text-center text-[10px] text-amber-400 outline-none py-1 font-bold shadow-[0_0_5px_rgba(245,158,11,0.2)]" />
+                        <input type="number" step="0.1" value={Number.isNaN(config.maxAmplitude) ? '' : config.maxAmplitude} onChange={e => setConfig(p => ({...p, maxAmplitude: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-amber-500/50 rounded text-center text-[10px] text-amber-400 outline-none py-1 font-bold shadow-[0_0_5px_rgba(245,158,11,0.2)]" />
                     </div>
                     <div className="space-y-1 relative">
                         <div className="absolute -top-1 -right-1 text-[6px] bg-blue-500 text-white px-0.5 rounded font-bold">VOL</div>
                         <label className="text-[8px] text-slate-500 block text-center">放量(x)</label>
-                        <input type="number" step="0.1" value={config.volMultiplier} onChange={e => setConfig(p => ({...p, volMultiplier: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-blue-500/50 rounded text-center text-[10px] text-white outline-none py-1 font-bold shadow-[0_0_5px_rgba(59,130,246,0.2)]" />
+                        <input type="number" step="0.1" value={Number.isNaN(config.volMultiplier) ? '' : config.volMultiplier} onChange={e => setConfig(p => ({...p, volMultiplier: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-blue-500/50 rounded text-center text-[10px] text-white outline-none py-1 font-bold shadow-[0_0_5px_rgba(59,130,246,0.2)]" />
                     </div>
                     <div className="space-y-1 relative">
                         <div className="absolute -top-1 -right-1 text-[6px] bg-emerald-500 text-white px-0.5 rounded font-bold">BODY</div>
                         <label className="text-[8px] text-slate-500 block text-center">实体(%)</label>
-                        <input type="number" value={config.minBodyRatio} onChange={e => setConfig(p => ({...p, minBodyRatio: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-emerald-500/50 rounded text-center text-[10px] text-white outline-none py-1 font-bold shadow-[0_0_5px_rgba(16,185,129,0.2)]" />
+                        <input type="number" value={Number.isNaN(config.minBodyRatio) ? '' : config.minBodyRatio} onChange={e => setConfig(p => ({...p, minBodyRatio: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-emerald-500/50 rounded text-center text-[10px] text-white outline-none py-1 font-bold shadow-[0_0_5px_rgba(16,185,129,0.2)]" />
                     </div>
                 </div>
             </div>

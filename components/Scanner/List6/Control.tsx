@@ -77,7 +77,7 @@ export const List6Control: React.FC<{
                     </div>
                     <input 
                         type="number" 
-                        value={config.openAmount} 
+                        value={(config.openAmount === undefined || Number.isNaN(config.openAmount)) ? '' : config.openAmount} 
                         onChange={e => setConfig(p => ({...p, openAmount: parseFloat(e.target.value)}))} 
                         className="w-full bg-transparent text-lg font-bold text-white outline-none font-mono placeholder-slate-600 text-center"
                     />
@@ -88,16 +88,16 @@ export const List6Control: React.FC<{
                         <label className="text-[9px] text-slate-500 block mb-1 font-bold">余额比例 (%)</label>
                         <input 
                             type="number" 
-                            value={config.variablePercentage || 2} 
+                            value={(config.variablePercentage === undefined || Number.isNaN(config.variablePercentage)) ? '' : (config.variablePercentage || 2)} 
                             onChange={e => setConfig(p => ({...p, variablePercentage: parseFloat(e.target.value)}))} 
                             className="w-full bg-transparent text-lg font-bold text-indigo-400 outline-none font-mono text-center"
                         />
                     </div>
                     <div className="bg-slate-800/50 rounded border border-slate-700 p-2">
-                        <label className="text-[9px] text-slate-500 block mb-1 font-bold">最大限制 (U)</label>
+                        <label className="text-[9px] text-slate-500 block mb-1 font-bold">最大限额 (U)</label>
                         <input 
                             type="number" 
-                            value={config.variableMaxLimit || 200} 
+                            value={(config.variableMaxLimit === undefined || Number.isNaN(config.variableMaxLimit)) ? '' : (config.variableMaxLimit || 200)} 
                             onChange={e => setConfig(p => ({...p, variableMaxLimit: parseFloat(e.target.value)}))} 
                             className="w-full bg-transparent text-lg font-bold text-white outline-none font-mono text-center"
                         />
@@ -125,13 +125,13 @@ export const List6Control: React.FC<{
             {/* Col 1: Max Symbols */}
             <div className="flex flex-col gap-1">
                 <label className="text-[8px] text-slate-500 font-bold whitespace-nowrap text-center">最大持仓</label>
-                <input type="number" value={config.maxOpenSymbols} onChange={e => setConfig(p => ({...p, maxOpenSymbols: parseInt(e.target.value)}))} className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-white text-center" />
+                <input type="number" value={(config.maxOpenSymbols === undefined || Number.isNaN(config.maxOpenSymbols)) ? '' : config.maxOpenSymbols} onChange={e => setConfig(p => ({...p, maxOpenSymbols: parseInt(e.target.value)}))} className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-white text-center" />
             </div>
             
             {/* Col 2: Max Capital */}
             <div className="flex flex-col gap-1">
                 <label className="text-[8px] text-slate-500 font-bold whitespace-nowrap text-center">总资金上限</label>
-                <input type="number" value={config.maxTotalValue} onChange={e => setConfig(p => ({...p, maxTotalValue: parseFloat(e.target.value)}))} className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-white text-center" />
+                <input type="number" value={(config.maxTotalValue === undefined || Number.isNaN(config.maxTotalValue)) ? '' : config.maxTotalValue} onChange={e => setConfig(p => ({...p, maxTotalValue: parseFloat(e.target.value)}))} className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-white text-center" />
             </div>
 
             {/* Col 3: Exposure % (Arrow Adjust) */}
@@ -140,7 +140,7 @@ export const List6Control: React.FC<{
                 <div className="relative flex items-center">
                     <input 
                         type="number" 
-                        value={config.maxExposurePercent ?? 50} 
+                        value={(config.maxExposurePercent === undefined || Number.isNaN(config.maxExposurePercent)) ? '' : (config.maxExposurePercent ?? 50)} 
                         onChange={e => setConfig(p => ({...p, maxExposurePercent: parseFloat(e.target.value)}))} 
                         className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-orange-400 font-bold text-center pr-4 appearance-none" 
                     />

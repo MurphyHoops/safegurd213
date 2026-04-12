@@ -16,7 +16,9 @@ interface Props {
     onClosePosition: (symbol: string, side: PositionSide) => void;
     onDeletePosition: (symbol: string, side: PositionSide) => void;
     onBatchClose: () => void;
-    onOpenChart: (symbol: string) => void;
+    onClearRecords: () => void;
+    onResetBalance: (amount: number) => void;
+    onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number) => void;
     onOpenLogs: () => void;
     onOpenTradeModal: () => void;
     isSimulating: boolean;
@@ -26,6 +28,7 @@ interface Props {
     onToggleLoop: () => void;
     onOpenScanner: () => void;
     settings: AppSettings;
+    networkStatus: 'healthy' | 'delayed' | 'disconnected';
 }
 
 const Dashboard: React.FC<Props> = ({
@@ -35,13 +38,16 @@ const Dashboard: React.FC<Props> = ({
     isSimulating,
     onToggleSimulation,
     onBatchClose,
+    onClearRecords,
+    onResetBalance,
     onOpenTradeModal,
     onClosePosition,
     onShowHistory,
     onOpenChart,
     settings,
     onOpenScanner,
-    onRowLongPress
+    onRowLongPress,
+    networkStatus
 }) => {
     
     return (
@@ -55,6 +61,8 @@ const Dashboard: React.FC<Props> = ({
                 onToggleSimulation={onToggleSimulation}
                 onBatchClose={onBatchClose}
                 onOpenTradeModal={onOpenTradeModal}
+                onResetBalance={onResetBalance}
+                networkStatus={networkStatus}
             />
 
             {/* MODULE B: POSITIONS LIST (Active Trades) */}
@@ -68,6 +76,9 @@ const Dashboard: React.FC<Props> = ({
                 onClosePosition={onClosePosition}
                 onOpenChart={onOpenChart}
                 onOpenScanner={onOpenScanner}
+                onOpenTradeModal={onOpenTradeModal}
+                onBatchClose={onBatchClose}
+                onClearRecords={onClearRecords}
             />
         </div>
     );

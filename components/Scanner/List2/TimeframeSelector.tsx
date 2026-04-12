@@ -10,9 +10,10 @@ interface Props {
     isLocked: boolean;
     onTfInteraction: (tf: string, type: 'SINGLE' | 'LONG_2' | 'LONG_3' | 'RESET') => void;
     activeScanTfs?: Set<string>;
+    pollingStatus?: string;
 }
 
-export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs }) => {
+export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, pollingStatus }) => {
     const ALL_TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h'];
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pressStartTimeRef = useRef<number>(0);
@@ -52,6 +53,11 @@ export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfC
         <div>
             <div className="flex justify-between items-center mb-1.5">
                 <div className="text-[9px] text-slate-500 flex gap-1 items-center"><Clock size={10}/> 扫描周期 (Timeframe)</div>
+                {pollingStatus && (
+                    <div className="text-[8px] text-slate-400 font-mono truncate max-w-[100px]" title={pollingStatus}>
+                        {pollingStatus.replace('最后扫描: ', '')}
+                    </div>
+                )}
                 <div className="flex gap-2">
                     {isLocked && <span className="text-[8px] text-cyan-400 animate-pulse font-bold border border-cyan-500/30 px-1 rounded">锁定</span>}
                     {activeFilterTf && !isLocked && <span className="text-[8px] text-amber-400 animate-pulse font-bold border border-amber-500/30 px-1 rounded">单选</span>}

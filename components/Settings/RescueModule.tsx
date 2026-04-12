@@ -2,7 +2,6 @@
 import React from 'react';
 import { StopLossSettings } from '../../types';
 import { AlertTriangle } from 'lucide-react';
-import Strategy1_OriginalProfit from './RescueStrategies/Strategy1_OriginalProfit';
 import Strategy2_HedgeProfit from './RescueStrategies/Strategy2_HedgeProfit';
 import Strategy3_CallbackProfit from './RescueStrategies/Strategy3_CallbackProfit';
 import Strategy4_Amputation from './RescueStrategies/Strategy4_Amputation';
@@ -25,7 +24,6 @@ const RescueModule: React.FC<Props> = ({ settings, onChange, toggleFeature, onSh
                 此功能需要有丰富交易经验的交易员，使用需谨慎。
             </div>
 
-            <Strategy1_OriginalProfit settings={settings} onChange={onChange} toggleFeature={toggleFeature} />
             <Strategy2_HedgeProfit settings={settings} onChange={onChange} toggleFeature={toggleFeature} />
             <Strategy3_CallbackProfit settings={settings} onChange={onChange} toggleFeature={toggleFeature} onShowStrategyInfo={onShowStrategyInfo} />
             <Strategy4_Amputation settings={settings} onChange={onChange} toggleFeature={toggleFeature} />

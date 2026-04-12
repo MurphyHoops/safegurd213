@@ -9,6 +9,9 @@ export interface PositionsListProps {
     onRowLongPress: () => void;
     onShowHistory: (symbol: string) => void;
     onClosePosition: (symbol: string, side: PositionSide) => void;
-    onOpenChart: (symbol: string) => void;
+    onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number) => void;
     onOpenScanner: () => void;
+    onOpenTradeModal: () => void;
+    onBatchClose: () => void;
+    onClearRecords: () => void;
 }

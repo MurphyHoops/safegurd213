@@ -29,7 +29,9 @@ interface Props {
   list2Config?: List2Config; 
   highlightTime?: number; // Time to highlight (Vertical Line)
   extraLines?: ExtraLine[]; // New: Dynamic visual lines (Trigger/Defense)
+  directMode?: boolean; // Added directMode for fast fetching
   onClose: () => void;
+  onTimeframeChange?: (timeframe: string) => void;
 }
 
 interface KlineData {
@@ -42,6 +44,16 @@ interface KlineData {
 }
 
 const TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d'];
+
+const sanitizeTf = (tf: string): string => {
+    if (!tf) return '15m';
+    const match = tf.match(/(\d+[mhd])/i);
+    if (match) {
+        const clean = match[1].toLowerCase();
+        if (TIMEFRAMES.includes(clean)) return clean;
+    }
+    return '15m';
+};
 
 // Binance Colors & Theme
 const COLOR_UP = '#0ECB81'; // Green
@@ -56,6 +68,7 @@ const MAX_CANDLES_VISIBLE = 150;
 
 // Replicate Helper: Generate Mock Kline Data
 const getTfMinutes = (tf: string) => {
+    if (!tf) return 15;
     const unit = tf.slice(-1);
     const val = parseInt(tf);
     if (unit === 'm') return val;
@@ -63,13 +76,25 @@ const getTfMinutes = (tf: string) => {
     if (unit === 'd') return val * 1440;
     if (unit === 'w') return val * 10080;
     if (unit === 'M') return val * 43200;
-    return 0;
+    return 15;
 };
 
-const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, onClose }) => {
-  const [timeframe, setTimeframe] = useState(initialTimeframe);
+import { createPortal } from 'react-dom';
+
+const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, onClose, onTimeframeChange }) => {
+  const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
+  
+  // Sync timeframe with initialTimeframe if it changes (e.g. when clicking a different row for same symbol)
+  useEffect(() => {
+    const cleanTf = sanitizeTf(initialTimeframe);
+    if (cleanTf && cleanTf !== timeframe) {
+      setTimeframe(cleanTf);
+    }
+  }, [initialTimeframe]);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [fullData, setFullData] = useState<KlineData[]>([]);
   const [emaData, setEmaData] = useState<Record<number, number[]>>({});
   const [lastUpdated, setLastUpdated] = useState<number>(0);
@@ -145,10 +170,12 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   }, [fullData, list2Config, symbol, timeframe]); // signals prop is ignored if we compute fresh ones
 
   useEffect(() => {
+    console.log("[KlineChart] Effect running with dependencies:", {symbol, timeframe, retryCount});
     let isMounted = true;
     let timerId: any;
 
     const fetchData = async (isInitialLoad: boolean) => {
+        console.log(`[KlineChart] Fetching data for ${symbol} ${timeframe}, initial: ${isInitialLoad}, directMode: ${directMode}, time: ${new Date().toISOString()}`);
         if (isInitialLoad) {
             setLoading(true);
             setError(null);
@@ -156,21 +183,24 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
         try {
             // OPTIMIZED: Reduced limit from 1000 to 299 to speed up fetch time.
-            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${timeframe}&limit=299`;
+            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${timeframe}&limit=299&_t=${Date.now()}`;
             const validator = (data: any) => Array.isArray(data) && data.length > 0;
             
-            const res = await fetchWithFallback(url, { cache: 'no-store', timeout: 3000 }, validator);
+            console.log(`[KlineChart] Calling fetchWithFallback for ${symbol}`);
+            const res = await fetchWithFallback(url, { cache: 'no-store', timeout: 10000 }, validator, directMode);
+            console.log(`[KlineChart] fetchWithFallback returned for ${symbol}, status: ${res.status}`);
             
             if (isMounted) {
                 const json = await res.json();
+                console.log(`[KlineChart] Data received for ${symbol}, length: ${Array.isArray(json) ? json.length : 'not array'}`);
                 if (Array.isArray(json) && json.length > 0) {
                     const klines: KlineData[] = json.map((k: any) => ({
                         time: k[0],
-                        open: parseFloat(k[1]),
-                        high: parseFloat(k[2]),
-                        low: parseFloat(k[3]),
-                        close: parseFloat(k[4]), 
-                        volume: parseFloat(k[5])
+                        open: parseFloat(k[1]) || 0,
+                        high: parseFloat(k[2]) || 0,
+                        low: parseFloat(k[3]) || 0,
+                        close: parseFloat(k[4]) || 0, 
+                        volume: parseFloat(k[5]) || 0
                     }));
                     
                     const closes = klines.map(k => k.close);
@@ -196,23 +226,29 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                 }
             }
         } catch (e: any) {
-            console.warn("Failed to fetch real kline data:", e);
+            console.warn(`[KlineChart] Failed to fetch real kline data for ${symbol}:`, e);
             if (isMounted) {
-                setError("无法连接行情源，请检查网络或开启直连模式");
-                setFullData([]);
+                if (isInitialLoad) {
+                    setError("无法连接行情源，请检查网络或开启直连模式");
+                    setFullData([]);
+                }
                 setLoading(false);
             }
         } finally {
             if (isMounted) {
                 if (isInitialLoad) setLoading(false);
-                timerId = setTimeout(() => fetchData(false), 2000);
+                timerId = setTimeout(() => fetchData(false), 15000);
             }
         }
     };
 
     fetchData(true);
-    return () => { isMounted = false; clearTimeout(timerId); };
-  }, [symbol, timeframe]);
+    return () => { 
+        console.log(`[KlineChart] Effect cleanup for ${symbol}`);
+        isMounted = false; 
+        clearTimeout(timerId); 
+    };
+  }, [symbol, timeframe, retryCount]);
 
   // Auto-scroll
   useEffect(() => {
@@ -310,15 +346,17 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       });
       
       // Ensure Entry Price and Extra Lines are visible in scale
-      if (entryPrice) {
+      if (entryPrice && entryPrice > 0) {
           minPrice = Math.min(minPrice, entryPrice * 0.995);
           maxPrice = Math.max(maxPrice, entryPrice * 1.005);
       }
       
       if (extraLines && extraLines.length > 0) {
           extraLines.forEach(line => {
-              minPrice = Math.min(minPrice, line.price * 0.995);
-              maxPrice = Math.max(maxPrice, line.price * 1.005);
+              if (line.price && line.price > 0) {
+                  minPrice = Math.min(minPrice, line.price * 0.995);
+                  maxPrice = Math.max(maxPrice, line.price * 1.005);
+              }
           });
       }
       
@@ -336,6 +374,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           const yClose = getY(d.close);
           const yHigh = getY(d.high);
           const yLow = getY(d.low);
+          if (isNaN(x) || isNaN(yOpen) || isNaN(yClose) || isNaN(yHigh) || isNaN(yLow)) return null;
           const isUp = d.close >= d.open;
           const color = isUp ? COLOR_UP : COLOR_DOWN;
           const vHeight = maxVol > 0 ? (d.volume / maxVol) * (volumeHeight - 5) : 0;
@@ -359,17 +398,22 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const emaIdx = fullIdx - (period - 1);
               if (emaIdx >= 0 && emaIdx < arr.length) {
                   const val = arr[emaIdx];
-                  const x = getX(i) + candleWidth / 2;
-                  const y = getY(val);
-                  if (first) { dPath += `M ${x} ${y}`; first = false; } else { dPath += ` L ${x} ${y}`; }
+                  if (val !== undefined && !isNaN(val)) {
+                      const x = getX(i) + candleWidth / 2;
+                      const y = getY(val);
+                      if (!isNaN(x) && !isNaN(y)) {
+                          if (first) { dPath += `M ${x} ${y}`; first = false; } else { dPath += ` L ${x} ${y}`; }
+                      }
+                  }
               }
           });
-          return <path d={dPath} fill="none" stroke={color} strokeWidth={1.5} />;
+          return dPath ? <path d={dPath} fill="none" stroke={color} strokeWidth={1.5} /> : null;
       };
 
       const yLabels = [0, 0.2, 0.4, 0.6, 0.8, 1].map(pct => {
           const val = maxPrice - (pct * safePriceRange);
           const y = getY(val);
+          if (isNaN(y)) return null;
           return (
               <g key={pct}>
                   <line x1={0} y1={y} x2={width - padding.right} stroke={COLOR_GRID} strokeDasharray="3 3" />
@@ -405,6 +449,69 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                   if (d) {
                       const x = getX(i) + candleWidth / 2;
                       const isLong = sig.type === 'LONG';
+                      
+                      // Calculate mid-axis (中轴) of the signal candle
+                      const midPrice = (d.high + d.low) / 2;
+                      const midY = getY(midPrice);
+                      
+                      // Calculate breakthrough line (进攻突破线)
+                      const amplitude = d.high - d.low;
+                      const breakthroughPrice = isLong ? d.high + amplitude * 0.3 : d.low - amplitude * 0.3;
+                      const breakthroughY = getY(breakthroughPrice);
+                      
+                      // Draw Mid-Axis Defense Line to the right
+                      signalMarkers.push(
+                          <g key={`sig-mid-${idx}`} pointerEvents="none">
+                              <line 
+                                  x1={x} 
+                                  y1={midY} 
+                                  x2={width} 
+                                  y2={midY} 
+                                  stroke={isLong ? "#0ECB81" : "#F6465D"} 
+                                  strokeWidth={1} 
+                                  opacity={0.6} 
+                                  strokeDasharray="4 4" 
+                              />
+                              <text 
+                                  x={width - 4} 
+                                  y={midY - 4} 
+                                  fill={isLong ? "#0ECB81" : "#F6465D"} 
+                                  fontSize="9" 
+                                  textAnchor="end" 
+                                  opacity={0.8}
+                              >
+                                  中轴防守 {midPrice.toFixed(4)}
+                              </text>
+                          </g>
+                      );
+
+                      // Draw Breakthrough Line to the right
+                      signalMarkers.push(
+                          <g key={`sig-break-${idx}`} pointerEvents="none">
+                              <line 
+                                  x1={x} 
+                                  y1={breakthroughY} 
+                                  x2={width} 
+                                  y2={breakthroughY} 
+                                  stroke={isLong ? "#0ECB81" : "#F6465D"} 
+                                  strokeWidth={1} 
+                                  opacity={0.8} 
+                                  strokeDasharray="2 2" 
+                              />
+                              <text 
+                                  x={width - 4} 
+                                  y={breakthroughY - 4} 
+                                  fill={isLong ? "#0ECB81" : "#F6465D"} 
+                                  fontSize="9" 
+                                  textAnchor="end" 
+                                  opacity={0.9}
+                                  fontWeight="bold"
+                              >
+                                  进攻突破 {breakthroughPrice.toFixed(4)}
+                              </text>
+                          </g>
+                      );
+
                       if (isLong) {
                           const y = getY(d.low) + 15;
                           signalMarkers.push(
@@ -464,67 +571,73 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       if (fullData.length > 0) {
           const lastCandle = fullData[fullData.length - 1];
           const yCurrent = getY(lastCandle.close);
-          currentPriceLine = (
-              <g>
-                  <line x1={0} y1={yCurrent} x2={width - padding.right} stroke={lastCandle.close >= lastCandle.open ? COLOR_UP : COLOR_DOWN} strokeDasharray="2 2" opacity={0.7} />
-                  <rect x={width - 80} y={yCurrent - 10} width={80} height={20} fill={lastCandle.close >= lastCandle.open ? COLOR_UP : COLOR_DOWN} rx={2} />
-                  <text x={width - 40} y={yCurrent + 4} fill="black" fontSize="10" fontWeight="bold" textAnchor="middle">{lastCandle.close.toFixed(8)}</text>
-              </g>
-          );
+          if (!isNaN(yCurrent)) {
+              currentPriceLine = (
+                  <g>
+                      <line x1={0} y1={yCurrent} x2={width - padding.right} stroke={lastCandle.close >= lastCandle.open ? COLOR_UP : COLOR_DOWN} strokeDasharray="2 2" opacity={0.7} />
+                      <rect x={width - 80} y={yCurrent - 10} width={80} height={20} fill={lastCandle.close >= lastCandle.open ? COLOR_UP : COLOR_DOWN} rx={2} />
+                      <text x={width - 40} y={yCurrent + 4} fill="black" fontSize="10" fontWeight="bold" textAnchor="middle">{lastCandle.close.toFixed(8)}</text>
+                  </g>
+              );
+          }
       }
 
       // ENTRY PRICE & TIME VISUALIZATION
       let entryVisuals = null;
-      if (entryPrice) {
+      if (entryPrice && entryPrice > 0) {
           const yEntry = getY(entryPrice);
-          const entryColor = "#22d3ee"; // Cyan-400
-          
-          let entryX = -1;
-          // Find Entry Candle X if visible
-          if (entryTime) {
-              // Try exact match first
-              let eIdx = fullData.findIndex(k => k.time === entryTime);
-              // Fallback match
-              if (eIdx === -1) {
-                  let minDiff = Infinity;
-                  fullData.forEach((k, i) => {
-                      const diff = Math.abs(k.time - entryTime!);
-                      if (diff < minDiff && diff < intervalMs) {
-                          minDiff = diff;
-                          eIdx = i;
-                      }
-                  });
+          if (!isNaN(yEntry)) {
+              const entryColor = "#22d3ee"; // Cyan-400
+              
+              let entryX = -1;
+              // Find Entry Candle X if visible
+              if (entryTime) {
+                  // Try exact match first
+                  let eIdx = fullData.findIndex(k => k.time === entryTime);
+                  // Fallback match
+                  if (eIdx === -1) {
+                      let minDiff = Infinity;
+                      fullData.forEach((k, i) => {
+                          const diff = Math.abs(k.time - entryTime!);
+                          if (diff < minDiff && diff < intervalMs) {
+                              minDiff = diff;
+                              eIdx = i;
+                          }
+                      });
+                  }
+                  if (eIdx !== -1 && eIdx >= startIndex && eIdx < startIndex + visibleCount) {
+                      entryX = getX(eIdx - startIndex) + candleWidth / 2;
+                  }
               }
-              if (eIdx !== -1 && eIdx >= startIndex && eIdx < startIndex + visibleCount) {
-                  entryX = getX(eIdx - startIndex) + candleWidth / 2;
-              }
+
+              entryVisuals = (
+                  <g pointerEvents="none">
+                      {/* Horizontal Line */}
+                      <line x1={0} y1={yEntry} x2={width - padding.right} y2={yEntry} stroke={entryColor} strokeWidth={1} strokeDasharray="4 2" opacity={0.8} />
+                      
+                      {/* Right Axis Label */}
+                      <rect x={width - 80} y={yEntry - 9} width={80} height={18} fill={entryColor} rx={2} opacity={0.2} />
+                      <text x={width - 76} y={yEntry + 3} fill={entryColor} fontSize="9" fontWeight="bold" fontFamily="monospace">
+                          ENTRY: {entryPrice.toFixed(4)}
+                      </text>
+
+                      {/* Specific Entry Time Marker (if visible) */}
+                      {entryX !== -1 && !isNaN(entryX) && (
+                          <g>
+                              <circle cx={entryX} cy={yEntry} r={4} fill={entryColor} />
+                              <circle cx={entryX} cy={yEntry} r={8} stroke={entryColor} strokeWidth={1} fill="none" opacity={0.5} />
+                          </g>
+                      )}
+                  </g>
+              );
           }
-
-          entryVisuals = (
-              <g pointerEvents="none">
-                  {/* Horizontal Line */}
-                  <line x1={0} y1={yEntry} x2={width - padding.right} y2={yEntry} stroke={entryColor} strokeWidth={1} strokeDasharray="4 2" opacity={0.8} />
-                  
-                  {/* Right Axis Label */}
-                  <rect x={width - 80} y={yEntry - 9} width={80} height={18} fill={entryColor} rx={2} opacity={0.2} />
-                  <text x={width - 76} y={yEntry + 3} fill={entryColor} fontSize="9" fontWeight="bold" fontFamily="monospace">
-                      ENTRY: {entryPrice.toFixed(4)}
-                  </text>
-
-                  {/* Specific Entry Time Marker (if visible) */}
-                  {entryX !== -1 && (
-                      <g>
-                          <circle cx={entryX} cy={yEntry} r={4} fill={entryColor} />
-                          <circle cx={entryX} cy={yEntry} r={8} stroke={entryColor} strokeWidth={1} fill="none" opacity={0.5} />
-                      </g>
-                  )}
-              </g>
-          );
       }
 
       // EXTRA LINES (Trigger / Defense)
       const extraVisuals = extraLines?.map((line, idx) => {
+          if (!line.price || line.price <= 0) return null;
           const y = getY(line.price);
+          if (isNaN(y)) return null;
           const dash = line.style === 'dashed' ? '6 4' : undefined;
           
           return (
@@ -590,9 +703,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       );
   };
 
-  return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 animate-in fade-in zoom-in-95">
-      <div className="bg-[#161A25] border border-slate-700 rounded-lg shadow-2xl flex flex-col w-[95vw] h-[85vh] overflow-hidden">
+  const modalContent = (
+    <div className="fixed inset-0 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2" style={{ zIndex: 2147483647 }} onClick={onClose}>
+      <div className="bg-[#161A25] border border-slate-700 rounded-lg shadow-2xl flex flex-col w-[95vw] h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#1E2329] shrink-0">
            <div className="flex items-center gap-4">
@@ -607,7 +720,10 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                <div className="h-4 w-px bg-slate-700"></div>
                <div className="flex gap-1">
                    {TIMEFRAMES.map(tf => (
-                       <button key={tf} onClick={() => setTimeframe(tf)} className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${timeframe === tf ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}>{tf}</button>
+                       <button key={tf} onClick={() => {
+                           setTimeframe(tf);
+                           if (onTimeframeChange) onTimeframeChange(tf);
+                       }} className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${timeframe === tf ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}>{tf}</button>
                    ))}
                </div>
            </div>
@@ -631,11 +747,18 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         </div>
 
         {/* Chart Area */}
-        <div ref={containerRef} className={`flex-1 relative w-full h-full select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={() => { handleMouseUp(); setHoverIndex(null); setMouseY(null); }} onWheel={handleWheel}>
-            {loading && !error && (
+        <div ref={containerRef} className={`flex-1 relative w-full h-full select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'} ${loading ? 'opacity-70 pointer-events-none' : ''}`} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={() => { handleMouseUp(); setHoverIndex(null); setMouseY(null); }} onWheel={handleWheel}>
+            {loading && !error && fullData.length === 0 && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[#161A25]/90">
                     <Loader2 size={32} className="animate-spin text-[#FCD535] mb-2" />
                     <span className="text-xs text-slate-400">正在连接节点加载数据...</span>
+                </div>
+            )}
+            
+            {loading && !error && fullData.length > 0 && (
+                <div className="absolute top-4 right-4 flex items-center gap-2 z-20 bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700 shadow-lg backdrop-blur-sm">
+                    <Loader2 size={14} className="animate-spin text-[#FCD535]" />
+                    <span className="text-[10px] font-bold text-slate-300">切换周期中...</span>
                 </div>
             )}
             
@@ -651,7 +774,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                 <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[#161A25]/90">
                     <AlertTriangle size={40} className="text-red-500 mb-2" />
                     <span className="text-sm font-bold text-slate-300 mb-2">{error}</span>
-                    <button onClick={() => { setError(null); setLoading(true); }} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-xs font-bold">重试连接</button>
+                    <button onClick={() => { setError(null); setLoading(true); setRetryCount(c => c + 1); }} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-xs font-bold">重试连接</button>
                 </div>
             )}
 
@@ -680,6 +803,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       </div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 };
 
 export default KlineChartModal;
