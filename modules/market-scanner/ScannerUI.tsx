@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { useScannerLogic } from './useScannerLogic';
 import { ScanConfig, ScannerItem } from '../../components/Scanner/scannerTypes';
-import List1_Selection from '../../components/Scanner/List1_Selection';
+import List1_Selection from './components/List1_Selection';
 
 import { BacktestMarketScannerModule } from '../backtester/mirrored/BacktestScannerUI';
 
@@ -13,9 +13,12 @@ interface Props {
     directMode?: boolean;
     scanConfig: ScanConfig;
     setScanConfig: React.Dispatch<React.SetStateAction<ScanConfig>>;
-    mode?: 'LIVE' | 'BACKTEST';
+    mode?: 'LIVE' | 'BACKTEST' | 'SMART';
+    setMode?: (mode: 'LIVE' | 'BACKTEST' | 'SMART') => void;
     onStartBacktest?: (symbols: string[]) => void;
     isSyncing?: boolean;
+    // Backtest Controls
+    backtestProps?: any;
 }
 
 export const MarketScannerModule: React.FC<Props> = (props) => {
@@ -30,6 +33,9 @@ export const MarketScannerModule: React.FC<Props> = (props) => {
                 setScanConfig={props.setScanConfig}
                 onStartBacktest={props.onStartBacktest}
                 isSyncing={props.isSyncing}
+                mode={props.mode}
+                setMode={props.setMode}
+                backtestProps={props.backtestProps}
             />
         );
     }
@@ -43,25 +49,67 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     directMode = false,
     scanConfig,
     setScanConfig,
-    isSyncing = false
+    isSyncing = false,
+    mode,
+    setMode,
+    backtestProps
 }) => {
     // --- LOCAL UI STATE ---
     const [fixedModeView, setFixedModeView] = usePersistedState<'MONITOR' | 'SEARCH'>('SCANNER_FIXED_MODE_VIEW', 'MONITOR');
     const [scanInterval, setScanInterval] = usePersistedState('SCANNER_INTERVAL', 1);
     const [isPaused, setIsPaused] = useState(false);
     
+    // Ref to track transferred symbols to prevent infinite loops
+    const transferredSymbolsRef = React.useRef(new Set<string>());
+    
     // --- LOGIC HOOK ---
-    const customSymbolSet = useMemo(() => new Set((typeof scanConfig.customSymbols === 'string' ? scanConfig.customSymbols : '').split(',').map(s=>s.trim()).filter(Boolean)), [scanConfig.customSymbols]);
+    const customSymbolSet = useMemo(() => {
+        const rawSyms = typeof scanConfig.customSymbols === 'string' ? scanConfig.customSymbols : '';
+        return new Set(rawSyms.toUpperCase().split(',').map(s => s.trim()).filter(Boolean));
+    }, [scanConfig.customSymbols]);
     
     // --- LIVE MODE LOGIC ---
     const { 
         list1, isScanning, scanStatusText, marketStats, nextScanTime, setNextScanTime, refreshList1Candidates, cancelScan,
-        addToBlacklist, clearBlacklist
-    } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode);
+        addToBlacklist, clearBlacklist,
+        majorTrendCandidates, isMajorScanning, majorProgress, runMajorTrendDiscovery
+    } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, mode);
+
+    // --- EFFECT: Auto Transfer to Watchlist ---
+    useEffect(() => {
+        if (scanConfig.majorTrend?.enabled && scanConfig.majorTrend?.autoTransfer && majorTrendCandidates && majorTrendCandidates.size > 0) {
+            const candidatesList = Array.from(majorTrendCandidates).map(s => s.replace('USDT', ''));
+            const currentSymbols = (scanConfig.customSymbols || '').split(',').map(s => s.trim()).filter(Boolean);
+            const currentSet = new Set(currentSymbols);
+            
+            let addedCount = 0;
+            candidatesList.forEach(sym => {
+                if (!currentSet.has(sym) && !transferredSymbolsRef.current.has(sym)) {
+                    currentSet.add(sym);
+                    transferredSymbolsRef.current.add(sym);
+                    addedCount++;
+                }
+            });
+            
+            if (addedCount > 0) {
+                const updatedSymbols = Array.from(currentSet).join(', ');
+                setScanConfig(p => ({
+                    ...p,
+                    customSymbols: updatedSymbols
+                }));
+                console.log(`[Auto Transfer] Added ${addedCount} discovered symbols to Watchlist:`, candidatesList);
+            }
+        }
+    }, [majorTrendCandidates, scanConfig.majorTrend?.enabled, scanConfig.majorTrend?.autoTransfer, scanConfig.customSymbols, setScanConfig]);
 
     // --- EFFECT: Sync with Legacy System ---
+    const lastListStrRef = React.useRef<string>('');
     useEffect(() => {
-        onCandidatesUpdate(list1);
+        const str = JSON.stringify(list1);
+        if (str !== lastListStrRef.current) {
+            lastListStrRef.current = str;
+            onCandidatesUpdate(list1);
+        }
     }, [list1, onCandidatesUpdate]);
 
     // --- EFFECT: Initial Scan ---
@@ -71,18 +119,36 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     }, []);
 
     // --- EFFECT: Interval ---
+    const isScanningRef = React.useRef(isScanning);
+    useEffect(() => { isScanningRef.current = isScanning; }, [isScanning]);
+
     useEffect(() => {
         if (isPaused) {
             setNextScanTime(0);
             return;
         }
-        const timer = setInterval(() => {
-            if (!isScanning) refreshList1Candidates(scanConfig, false);
-            setNextScanTime(Date.now() + scanInterval * 60 * 1000);
-        }, scanInterval * 60 * 1000);
-        setNextScanTime(Date.now() + scanInterval * 60 * 1000);
+
+        const intervalMs = scanInterval * 60 * 1000;
+        
+        const tick = () => {
+            if (!isScanningRef.current) {
+                console.log("[ScannerUI] Auto-refresh tick.");
+                refreshList1Candidates(scanConfig, false);
+            }
+            // Update next scan time after refresh
+            setNextScanTime(Date.now() + intervalMs);
+        };
+
+        const timer = setInterval(tick, intervalMs);
+        
+        // Only set initial next scan time if it's currently 0 or past
+        setNextScanTime(prev => {
+            if (prev <= Date.now()) return Date.now() + intervalMs;
+            return prev;
+        });
+        
         return () => clearInterval(timer);
-    }, [scanInterval, scanConfig, isScanning, refreshList1Candidates, setNextScanTime, isPaused]);
+    }, [scanInterval, scanConfig, refreshList1Candidates, isPaused]);
 
     // --- HANDLERS ---
     const handleToggleSymbol = (symbol: string) => { 
@@ -152,6 +218,13 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             marketStats={marketStats}
             nextScanTime={nextScanTime}
             setChartData={setChartData}
+            scannerMode={mode}
+            setScannerMode={setMode}
+            majorTrendCandidates={majorTrendCandidates}
+            isMajorScanning={isMajorScanning}
+            majorProgress={majorProgress}
+            runMajorTrendDiscovery={runMajorTrendDiscovery}
+            backtestProps={backtestProps}
         />
     );
 };

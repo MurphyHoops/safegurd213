@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { AppSettings, SimulationSettings, StopLossSettings } from '../types';
-import { Target, Shield, AlertTriangle, RefreshCw, Settings, Info, X, BookOpen, Sun, Moon, Music, VolumeX, ShieldCheck, History } from 'lucide-react';
+import { Target, Shield, AlertTriangle, RefreshCw, Settings, BookOpen, History } from 'lucide-react';
 import { audioService } from '../services/audioService';
 
 // --- ATOMIC MODULES ---
@@ -10,9 +10,14 @@ import { HedgeGuardianModule } from '../modules/hedge-guardian';
 import { RescueTacticsModule } from '../modules/rescue-tactics';
 import { AutoPilotModule } from '../modules/auto-pilot';
 import { SystemCoreModule } from '../modules/system-core';
+import { UserGuideModule } from '../modules/user-guide';
 import { BacktesterModule } from '../modules/backtester/BacktesterModule';
+import { SystemMonitorModule } from '../modules/system-monitor/SystemMonitorUI';
+import { Terminal } from 'lucide-react';
 
 import ModuleHeader from './Settings/ModuleHeader';
+import { GlobalProcessGuard } from './Settings/GlobalProcessGuard';
+import { StrategyRulesModal } from './Settings/StrategyRulesModal';
 
 interface Props {
     settings: AppSettings;
@@ -33,9 +38,10 @@ interface Props {
     onViewSource: () => void;
     onOpenManual: () => void; 
     onRestoreSettings: (settings: AppSettings) => void;
+    onOpenSaviorLab: (tab: 'DNA' | 'BACKTEST') => void;
 }
 
-const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onFactoryReset, onOpenScanner, onToggleSim, isSimulating, onViewSource, onOpenManual, onRestoreSettings }) => {
+const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onFactoryReset, onOpenScanner, onToggleSim, isSimulating, onViewSource, onOpenManual, onRestoreSettings, onOpenSaviorLab }) => {
     
     const [expandedModule, setExpandedModule] = useState<number | null>(6); // Default to User Guide
     const [showStrategy43Info, setShowStrategy43Info] = useState(false);
@@ -210,58 +216,18 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
     return (
         <div className="flex flex-col h-full bg-slate-900 text-slate-300 custom-scrollbar overflow-y-auto select-none relative">
             {/* Strategy Rules Modal */}
-            {showStrategy43Info && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-                    <div className="bg-slate-900 border border-amber-500/50 rounded-lg shadow-2xl w-full max-w-md p-5 animate-in fade-in zoom-in-95">
-                        <div className="flex justify-between items-start mb-4">
-                            <h3 className="text-sm font-bold text-amber-400 flex items-center gap-2">
-                                <Info size={16} /> 3.3 回调盈利清仓 (运行规则)
-                            </h3>
-                            <button onClick={() => setShowStrategy43Info(false)} className="text-slate-500 hover:text-white"><X size={16}/></button>
-                        </div>
-                        <div className="space-y-3 text-[10px] text-slate-300 leading-relaxed">
-                            <div className="bg-slate-800/50 p-2 rounded border border-slate-700">
-                                <span className="text-blue-400 font-bold block mb-1">1. 触发逻辑 (Entry)</span>
-                                初始开仓由【2. 防爆对冲】模块触发。一旦进入回调清仓模式，后续加仓由【价格突破极值】触发。
-                            </div>
-                            <div className="bg-slate-800/50 p-2 rounded border border-slate-700">
-                                <span className="text-emerald-400 font-bold block mb-1">2. 循环收割 (Harvest)</span>
-                                当对冲仓位盈利达到【对冲盈利目标】且回调【回调比例】时，仅平掉对冲仓位，保留原仓位。盈利计入“总子弹”。
-                            </div>
-                            <div className="bg-slate-800/50 p-2 rounded border border-slate-700">
-                                <span className="text-amber-400 font-bold block mb-1">3. 最终胜利 (Victory)</span>
-                                当【历史累计对冲盈利 + 当前对冲浮盈 + 原仓当前浮盈】 &gt; 【最大债务 * (1+覆盖阈值)】时，执行全平。
-                            </div>
-                        </div>
-                        <button onClick={() => setShowStrategy43Info(false)} className="w-full mt-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs">关闭</button>
-                    </div>
-                </div>
-            )}
+            <StrategyRulesModal 
+                isOpen={showStrategy43Info} 
+                onClose={() => setShowStrategy43Info(false)} 
+            />
 
             {/* --- GLOBAL PROCESS GUARD (PINNED TOP) --- */}
-            <div className="p-3 bg-slate-950 border-b border-slate-800 shrink-0">
-                <div className="flex items-center gap-2 mb-2">
-                    <ShieldCheck size={14} className="text-emerald-400"/>
-                    <span className="text-xs font-bold text-white">系统运行保障 (Process Guard)</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                    <button 
-                        onClick={toggleWakeLock}
-                        className={`flex items-center justify-center gap-2 py-2 rounded border transition-all ${wakeLock ? 'bg-yellow-900/30 border-yellow-500/50 text-yellow-400 shadow-[0_0_10px_rgba(234,179,8,0.2)]' : 'bg-slate-800 border-slate-700 text-slate-500 hover:bg-slate-700'}`}
-                    >
-                        {wakeLock ? <Sun size={14} className="animate-pulse"/> : <Moon size={14}/>}
-                        <span className="text-[10px] font-bold">{wakeLock ? '屏幕常亮: ON' : '屏幕常亮: OFF'}</span>
-                    </button>
-                    
-                    <button 
-                        onClick={toggleBgMode}
-                        className={`flex items-center justify-center gap-2 py-2 rounded border transition-all ${bgModeActive ? 'bg-blue-900/30 border-blue-500/50 text-blue-400 shadow-[0_0_10px_rgba(59,130,246,0.2)]' : 'bg-slate-800 border-slate-700 text-slate-500 hover:bg-slate-700'}`}
-                    >
-                        {bgModeActive ? <Music size={14} className="animate-pulse"/> : <VolumeX size={14}/>}
-                        <span className="text-[10px] font-bold">{bgModeActive ? '后台保活: ON' : '后台保活: OFF'}</span>
-                    </button>
-                </div>
-            </div>
+            <GlobalProcessGuard 
+                wakeLock={wakeLock}
+                bgModeActive={bgModeActive}
+                toggleWakeLock={toggleWakeLock}
+                toggleBgMode={toggleBgMode}
+            />
 
             {/* MODULE 1: PROFIT MANAGER */}
             <ModuleHeader id={1} icon={Target} title="止盈止损" subtitle="Profit & Stop Loss" active={expandedModule === 1} colorClass="bg-emerald-900/50 text-emerald-400" onClick={toggleModule} />
@@ -270,6 +236,7 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
                     settings={settings.profit} 
                     onChange={(k, v) => handleChange('profit', k, v)} 
                     updateNested={(sub, k, v) => updateNested('profit', sub, k, v)} 
+                    onOpenSaviorLab={onOpenSaviorLab}
                 />
             )}
             
@@ -321,30 +288,19 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
             {/* MODULE 6: USER GUIDE */}
             <ModuleHeader id={6} icon={BookOpen} title="新手必读" subtitle="User Guide & Manual" active={expandedModule === 6} colorClass="bg-indigo-600 text-white" onClick={toggleModule} />
             {expandedModule === 6 && (
-                <div className="p-4 bg-slate-800/30 border-b border-slate-800 animate-in fade-in">
-                    <button 
-                        onClick={onOpenManual}
-                        className="w-full py-4 flex items-center justify-center gap-2 text-sm bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-lg transition-all shadow-lg shadow-indigo-900/30 font-bold"
-                    >
-                        <BookOpen size={18} /> 📘 打开操作说明书
-                    </button>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                        <div className="bg-slate-900/50 p-2 rounded border border-slate-700/50 text-center">
-                            <span className="text-[10px] text-slate-400 block mb-1">快速入门</span>
-                            <span className="text-[9px] text-slate-500">3分钟上手全攻略</span>
-                        </div>
-                        <div className="bg-slate-900/50 p-2 rounded border border-slate-700/50 text-center">
-                            <span className="text-[10px] text-slate-400 block mb-1">策略详解</span>
-                            <span className="text-[9px] text-slate-500">防爆与解套逻辑</span>
-                        </div>
-                    </div>
-                </div>
+                <UserGuideModule onOpenManual={onOpenManual} />
             )}
 
             {/* MODULE 7: BACKTESTER */}
             <ModuleHeader id={7} icon={History} title="历史回测" subtitle="Backtesting Engine" active={expandedModule === 7} colorClass="bg-amber-900/50 text-amber-400" onClick={toggleModule} />
             {expandedModule === 7 && (
                 <BacktesterModule settings={settings} />
+            )}
+
+            {/* MODULE 8: SYSTEM MONITOR (LOGS & CACHE) */}
+            <ModuleHeader id={8} icon={Terminal} title="日志监控" subtitle="System Logs & Monitor" active={expandedModule === 8} colorClass="bg-slate-800 text-emerald-400" onClick={toggleModule} />
+            {expandedModule === 8 && (
+                <SystemMonitorModule />
             )}
         </div>
     );

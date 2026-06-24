@@ -17,6 +17,7 @@ interface Props {
     onDeletePosition: (symbol: string, side: PositionSide) => void;
     onBatchClose: () => void;
     onClearRecords: () => void;
+    onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
     onResetBalance: (amount: number) => void;
     onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number) => void;
     onOpenLogs: () => void;
@@ -29,6 +30,7 @@ interface Props {
     onOpenScanner: () => void;
     settings: AppSettings;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
+    isOnline: boolean;
 }
 
 const Dashboard: React.FC<Props> = ({
@@ -47,7 +49,9 @@ const Dashboard: React.FC<Props> = ({
     settings,
     onOpenScanner,
     onRowLongPress,
-    networkStatus
+    networkStatus,
+    isOnline,
+    onUpdateCustomSettings
 }) => {
     
     return (
@@ -63,6 +67,7 @@ const Dashboard: React.FC<Props> = ({
                 onOpenTradeModal={onOpenTradeModal}
                 onResetBalance={onResetBalance}
                 networkStatus={networkStatus}
+                isOnline={isOnline}
             />
 
             {/* MODULE B: POSITIONS LIST (Active Trades) */}
@@ -79,6 +84,9 @@ const Dashboard: React.FC<Props> = ({
                 onOpenTradeModal={onOpenTradeModal}
                 onBatchClose={onBatchClose}
                 onClearRecords={onClearRecords}
+                onUpdateCustomSettings={onUpdateCustomSettings}
+                networkStatus={networkStatus}
+                isOnline={isOnline}
             />
         </div>
     );

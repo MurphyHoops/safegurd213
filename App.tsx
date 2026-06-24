@@ -7,6 +7,7 @@ import SettingsPanel from './components/SettingsPanel';
 import { LogCenterModule } from './modules/log-center'; 
 import TradeLogModal from './components/TradeLogModal';
 import { ScannerDashboard } from './components/ScannerDashboard';
+import { SaviorLab } from './components/SaviorLab';
 import TrendHunterPanel from './components/TrendHunterPanel';
 import UserManualModal from './components/UserManualModal';
 import SourceCodeModal from './components/SourceCodeModal';
@@ -15,160 +16,147 @@ import StrategyAdvisorWidget from './components/StrategyAdvisorWidget';
 import { subscriptionService } from './services/subscriptionService';
 import { fetchWithFallback } from './services/apiService'; 
 import { audioService } from './services/audioService';
+import { logger } from './services/monitor/monitorService';
 import { MarketProvider } from './store/MarketContext';
 import { BackgroundTimer } from './services/backgroundTask'; 
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { usePersistedState } from './hooks/usePersistedState';
 import { binanceWs } from './services/binanceWs';
+import { normalizeSymbol, resolvePrice } from './services/symbolUtils';
 import KlineChartModal from './components/KlineChartModal';
-import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock } from 'lucide-react'; 
+import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock, AlertTriangle, Trash2 } from 'lucide-react'; 
 
-const DEFAULT_SETTINGS: AppSettings = {
-    profit: {
-        enabled: true,
-        profitMode: 'SMART',
-        conventional: { minPosition: 100, profitPercent: 5, callbackPercent: 1, closePercent: 100 },
-        dynamic: { minPosition: 100, tiers: [{ profit: 5, callback: 1, close: 50 }, { profit: 10, callback: 2, close: 100 }] },
-        smart: { 
-            minPosition: 100,
-            activationProfit: 60, 
-            conventionalEnabled: false, 
-            tiers: [
-                { threshold: 2, callback: 0.5, expiry: 5 },
-                { threshold: 5, callback: 1, expiry: 10 },
-                { threshold: 10, callback: 2, expiry: 20 },
-                { threshold: 20, callback: 4, expiry: 40 },
-                { threshold: 40, callback: 8, expiry: 60 }
-            ]
-        },
-        global: { profitPercent: 0, lossPercent: 0, profitAmount: 0, lossAmount: 0 },
-        stopLoss: { enabled: false, minPosition: 100, lossPercent: 5, closePercent: 100 }
-    },
-    hedging: {
-        enabled: true,
-        triggerLossPercent: 1,
-        triggerLossEnabled: true,
-        hedgeRatio: 100,
-        minPosition: 10,
-        safeClearEnabled: false,
-        safeClearProfit: 10,
-        safeClearLoss: 10,
-        oscillationCheck: false,
-        oscillationTimeWindow: 60,
-        boxThreshold: 1,
-        touchCount: 3,
-        trendHedgeEnabled: false,
-        trendHedgeEmaPeriod: 80,
-        breakKLineEnabled: false,
-        breakKLineRatio: 20
-    },
-    stopLoss: {
-        hedgeProfitClear: false,
-        hedgeOpenRatio: 150,
-        hedgeCoverPercent: 10,
-        hedgeProfitClearStopLoss: 2,
-        callbackProfitClear: true,
-        callbackHedgeRatio: 150,
-        callbackCoverPercent: 10,
-        callbackTargetProfit: 10,
-        callbackRate: 2,
-        callbackStopLoss: 2,
-        amputationEnabled: false,
-        amputationTriggerProfit: 2,
-        amputationRatio: 50,
-        amputationVictoryBuffer: 10,
-        fuseEnabled: false,
-        maxHedgeRetries: 3,
-        fuseFailStopPercent: 30,
-        advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
-    },
-    martingale: { enabled: false },
-    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true },
-    scanner: {
-        minVolume: 1, 
-        maxVolume: 0,
-        minChange: 1, 
-        source: 'BOTH',
-        timeBasis: '24H',
-        limit: 520,   
-        customSymbols: '',
-        useCustomOnly: false,
-        batchSize: 40
-    },
-    trendHunter: { enabled: false }
-};
+import { DEFAULT_SETTINGS } from './config/defaultSettings';
+
+import { deepMerge, loadState, saveState } from './utils/persistence';
 
 const AppContent: React.FC = () => {
-    // --- PERSISTENCE HELPERS ---
-    const deepMerge = (target: any, source: any): any => {
-        if (source === null || source === undefined) return target;
-        if (target === null || target === undefined) return source;
-        
-        if (typeof target !== typeof source) return target; // Type mismatch, keep target
-        if (typeof target !== 'object') return source; // Both are primitives, overwrite
-        if (Array.isArray(target) !== Array.isArray(source)) return target; // Mismatch, keep target
-        if (Array.isArray(target)) return source; // Both are arrays, overwrite
-        
-        const output = { ...target };
-        for (const key of Object.keys(source)) {
-            if (source[key] === null || source[key] === undefined) {
-                continue;
-            } else if (key in target) {
-                output[key] = deepMerge(target[key], source[key]);
-            } else {
-                output[key] = source[key];
-            }
-        }
-        return output;
-    };
 
-    const loadState = <T,>(key: string, defaultVal: T): T => {
+    const [settings, setSettings] = useState<AppSettings>(() => {
         try {
-            const saved = localStorage.getItem(key);
-            if (!saved) return defaultVal;
-            const parsed = JSON.parse(saved);
-            
-            if (Array.isArray(defaultVal)) {
-                return (Array.isArray(parsed) ? parsed : defaultVal) as T;
-            }
-            
-            if (typeof defaultVal === 'object' && defaultVal !== null) {
-                if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-                    return defaultVal;
-                }
-                return deepMerge(defaultVal, parsed) as T;
-            }
-            
-            return parsed;
+            console.log("[Boot] Loading settings...");
+            logger.info('BOOT', '正在加载系统设置...');
+            return loadState('SAVIOR_SETTINGS', DEFAULT_SETTINGS);
         } catch (e) {
-            console.warn(`Failed to load ${key}`, e);
-            return defaultVal;
+            console.error("[Boot] Settings load crash", e);
+            return DEFAULT_SETTINGS;
         }
-    };
-
-    const [settings, setSettings] = useState<AppSettings>(() => loadState('SAVIOR_SETTINGS', DEFAULT_SETTINGS));
-    const [account, setAccount] = useState<AccountData>(() => loadState('SAVIOR_ACCOUNT', { marginBalance: 10000, totalBalance: 10000, maintenanceMargin: 0, marginRatio: 999 }));
-    const [positions, setPositions] = useState<Position[]>(() => {
-        const saved = loadState<Position[]>('SAVIOR_POSITIONS', []);
-        return saved.filter(p => p !== null && typeof p === 'object');
     });
+
+    const [account, setAccount] = useState<AccountData>(() => {
+        try {
+            console.log("[Boot] Loading account data...");
+            return loadState('SAVIOR_ACCOUNT', { marginBalance: 10000, totalBalance: 10000, maintenanceMargin: 0, marginRatio: 999 });
+        } catch (e) {
+            console.error("[Boot] Account load crash", e);
+            return { marginBalance: 10000, totalBalance: 10000, maintenanceMargin: 0, marginRatio: 999 };
+        }
+    });
+
+    const [positions, setPositions] = useState<Position[]>(() => {
+        try {
+            console.log("[Boot] Loading positions...");
+            const saved = loadState<Position[]>('SAVIOR_POSITIONS', []);
+            if (!Array.isArray(saved)) return [];
+            return saved
+                .filter(p => p && typeof p === 'object' && p.symbol)
+                .map(p => ({
+                    ...p,
+                    symbol: normalizeSymbol(p.symbol || '')
+                }));
+        } catch (e) {
+            console.error("[Boot] Positions load crash", e);
+            return [];
+        }
+    });
+
     const [logs, setLogs] = useState<LogEntry[]>(() => {
-        const saved = loadState<LogEntry[]>('SAVIOR_LOGS', []);
-        // Revive dates safely
-        return saved.map(l => {
-            if (!l || typeof l !== 'object') return null;
-            return { ...l, timestamp: new Date(l.timestamp || Date.now()) };
-        }).filter(Boolean) as LogEntry[];
+        try {
+            console.log("[Boot] Loading logs...");
+            const saved = loadState<LogEntry[]>('SAVIOR_LOGS', []);
+            // Revive dates safely
+            return saved.map(l => {
+                if (!l || typeof l !== 'object') return null;
+                return { ...l, timestamp: new Date(l.timestamp || Date.now()) };
+            }).filter(Boolean) as LogEntry[];
+        } catch (e) {
+            console.error("[Boot] Logs load crash", e);
+            return [];
+        }
     });
     const [tradeLogs, setTradeLogs] = useState<TradeLog[]>(() => {
-        const saved = loadState<TradeLog[]>('SAVIOR_TRADELOGS', []);
-        return saved.filter(l => l !== null && typeof l === 'object');
+        try {
+            console.log("[Boot] Loading trade logs...");
+            const saved = loadState<TradeLog[]>('SAVIOR_TRADELOGS', []);
+            if (!Array.isArray(saved)) return [];
+            return saved.filter(l => l !== null && typeof l === 'object');
+        } catch (e) {
+            console.error("[Boot] Trade logs load crash", e);
+            return [];
+        }
     });
     const [systemEvents, setSystemEvents] = useState<SystemEvent[]>([]);
     const [realPrices, setRealPrices] = useState<Record<string, number>>({});
+    const lastUiUpdateRef = useRef<number>(0);
+    const priceBufferRef = useRef<Record<string, number>>({});
+    const simulatorBootTimeRef = useRef<number>(Date.now());
     const [networkStatus, setNetworkStatus] = useState<'healthy' | 'delayed' | 'disconnected'>('disconnected');
     const [backtestPositions, setBacktestPositions] = useState<Position[]>([]);
     
+    const handleBacktestPositionsUpdate = useCallback((newPos: Position[]) => {
+        setBacktestPositions(prev => {
+            if (JSON.stringify(prev) === JSON.stringify(newPos)) {
+                return prev;
+            }
+            return newPos;
+        });
+    }, []);
+    
+    // Stabilize positions array to prevent infinite loops in effects
+    const combinedPositions = React.useMemo(() => {
+        return [...positions, ...backtestPositions];
+    }, [positions, backtestPositions]);
+
+    const logsPendingRef = useRef<LogEntry[]>([]);
+    const lastLogUpdateRef = useRef<number>(0);
+
+    const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => {
+        const newEntry: LogEntry = {
+            id: Date.now().toString() + Math.random(),
+            timestamp: new Date(),
+            type,
+            message
+        };
+
+        logsPendingRef.current.unshift(newEntry);
+        
+        const now = Date.now();
+        // 如果距离上次更新不足 500ms，则缓冲（List 2 高频扫描时非常有用）
+        if (now - lastLogUpdateRef.current > 500) {
+            updateLogsFromBuffer();
+        }
+    }, []);
+
+    const updateLogsFromBuffer = useCallback(() => {
+        if (logsPendingRef.current.length === 0) return;
+        
+        const batch = [...logsPendingRef.current];
+        logsPendingRef.current = [];
+        lastLogUpdateRef.current = Date.now();
+
+        setLogs(prev => [...batch, ...prev].slice(0, 300));
+    }, []);
+
+    // 补偿定时器：确保即便没有新日志进入，最后的缓冲日志也能被刷新
+    useEffect(() => {
+        const timer = setInterval(() => {
+            if (logsPendingRef.current.length > 0) {
+                updateLogsFromBuffer();
+            }
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [updateLogsFromBuffer]);
+
     const [isSimulating, setIsSimulating] = usePersistedState('SAVIOR_IS_SIMULATING', false);
     const [showLogs, setShowLogs] = useState(true);
     const [showTradeLogModal, setShowTradeLogModal] = useState(false);
@@ -178,9 +166,51 @@ const AppContent: React.FC = () => {
     const [showScanner, setShowScanner] = useState(() => {
         return localStorage.getItem('SCANNER_VISIBLE') === 'true';
     });
+    const [saviorLabOpen, setSaviorLabOpen] = useState(false);
+    const [saviorLabTab, setSaviorLabTab] = useState<'DNA' | 'BACKTEST'>('DNA');
+
+    const openSaviorLab = (tab: 'DNA' | 'BACKTEST') => {
+        setSaviorLabTab(tab);
+        setSaviorLabOpen(true);
+    };
+
+    const [isInitializing, setIsInitializing] = useState(true);
+    const [bootError, setBootError] = useState<string | null>(null);
+
+    // --- EMERGENCY TIMEOUT (8秒硬跳过) ---
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (isInitializing) {
+                console.warn("⚠️ System initialization is taking too long. Forcing UI load...");
+                setIsInitializing(false);
+                handleLog('WARNING', '系统初始化超时，已切换至紧急强制启动模式');
+            }
+        }, 8000);
+        return () => clearTimeout(timer);
+    }, [isInitializing, handleLog]);
 
     // --- WEBSOCKET CONNECTION & AUTO-RECOVERY ---
     useEffect(() => {
+        const initSystem = async () => {
+            console.log("[Boot] Initializing system services...");
+            try {
+                // Ensure audio is ready
+                await audioService.checkAndResume().catch((e) => {
+                    console.warn("[Boot] Audio resume warning", e);
+                    logger.warn('BOOT', '音频服务唤醒提醒', e.message);
+                });
+                console.log("[Boot] System initialized successfully.");
+                logger.info('BOOT', '系统初始化成功，主引擎负载就绪');
+                setIsInitializing(false);
+            } catch (err) {
+                console.error("[Boot] System boot failed:", err);
+                logger.error('BOOT', '系统启动崩溃', err);
+                setBootError(String(err));
+            }
+        };
+
+        initSystem();
+
         let ws: WebSocket;
         let reconnectTimer: any;
         let isIntentionalClose = false;
@@ -192,6 +222,7 @@ const AppContent: React.FC = () => {
             
             ws.onopen = () => {
                 console.log('✅ Connected to Trading Engine Server');
+                logger.info('WS', 'WebSocket 交易引擎已连接');
                 
                 // If we are reconnecting after a drop, just log it instead of reloading
                 if (hasConnectedOnce) {
@@ -222,6 +253,7 @@ const AppContent: React.FC = () => {
                 if (isIntentionalClose) return;
                 
                 console.log('❌ Disconnected from Trading Engine Server. Attempting to reconnect...');
+                logger.warn('WS', 'WebSocket 掉线，正在尝试自动重连...');
                 setLogs(prev => [{
                     id: `ws-close-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
                     timestamp: new Date(),
@@ -252,26 +284,54 @@ const AppContent: React.FC = () => {
     // --- BINANCE WEBSOCKET SUBSCRIPTION ---
     useEffect(() => {
         const unsubscribePrices = binanceWs.subscribe((newPrices) => {
-            if (activePositionsRef.current.length > 0 || showScannerRef.current) {
-                setRealPrices(prev => ({ ...prev, ...newPrices }));
-                if (simulatorRef.current) {
-                    simulatorRef.current.updateRealPrices(newPrices);
+            // 1. Normalize for Internal Simulator
+            const normalized: Record<string, number> = {};
+            for (const s in newPrices) {
+                normalized[normalizeSymbol(s)] = newPrices[s];
+            }
+            
+            // 2. Update buffer for UI
+            Object.assign(priceBufferRef.current, normalized);
+            
+            // 3. ALWAYS update simulator (logic thread)
+            if (simulatorRef.current) {
+                simulatorRef.current.updateRealPrices(normalized);
+                
+                // CRITICAL INSTANT-TICK:
+                // Eliminate the 200ms loop delay. The very millisecond a price tick arrives from the WebSocket,
+                // we instantly tick the simulator so it can recalculate PnL and match critical triggers (Stop Loss,
+                // Take Profit, Hedge Boundaries, Trailing, Amputation) with ZERO delay!
+                if (activePositionsRef.current.length > 0) {
+                    try {
+                        simulatorRef.current.tick(isSimulatingRef.current);
+                    } catch (tickErr) {
+                        console.error("[InstantTick] Error in instant simulator execution:", tickErr);
+                    }
                 }
+            }
+
+            // 4. THROTTLE UI UPDATE: Max ~10 times per second (100ms)
+            // Provides extremely fluid, hyper-responsive visual momentum feedback without choking the UI thread
+            const now = Date.now();
+            if (now - lastUiUpdateRef.current > 100) {
+                const snapshot = { ...priceBufferRef.current };
+                setRealPrices(snapshot);
+                lastUiUpdateRef.current = now;
             }
         });
 
         const unsubscribeStatus = binanceWs.subscribeStatus((status) => {
             const timeSinceLastMessage = Date.now() - status.lastMessageTime;
-            // Consider healthy if connected and last message was < 10s ago
-            const isHealthy = status.isConnected && timeSinceLastMessage < 10000;
+            // As long as we receive data (via WS or REST fallback) within 15s, engine handles it as healthy/delayed
+            const isHealthy = timeSinceLastMessage < 15000;
             
-            if (!status.isConnected) {
-                setNetworkStatus('disconnected');
-            } else if (timeSinceLastMessage > 3000) {
-                setNetworkStatus('delayed');
-            } else {
-                setNetworkStatus('healthy');
-            }
+            setNetworkStatus(prev => {
+                let nextStatus: 'healthy' | 'delayed' | 'disconnected' = 'disconnected';
+                if (status.isConnected && timeSinceLastMessage < 6000) nextStatus = 'healthy';
+                else if (timeSinceLastMessage < 15000) nextStatus = 'delayed';
+                else nextStatus = 'disconnected';
+                return prev === nextStatus ? prev : nextStatus;
+            });
 
             if (simulatorRef.current) {
                 simulatorRef.current.updateNetworkStatus(isHealthy);
@@ -343,6 +403,46 @@ const AppContent: React.FC = () => {
         if (timeframe) setChartTimeframe(timeframe);
     }, []);
 
+    const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+    // --- REFERENCES FOR STABLE BACKGROUND TASKS & CALLBACKS ---
+    const settingsRef = useRef(settings);
+    const accountRef = useRef(account);
+    const positionsRef = useRef(positions);
+    const logsRef = useRef(logs);
+    const tradeLogsRef = useRef(tradeLogs);
+    const systemEventsRef = useRef(systemEvents);
+    const realPricesRef = useRef(realPrices);
+    const isSimulatingRef = useRef(isSimulating);
+    const showScannerRef = useRef(showScanner);
+    const activePositionsRef = useRef(combinedPositions);
+
+    // Keep refs in sync with latest state
+    useEffect(() => {
+        settingsRef.current = settings;
+        accountRef.current = account;
+        positionsRef.current = positions;
+        logsRef.current = logs;
+        tradeLogsRef.current = tradeLogs;
+        systemEventsRef.current = systemEvents;
+        realPricesRef.current = realPrices;
+        isSimulatingRef.current = isSimulating;
+        showScannerRef.current = showScanner;
+        activePositionsRef.current = combinedPositions;
+    }, [settings, account, positions, logs, tradeLogs, systemEvents, realPrices, isSimulating, showScanner, combinedPositions]);
+
+    useEffect(() => {
+        const handleOnline = () => { setIsOnline(true); handleLog('SUCCESS', '本地互联网已连接'); };
+        const handleOffline = () => { setIsOnline(false); handleLog('DANGER', '本地互联网已断开，请检查网线或路由器'); };
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        return () => {
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+        };
+    }, [handleLog]);
+
+
     // --- IMMORTAL NETWORK GUARD (防崩溃网络守护) ---
     // REMOVED: isNetworkPaused state to prevent any "paused" UI.
     const failCountRef = useRef(0);
@@ -357,19 +457,6 @@ const AppContent: React.FC = () => {
     const simulatorRef = useRef<MarketSimulator | null>(null);
     const timerRef = useRef<BackgroundTimer | null>(null);
     
-    // Refs for accessing latest state inside callbacks
-    const isSimulatingRef = useRef(isSimulating);
-    useEffect(() => { isSimulatingRef.current = isSimulating; }, [isSimulating]);
-
-    const activePositionsRef = useRef(positions);
-    useEffect(() => { activePositionsRef.current = positions; }, [positions]);
-
-    const showScannerRef = useRef(showScanner);
-    useEffect(() => { showScannerRef.current = showScanner; }, [showScanner]);
-
-    const directModeRef = useRef(settings.system.directMode || false);
-    useEffect(() => { directModeRef.current = settings.system.directMode || false; }, [settings.system.directMode]);
-
     // Manual or Auto Retry Handler
     const handleRetryConnection = () => {
         failCountRef.current = 0;
@@ -386,7 +473,7 @@ const AppContent: React.FC = () => {
     }, []);
     */
 
-    // --- VISIBILITY HANDLER (Prevent Wake-up Crash) ---
+    // --- VISIBILITY HANDLER (Prevent Wake-up Crash & Sync UI) ---
     useEffect(() => {
         const handleVisibilityChange = () => {
             if (document.hidden) {
@@ -394,7 +481,9 @@ const AppContent: React.FC = () => {
             } else {
                 // Foreground: Reset timestamp to prevent "catch-up" burst
                 lastTickTimestampRef.current = Date.now();
-                console.log("👀 App Visible - Resumed active rendering");
+                console.log("👀 App Visible - Resumed active rendering & forcing instant UI sync");
+                // Force an immediate UI synchronization from the simulator to get 100% correct positions list
+                simulatorRef.current?.emitUpdate(true);
             }
         };
         document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -402,13 +491,13 @@ const AppContent: React.FC = () => {
     }, []);
 
     // --- THE IMMORTAL LOOP LOGIC ---
+    // Critical: No dependencies, uses Refs to ensure the timer always uses latest data
     const handleTick = useCallback(async () => {
         const now = Date.now();
 
-        // 0. THROTTLE & CLOCK SKEW PROTECTION
+        // 0. THROTTLE: 200ms loop
         const diff = now - lastTickTimestampRef.current;
-        // Fix: If diff is negative (clock rollback), treat as valid interval to prevent freeze
-        if (diff < 1000 && diff >= 0) {
+        if (diff < 200 && diff >= 0) {
             return;
         }
         lastTickTimestampRef.current = now;
@@ -416,7 +505,6 @@ const AppContent: React.FC = () => {
         // 1. CONCURRENCY CHECK
         if (isProcessingRef.current) {
             if (now - lastHeartbeatRef.current > 30000) {
-                console.warn("⚠️ [System] Watchdog: Loop stuck for 30s, forcing reset!");
                 isProcessingRef.current = false;
             } else {
                 return;
@@ -424,34 +512,26 @@ const AppContent: React.FC = () => {
         }
         
         isProcessingRef.current = true;
-        lastHeartbeatRef.current = now; // Feeding the watchdog
+        lastHeartbeatRef.current = now;
 
         try {
-            // 2. CIRCUIT BREAKER CHECK REMOVED
-            // We no longer pause the network. We just retry endlessly.
-            
-            // 3. NORMAL OPERATION (Data Fetching) - Now handled by Binance WebSocket
-            // The WebSocket updates `realPrices` and `simulatorRef.current` directly.
-            // We just need to ensure the engine ticks.
-
-            // 4. ENGINE TICK (Safeguarded)
+            // 2. ENGINE TICK (Safeguarded)
             if (simulatorRef.current) {
                 try {
+                    // Update engine with latest prices before tick (Directly from priceBufferRef.current for sub-millisecond sync!)
+                    simulatorRef.current.updateRealPrices(priceBufferRef.current);
                     simulatorRef.current.tick(isSimulatingRef.current);
                 } catch (err) {
-                    console.error("CRITICAL: Strategy Engine Error", err);
-                    // Do not throw here, swallow engine error to keep app alive
+                    console.error("Simulator engine error:", err);
                 }
             }
 
         } catch (fatalError) {
-            // This catches unexpected runtime errors in the loop itself
             console.error("FATAL LOOP ERROR:", fatalError);
         } finally {
-            // ALWAYS release the lock, no matter what happens
             isProcessingRef.current = false;
         }
-    }, []);
+    }, []); 
 
     // Initialize Simulator & Worker
     useEffect(() => {
@@ -465,31 +545,101 @@ const AppContent: React.FC = () => {
             _notification: any, 
             newRec: any
         ) => {
-            setAccount(newAccount);
-            setPositions(newPositions);
-            setLogs(newLogs);
-            setTradeLogs(newTradeLogs || []);
-            setSystemEvents(newEvents || []);
-            if(newRec) setRecommendation(newRec);
+            // PERFORMANCE: Guard state updates by checking for material changes
+            // This prevents "depth exceeded" issues if updates are rapid
+            setAccount(prev => {
+                if (Math.abs(prev.marginBalance - newAccount.marginBalance) < 0.01 && 
+                    prev.marginRatio === newAccount.marginRatio &&
+                    prev.totalBalance === newAccount.totalBalance) {
+                    return prev;
+                }
+                return { ...newAccount };
+            });
 
-            // --- PERSIST STATE ---
-            localStorage.setItem('SAVIOR_ACCOUNT', JSON.stringify(newAccount));
-            localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(newPositions));
-            localStorage.setItem('SAVIOR_LOGS', JSON.stringify(newLogs));
-            localStorage.setItem('SAVIOR_TRADELOGS', JSON.stringify(newTradeLogs || []));
+            setPositions(prev => {
+                const sanitized = newPositions.map(p => ({
+                    ...p,
+                    symbol: normalizeSymbol(p.symbol)
+                }));
+                
+                // GUARDIAN: Prevent the simulator from accidentally wiping positions during a race OR stale data state
+                // Only allow wiping if the user specifically cleared it (e.g. via batchClose)
+                // We check if prev had data but new set is empty WITHOUT an explicit clear reason
+                if (prev.length > 0 && sanitized.length === 0) {
+                    const hasActiveTrade = newTradeLogs && newTradeLogs.length > 0 && newTradeLogs[0].status === 'CLOSED';
+                    // If trade logs show no recent clear action, this might be a stale empty update
+                    if (!hasActiveTrade && (Date.now() - simulatorBootTimeRef.current < 2000)) {
+                        console.warn("[Guardian] Intercepted stale empty positions update during boot");
+                        return prev;
+                    }
+                }
+
+                // Compare to previous sanitized state to avoid useless renders
+                if (JSON.stringify(prev) === JSON.stringify(sanitized)) {
+                    return prev;
+                }
+                
+                return sanitized;
+            });
+
+            setLogs(prev => {
+                if (prev.length === newLogs.length && (prev.length === 0 || prev[0].timestamp === newLogs[0]?.timestamp)) return prev;
+                return newLogs;
+            });
+            
+            setTradeLogs(prev => {
+                const incoming = newTradeLogs || [];
+                
+                // GUARDIAN: Prevent the simulator from accidentally wiping trade logs during a race
+                if (prev.length > 0 && incoming.length === 0 && (Date.now() - simulatorBootTimeRef.current < 2000)) {
+                    console.warn("[Guardian] Intercepted stale empty trade logs update during boot");
+                    return prev;
+                }
+
+                // Deep check: If length is same AND last log (newest) has same timestamp and same sub-events count
+                if (prev.length === incoming.length && prev.length > 0) {
+                    const pLast = prev[0];
+                    const iLast = incoming[0];
+                    if (pLast.entry_id === iLast.entry_id && 
+                        pLast.profit_usdt === iLast.profit_usdt && 
+                        (pLast.events?.length || 0) === (iLast.events?.length || 0)) {
+                        return prev;
+                    }
+                } else if (prev.length === 0 && incoming.length === 0) {
+                    return prev;
+                }
+
+                return incoming;
+            });
+
+            setSystemEvents(prev => {
+                const incoming = newEvents || [];
+                if (prev.length === incoming.length && (prev.length === 0 || prev[0].id === incoming[0]?.id)) return prev;
+                return incoming;
+            });
+
+            if(newRec) {
+                setRecommendation(prev => {
+                    if (JSON.stringify(prev) === JSON.stringify(newRec)) return prev;
+                    return newRec;
+                });
+            }
         };
 
+        // Create simulator with current boot state
+        simulatorBootTimeRef.current = Date.now();
         simulatorRef.current = new MarketSimulator(
-            account, 
-            positions, 
-            settings, 
+            accountRef.current, 
+            positionsRef.current, 
+            settingsRef.current, 
             updateCallback, 
-            tradeLogs, 
-            systemEvents, 
-            logs
+            tradeLogsRef.current, 
+            systemEventsRef.current, 
+            logsRef.current
         );
         
-        timerRef.current = new BackgroundTimer(handleTick);
+        // Timer always calls the same handleTick wrapper
+        timerRef.current = new BackgroundTimer(() => handleTick());
         timerRef.current.start();
 
         return () => {
@@ -497,14 +647,12 @@ const AppContent: React.FC = () => {
         };
     }, []); 
 
-    const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => {
-        setLogs(prev => [{
-            id: Date.now().toString() + Math.random(),
-            timestamp: new Date(),
-            type,
-            message
-        }, ...prev].slice(0, 200));
-    }, []);
+    // Important: Propagate settings changes to the engine
+    useEffect(() => {
+        if (simulatorRef.current) {
+            simulatorRef.current.updateSettings(settings);
+        }
+    }, [settings]);
 
     const handleSettingsChange = (section: keyof AppSettings, key: string, value: any) => {
         setSettings(prev => ({
@@ -517,11 +665,58 @@ const AppContent: React.FC = () => {
     };
 
     const handleOpenPosition = useCallback((symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any) => {
-        simulatorRef.current?.openPosition(symbol, side, amount, price, signalTf, signalCandle, entryEmas);
+        const cleanSymbol = normalizeSymbol(symbol);
+        simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas);
     }, []);
 
     const handleClosePosition = useCallback((symbol: string, side: PositionSide) => {
-        simulatorRef.current?.closePosition(symbol, side, 'MANUAL');
+        const cleanSymbol = normalizeSymbol(symbol);
+        simulatorRef.current?.closePosition(cleanSymbol, side, 'MANUAL');
+    }, []);
+
+    const handleUpdateCustomSettings = useCallback((symbol: string, customSettings?: any) => {
+        if (symbol === 'GLOBAL_MASTER_TOGGLE') {
+            setSettings(prev => {
+                const next = {
+                    ...prev,
+                    profit: {
+                        ...prev.profit,
+                        aiSmartMasterEnabled: customSettings.aiSmartMasterEnabled
+                    }
+                };
+                saveState('SAVIOR_SETTINGS', next);
+                return next;
+            });
+            return;
+        }
+
+        if (symbol === 'GLOBAL_DEFAULT') {
+            setSettings(prev => {
+                const next = {
+                    ...prev,
+                    profit: {
+                        ...prev.profit,
+                        ...customSettings
+                    }
+                };
+                saveState('SAVIOR_SETTINGS', next);
+                return next;
+            });
+            return;
+        }
+
+        const cleanSymbol = normalizeSymbol(symbol);
+        setPositions(prev => {
+            const next = prev.map(p => p.symbol === cleanSymbol ? { ...p, customProfitSettings: customSettings } : p);
+            localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(next));
+            return next;
+        });
+        if (simulatorRef.current) {
+            const simPositions = simulatorRef.current.getPositions();
+            const updated = simPositions.map(p => p.symbol === cleanSymbol ? { ...p, customProfitSettings: customSettings } : p);
+            simulatorRef.current.setPositions(updated);
+            localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(updated));
+        }
     }, []);
 
     const handleBatchOpen = (simSettings: SimulationSettings) => {
@@ -533,35 +728,39 @@ const AppContent: React.FC = () => {
         setRecommendation(null);
     };
 
+    // --- PERIODIC PERSISTENCE (Every 5s) ---
+    // Stable persistence loop using refs to prevent interval clearing on every state change
+    useEffect(() => {
+        const interval = setInterval(() => {
+            if (isProcessingRef.current) return;
+            // Use current refs to get latest data without re-mounting the interval
+            saveState('SAVIOR_ACCOUNT', accountRef.current);
+            saveState('SAVIOR_POSITIONS', positionsRef.current);
+            saveState('SAVIOR_LOGS', logsRef.current, 150);
+            saveState('SAVIOR_TRADELOGS', tradeLogsRef.current, 800);
+        }, 5000);
+        return () => clearInterval(interval);
+    }, []); // Run once at mount
+
     // --- NETWORK STATUS LOGGING & AUTO-RECOVERY ---
     const prevNetworkStatusRef = useRef(networkStatus);
     useEffect(() => {
         if (networkStatus !== prevNetworkStatusRef.current) {
             if (networkStatus === 'disconnected') {
-                handleLog('DANGER', '网络连接已断开，系统正在尝试自动重连...');
-                audioService.speak("网络已断开");
-            } else if (networkStatus === 'delayed') {
-                handleLog('WARNING', '网络延迟较高，可能会影响交易执行速度');
+                handleLog('DANGER', '行情连接已断开，系统正在尝试自动重连...');
+                audioService.speak("警告，行情网络已断开，全域扫描已自动挂起", true);
+                audioService.playAlert();
             } else if (networkStatus === 'healthy' && prevNetworkStatusRef.current === 'disconnected') {
-                handleLog('SUCCESS', '网络连接已恢复正常');
-                audioService.speak("网络已恢复");
+                handleLog('SUCCESS', '行情连接已恢复正常');
+                audioService.speak("网络已恢复", true);
             }
             prevNetworkStatusRef.current = networkStatus;
         }
     }, [networkStatus, handleLog]);
 
-    // --- AUTO-REFRESH ON PROLONGED DISCONNECTION ---
-    useEffect(() => {
-        let refreshTimer: any;
-        if (networkStatus === 'disconnected') {
-            // If disconnected for 2 minutes, reload the page as a last resort
-            refreshTimer = setTimeout(() => {
-                handleLog('DANGER', '网络长时间断开，系统将自动刷新页面以尝试恢复...');
-                setTimeout(() => window.location.reload(), 2000);
-            }, 120000);
-        }
-        return () => clearTimeout(refreshTimer);
-    }, [networkStatus, handleLog]);
+    // --- AUTO-REFRESH ON PROLONGED DISCONNECTION (REMOVED) ---
+    // Prevented auto-reloading to avoid white screens when network is down. 
+    // The system will just pause and wait for reconnection.
 
     // Update settings in simulator when they change in UI
     useEffect(() => {
@@ -577,6 +776,69 @@ const AppContent: React.FC = () => {
         }
     }, []);
 
+    if (bootError) {
+        return (
+            <div className="h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
+                <div className="p-4 bg-red-900/10 border border-red-500/20 rounded-2xl max-w-lg shadow-2xl backdrop-blur-xl">
+                    <div className="bg-red-500/20 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 border border-red-500/30">
+                        <ShieldAlert className="text-red-500" size={40} />
+                    </div>
+                    <h1 className="text-white font-black text-2xl mb-2 tracking-tighter">系统引导受阻 (BOOT SUSPENDED)</h1>
+                    <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+                        检测到初始化异常。这通常是由极端网络环境或浏览器缓存溢出引起的。<br/>
+                        <b>白屏修正对策已激活</b>：您可以选择重置扫描缓存或恢复出厂设置。
+                    </p>
+                    
+                    <div className="flex flex-col gap-3">
+                        <button 
+                            onClick={() => { setBootError(null); setIsInitializing(false); }}
+                            className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 border border-slate-700"
+                        >
+                            <Zap size={18} className="text-amber-400" /> 继续运行 (忽略异常并尝试加载数据)
+                        </button>
+                        <button 
+                            onClick={() => { 
+                                // SAFE RESET: Only clears temporary scanner caches and main logs, but PRESERVES POSITIONS
+                                const scannerKeys = Object.keys(localStorage).filter(k => k.startsWith('SCANNER_CACHE') || k.includes('CACHE_MAP'));
+                                scannerKeys.forEach(k => localStorage.removeItem(k));
+                                localStorage.removeItem('SAVIOR_LOGS');
+                                window.location.reload(); 
+                            }}
+                            className="w-full py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 border border-slate-600"
+                        >
+                            <RefreshCw size={18} className="text-indigo-400" /> 安全清理缓存 (保留持仓与日志)
+                        </button>
+                        <button 
+                            onClick={() => { 
+                                if (window.confirm('⚠️ 警告：这将从浏览器中彻底擦除所有持仓记录和交易历史。确定吗？')) {
+                                    localStorage.clear(); 
+                                    window.location.reload(); 
+                                }
+                            }}
+                            className="w-full py-3 bg-red-900/40 hover:bg-red-800 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 border border-red-500/30 shadow-lg"
+                        >
+                            <Trash2 size={18} /> 深度重置 (清理所有持仓与流水)
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (isInitializing) {
+        return (
+            <div className="h-screen w-full bg-slate-950 flex items-center justify-center">
+                <div className="flex flex-col items-center gap-4">
+                    <div className="relative">
+                        <Loader2 className="text-indigo-500 animate-spin" size={48} />
+                        <Zap className="text-indigo-400 absolute inset-0 m-auto animate-pulse" size={20} />
+                    </div>
+                    <div className="text-indigo-500 font-mono text-xs tracking-widest animate-pulse">SYSTEM BOOTING...</div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="flex h-screen bg-slate-950 text-slate-200 overflow-hidden font-sans relative">
             
@@ -584,7 +846,12 @@ const AppContent: React.FC = () => {
                 <SettingsPanel 
                     settings={settings} 
                     handleChange={handleSettingsChange}
-                    onFactoryReset={() => setSettings(DEFAULT_SETTINGS)}
+                    onFactoryReset={() => {
+                        if (window.confirm('🚨 确定要恢复出厂设置吗？\n警告：这将清空所有配置、持仓和交易记录，系统将彻底重启。')) {
+                            localStorage.clear();
+                            window.location.reload();
+                        }
+                    }}
                     onOpenScanner={() => setShowScanner(true)}
                     onToggleSim={() => setIsSimulating(!isSimulating)}
                     isSimulating={isSimulating}
@@ -595,75 +862,64 @@ const AppContent: React.FC = () => {
                     onOpenManual={() => setShowUserManual(true)}
                     onRestoreSettings={(s) => setSettings(prev => deepMerge(prev, s))}
                     onBatchOpen={handleBatchOpen}
+                    onOpenSaviorLab={openSaviorLab}
                 />
             </div>
 
             <div className="flex-1 flex flex-col min-w-0 relative">
                 
-                {/* Network Status Indicator */}
-                <div 
-                    onClick={() => {
-                        binanceWs.forceReconnect();
-                        handleLog('INFO', '手动触发网络重连...');
-                    }}
-                    className="absolute top-2 right-4 z-50 flex items-center gap-2 bg-slate-900/80 backdrop-blur-sm border border-slate-800 px-3 py-1.5 rounded-full shadow-lg cursor-pointer hover:bg-slate-800 transition-colors group"
-                    title="点击强制重连网络"
-                >
-                    <div className={`w-2 h-2 rounded-full ${
-                        networkStatus === 'healthy' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' :
-                        networkStatus === 'delayed' ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)] animate-pulse' :
-                        'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)] animate-pulse'
-                    }`} />
-                    <span className="text-[10px] font-mono font-medium text-slate-300 uppercase tracking-wider">
-                        {networkStatus === 'healthy' ? 'Binance WS: OK' :
-                         networkStatus === 'delayed' ? 'Binance WS: Delayed' :
-                         'Binance WS: Disconnected'}
-                    </span>
-                    <RefreshCw size={10} className="text-slate-500 group-hover:text-indigo-400 transition-colors" />
-                </div>
-
                 <div className="flex-1 overflow-auto p-2 pt-2"> 
-                    <Dashboard 
-                        account={account}
-                        positions={[...positions, ...backtestPositions]}
-                        tradeLogs={tradeLogs}
-                        realPrices={realPrices}
-                        networkStatus={networkStatus}
-                        onRowLongPress={() => {}}
-                        onShowHistory={(symbol) => {
-                            setTradeLogSearchSymbol(symbol);
-                            setShowTradeLogModal(true);
-                        }}
-                        hasHistory={() => tradeLogs.length > 0}
-                        onClearPositions={() => simulatorRef.current?.batchCloseAllPositions()}
-                        onClosePosition={handleClosePosition}
-                        onDeletePosition={handleClosePosition}
-                        onBatchClose={() => simulatorRef.current?.batchCloseAllPositions()}
-                        onResetBalance={(amount) => simulatorRef.current?.resetMarginBalance(amount)}
-                        onClearRecords={() => {
-                            setTradeLogs([]);
-                            setLogs([]);
-                            localStorage.removeItem('SAVIOR_TRADELOGS');
-                            localStorage.removeItem('SAVIOR_LOGS');
-                            simulatorRef.current?.clearTradeLogs();
-                        }}
-                        onOpenChart={handleOpenChart}
-                        onOpenLogs={() => setShowLogs(!showLogs)}
-                        onOpenTradeModal={() => {
-                            setTradeLogSearchSymbol('');
-                            setShowTradeLogModal(true);
-                        }}
-                        isSimulating={isSimulating}
-                        onToggleSimulation={() => setIsSimulating(!isSimulating)}
-                        onShowSymbolTradeLogs={(symbol) => {
-                            setTradeLogSearchSymbol(symbol);
-                            setShowTradeLogModal(true);
-                        }}
-                        globalAutoReopen={false}
-                        onToggleLoop={() => {}}
-                        onOpenScanner={() => setShowScanner(true)}
-                        settings={settings}
-                    />
+                    <ErrorBoundary moduleName="交易主监控 (Main Tracker)">
+                        <Dashboard 
+                            account={account}
+                            positions={combinedPositions}
+                            tradeLogs={tradeLogs}
+                            realPrices={realPrices}
+                            networkStatus={networkStatus}
+                            isOnline={isOnline}
+                            onRowLongPress={() => {}}
+                            onShowHistory={(symbol) => {
+                                setTradeLogSearchSymbol(symbol);
+                                setShowTradeLogModal(true);
+                            }}
+                            hasHistory={() => tradeLogs.length > 0}
+                            onClearPositions={() => {
+                                simulatorRef.current?.batchCloseAllPositions();
+                                if (simulatorRef.current) localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(simulatorRef.current.getPositions()));
+                            }}
+                            onClosePosition={handleClosePosition}
+                            onDeletePosition={handleClosePosition}
+                            onBatchClose={() => {
+                                simulatorRef.current?.batchCloseAllPositions();
+                                if (simulatorRef.current) localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(simulatorRef.current.getPositions()));
+                            }}
+                            onResetBalance={(amount) => simulatorRef.current?.resetMarginBalance(amount)}
+                            onClearRecords={() => {
+                                setTradeLogs([]);
+                                setSystemEvents([]);
+                                localStorage.removeItem('SAVIOR_TRADELOGS');
+                                simulatorRef.current?.clearTradeLogs();
+                                handleLog('SUCCESS', '交易流水记录已清空');
+                            }}
+                            onOpenChart={handleOpenChart}
+                            onOpenLogs={() => setShowLogs(!showLogs)}
+                            onOpenTradeModal={() => {
+                                setTradeLogSearchSymbol('');
+                                setShowTradeLogModal(true);
+                            }}
+                            isSimulating={isSimulating}
+                            onToggleSimulation={() => setIsSimulating(!isSimulating)}
+                            onShowSymbolTradeLogs={(symbol) => {
+                                setTradeLogSearchSymbol(symbol);
+                                setShowTradeLogModal(true);
+                            }}
+                            globalAutoReopen={false}
+                            onToggleLoop={() => {}}
+                            onOpenScanner={() => setShowScanner(true)}
+                            settings={settings}
+                            onUpdateCustomSettings={handleUpdateCustomSettings}
+                        />
+                    </ErrorBoundary>
                 </div>
                 {showLogs && (
                     <div className="h-48 border-t border-slate-800">
@@ -678,18 +934,23 @@ const AppContent: React.FC = () => {
             {/* KEEP-ALIVE SCANNER */}
             <ErrorBoundary moduleName="全域扫描终端 (Scanner Core)">
                 <ScannerDashboard 
+                    networkStatus={networkStatus}
                     settings={settings.scanner} 
                     isVisible={showScanner}
                     onClose={() => setShowScanner(false)}
                     onOpenPosition={handleOpenPosition}
                     onClosePosition={handleClosePosition}
+                    onBatchClose={() => {
+                        simulatorRef.current?.batchCloseAllPositions();
+                        if (simulatorRef.current) localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(simulatorRef.current.getPositions()));
+                    }}
                     realPrices={realPrices}
                     activePositions={positions}
                     balance={account.marginBalance}
                     directMode={settings.system.directMode}
                     onLog={handleLog}
                     logs={logs}
-                    onBacktestPositionsUpdate={setBacktestPositions}
+                    onBacktestPositionsUpdate={handleBacktestPositionsUpdate}
                 />
             </ErrorBoundary>
             
@@ -715,8 +976,10 @@ const AppContent: React.FC = () => {
                     onClearHistory={() => {
                         if (window.confirm('确定要清空所有交易历史记录吗？此操作不可恢复。')) {
                             setTradeLogs([]);
+                            setSystemEvents([]);
                             localStorage.removeItem('SAVIOR_TRADELOGS');
                             simulatorRef.current?.clearTradeLogs();
+                            handleLog('SUCCESS', '交易历史记录已清空');
                         }
                     }}
                 />
@@ -741,6 +1004,7 @@ const AppContent: React.FC = () => {
                     directMode={settings.system.directMode}
                     entryPrice={chartEntryPrice}
                     entryTime={chartEntryTime}
+                    tradeLogs={tradeLogs} // Added this
                     onClose={() => {
                         setChartSymbol(null);
                         setChartEntryPrice(undefined);
@@ -754,15 +1018,23 @@ const AppContent: React.FC = () => {
                 onApply={handleApplyRecommendation}
                 onIgnore={() => setRecommendation(null)}
             />
+            <SaviorLab 
+                isOpen={saviorLabOpen} 
+                onClose={() => setSaviorLabOpen(false)} 
+                settings={settings}
+                initialTab={saviorLabTab}
+            />
         </div>
     );
 };
 
 const App: React.FC = () => {
     return (
-        <MarketProvider>
-            <AppContent />
-        </MarketProvider>
+        <ErrorBoundary moduleName="系统核心救世之星 (System Root)">
+            <MarketProvider>
+                <AppContent />
+            </MarketProvider>
+        </ErrorBoundary>
     );
 };
 

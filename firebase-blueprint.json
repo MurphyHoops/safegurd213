@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "TradeDna": {
+      "title": "Trade DNA",
+      "description": "Deep record of a trade's lifecycle for AI analysis and backtesting.",
+      "type": "object",
+      "properties": {
+        "symbol": { "type": "string" },
+        "side": { "type": "string", "enum": ["LONG", "SHORT"] },
+        "entryPrice": { "type": "number" },
+        "exitPrice": { "type": "number" },
+        "maxProfitPercent": { "type": "number" },
+        "finalProfitPercent": { "type": "number" },
+        "entryTimestamp": { "type": "number" },
+        "exitTimestamp": { "type": "number" },
+        "exitReason": { "type": "string" },
+        "indicatorsAtEntry": {
+          "type": "object",
+          "properties": {
+            "rsi": { "type": "number" },
+            "ema80Dist": { "type": "number" },
+            "volatility": { "type": "number" }
+          }
+        },
+        "priceHistory": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "t": { "type": "number" },
+              "p": { "type": "number" }
+            }
+          }
+        },
+        "aiSettings": {
+          "type": "object",
+          "properties": {
+            "sensitivity": { "type": "number" },
+            "aggressiveness": { "type": "number" }
+          }
+        }
+      },
+      "required": ["symbol", "side", "entryPrice", "entryTimestamp"]
+    },
+    "BacktestResult": {
+      "title": "Backtest Result",
+      "description": "Results of a historical simulation run.",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "number" },
+        "symbol": { "type": "string" },
+        "timeframe": { "type": "string" },
+        "config": { "type": "object" },
+        "totalProfit": { "type": "number" },
+        "winRate": { "type": "number" },
+        "trades": { "type": "array" }
+      }
+    }
+  },
+  "firestore": {
+    "/trade_dna/{dnaId}": {
+      "schema": "TradeDna",
+      "description": "Collection of detailed trade records for AI optimization."
+    },
+    "/backtests/{testId}": {
+      "schema": "BacktestResult",
+      "description": "Historical simulation results."
+    }
+  }
+}

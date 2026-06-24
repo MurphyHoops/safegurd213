@@ -25,6 +25,8 @@ export const useBacktestScannerLogic = (
     
     const list1Ref = useRef<ScannerItem[]>([]);
     const rawDataRef = useRef<any[]>([]);
+    const bannedUntilRef = useRef<number>(0);
+    const BAN_DURATION = 10 * 60 * 1000;
 
     // Re-filter when virtual time changes (simulating real-time updates)
     useEffect(() => {
@@ -34,6 +36,12 @@ export const useBacktestScannerLogic = (
     }, [virtualTime, isPlaying, initialConfig]);
 
     const refreshList1Candidates = useCallback(async (currentConfig: ScanConfig, forceFull = false) => {
+        const now = Date.now();
+        if (useRealData && now < bannedUntilRef.current) {
+            setScanStatusText("IP封禁中，请稍后再试");
+            return;
+        }
+
         if (forceFull) {
             setIsScanning(true);
             setScanStatusText("正在获取行情数据...");
@@ -57,21 +65,39 @@ export const useBacktestScannerLogic = (
 
             rawDataRef.current = data;
             
-            const { list1: filtered, stats } = processMarketData(data, currentConfig, customSymbolSet, fixedModeView);
+            const activeConfig = isPlaying ? {
+                ...currentConfig,
+                minVolume: 0,
+                minChange: 0,
+                useCustomOnly: true
+            } : currentConfig;
+
+            const { list1: filtered, stats } = processMarketData(data, activeConfig, customSymbolSet, fixedModeView);
             
-            setMarketStats(stats);
-            setList1(filtered);
-            list1Ref.current = filtered;
+            if (JSON.stringify(stats) !== JSON.stringify(marketStats)) {
+                setMarketStats(stats);
+            }
+            
+            if (JSON.stringify(filtered) !== JSON.stringify(list1Ref.current)) {
+                setList1(filtered);
+                list1Ref.current = filtered;
+            }
             
             if (forceFull) {
                 setScanStatusText(filtered.length > 0 ? `行情就绪 (${filtered.length}个)` : "无符合条件的币种");
                 setIsScanning(false);
             }
-        } catch (e) {
-            console.error("[Backtest Scanner] Fetch Failed:", e);
+        } catch (e: any) {
+            let errMsg = e?.message || String(e);
+            if (errMsg.includes('418')) {
+                errMsg = "HTTP 418: 您的IP已被Binance暂时封禁。请尝试：1. 关闭[直连模式]使用代理 2. 切换VPN节点 3. 增加扫描间隔。";
+                bannedUntilRef.current = Date.now() + BAN_DURATION;
+            }
+            console.error("[Backtest Scanner] Fetch Failed:", errMsg);
+            setScanStatusText(errMsg);
             setIsScanning(false);
         }
-    }, [fetchVirtualMarketData, customSymbolSet, fixedModeView, useRealData, directMode]);
+    }, [fetchVirtualMarketData, customSymbolSet, fixedModeView, useRealData, directMode, isPlaying, virtualTime, marketStats, list1]);
 
     useEffect(() => {
         if (useRealData) {

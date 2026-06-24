@@ -2,9 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { useGrandCrossing } from './useGrandCrossing';
 import { ScannerItem, ScanConfig, List2Config } from '../../components/Scanner/scannerTypes';
-import List2_GrandCrossing from '../../components/Scanner/List2_GrandCrossing';
+import List2_GrandCrossing from './components/List2_GrandCrossing';
 
 interface Props {
+    networkStatus?: 'healthy' | 'delayed' | 'disconnected';
     candidates: ScannerItem[]; // Input from List 1
     onResultsUpdate: (results: ScannerItem[]) => void; // Output to Dashboard -> List 3
     scanConfig: ScanConfig; // Just for display (batch size etc)
@@ -15,11 +16,11 @@ interface Props {
     initialConfig?: List2Config;
     directMode?: boolean;
     onLog?: (type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => void;
+    onRemoveSignalReady?: (fn: (uniqueId: string) => void) => void;
 }
 
 const DEFAULT_CONFIG: List2Config = {
-    timeframes: ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h'],
-    maxLag: 9,
+    timeframes: ['5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'],
     newModeRetention: 9,
     volMultiplier: 1.0,
     squeezeThreshold: 0.5,
@@ -30,23 +31,52 @@ const DEFAULT_CONFIG: List2Config = {
     flatThreshold: 5,
     checkEma80Conflict: false,
     sortMode: 'MOST',
-    triggerMode: 'NEW',
     requireCrossing: true,
-    strictFiltering: false
+    requireAlignment: false,
+    strictFiltering: true
 };
 
 export const GrandCrossingModule: React.FC<Props> = ({ 
-    candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog 
+    networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady
 }) => {
     
+    // --- FILTER CANDIDATES TO COMPLY WITH USER WATCHLIST INTENT ---
+    // If useCustomOnly (固定选币) is active, List 2 MUST strictly scan ONLY the user's custom symbols (监控池)
+    // even if the user switches List 1 to "市场搜索" (SEARCH) tab.
+    const effectiveCandidates = React.useMemo(() => {
+        if (scanConfig.useCustomOnly) {
+            const customSet = new Set(
+                (scanConfig.customSymbols || '')
+                    .split(',')
+                    .map(s => s.trim().toUpperCase())
+                    .filter(Boolean)
+                    .map(s => s.endsWith('USDT') ? s : `${s}USDT`)
+            );
+            return candidates.filter(c => customSet.has(c.symbol.toUpperCase()));
+        }
+        return candidates;
+    }, [candidates, scanConfig.useCustomOnly, scanConfig.customSymbols]);
+
     // --- LOGIC HOOK ---
     const { 
-        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, lastScanTime
-    } = useGrandCrossing(candidates, initialConfig || DEFAULT_CONFIG, directMode, onLog);
+        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, lastScanTime, removeItem, clearItems, removeSignal
+    } = useGrandCrossing(effectiveCandidates, initialConfig || DEFAULT_CONFIG, directMode, onLog);
+
+    // Expose removeSignal to parent
+    useEffect(() => {
+        if (onRemoveSignalReady && removeSignal) {
+            onRemoveSignalReady(removeSignal);
+        }
+    }, [onRemoveSignalReady, removeSignal]);
 
     // --- SYNC OUTPUT ---
+    const lastListStrRef = React.useRef<string>('');
     useEffect(() => {
-        onResultsUpdate(list2);
+        const str = JSON.stringify(list2);
+        if (str !== lastListStrRef.current) {
+            lastListStrRef.current = str;
+            onResultsUpdate(list2);
+        }
     }, [list2, onResultsUpdate]);
 
     // --- LOCAL UI STATE ---
@@ -82,6 +112,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
 
     return (
         <List2_GrandCrossing 
+            networkStatus={networkStatus}
             config={config} setConfig={setConfig}
             scanConfig={scanConfig} setScanConfig={setScanConfig}
             countdowns={countdowns} tfCounts={tfCounts}
@@ -91,6 +122,8 @@ export const GrandCrossingModule: React.FC<Props> = ({
             setChartData={setChartData}
             pollingStatus={status === 'SCANNING' ? scanText : (lastScanTime ? `最后扫描: ${new Date(lastScanTime).toLocaleTimeString()}` : undefined)}
             activeScanTfs={activeScanTfs}
+            onRemoveItem={removeItem}
+            onClearItems={clearItems}
         />
     );
 };

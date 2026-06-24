@@ -9,7 +9,7 @@ self.onmessage = function(e) {
     if (intervalId) clearInterval(intervalId);
     intervalId = setInterval(() => {
       self.postMessage('tick');
-    }, 1000); 
+    }, 500); 
   } else if (e.data === 'stop') {
     clearInterval(intervalId);
   }
@@ -33,8 +33,8 @@ export class BackgroundTimer {
     } catch (e) {
         console.error("Worker creation failed, falling back to setInterval", e);
         // Fallback for environments that restrict blob workers (rare)
-        // Set to 1000ms to align with worker and save CPU
-        setInterval(onTick, 1000);
+        // Set to 500ms to align with worker and keep app snappy
+        setInterval(onTick, 500);
     }
   }
 

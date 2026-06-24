@@ -31,6 +31,9 @@ export interface Position {
     unrealizedPnLPercentage: number;
     entryId: string;
     entryTime: number;
+    amputationTriggered?: boolean;
+    maxPnLAfterAmputationTrigger?: number;
+    maxPnLPercentAfterAmputationTrigger?: number;
     maxPnLPercent?: number;
     isHedged?: boolean;
     extremePrice?: number;
@@ -55,9 +58,18 @@ export interface Position {
         ema40: number;
         ema80: number;
     };
+    currentEmaValue?: number;
     triggerReason?: string;
     isBacktestRecord?: boolean;
     backtestEntryTime?: number;
+    currentIndicators?: {
+        rsi: number;
+        volatility: number;
+        deviation: number;
+        emaDistance: number;
+        volumeSwell: number;
+    };
+    customProfitSettings?: ProfitSettings;
 }
 
 export interface LogEntry {
@@ -65,6 +77,15 @@ export interface LogEntry {
     timestamp: Date;
     type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER';
     message: string;
+}
+
+export interface TradeEvent {
+    timestamp: number;
+    action: string;
+    price: number;
+    amount: number;
+    reason: string;
+    pnl?: number;
 }
 
 export interface TradeLog {
@@ -88,6 +109,7 @@ export interface TradeLog {
     timeframe?: string; // Added timeframe field
     last_stop_loss_time?: number; // Added last stop loss time
     stop_loss_rule?: string; // Added stop loss rule
+    events?: TradeEvent[]; // Collection of all actions during the trade lifecycle
 }
 
 export interface SystemEvent {
@@ -120,12 +142,6 @@ export interface SimulationSettings {
     limit?: number;
 }
 
-export interface ProfitTier {
-    profit: number;
-    callback: number;
-    close: number;
-}
-
 export interface ConventionalSettings {
     minPosition: number;
     profitPercent: number;
@@ -136,11 +152,10 @@ export interface ConventionalSettings {
 export interface AtrSettings {
     multiplier: number;
     volatilityPercent: number;
-}
-
-export interface DynamicSettings {
-    minPosition: number;
-    tiers: ProfitTier[];
+    chandelierEnabled: boolean;
+    emaEnabled: boolean;
+    emaPeriod: number;
+    emaTimeframe: string;
 }
 
 export interface SmartProfitTier {
@@ -170,16 +185,30 @@ export interface SimpleStopLossSettings {
     closePercent: number;
 }
 
+export interface AiProfitSettings {
+    sensitivity: number; // 1-10
+    aggressiveness: number; // 1-10
+    minPosition: number;
+    activationProfit: number;
+    aiSmartModeEnabled?: boolean;
+    activationProfitPercent?: number;
+    fallbackProfitPercent?: number;
+    atrMultiplier?: number;
+    momentumWeight?: number;
+    volResonance?: number;
+}
+
 export interface ProfitSettings {
     enabled: boolean;
-    profitMode: 'CONVENTIONAL' | 'ATR' | 'DYNAMIC' | 'SMART' | 'GLOBAL';
+    profitMode: 'CONVENTIONAL' | 'ATR' | 'SMART' | 'GLOBAL' | 'AI';
     conventional: ConventionalSettings;
-    dynamic: DynamicSettings;
     smart: SmartSettings;
     global: GlobalSettings;
     atr?: AtrSettings;
+    ai?: AiProfitSettings;
     stopLoss: SimpleStopLossSettings;
     oEnabledMap?: Record<string, boolean>;
+    aiSmartMasterEnabled?: boolean;
 }
 
 export interface HedgingSettings {
@@ -224,6 +253,7 @@ export interface StopLossSettings {
     amputationTriggerProfit: number;
     amputationRatio: number;
     amputationVictoryBuffer: number;
+    amputationBreathingSpace: number;
     fuseEnabled: boolean;
     maxHedgeRetries: number;
     fuseFailStopPercent: number;
@@ -295,6 +325,27 @@ export interface StrategyRecommendation {
         trend: 'UP' | 'DOWN' | 'SIDEWAYS';
     };
     actionType: 'SWITCH' | 'KEEP';
+}
+
+export interface TradeDNA {
+    id: string;
+    symbol: string;
+    side: PositionSide;
+    entryTime: number;
+    exitTime: number;
+    entryPrice: number;
+    exitPrice: number;
+    profitUsdt: number;
+    profitPercent: number;
+    exitReason: string;
+    indicators: {
+        rsi: number;
+        volatility: number;
+        deviation: number; // 乖离率
+        emaDistance: number;
+        volumeSwell: number; // 成交量激增倍数
+    };
+    aiSettings: AiProfitSettings;
 }
 
 export const ALL_BINANCE_SYMBOLS: string[] = [

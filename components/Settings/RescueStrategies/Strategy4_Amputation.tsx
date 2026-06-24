@@ -35,10 +35,14 @@ const Strategy4_Amputation: React.FC<Props> = ({ settings, onChange, toggleFeatu
                             <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400 font-bold" value={Number.isNaN(settings.amputationRatio) ? '' : settings.amputationRatio} onChange={(e) => onChange('amputationRatio', parseFloat(e.target.value))} />
                         </div>
                     </div>
-                    <div className="grid grid-cols-1 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                         <div>
                             <label className="text-[10px] text-slate-500 block mb-1">盈利覆盖安全垫 (%)</label>
                             <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white" value={Number.isNaN(settings.amputationVictoryBuffer) ? '' : settings.amputationVictoryBuffer} onChange={(e) => onChange('amputationVictoryBuffer', parseFloat(e.target.value))} />
+                        </div>
+                        <div>
+                            <label className="text-[10px] text-slate-500 block mb-1">解套回撤清仓 (%)</label>
+                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-sky-400 font-bold" value={Number.isNaN(settings.amputationBreathingSpace) ? '' : settings.amputationBreathingSpace} onChange={(e) => onChange('amputationBreathingSpace', parseFloat(e.target.value))} />
                         </div>
                     </div>
                     <div className="text-[9px] text-slate-500 bg-slate-800/50 p-1.5 rounded leading-relaxed border border-slate-700/30">

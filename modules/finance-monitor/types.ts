@@ -11,4 +11,5 @@ export interface FinanceMonitorProps {
     onOpenTradeModal: () => void;
     onResetBalance?: (amount: number) => void;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
+    isOnline: boolean;
 }

@@ -12,11 +12,14 @@ export function processMarketData(
     rawData: any[], 
     config: ScanConfig,
     customSymbolSet: Set<string>,
-    fixedModeView: 'MONITOR' | 'SEARCH' = 'MONITOR'
+    fixedModeView: 'MONITOR' | 'SEARCH' = 'MONITOR',
+    majorTrendCandidates?: Set<string>
 ): { list1: ScannerItem[], stats: MarketStats } {
     
     let up = 0, down = 0, btcChange = 0;
     const allCandidates: ScannerItem[] = [];
+
+    const isMajorTrendActive = config.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0 && !config.useCustomOnly;
 
     // Safety check: if rawData is not an array (e.g. API error object), return empty
     if (!Array.isArray(rawData)) {
@@ -29,6 +32,11 @@ export function processMarketData(
     // 1. First Pass: Stats & Normalization
     rawData.forEach((t: any) => {
         if (!t.symbol || !t.symbol.endsWith('USDT')) return;
+        
+        // Major Trend Filter (Stage 2)
+        if (isMajorTrendActive && !majorTrendCandidates.has(t.symbol)) {
+            return;
+        }
 
         const price = parseFloat(t.lastPrice) || 0;
         const volume = parseFloat(t.quoteVolume) || 0; // Raw volume
@@ -42,6 +50,10 @@ export function processMarketData(
         // Convert Volume to Millions
         const volumeM = volume / 1000000;
 
+        const openPrice = parseFloat(t.openPrice) || price;
+        const highPrice = parseFloat(t.highPrice) || price;
+        const lowPrice = parseFloat(t.lowPrice) || price;
+
         if (change > 0) up++; else if (change < 0) down++;
         if (t.symbol === 'BTCUSDT') btcChange = change;
 
@@ -54,32 +66,69 @@ export function processMarketData(
             volume24h: volumeM,
             change8am: change, 
             change: change,    
-            isNew: false 
+            isNew: false,
+            openPrice,
+            highPrice,
+            lowPrice
         });
     });
 
     // 2. Filter Logic
-    let filtered = allCandidates.filter(i => (i.volume24h || 0) >= config.minVolume);
+    let filtered: ScannerItem[] = [];
+    const upperCustomSymbolSet = new Set(Array.from(customSymbolSet || []).map(s => s.trim().toUpperCase()));
 
-    if (config.maxVolume > 0) {
-        filtered = filtered.filter(i => (i.volume24h || 0) <= config.maxVolume);
-    }
-
-    if (config.source === 'GAINERS') {
-        filtered = filtered.filter(i => (i.change || 0) > 0);
-    } else if (config.source === 'LOSERS') {
-        filtered = filtered.filter(i => (i.change || 0) < 0);
-    }
-
-    // Volatility Filter (Absolute change >= minChange)
-    filtered = filtered.filter(i => Math.abs(i.change || 0) >= config.minChange);
-
-    // Custom Symbol Filter
-    if (config.useCustomOnly && fixedModeView !== 'SEARCH') {
-        filtered = filtered.filter(i => {
-            const rawSym = i.symbol.replace('USDT', '');
-            return customSymbolSet.has(rawSym);
+    if (config.useCustomOnly && fixedModeView === 'MONITOR') {
+        // [BYPASS] If we are in "监控列表" view of "固定选币", we bypass standard change & volume filters
+        // to ensure manual coins typed by the user always display below.
+        filtered = allCandidates.filter(i => {
+            const rawSym = i.symbol.replace('USDT', '').toUpperCase();
+            return upperCustomSymbolSet.has(rawSym);
         });
+
+        // Ensure ALL custom symbols are represented, even if Binance returned empty elements or stats are not loaded
+        const presentSet = new Set(filtered.map(f => f.symbol.replace('USDT', '').toUpperCase()));
+        upperCustomSymbolSet.forEach(sym => {
+            if (!presentSet.has(sym)) {
+                filtered.push({
+                    symbol: `${sym}USDT`,
+                    price: 0,
+                    volume24h: 0,
+                    change8am: 0,
+                    change: 0,
+                    isNew: false,
+                    openPrice: 0,
+                    highPrice: 0,
+                    lowPrice: 0
+                });
+            }
+        });
+    } else {
+        // Standard Filters apply ONLY to coins NOT in the Major Trend Candidate list, 
+        // OR if Major Trend is not active at all.
+        // If Major Trend IS active, these candidates represent a different selection logic.
+        filtered = allCandidates.filter(i => {
+            // Basic Volume filter usually applies to everyone for safety
+            if ((i.volume24h || 0) < config.minVolume) return false;
+            if (config.maxVolume > 0 && (i.volume24h || 0) > config.maxVolume) return false;
+
+            // If this symbol is part of the Major Trend discovery, it BYPASSES regular change filters
+            if (isMajorTrendActive && majorTrendCandidates.has(i.symbol)) return true;
+
+            // Regular filters for Config A / Standard Mode
+            if (config.source === 'GAINERS' && (i.change || 0) <= 0) return false;
+            if (config.source === 'LOSERS' && (i.change || 0) >= 0) return false;
+            if (Math.abs(i.change || 0) < config.minChange) return false;
+
+            return true;
+        });
+
+        // Custom Symbol Filter for other views
+        if (config.useCustomOnly && fixedModeView !== 'SEARCH') {
+            filtered = filtered.filter(i => {
+                const rawSym = i.symbol.replace('USDT', '').toUpperCase();
+                return upperCustomSymbolSet.has(rawSym);
+            });
+        }
     }
 
     // 3. Sorting

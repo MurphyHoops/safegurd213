@@ -8,6 +8,24 @@ import { checkIndividualPositionRules } from '../rules/profit_loss_rules';
 import { analyzeList2Crossing } from '../rules/list2_crossing';
 import { analyzeList3Structure } from '../rules/list3_structure';
 import { analyzeList4Momentum } from '../rules/list4_momentum';
+import { getLatestEMA } from '../indicators';
+
+// Helper to determine the next timeframe for Rule 3
+const getAutoTimeframe = (entryTf: string): string => {
+    const tfMap: Record<string, string> = {
+        '1m': '3m',
+        '3m': '5m',
+        '5m': '15m',
+        '15m': '30m',
+        '30m': '1h',
+        '1h': '2h',
+        '2h': '4h',
+        '4h': '8h',
+        '8h': '1d',
+        '1d': '1d'
+    };
+    return tfMap[entryTf] || '1h';
+};
 
 // Mock closePosition for backtesting
 const createCloseHandler = (trades: any[], currentTime: number) => {
@@ -82,6 +100,38 @@ self.onmessage = async (e) => {
                 pos.unrealizedPnLPercentage = (pnl / (pos.amount * pos.entryPrice)) * 100;
                 pos.maxPnLPercent = Math.max(pos.maxPnLPercent || 0, pos.unrealizedPnLPercentage);
                 pos.minPnLPercent = Math.min(pos.minPnLPercent || 0, pos.unrealizedPnLPercentage);
+
+                // Update EMA Baseline for Rule 3 (Auto-sensing next timeframe)
+                if (settings.profit?.enabled && (settings.profit.profitMode === 'ATR' || settings.profit.oEnabledMap?.['ATR'])) {
+                    const atrSettings = settings.profit.atr;
+                    if (atrSettings?.emaEnabled) {
+                        let tf = atrSettings.emaTimeframe;
+                        if (tf === 'AUTO') {
+                            tf = getAutoTimeframe(pos.signalTf || '15m');
+                        }
+                        
+                        // Find the appropriate klines for this timeframe up to current virtual time
+                        const emaKlines = klinesMap[symbol][tf];
+                        if (emaKlines) {
+                            const emaIdx = emaKlines.findIndex(k => k.time <= timestamp && k.time > timestamp - (60000 * 200)); // Rough bounds
+                            if (emaIdx !== -1) {
+                                // For performance in backtest, we find the closest candle
+                                let lastTfIdx = -1;
+                                for (let j = emaKlines.length - 1; j >= 0; j--) {
+                                    if (emaKlines[j].time <= timestamp) {
+                                        lastTfIdx = j;
+                                        break;
+                                    }
+                                }
+                                if (lastTfIdx >= (atrSettings.emaPeriod || 80)) {
+                                    // Exclude the current active candle (lastTfIdx)
+                                    const closes = emaKlines.slice(0, lastTfIdx).map(k => k.close);
+                                    pos.currentEmaValue = getLatestEMA(closes, atrSettings.emaPeriod || 80);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -188,6 +238,7 @@ self.onmessage = async (e) => {
                                 maxPnLPercent: 0,
                                 minPnLPercent: 0,
                                 entryTime: timestamp,
+                                signalTf: tf, // Store signal timeframe for Rule 3
                                 isHedged: false
                             });
                             log('INFO', `开仓: ${item.symbol} ${finalSignal.direction} | 价格: ${item.price} | 原因: ${tf} 信号触发`, timestamp);

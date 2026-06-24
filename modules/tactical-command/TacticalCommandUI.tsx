@@ -3,7 +3,7 @@ import React, { useEffect } from 'react';
 import { useTacticalCommand } from './useTacticalCommand';
 import { ActionConfig } from '../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../types';
-import List6_Action from '../../components/Scanner/List6_Action';
+import List6_Action from './components/List6_Action';
 
 interface Props {
     // Input stats from List 5

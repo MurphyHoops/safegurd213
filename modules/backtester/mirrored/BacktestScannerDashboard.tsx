@@ -3,6 +3,7 @@ import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { ScannerSettings, PositionSide, Position } from '../../../types';
 import { X, Crosshair, Minus, Activity, Maximize2 } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
+import { normalizeSymbol } from '../../../services/symbolUtils';
 
 // --- MIRRORED MODULES ---
 import { BacktestMarketScannerModule } from './BacktestScannerUI';
@@ -45,8 +46,11 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
 
   const setScanConfig = useCallback((update: React.SetStateAction<ScanConfig>) => {
       const next = typeof update === 'function' ? (update as any)(scanConfig) : update;
-      if (next.timeBasis !== activeMode) setActiveMode(next.timeBasis as any);
-      else activeMode === '24H' ? setConfig24H(next) : setConfig8AM(next);
+      if (next.timeBasis !== activeMode) {
+          setTimeout(() => setActiveMode(next.timeBasis as any), 0);
+      } else {
+          activeMode === '24H' ? setConfig24H(next) : setConfig8AM(next);
+      }
   }, [scanConfig, activeMode, setActiveMode, setConfig24H, setConfig8AM]);
 
   const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>([]);
@@ -54,22 +58,108 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
   const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
   const [liveStats, setLiveStats] = useState({ symbolCount: 0, totalValue: 0, totalPnl: 0 });
-  const [actionConfig, setActionConfig] = useState<ActionConfig | null>(null);
+  const liveStatsPulseRef = useRef('');
 
+  const handleLiveStatsUpdate = useCallback((newStats: any) => {
+    const pulse = `${newStats.symbolCount}-${newStats.totalPnl.toFixed(4)}`;
+    if (liveStatsPulseRef.current !== pulse) {
+      setLiveStats(newStats);
+      liveStatsPulseRef.current = pulse;
+    }
+  }, []);
+
+  const [actionConfig, setActionConfig] = useState<ActionConfig | null>(null);
   const removeSignalRef = useRef<((uniqueId: string) => void) | undefined>(undefined);
 
-  const executeTradeSafe = useCallback((symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => {
-      if (!actionConfig) return;
-      const currentSymbolCount = new Set(activePositions.map(p => p.symbol)).size;
-      if (currentSymbolCount >= actionConfig.maxOpenSymbols) return;
+  const handleRemoveSignalReady = useCallback((fn: (uniqueId: string) => void) => {
+    removeSignalRef.current = fn;
+  }, []);
 
-      const amount = actionConfig.positionSizeMode === 'VARIABLE' 
-          ? Math.min(balance * (actionConfig.variablePercentage / 100), actionConfig.variableMaxLimit || Infinity)
-          : (actionConfig.openAmount || 100);
+  const handleRemoveSignal = useCallback((id: string) => {
+    removeSignalRef.current?.(id);
+  }, []);
+
+  // --- REFS FOR STABLE CALLBACKS ---
+  const actionConfigRef = useRef<ActionConfig | null>(null);
+  const activePositionsRef = useRef<Position[]>([]);
+  const balanceRef = useRef<number>(0);
+  const realPricesRef = useRef<Record<string, number>>({});
+
+  useEffect(() => { actionConfigRef.current = actionConfig; }, [actionConfig]);
+  useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
+  useEffect(() => { balanceRef.current = balance; }, [balance]);
+  useEffect(() => { realPricesRef.current = realPrices; }, [realPrices]);
+
+  const executeTradeSafe = useCallback((symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => {
+      const DEFAULT_ACTION_CONFIG: ActionConfig = { 
+          enabled: true, 
+          openAmount: 100, 
+          maxOpenSymbols: 200, 
+          maxTotalValue: 100000, 
+          breakoutBuffer: 0.2, 
+          autoExecute: true, 
+          maxExposurePercent: 95, 
+          positionSizeMode: 'FIXED', 
+          variablePercentage: 2, 
+          variableMaxLimit: 200,
+          breakerConfig: {
+              enabled: false,
+              triggerMinutes: 15,
+              minDropPercent: 3,
+              minCoinsPercent: 50,
+              autoRecoverMinutes: 30
+          }
+      };
+
+      const userConfig = (actionConfigRef.current || {}) as Partial<ActionConfig>;
+      const config: ActionConfig = {
+          enabled: typeof userConfig.enabled === 'boolean' ? userConfig.enabled : DEFAULT_ACTION_CONFIG.enabled,
+          openAmount: typeof userConfig.openAmount === 'number' && userConfig.openAmount > 0 ? userConfig.openAmount : DEFAULT_ACTION_CONFIG.openAmount,
+          maxOpenSymbols: typeof userConfig.maxOpenSymbols === 'number' && userConfig.maxOpenSymbols > 0 ? userConfig.maxOpenSymbols : DEFAULT_ACTION_CONFIG.maxOpenSymbols,
+          maxTotalValue: typeof userConfig.maxTotalValue === 'number' ? userConfig.maxTotalValue : DEFAULT_ACTION_CONFIG.maxTotalValue,
+          breakoutBuffer: typeof userConfig.breakoutBuffer === 'number' ? userConfig.breakoutBuffer : DEFAULT_ACTION_CONFIG.breakoutBuffer,
+          autoExecute: typeof userConfig.autoExecute === 'boolean' ? userConfig.autoExecute : DEFAULT_ACTION_CONFIG.autoExecute,
+          maxExposurePercent: typeof userConfig.maxExposurePercent === 'number' && userConfig.maxExposurePercent > 0 ? userConfig.maxExposurePercent : DEFAULT_ACTION_CONFIG.maxExposurePercent,
+          positionSizeMode: userConfig.positionSizeMode || DEFAULT_ACTION_CONFIG.positionSizeMode,
+          variablePercentage: typeof userConfig.variablePercentage === 'number' ? userConfig.variablePercentage : DEFAULT_ACTION_CONFIG.variablePercentage,
+          variableMaxLimit: typeof userConfig.variableMaxLimit === 'number' ? userConfig.variableMaxLimit : DEFAULT_ACTION_CONFIG.variableMaxLimit,
+          breakerConfig: userConfig.breakerConfig || DEFAULT_ACTION_CONFIG.breakerConfig,
+      };
+      if (!config.enabled) {
+          if (onLog) onLog('WARNING', `[回测] 交易拦截 (${symbol}): 战术面板总开关 (List 6) 未开启。`);
+          return false;
+      }
       
-      onOpenPosition(symbol, side, amount, price, signalTf, signalCandle, entryEmas);
-      if (onLog) onLog('SUCCESS', `[回测] 执行交易: ${symbol} ${side} | 原因: ${reason}`);
-  }, [actionConfig, onOpenPosition, activePositions, balance, onLog]);
+      const cleanSymbol = normalizeSymbol(symbol);
+
+      if (!price || isNaN(price) || price <= 0) {
+          if (onLog) onLog('DANGER', `[回测] 交易拦截 ${cleanSymbol}: 开仓价格无效 (${price})，拒绝执行。`);
+          console.warn(`[Trade Reject - Backtest] Invalid price for ${cleanSymbol}: ${price}`);
+          return false;
+      }
+      
+      const currentSymbols = new Set(activePositionsRef.current.map(p => p.symbol));
+      const currentSymbolCount = currentSymbols.size;
+      if (!currentSymbols.has(cleanSymbol) && currentSymbolCount >= (config.maxOpenSymbols || 200)) {
+          if (onLog) onLog('DANGER', `[回测] 交易拦截 ${cleanSymbol}: 持仓币种已达上限 (${currentSymbolCount} >= ${config.maxOpenSymbols})`);
+          console.warn(`[Trade Reject - Backtest] Max open symbols limit reached: ${currentSymbolCount} >= ${config.maxOpenSymbols}`);
+          return false;
+      }
+
+      const amount = config.positionSizeMode === 'VARIABLE' 
+          ? Math.min(balanceRef.current * (config.variablePercentage / 100), config.variableMaxLimit || Infinity)
+          : (config.openAmount || 100);
+      
+      onOpenPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas);
+      if (onLog) onLog('SUCCESS', `[回测] 执行交易: ${cleanSymbol} ${side} | 原因: ${reason}`);
+      return true;
+  }, [onOpenPosition, onLog]);
+
+  const handlePanicSell = useCallback(() => activePositions.forEach(p => onClosePosition(p.symbol, p.side)), [activePositions, onClosePosition]);
+  const handleSecureProfit = useCallback(() => activePositions.filter(p => p.unrealizedPnL > 0).forEach(p => onClosePosition(p.symbol, p.side)), [activePositions, onClosePosition]);
+  const handleCutLosses = useCallback(() => activePositions.filter(p => p.unrealizedPnL < 0).forEach(p => onClosePosition(p.symbol, p.side)), [activePositions, onClosePosition]);
+  const handleCloseLongs = useCallback(() => activePositions.filter(p => p.side === PositionSide.LONG).forEach(p => onClosePosition(p.symbol, p.side)), [activePositions, onClosePosition]);
+  const handleCloseShorts = useCallback(() => activePositions.filter(p => p.side === PositionSide.SHORT).forEach(p => onClosePosition(p.symbol, p.side)), [activePositions, onClosePosition]);
 
   if (!isVisible) return null;
 
@@ -110,12 +200,14 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
                       candidates={list2Results}
                       onResultsUpdate={setList3Results}
                       onConfigUpdate={setList3Config}
-                      onRemoveSignalReady={(fn) => { removeSignalRef.current = fn; }}
+                      onRemoveSignalReady={handleRemoveSignalReady}
                       realPrices={realPrices}
                       setChartData={setChartData}
                       executeTradeSafe={executeTradeSafe}
                       activePositions={activePositions}
                       directMode={true}
+                      actionConfig={actionConfig}
+                      onLog={onLog}
                   />
                   <BacktestMomentumAuditModule 
                       candidates={list3Results}
@@ -124,23 +216,25 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
                       list3Config={list3Config}
                       realPrices={realPrices}
                       activePositions={activePositions}
-                      onRemoveSignal={(id) => removeSignalRef.current?.(id)}
+                      onRemoveSignal={handleRemoveSignal}
+                      actionConfig={actionConfig}
+                      onLog={onLog}
                   />
                   <LiveBattlefieldModule 
                       positions={activePositions}
                       realPrices={realPrices}
                       setChartData={setChartData}
                       onClosePosition={onClosePosition}
-                      onStatsUpdate={setLiveStats}
+                      onStatsUpdate={handleLiveStatsUpdate}
                   />
                   <TacticalCommandModule 
                       currentStats={liveStats}
                       onConfigUpdate={setActionConfig}
-                      onPanicSell={() => activePositions.forEach(p => onClosePosition(p.symbol, p.side))} 
-                      onSecureProfit={() => activePositions.filter(p => p.unrealizedPnL > 0).forEach(p => onClosePosition(p.symbol, p.side))}
-                      onCutLosses={() => activePositions.filter(p => p.unrealizedPnL < 0).forEach(p => onClosePosition(p.symbol, p.side))} 
-                      onCloseLongs={() => activePositions.filter(p => p.side === PositionSide.LONG).forEach(p => onClosePosition(p.symbol, p.side))} 
-                      onCloseShorts={() => activePositions.filter(p => p.side === PositionSide.SHORT).forEach(p => onClosePosition(p.symbol, p.side))}
+                      onPanicSell={handlePanicSell} 
+                      onSecureProfit={handleSecureProfit}
+                      onCutLosses={handleCutLosses} 
+                      onCloseLongs={handleCloseLongs} 
+                      onCloseShorts={handleCloseShorts}
                   />
               </div>
           </div>

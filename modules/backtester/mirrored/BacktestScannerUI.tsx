@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { useBacktestScannerLogic } from './useBacktestScannerLogic';
 import { ScanConfig, ScannerItem } from '../../../components/Scanner/scannerTypes';
-import List1_Selection from '../../../components/Scanner/List1_Selection';
+import List1_Selection from '../../market-scanner/components/List1_Selection';
 import { Play, Download, Loader2 } from 'lucide-react';
 import { backtestDownloader } from '../../../services/backtest/downloader';
 
@@ -15,6 +15,9 @@ interface Props {
     setScanConfig: React.Dispatch<React.SetStateAction<ScanConfig>>;
     onStartBacktest?: (symbols: string[]) => void;
     isSyncing?: boolean;
+    mode?: 'LIVE' | 'BACKTEST';
+    setMode?: (mode: 'LIVE' | 'BACKTEST') => void;
+    backtestProps?: any;
 }
 
 export const BacktestMarketScannerModule: React.FC<Props> = ({ 
@@ -24,7 +27,10 @@ export const BacktestMarketScannerModule: React.FC<Props> = ({
     scanConfig,
     setScanConfig,
     onStartBacktest,
-    isSyncing = false
+    isSyncing = false,
+    mode,
+    setMode,
+    backtestProps
 }) => {
     const [fixedModeView, setFixedModeView] = usePersistedState<'MONITOR' | 'SEARCH'>('SCANNER_FIXED_MODE_VIEW', 'MONITOR');
     const [scanInterval, setScanInterval] = usePersistedState('SCANNER_INTERVAL', 1);
@@ -38,8 +44,13 @@ export const BacktestMarketScannerModule: React.FC<Props> = ({
         list1, isScanning, scanStatusText, marketStats, nextScanTime, setNextScanTime, refreshList1Candidates, cancelScan
     } = useBacktestScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, onStartBacktest !== undefined);
 
+    const lastListStrRef = React.useRef<string>('');
     useEffect(() => {
-        onCandidatesUpdate(list1);
+        const str = JSON.stringify(list1);
+        if (str !== lastListStrRef.current) {
+            lastListStrRef.current = str;
+            onCandidatesUpdate(list1);
+        }
     }, [list1, onCandidatesUpdate]);
 
     const handleToggleSymbol = useCallback((symbol: string) => {
@@ -117,6 +128,10 @@ export const BacktestMarketScannerModule: React.FC<Props> = ({
                 mode="BACKTEST"
                 downloadProgressMap={downloadProgressMap}
                 onDownload={handleDownload}
+                // New Props
+                scannerMode={mode}
+                setScannerMode={setMode}
+                backtestProps={backtestProps}
             />
             
             {onStartBacktest && selectedSymbols.size > 0 && (

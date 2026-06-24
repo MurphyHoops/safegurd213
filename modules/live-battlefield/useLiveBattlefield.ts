@@ -1,6 +1,7 @@
 
 import { useState, useMemo } from 'react';
 import { Position, PositionSide } from '../../types';
+import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
 
 export const useLiveBattlefield = (
     positions: Position[],
@@ -13,7 +14,7 @@ export const useLiveBattlefield = (
         // Helper: Calculate live PnL dynamically for sorting
         // This ensures the sort order responds immediately to price ticks
         const getLivePnLPercent = (p: Position) => {
-            const currentPrice = realPrices[p.symbol] || p.markPrice || p.entryPrice;
+            const currentPrice = resolvePrice(p.symbol, realPrices, p.markPrice || p.entryPrice);
             if (!currentPrice || !p.entryPrice) return 0;
             
             const diff = p.side === PositionSide.LONG 
@@ -27,29 +28,32 @@ export const useLiveBattlefield = (
         const symbolStats: Record<string, { isHedged: boolean, maxPnlPercent: number }> = {};
         
         positions.forEach(p => {
-            if (!symbolStats[p.symbol]) {
-                symbolStats[p.symbol] = { isHedged: false, maxPnlPercent: -Infinity };
+            const cleanSym = normalizeSymbol(p.symbol);
+            if (!symbolStats[cleanSym]) {
+                symbolStats[cleanSym] = { isHedged: false, maxPnlPercent: -Infinity };
             }
             if (p.isHedged) {
-                symbolStats[p.symbol].isHedged = true;
+                symbolStats[cleanSym].isHedged = true;
             }
             const pnlPct = getLivePnLPercent(p);
-            if (pnlPct > symbolStats[p.symbol].maxPnlPercent) {
-                symbolStats[p.symbol].maxPnlPercent = pnlPct;
+            if (pnlPct > symbolStats[cleanSym].maxPnlPercent) {
+                symbolStats[cleanSym].maxPnlPercent = pnlPct;
             }
         });
 
         // Sort logic
         return [...positions].sort((a, b) => {
-            const statsA = symbolStats[a.symbol];
-            const statsB = symbolStats[b.symbol];
+            const cleanSymA = normalizeSymbol(a.symbol);
+            const cleanSymB = normalizeSymbol(b.symbol);
+            const statsA = symbolStats[cleanSymA];
+            const statsB = symbolStats[cleanSymB];
 
             // 1. Hedged pairs first
             if (statsA.isHedged && !statsB.isHedged) return -1;
             if (!statsA.isHedged && statsB.isHedged) return 1;
 
             // 2. If they are different symbols, sort by the symbol's max PnL percent
-            if (a.symbol !== b.symbol) {
+            if (cleanSymA !== cleanSymB) {
                 if (sortMode === 'DESC') {
                     return statsB.maxPnlPercent - statsA.maxPnlPercent;
                 } else {
@@ -68,22 +72,33 @@ export const useLiveBattlefield = (
         // Recalculate stats based on live prices for accuracy
         let totalVal = 0;
         let totalP = 0;
+        const missingSymbols: string[] = [];
+        
+        // Only warn if the price feed is actually established (> 50 symbols) 
+        // to avoid mass-warning during the first few seconds of startup
+        const isPriceFeedEstablished = Object.keys(realPrices).length > 20;
 
         positions.forEach(p => {
-            const price = realPrices[p.symbol] || p.markPrice || p.entryPrice;
-            totalVal += p.amount * price;
+            const cleanSym = normalizeSymbol(p.symbol);
+            const price = resolvePrice(p.symbol, realPrices, p.markPrice || p.entryPrice);
+            
+            totalVal += p.amount * (price || 0);
             
             const diff = p.side === PositionSide.LONG 
-                ? price - p.entryPrice 
-                : p.entryPrice - price;
+                ? (price || 0) - p.entryPrice 
+                : p.entryPrice - (price || 0);
             
             totalP += diff * p.amount;
         });
 
+        const uniqueSymbols = new Set(positions.map(p => p.symbol));
+
         return {
-            symbolCount: positions.length,
+            symbolCount: uniqueSymbols.size,
             totalValue: totalVal,
-            totalPnl: totalP
+            totalPnl: totalP,
+            symbolsWithNoPrice: missingSymbols.length,
+            missingSymbols
         };
     }, [positions, realPrices]);
 

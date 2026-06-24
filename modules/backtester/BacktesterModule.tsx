@@ -2,10 +2,12 @@
 import React, { useState } from 'react';
 import { Play, BarChart2, History, Settings, AlertCircle, Loader2, TrendingUp, TrendingDown, Activity } from 'lucide-react';
 import { BacktestService, BacktestResult } from '../../services/backtestService';
-import { AppSettings, PositionSide } from '../../types';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
-
+import { AppSettings } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
+import { BacktesterControls } from './components/BacktesterControls';
+import { EquityCurveChart } from './components/EquityCurveChart';
+import { TradeHistoryTable } from './components/TradeHistoryTable';
+import { StatCard } from './components/StatCard';
 
 interface Props {
     settings: AppSettings;
@@ -36,51 +38,16 @@ export const BacktesterModule: React.FC<Props> = ({ settings }) => {
     return (
         <div className="p-4 space-y-4 bg-slate-900/50 min-h-[400px]">
             {/* Header / Controls */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div>
-                    <label className="text-[10px] text-slate-500 block mb-1 font-mono uppercase tracking-wider">交易对 (Symbol)</label>
-                    <input 
-                        type="text" 
-                        className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white font-mono" 
-                        value={symbol}
-                        onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                    />
-                </div>
-                <div>
-                    <label className="text-[10px] text-slate-500 block mb-1 font-mono uppercase tracking-wider">周期 (Interval)</label>
-                    <select 
-                        className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white font-mono"
-                        value={interval}
-                        onChange={(e) => setInterval(e.target.value)}
-                    >
-                        <option value="1m">1m</option>
-                        <option value="5m">5m</option>
-                        <option value="15m">15m</option>
-                        <option value="1h">1h</option>
-                        <option value="4h">4h</option>
-                        <option value="1d">1d</option>
-                    </select>
-                </div>
-                <div>
-                    <label className="text-[10px] text-slate-500 block mb-1 font-mono uppercase tracking-wider">K线数量 (Limit)</label>
-                    <input 
-                        type="number" 
-                        className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white font-mono" 
-                        value={limit}
-                        onChange={(e) => setLimit(parseInt(e.target.value))}
-                    />
-                </div>
-                <div className="flex items-end">
-                    <button 
-                        onClick={runBacktest}
-                        disabled={loading}
-                        className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white py-1.5 rounded text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-900/20"
-                    >
-                        {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                        开始回测
-                    </button>
-                </div>
-            </div>
+            <BacktesterControls 
+                symbol={symbol}
+                interval={interval}
+                limit={limit}
+                loading={loading}
+                setSymbol={setSymbol}
+                setInterval={setInterval}
+                setLimit={setLimit}
+                onRunBacktest={runBacktest}
+            />
 
             <AnimatePresence mode="wait">
                 {error && (
@@ -113,85 +80,10 @@ export const BacktesterModule: React.FC<Props> = ({ settings }) => {
                         </div>
 
                         {/* Equity Curve Chart */}
-                        <motion.div 
-                            initial={{ opacity: 0, scale: 0.95 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            transition={{ delay: 0.2 }}
-                            className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 h-[250px]"
-                        >
-                            <div className="flex items-center justify-between mb-4">
-                                <h4 className="text-[10px] font-bold text-slate-400 flex items-center gap-2 uppercase tracking-widest">
-                                    <TrendingUp size={12} /> 权益曲线 (Equity Curve)
-                                </h4>
-                            </div>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={result.equityCurve}>
-                                    <defs>
-                                        <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
-                                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                                        </linearGradient>
-                                    </defs>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                                    <XAxis 
-                                        dataKey="time" 
-                                        hide 
-                                    />
-                                    <YAxis 
-                                        domain={['auto', 'auto']} 
-                                        stroke="#64748b" 
-                                        fontSize={10} 
-                                        tickFormatter={(val) => `${val.toFixed(0)}`}
-                                    />
-                                    <Tooltip 
-                                        contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', fontSize: '10px' }}
-                                        labelFormatter={(label) => new Date(label).toLocaleString()}
-                                    />
-                                    <Area type="monotone" dataKey="balance" stroke="#6366f1" fillOpacity={1} fill="url(#colorBalance)" strokeWidth={2} />
-                                </AreaChart>
-                            </ResponsiveContainer>
-                        </motion.div>
+                        <EquityCurveChart data={result.equityCurve} />
 
                         {/* Trade History Table */}
-                        <motion.div 
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            transition={{ delay: 0.4 }}
-                            className="bg-slate-800/50 border border-slate-700 rounded-lg overflow-hidden"
-                        >
-                            <div className="p-3 border-b border-slate-700 bg-slate-800/30 flex items-center justify-between">
-                                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">交易历史 (Trade History)</h4>
-                                <span className="text-[9px] text-slate-500 font-mono">LATEST {result.trades.length} TRADES</span>
-                            </div>
-                            <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
-                                <table className="w-full text-[10px] text-left border-collapse">
-                                    <thead className="sticky top-0 bg-slate-900 text-slate-500 font-mono uppercase tracking-tighter border-b border-slate-800">
-                                        <tr>
-                                            <th className="p-2">时间</th>
-                                            <th className="p-2">方向</th>
-                                            <th className="p-2">盈亏 %</th>
-                                            <th className="p-2">平仓原因</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-800/50">
-                                        {result.trades.slice().reverse().map((trade, i) => (
-                                            <tr key={i} className="hover:bg-slate-700/30 transition-colors">
-                                                <td className="p-2 text-slate-400 font-mono">{new Date(trade.exitTime).toLocaleString()}</td>
-                                                <td className={`p-2 font-bold ${trade.side === PositionSide.LONG ? 'text-emerald-500' : 'text-red-500'}`}>
-                                                    {trade.side === PositionSide.LONG ? 'LONG' : 'SHORT'}
-                                                </td>
-                                                <td className={`p-2 font-mono ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                                    {trade.pnl >= 0 ? '+' : ''}{trade.pnlPercent.toFixed(2)}%
-                                                </td>
-                                                <td className="p-2 text-slate-500 italic truncate max-w-[150px]" title={trade.reason}>
-                                                    {trade.reason}
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </motion.div>
+                        <TradeHistoryTable trades={result.trades} />
                     </motion.div>
                 )}
             </AnimatePresence>
@@ -205,18 +97,3 @@ export const BacktesterModule: React.FC<Props> = ({ settings }) => {
         </div>
     );
 };
-
-const StatCard = ({ label, value, icon: Icon, color, index }: { label: string, value: any, icon: any, color: string, index: number }) => (
-    <motion.div 
-        initial={{ opacity: 0, x: -10 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ delay: index * 0.1 }}
-        className="bg-slate-800/50 border border-slate-700 p-3 rounded-lg"
-    >
-        <div className="flex items-center gap-2 mb-1">
-            <Icon size={12} className="text-slate-500" />
-            <span className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">{label}</span>
-        </div>
-        <div className={`text-sm font-mono font-bold ${color}`}>{value}</div>
-    </motion.div>
-);

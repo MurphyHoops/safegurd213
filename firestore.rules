@@ -1,0 +1,86 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: trade_dna
+// Document ID: {dnaId}
+// Fields:
+//   - symbol: string (required)
+//   - side: string (required, LONG/SHORT)
+//   - entryPrice: number (required)
+//   - exitPrice: number
+//   - maxProfitPercent: number
+//   - finalProfitPercent: number
+//   - entryTimestamp: number (required)
+//   - exitTimestamp: number
+//   - exitReason: string
+//   - indicatorsAtEntry: map (rsi, ema80Dist, volatility)
+//   - priceHistory: array of maps (t, p)
+//   - aiSettings: map (sensitivity, aggressiveness)
+//   - uid: string (required)
+//
+// Collection: backtests
+// Document ID: {testId}
+// Fields:
+//   - timestamp: number (required)
+//   - symbol: string (required)
+//   - timeframe: string (required)
+//   - config: map (required)
+//   - totalProfit: number (required)
+//   - winRate: number (required)
+//   - trades: array (required)
+//   - uid: string (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isValidTradeDna(data) {
+      return data.symbol is string && data.symbol.size() > 0 && data.symbol.size() < 20 &&
+             data.side in ['LONG', 'SHORT'] &&
+             data.entryPrice is number && data.entryPrice > 0 &&
+             data.entryTimestamp is number &&
+             data.uid == request.auth.uid;
+    }
+
+    function isValidBacktest(data) {
+      return data.symbol is string &&
+             data.timestamp is number &&
+             data.uid == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /trade_dna/{dnaId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidTradeDna(request.resource.data);
+      allow update: if isDocOwner() && isValidTradeDna(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /backtests/{testId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidBacktest(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+  }
+}

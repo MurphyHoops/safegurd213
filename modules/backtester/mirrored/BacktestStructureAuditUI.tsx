@@ -2,7 +2,7 @@
 import React, { useEffect } from 'react';
 import { useBacktestStructureAudit } from './useBacktestStructureAudit';
 import { ScannerItem, List3Config } from '../../../components/Scanner/scannerTypes';
-import List3_Structure from '../../../components/Scanner/List3_Structure';
+import List3_Structure from '../../structure-audit/components/List3_Structure';
 
 interface Props {
     candidates: ScannerItem[];
@@ -15,10 +15,11 @@ interface Props {
     activePositions: any[];
     directMode?: boolean;
     onLog?: (type: any, msg: string) => void;
+    actionConfig?: any;
 }
 
-export const BacktestStructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, onLog }) => {
-    const { config, setConfig, results, status } = useBacktestStructureAudit(candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, onLog);
+export const BacktestStructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, onLog, actionConfig }) => {
+    const { config, setConfig, results, status, removeItem, clearItems } = useBacktestStructureAudit(candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, onLog);
 
     return (
         <List3_Structure 
@@ -28,7 +29,7 @@ export const BacktestStructureAuditModule: React.FC<Props> = ({ candidates, onRe
             list3={results} 
             setChartData={setChartData} 
             executeTradeSafe={executeTradeSafe} 
-            actionConfig={{ enabled: false } as any}
+            actionConfig={actionConfig || ({ enabled: false } as any)}
             scanningStatus={{
                 symbols: [],
                 tfs: [],
@@ -37,6 +38,8 @@ export const BacktestStructureAuditModule: React.FC<Props> = ({ candidates, onRe
                 currentAction: status === 'AUDITING' ? 'SCANNING' : 'IDLE'
             }}
             activePositions={activePositions}
+            onRemoveItem={removeItem}
+            onClearItems={clearItems}
         />
     );
 };

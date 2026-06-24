@@ -14,4 +14,7 @@ export interface PositionsListProps {
     onOpenTradeModal: () => void;
     onBatchClose: () => void;
     onClearRecords: () => void;
+    onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
+    networkStatus: 'healthy' | 'delayed' | 'disconnected';
+    isOnline: boolean;
 }

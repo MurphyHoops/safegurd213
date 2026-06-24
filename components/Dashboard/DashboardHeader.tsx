@@ -40,11 +40,16 @@ const DashboardHeader: React.FC<Props> = ({
     
     const walletBalance = account.marginBalance; 
     const equity = walletBalance + totalPnL;   
-    const usedMargin = positions.reduce((sum, p) => (p.amount * p.entryPrice), 0);
-    const realAvailableMargin = Math.max(0, equity - usedMargin);
-    const calculatedMarginRatio = walletBalance > 0 ? (realAvailableMargin / walletBalance * 100) : 0;
     const totalPnLPercentage = walletBalance > 0 ? (totalPnL / walletBalance) * 100 : 0;
     const totalDebt = positions.reduce((s,p)=>s+(p.cumulativeHedgeLoss||0), 0);
+
+    // 标准币安合约可用保证金算法：(钱包余额 + 浮动盈亏) - (总持仓 / 杠杆倍数)
+    const CONTRACT_LEVERAGE = 20;
+    const totalPositionValue = positions.reduce((sum, p) => (p.amount * p.entryPrice), 0);
+    const availableMarginWithLeverage = Math.max(0, (walletBalance + totalPnL) - (totalPositionValue / CONTRACT_LEVERAGE));
+
+    // 账户健康度算法：可用保证金 / 钱包余额
+    const calculatedMarginRatio = walletBalance > 0 ? (availableMarginWithLeverage / walletBalance * 100) : 0;
 
     const handleBatchCloseWithConfirm = () => {
         if (!confirmClear) {
@@ -75,7 +80,7 @@ const DashboardHeader: React.FC<Props> = ({
                     <div className="flex flex-col justify-center pl-3">
                         <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">可用保证金 / 钱包余额</span>
                         <div className="flex items-baseline gap-1">
-                            <span className="text-xl font-mono text-slate-100 font-bold">{realAvailableMargin.toFixed(0)}</span>
+                            <span className="text-xl font-mono text-slate-100 font-bold">{availableMarginWithLeverage.toFixed(0)}</span>
                             <span className="text-slate-700 mx-1">/</span>
                             <span className="text-lg font-mono text-slate-400">{walletBalance.toFixed(0)}</span>
                             <span className="text-[10px] text-slate-600 ml-1">U</span>

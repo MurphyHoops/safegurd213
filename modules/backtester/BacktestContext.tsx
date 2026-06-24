@@ -25,9 +25,14 @@ interface BacktestContextType {
     setSpeed: (s: number) => void;
     setCurrentIndex: React.Dispatch<React.SetStateAction<number>>;
     
+    // Internal State for step logic
+    baseKlines: KLine[];
+    baseInterval: string;
+
     // Virtual API
     fetchVirtualMarketData: () => Promise<any[]>;
     fetchVirtualKlines: (symbol: string, interval: string, limit: number) => Promise<KLine[]>;
+    batchCloseAll: () => void;
 }
 
 const BacktestContext = createContext<BacktestContextType | null>(null);
@@ -64,10 +69,20 @@ export const BacktestProvider: React.FC<{
     const [realPrices, setRealPrices] = useState<Record<string, number>>({});
 
     const symbols = useMemo(() => Object.keys(klinesMap), [klinesMap]);
+    const getMinutes = (tf: string) => {
+        const val = parseInt(tf);
+        const unit = tf.slice(-1);
+        if (unit === 'm') return val;
+        if (unit === 'h') return val * 60;
+        if (unit === 'd') return val * 1440;
+        return val;
+    };
+
     const baseInterval = useMemo(() => {
         if (symbols.length === 0) return '1m';
         const intervals = Object.keys(klinesMap[symbols[0]]);
-        return intervals.length > 0 ? intervals.sort()[0] : '1m';
+        if (intervals.length === 0) return '1m';
+        return intervals.sort((a, b) => getMinutes(a) - getMinutes(b))[0];
     }, [klinesMap, symbols]);
     
     const baseKlines = useMemo(() => {
@@ -81,14 +96,102 @@ export const BacktestProvider: React.FC<{
     React.useEffect(() => {
         if (symbols.length === 0) return;
         const newPrices: Record<string, number> = {};
+        
         symbols.forEach(symbol => {
             const klines = klinesMap[symbol][baseInterval];
-            if (klines && klines[currentIndex]) {
+            if (!klines) return;
+            
+            // Try direct index first for speed
+            if (klines[currentIndex] && klines[currentIndex].time === virtualTime) {
                 newPrices[symbol] = klines[currentIndex].close;
+            } else {
+                // Fallback: Find by timestamp (binary search or findLast)
+                let low = 0;
+                let high = klines.length - 1;
+                let foundPrice = -1;
+                
+                while (low <= high) {
+                    const mid = Math.floor((low + high) / 2);
+                    if (klines[mid].time === virtualTime) {
+                        foundPrice = klines[mid].close;
+                        break;
+                    } else if (klines[mid].time < virtualTime) {
+                        foundPrice = klines[mid].close; 
+                        low = mid + 1;
+                    } else {
+                        high = mid - 1;
+                    }
+                }
+                
+                if (foundPrice !== -1) {
+                    newPrices[symbol] = foundPrice;
+                }
             }
         });
-        setRealPrices(newPrices);
-    }, [currentIndex, symbols, klinesMap, baseInterval]);
+        if (JSON.stringify(newPrices) !== JSON.stringify(realPrices)) {
+            setRealPrices(newPrices);
+        }
+        
+        // Reconcile Positions and Calculate totalPnL
+        let totalPnL = 0;
+        const updatedPositions = positions.map(p => {
+            let currentPrice = newPrices[p.symbol] || p.markPrice || p.entryPrice;
+            if (!currentPrice) return p;
+
+            // --- Smart Magnitude Protection (Fixes XMR decimals if they jump 1000x) ---
+            if (p.entryPrice > 0 && currentPrice > 0) {
+                const ratio = currentPrice / p.entryPrice;
+                // Symbols that usually don't scale but we still fix if the error is exactly ~1000x
+                if (ratio > 500 || ratio < 0.002) {
+                    const corrected = ratio > 500 ? currentPrice / 1000 : currentPrice * 1000;
+                    const correctedRatio = corrected / p.entryPrice;
+                    // If correction brings us within 20% of entry price, it's likely a decimal glitch
+                    if (correctedRatio > 0.8 && correctedRatio < 1.2) {
+                        currentPrice = corrected;
+                    }
+                }
+            }
+
+            const diff = p.side === 'LONG' 
+                ? currentPrice - p.entryPrice 
+                : p.entryPrice - currentPrice;
+            
+            const upnl = diff * p.amount;
+            const upnlPct = p.entryPrice > 0 ? (diff / p.entryPrice) * 100 : 0;
+            
+            totalPnL += upnl;
+            
+            const maxPct = p.maxPnLPercent !== undefined ? Math.max(p.maxPnLPercent, upnlPct) : (upnlPct > 0 ? upnlPct : 0);
+            
+            // Only return new object if something actually changed to avoid unnecessary re-renders
+            if (p.markPrice === currentPrice && p.unrealizedPnL === upnl && p.unrealizedPnLPercentage === upnlPct) {
+                return p;
+            }
+
+            return {
+                ...p,
+                markPrice: currentPrice,
+                unrealizedPnL: upnl,
+                unrealizedPnLPercentage: upnlPct,
+                maxPnLPercent: maxPct
+            };
+        });
+
+        const hasChanged = updatedPositions.some((p, i) => p !== positions[i]);
+        if (hasChanged) {
+            setPositions(updatedPositions);
+        }
+
+        // Sync account balance independently
+        setAccount(prev => {
+            const newMarginBalance = prev.totalBalance + (totalPnL || 0);
+            if (Math.abs(prev.marginBalance - newMarginBalance) < 0.000001) return prev;
+            return {
+                ...prev,
+                marginBalance: newMarginBalance
+            };
+        });
+    }, [currentIndex, virtualTime, symbols, klinesMap, baseInterval, positions.length]); // Removed full positions dependency to prevent loop, use length to detect adds/removes
 
     const fetchVirtualMarketData = useCallback(async () => {
         if (symbols.length === 0) return [];
@@ -132,6 +235,35 @@ export const BacktestProvider: React.FC<{
         return klines.slice(Math.max(0, lastIdx - limit + 1), lastIdx + 1);
     }, [virtualTime, klinesMap]);
 
+    const batchCloseAll = useCallback(() => {
+        setPositions(prev => {
+            if (prev.length === 0) return prev;
+            
+            const totalRealizedPnl = prev.reduce((sum, p) => sum + p.unrealizedPnL, 0);
+            const now = virtualTime;
+            
+            const updatedTradeLogs: TradeLog[] = prev.map(p => ({
+                symbol: p.symbol,
+                side: p.side,
+                entryPrice: p.entryPrice,
+                exitPrice: p.markPrice || p.entryPrice,
+                pnl: p.unrealizedPnL,
+                pnlPercent: p.unrealizedPnLPercentage,
+                exitTime: now,
+                reason: 'BATCH_CLOSE'
+            } as any));
+
+            setAccount(acc => ({
+                ...acc,
+                totalBalance: acc.totalBalance + totalRealizedPnl,
+                marginBalance: acc.marginBalance + totalRealizedPnl
+            }));
+            
+            setTradeLogs(l => [...l, ...updatedTradeLogs]);
+            return [];
+        });
+    }, [virtualTime]);
+
     const value = React.useMemo(() => ({
         virtualTime, setVirtualTime,
         realPrices,
@@ -144,11 +276,15 @@ export const BacktestProvider: React.FC<{
         speed, setSpeed,
         currentIndex, setCurrentIndex,
         totalSteps,
+        baseKlines,
+        baseInterval,
         fetchVirtualMarketData,
-        fetchVirtualKlines
+        fetchVirtualKlines,
+        batchCloseAll
     }), [
         virtualTime, realPrices, klinesMap, account, positions, logs, tradeLogs, 
-        isPlaying, speed, currentIndex, totalSteps, fetchVirtualMarketData, fetchVirtualKlines
+        isPlaying, speed, currentIndex, totalSteps, baseKlines, baseInterval, fetchVirtualMarketData, fetchVirtualKlines,
+        batchCloseAll
     ]);
 
     return <BacktestContext.Provider value={value}>{children}</BacktestContext.Provider>;

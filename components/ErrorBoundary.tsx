@@ -33,6 +33,40 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error(`[Savior Guard] Crash caught in ${this.props.moduleName || 'Root'}:`, error);
     
+    // Log component rendering crash directly inside persistent local storage
+    try {
+        const raw = localStorage.getItem('SAVIOR_SYSTEM_MONITOR_LOGS');
+        let logs: any[] = [];
+        if (raw) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    logs = parsed;
+                }
+            } catch (err) {}
+        }
+        
+        const isRootModule = !this.props.moduleName || this.props.moduleName.toLowerCase().includes('root');
+        const newLog = {
+            id: Math.random().toString(36).substring(2, 9),
+            timestamp: Date.now(),
+            level: isRootModule ? 'ERROR' : 'WARN',
+            module: this.props.moduleName || 'ROOT',
+            message: isRootModule 
+                ? `【React 顶级内核崩溃】${error?.message || '未知渲染错误'}` 
+                : `【模块局部抗扰】已自动拦截局部渲染异常并尝试热重启: ${error?.message || '未知渲染错误'}`,
+            details: { 
+                stack: error?.stack, 
+                componentStack: errorInfo?.componentStack,
+                time: new Date().toISOString()
+            }
+        };
+        
+        localStorage.setItem('SAVIOR_SYSTEM_MONITOR_LOGS', JSON.stringify([newLog, ...logs].slice(0, 200)));
+    } catch (e) {
+        console.warn('[ErrorBoundary] Failed to save render error to system logs:', e);
+    }
+
     // Auto-retry for non-critical modules after 3 seconds
     if (this.props.moduleName) {
         const now = Date.now();
@@ -65,7 +99,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   render() {
     if (this.state.hasError) {
-      const isCritical = !this.props.moduleName;
+      const isCritical = !this.props.moduleName || this.props.moduleName === 'Root Shield';
       
       // If it's a module error, show a small placeholder instead of full screen
       if (!isCritical) {
@@ -90,40 +124,71 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
       }
       
       return (
-        <div className="fixed inset-0 z-[9999] w-screen h-screen flex flex-col items-center justify-center p-6 bg-[#0b0e11] text-center">
-          
-          <div className="bg-red-900/20 p-4 rounded-full mb-4 animate-pulse border border-red-500/30 shadow-[0_0_20px_rgba(220,38,38,0.3)]">
-            <ShieldAlert size={56} className="text-red-500" />
-          </div>
-          
-          <h2 className="font-black text-white mb-1 text-2xl tracking-tight flex items-center gap-2">
-            <AlertTriangle size={24} className="text-orange-500"/>
-            系统核心进程中断 (SYSTEM FAILURE)
-          </h2>
-          
-          <p className="text-slate-400 text-xs mb-4 max-w-md">
-              检测到致命错误，为保护资金安全，系统已紧急熔断。
-          </p>
-
-          <div className="bg-black/60 p-3 rounded-lg border border-red-900/30 mb-6 max-w-xl w-full text-left overflow-hidden font-mono shadow-inner">
-            <div className="flex items-center gap-2 text-red-400 text-[10px] font-bold mb-2 border-b border-red-900/30 pb-1">
-                <Terminal size={12} /> ERROR TRACE LOG
+        <div className="fixed inset-0 z-[9999] w-screen h-screen flex flex-col items-center justify-center p-6 bg-[#0b0e11] text-center overflow-y-auto">
+          <div className="max-w-xl w-full my-auto flex flex-col items-center">
+            <div className="bg-red-900/20 p-4 rounded-full mb-4 animate-pulse border border-red-500/30 shadow-[0_0_20px_rgba(220,38,38,0.3)]">
+              <ShieldAlert size={56} className="text-red-500" />
             </div>
-            <p className="text-[10px] text-red-200/80 break-all leading-relaxed opacity-90">
-              {this.state.error?.message || 'Unknown render error occurred.'}
+            
+            <h2 className="font-black text-white mb-1 text-2xl tracking-tight flex items-center gap-2 justify-center">
+              <AlertTriangle size={24} className="text-orange-500 shrink-0"/>
+              系统核心进程中断 (SYSTEM FAILURE)
+            </h2>
+            
+            <p className="text-slate-400 text-xs mb-4 max-w-md">
+                检测到致命渲染错误。为保护交易安全，安全围栏已激活。您可以在此下方直接操作修复或恢复出厂设置。
             </p>
-          </div>
 
-          <button
-              onClick={this.handleRetry}
-              className="flex items-center gap-2 bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 text-white font-bold rounded-lg transition-all shadow-lg border border-slate-500/30 px-8 py-3 text-sm"
-          >
-              <RefreshCw size={16} className="animate-spin-slow" />
-              尝试恢复会话
-          </button>
-          
-          <div className="mt-6 text-[9px] text-slate-600 flex items-center gap-1.5 opacity-60">
-              <Cpu size={10} /> Protected by Savior Protocol v12.29
+            <div className="bg-black/60 p-3 rounded-lg border border-red-900/30 mb-6 w-full text-left overflow-hidden font-mono shadow-inner">
+              <div className="flex items-center gap-2 text-red-400 text-[10px] font-bold mb-2 border-b border-red-900/30 pb-1">
+                  <Terminal size={12} /> ERROR TRACE LOG
+              </div>
+              <p className="text-[10px] text-red-200/80 break-all leading-relaxed opacity-90 max-h-24 overflow-y-auto">
+                {this.state.error?.message || 'Unknown render error occurred.'}
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2.5 w-full">
+              <button
+                  onClick={this.handleRetry}
+                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg transition-all shadow-lg border border-indigo-500/30 py-3 text-xs"
+              >
+                  <RefreshCw size={14} />
+                  仅重载核心 / 尝试恢复当前会话
+              </button>
+
+              <button
+                  onClick={() => {
+                      localStorage.removeItem('SAVIOR_LOGS');
+                      localStorage.removeItem('SAVIOR_SYSTEM_MONITOR_LOGS');
+                      localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');
+                      localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');
+                      localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');
+                      alert('已清理系统日志与扫描器缓存。核心正在重试...');
+                      window.location.reload();
+                  }}
+                  className="w-full flex items-center justify-center gap-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 font-bold rounded-lg transition-all border border-blue-500/30 py-3 text-xs"
+              >
+                  执行修复：清理系统日志与臃肿缓存 (保留个人设置)
+              </button>
+
+              <button
+                  onClick={() => {
+                      if (confirm('确定要清除所有系统设置、账户数据、运行参数恢复出厂配置吗？该操作不可撤销！')) {
+                          localStorage.clear();
+                          alert('出厂设置已成功还原。系统正在重联...');
+                          window.location.reload();
+                      }
+                  }}
+                  className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-400 font-bold rounded-lg transition-all border border-slate-700 py-3 text-xs"
+              >
+                  最终对策：完全清除缓存恢复出厂设置 (慎用)
+              </button>
+            </div>
+            
+            <div className="mt-8 text-[9px] text-slate-600 flex items-center gap-1.5 opacity-60">
+                <Cpu size={10} /> Emergency Recovery Protocol v12.30
+            </div>
           </div>
         </div>
       );

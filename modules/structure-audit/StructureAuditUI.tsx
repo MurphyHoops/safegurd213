@@ -1,9 +1,9 @@
 
 import React, { useEffect, useRef } from 'react';
 import { useStructureAudit } from './useStructureAudit';
-import { ScannerItem, List3Config } from '../../components/Scanner/scannerTypes';
+import { ScannerItem, List3Config, ActionConfig } from '../../components/Scanner/scannerTypes';
 import { PositionSide, Position } from '../../types';
-import List3_Structure from '../../components/Scanner/List3_Structure';
+import List3_Structure from './components/List3_Structure';
 
 interface Props {
     candidates: ScannerItem[]; // From List 2
@@ -12,16 +12,18 @@ interface Props {
     onRemoveSignalReady?: (fn: (uniqueId: string) => void) => void;
     realPrices: Record<string, number>;
     setChartData: (data: any) => void;
-    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => void;
+    executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => boolean;
     activePositions: Position[];
     directMode?: boolean;
+    actionConfig?: ActionConfig | null;
 }
 
 const DEFAULT_CONFIG: List3Config = { 
-    timeframes: ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h'], 
-    enableThrust: false, 
-    enableResonance: false, 
-    strictTrend: true, // Default to TRUE
+    timeframes: ['5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'], 
+    enableAmplitudeAudit: true,
+    enableMultiResonance: false,
+    minResonanceCount: 2,
+    strictTrend: true,
     checkCandleColor: false, 
     maxBBW: 1.0, 
     validityPeriod: 5, 
@@ -34,13 +36,12 @@ const DEFAULT_CONFIG: List3Config = {
     rsiShortMin: 10, 
     rsiShortMax: 60, 
     enableRsi: true,
-    autoSimOpen: false, 
-    antiChase: { enabled: true, maxRise: 100, maxFall: 50 }
+    autoSimOpen: false
 };
 
-export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, directMode = false }) => {
+export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, directMode = false, actionConfig }) => {
     
-    const { config, setConfig, list3, isScanning, scanStatus, countdowns, removeSignal } = useStructureAudit(candidates, DEFAULT_CONFIG, realPrices, directMode);
+    const { config, setConfig, list3, isScanning, scanStatus, countdowns, removeSignal, removeItem, clearItems } = useStructureAudit(candidates, DEFAULT_CONFIG, realPrices, directMode);
     
     // Expose removeSignal to parent
     useEffect(() => {
@@ -53,8 +54,13 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
     const prevConfigStrRef = useRef('');
 
     // Sync Output
+    const lastListStrRef = useRef<string>('');
     useEffect(() => {
-        onResultsUpdate(list3);
+        const str = JSON.stringify(list3);
+        if (str !== lastListStrRef.current) {
+            onResultsUpdate(list3);
+            lastListStrRef.current = str;
+        }
     }, [list3, onResultsUpdate]);
 
     // Sync Config (SAFE VERSION)
@@ -74,9 +80,11 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
             list3={list3} 
             setChartData={setChartData} 
             executeTradeSafe={executeTradeSafe} 
-            actionConfig={{ enabled: false } as any} // Dummy pass
+            actionConfig={actionConfig || ({ enabled: false } as any)} 
             scanningStatus={scanStatus}
             activePositions={activePositions}
+            onRemoveItem={removeItem}
+            onClearItems={clearItems}
         />
     );
 };

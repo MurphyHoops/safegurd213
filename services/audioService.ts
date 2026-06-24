@@ -164,9 +164,13 @@ class AudioService {
    * Checks if the audio context is suspended and tries to wake it up.
    * Should be called periodically by the main loop.
    */
-  checkAndResume() {
+  async checkAndResume() {
       if (this.audioCtx && this.audioCtx.state === 'suspended') {
-          this.audioCtx.resume().catch(e => console.warn("Audio Resume Failed", e));
+          try {
+              await this.audioCtx.resume();
+          } catch (e) {
+              console.warn("Audio Resume Failed", e);
+          }
       }
   }
 }

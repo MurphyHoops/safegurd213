@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { HedgeRecord, TradeLog } from '../types';
-import { X, ShieldAlert, Clock, Info, Trash2, TrendingDown, TrendingUp, Calculator } from 'lucide-react';
+import { X, ShieldAlert, Clock, Info, Trash2, TrendingDown, TrendingUp, Calculator, RotateCcw } from 'lucide-react';
+import { formatPrice } from '../services/symbolUtils';
 
 interface Props {
   symbol: string; // Can be a specific symbol or 'ALL'
@@ -13,10 +14,23 @@ interface Props {
 
 const HedgeHistoryModal: React.FC<Props> = ({ symbol, records, tradeLogs, onClose, onClearHistory, onDeleteRecord }) => {
   const isAll = symbol === 'ALL';
+  const [startTime, setStartTime] = React.useState<string>('');
+  const [endTime, setEndTime] = React.useState<string>('');
   
-  const symbolRecords = records
-    .filter(r => isAll || r.symbol === symbol)
-    .sort((a, b) => b.timestamp - a.timestamp);
+  const filteredRecords = useMemo(() => {
+    const startMs = startTime ? new Date(startTime).getTime() : 0;
+    const endMs = endTime ? new Date(endTime).getTime() : Infinity;
+
+    return records
+      .filter(r => {
+        const matchesSymbol = isAll || r.symbol === symbol;
+        if (!matchesSymbol) return false;
+        return r.timestamp >= startMs && r.timestamp <= endMs;
+      })
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [records, symbol, isAll, startTime, endTime]);
+
+  const symbolRecords = filteredRecords;
 
   const handleSymbolClear = (sym: string) => {
       if(window.confirm(`⚠️ 确定要清空 ${sym} 的所有历史记录吗？`)) {
@@ -28,7 +42,15 @@ const HedgeHistoryModal: React.FC<Props> = ({ symbol, records, tradeLogs, onClos
   const pnlStats = useMemo(() => {
       if (isAll) return null;
       
-      const closedLogs = tradeLogs.filter(t => t.symbol === symbol && t.status === 'CLOSED');
+      const startMs = startTime ? new Date(startTime).getTime() : 0;
+      const endMs = endTime ? new Date(endTime).getTime() : Infinity;
+
+      const closedLogs = tradeLogs.filter(t => {
+          const matches = t.symbol === symbol && t.status === 'CLOSED';
+          if (!matches) return false;
+          const logTime = t.exit_timestamp || t.entry_timestamp;
+          return logTime >= startMs && logTime <= endMs;
+      });
       const totalPnL = closedLogs.reduce((acc, curr) => acc + (curr.profit_usdt || 0), 0);
       const totalTrades = closedLogs.length;
       
@@ -40,7 +62,7 @@ const HedgeHistoryModal: React.FC<Props> = ({ symbol, records, tradeLogs, onClos
       const totalLoss = stopLossLogs.reduce((acc, curr) => acc + (curr.profit_usdt || 0), 0);
 
       return { totalPnL, totalTrades, totalLoss, winCount: closedLogs.length - stopLossLogs.length, lossCount: stopLossLogs.length };
-  }, [symbol, tradeLogs, isAll]);
+  }, [symbol, tradeLogs, isAll, startTime, endTime]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
@@ -61,12 +83,41 @@ const HedgeHistoryModal: React.FC<Props> = ({ symbol, records, tradeLogs, onClos
                 <p className="text-xs text-slate-500">详细触发日志与操作流水</p>
              </div>
           </div>
-          <button 
-            onClick={onClose}
-            className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-white"
-          >
-            <X size={24} />
-          </button>
+
+          <div className="flex items-center gap-4">
+              {/* Time Filter UI */}
+              <div className="hidden sm:flex items-center gap-2 bg-slate-800/50 p-1.5 rounded-lg border border-slate-700/50">
+                  <Clock size={14} className="text-slate-500 ml-1" />
+                  <input 
+                      type="datetime-local" 
+                      value={startTime}
+                      onChange={(e) => setStartTime(e.target.value)}
+                      className="bg-transparent border-none text-[10px] text-slate-300 focus:outline-none w-32"
+                  />
+                  <span className="text-slate-600">-</span>
+                  <input 
+                      type="datetime-local" 
+                      value={endTime}
+                      onChange={(e) => setEndTime(e.target.value)}
+                      className="bg-transparent border-none text-[10px] text-slate-300 focus:outline-none w-32"
+                  />
+                  {(startTime || endTime) && (
+                      <button 
+                          onClick={() => { setStartTime(''); setEndTime(''); }}
+                          className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-1 rounded-md transition-colors"
+                      >
+                          <RotateCcw size={10} />
+                      </button>
+                  )}
+              </div>
+
+              <button 
+                onClick={onClose}
+                className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-white"
+              >
+                <X size={24} />
+              </button>
+          </div>
         </div>
 
         {/* Summary Card (If single symbol) */}
@@ -161,7 +212,7 @@ const HedgeHistoryModal: React.FC<Props> = ({ symbol, records, tradeLogs, onClos
                                             {record.action === 'CLOSE_HEDGE' && '关闭对冲'}
                                         </span>
                                     </td>
-                                    <td className="px-4 py-3 font-mono text-white">{record.triggerPrice.toFixed(4)}</td>
+                                    <td className="px-4 py-3 font-mono text-white">{formatPrice(record.triggerPrice)}</td>
                                     <td className="px-4 py-3 font-mono">{record.hedgeAmount.toFixed(0)} U</td>
                                     <td className={`px-4 py-3 font-mono font-bold ${record.originalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                                         {record.originalPnL > 0 ? '+' : ''}{record.originalPnL.toFixed(2)}%

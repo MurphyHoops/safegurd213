@@ -15,7 +15,8 @@ export function checkRescueRules(
     closePair: (mainId: string, hedgeId: string, reason: string) => void,
     amputate: (position: Position, ratio: number, reason: string) => void,
     refill: (position: Position, reason: string) => void,
-    closeHedgeOnly: (hedgeId: string, profit: number, reason: string) => void
+    closeHedgeOnly: (hedgeId: string, profit: number, reason: string) => void,
+    addLog?: (type: string, message: string) => void
 ): boolean {
     // 仅针对【已对冲】的【主仓位】进行检查
     // Note: A main position might have isHedged=false but still have accumulated profit/loss
@@ -23,6 +24,26 @@ export function checkRescueRules(
     if (!position.mainPositionId) {
         const hedgePosition = allPositions.find(p => p.mainPositionId === position.entryId);
         
+        // 1. 如果启用了"断臂求生"
+        if (settings.stopLoss.amputationEnabled) {
+            const totalAccumulatedLoss = 
+                (position.cumulativeHedgeLoss || 0) + 
+                (position.cumulativeAmputationLoss || 0) + 
+                (hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0);
+            
+            const hasHedgingHistory = totalAccumulatedLoss > 0 || hedgePosition !== undefined;
+
+            if (hasHedgingHistory) {
+                const res = checkStrategy4_Amputation(position, hedgePosition, settings, amputate, refill, closePair, addLog);
+                if (res) {
+                    return true;
+                }
+                // 极为关键：当启用了断臂求生，该仓位的最终去留全部交由策略4托管。
+                // 我们必须绕过策略2和策略3的分支，防止其被普通的对冲平仓规则中途拦截而直接平账，彻底实现“先冲顶，待回调才清仓”的呼吸机制。
+                return false;
+            }
+        }
+
         // 策略 3: 回调盈利清仓 (蚂蚁搬家) - Needs to run even without active hedge to check accumulated PnL
         if (checkStrategy3_CallbackProfit(position, hedgePosition, settings, closePair, closeHedgeOnly)) {
             return true;
@@ -35,8 +56,8 @@ export function checkRescueRules(
 
         if (!hedgePosition) return false;
 
-        // 策略 4: 断臂求生 (弃卒保车)
-        if (checkStrategy4_Amputation(position, hedgePosition, settings, amputate, refill, closePair)) {
+        // 策略 4: 断臂求生 (弃卒保车) - 当未启用断臂求生作为主控，仍作为下限兜底运行时触发
+        if (checkStrategy4_Amputation(position, hedgePosition, settings, amputate, refill, closePair, addLog)) {
             return true;
         }
     }

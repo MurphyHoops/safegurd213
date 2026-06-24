@@ -1,8 +1,11 @@
 {
   "name": "0211自动找币防爆仓救世之星",
-  "description": "币安交易所终极风控系统 - 从绝对防守到主动出击的智能交易助手。",
+  "description": "币安交易所终极风控系统 - 集成『救世实验室』内核分析与智能选币引擎，具备强大的异常自愈与实况监控能力。",
   "requestFramePermissions": [
     "microphone",
     "screen-wake-lock"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

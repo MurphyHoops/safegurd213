@@ -1,1 +1,0 @@
-// This file is deprecated and should be ignored. Please use the root App.tsx.

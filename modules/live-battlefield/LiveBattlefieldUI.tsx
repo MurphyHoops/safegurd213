@@ -2,7 +2,7 @@
 import React, { useRef } from 'react';
 import { useLiveBattlefield } from './useLiveBattlefield';
 import { Position, PositionSide } from '../../types';
-import List5_Live from '../../components/Scanner/List5_Live';
+import List5_Live from './components/List5_Live';
 
 interface Props {
     positions: Position[];

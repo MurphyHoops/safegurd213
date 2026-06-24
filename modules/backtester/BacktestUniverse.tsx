@@ -62,7 +62,7 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
     }, [isPlaying, handleTick]);
 
     // --- HANDLERS ---
-    const handleOpenPosition = (symbol: string, side: PositionSide, amount: number, price: number) => {
+    const handleOpenPosition = useCallback((symbol: string, side: PositionSide, amount: number, price: number) => {
         const newPos: Position = {
             symbol,
             side,
@@ -83,9 +83,9 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
             type: 'SUCCESS',
             message: `[回测] 开仓成功: ${symbol} ${side} @ ${price}`
         }, ...prev]);
-    };
+    }, [virtualTime, setPositions, setLogs]);
 
-    const handleClosePosition = (symbol: string, side: PositionSide) => {
+    const handleClosePosition = useCallback((symbol: string, side: PositionSide) => {
         setPositions(prev => {
             const pos = prev.find(p => p.symbol === symbol && p.side === side);
             if (pos) {
@@ -108,7 +108,22 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
             }
             return prev.filter(p => !(p.symbol === symbol && p.side === side));
         });
-    };
+    }, [virtualTime, setPositions, setAccount, setTradeLogs]);
+
+    const virtualTimeRef = useRef(virtualTime);
+    useEffect(() => {
+        virtualTimeRef.current = virtualTime;
+    }, [virtualTime]);
+
+    const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => {
+        const now = virtualTimeRef.current;
+        setLogs(prev => [{
+            id: Date.now().toString() + Math.random(),
+            timestamp: new Date(now),
+            type: type as any,
+            message
+        }, ...prev]);
+    }, [setLogs]);
 
     return (
         <div className="fixed inset-0 z-[1000] bg-slate-950 text-slate-200 flex flex-col overflow-hidden font-sans">
@@ -188,6 +203,7 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                         onOpenManual={() => {}}
                         onRestoreSettings={() => {}}
                         onBatchOpen={() => {}}
+                        onOpenSaviorLab={() => {}}
                     />
                 </div>
 
@@ -199,6 +215,7 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                             tradeLogs={tradeLogs}
                             realPrices={realPrices}
                             networkStatus="healthy"
+                            isOnline={true}
                             onRowLongPress={() => {}}
                             onShowHistory={() => {}}
                             hasHistory={() => tradeLogs.length > 0}
@@ -236,14 +253,7 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                     activePositions={positions}
                     balance={account.marginBalance}
                     directMode={settings.system.directMode}
-                    onLog={(type, message) => {
-                        setLogs(prev => [{
-                            id: Date.now().toString() + Math.random(),
-                            timestamp: new Date(virtualTime),
-                            type,
-                            message
-                        }, ...prev]);
-                    }}
+                    onLog={handleLog}
                 />
             </div>
         </div>

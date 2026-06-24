@@ -14,8 +14,9 @@ export function analyzeList3Structure(
 ): ScannerItem | null {
     
     const idx = closes.length - 1;
-    // Safety check for minimal data requirements
-    if (idx < 80) return null; // Increased to 80 to ensure EMA80 is valid
+    // Safety check: Needs at least 40 candles for basic EMA alignment. 
+    // EMA80 will be treated as optional if history is between 40-80.
+    if (idx < 40) return null; 
 
     // 0. FIND THE SIGNAL INDEX
     // Locate the exact candle index where the List 2 signal occurred using the timestamp
@@ -48,8 +49,10 @@ export function analyzeList3Structure(
         signalIdx = idx;
     }
 
-    // --- METRIC 1: STRICT TREND CHECK (AUDIT EMA ALIGNMENT) ---
-    let isStrictTrend = false;
+    // --- METRIC 1: TREND CHECK (AUDIT EMA ALIGNMENT) ---
+    // Check both signal time and current time. If either satisfies, we consider it a trend pass.
+    let isSignalTrendValid = false;
+    let isCurrentTrendValid = false;
     
     // Always calculate EMAs 
     let ema10 = calculateEMA(closes, 10);
@@ -65,30 +68,37 @@ export function analyzeList3Structure(
         return (isNaN(val)) ? -1 : val;
     };
 
-    if (signalIdx >= 80) {
-        const c10 = getVal(ema10, signalIdx, 10);
-        const c20 = getVal(ema20, signalIdx, 20);
-        const c30 = getVal(ema30, signalIdx, 30);
-        const c40 = getVal(ema40, signalIdx, 40);
-        const c80 = getVal(ema80, signalIdx, 80);
+    const checkFan = (index: number) => {
+        // Relaxed requirement: Need at least 40 candles for a valid trend (EMA10-40)
+        // If index < 39, we definitely don't have enough for EMA40
+        if (index < 39) return false; 
+        
+        const c10 = getVal(ema10, index, 10);
+        const c20 = getVal(ema20, index, 20);
+        const c30 = getVal(ema30, index, 30);
+        const c40 = getVal(ema40, index, 40);
+        const c80 = getVal(ema80, index, 80);
 
-        // Valid data check: ensure all EMAs are present
-        if (c10 !== -1 && c20 !== -1 && c30 !== -1 && c40 !== -1 && c80 !== -1) {
-            if (task.direction === 'LONG') {
-                // Strict Fan open upwards: 10 > 20 > 30 > 40 > 80
-                // We use explicit strict inequality
-                if (c10 > c20 && c20 > c30 && c30 > c40 && c40 > c80) {
-                    isStrictTrend = true;
-                }
-            } else {
-                // Strict Fan open downwards: 10 < 20 < 30 < 40 < 80
-                // 10 is Lowest, 80 is Highest
-                if (c10 < c20 && c20 < c30 && c30 < c40 && c40 < c80) {
-                    isStrictTrend = true;
-                }
-            }
+        // Required: at least EMAs 10, 20, 30, 40 must be available
+        if (c10 === -1 || c20 === -1 || c30 === -1 || c40 === -1) return false;
+
+        if (task.direction === 'LONG') {
+            const basic = (c10 > c20 && c20 > c30 && c30 > c40);
+            if (!basic) return false;
+            // 80 is optional if history is too short. If exists, it must be below 40.
+            return (c80 === -1 || c40 > c80);
+        } else {
+            const basic = (c10 < c20 && c20 < c30 && c30 < c40);
+            if (!basic) return false;
+            // 80 is optional if history is too short. If exists, it must be above 40.
+            return (c80 === -1 || c40 < c80);
         }
-    }
+    };
+
+    isSignalTrendValid = checkFan(signalIdx);
+    isCurrentTrendValid = checkFan(idx);
+
+    let isStrictTrend = isSignalTrendValid && isCurrentTrendValid;
 
     // --- METRIC 2: Candle Color Check ---
     let isColorValid = true; 
@@ -121,24 +131,36 @@ export function analyzeList3Structure(
         postSignalExtreme = task.price;
     }
 
-    // --- METRIC 4: Thrust Logic ---
+    // --- METRIC 4: Thrust Logic (New 4K Window Logic) ---
+    // Rule: Signal candle (1K) OR [Signal + 3 Left] OR [Signal + 3 Right] amplitude > 1%
     let isThrustValid = false;
-    if (signalIdx >= 39) { 
-        const centerIdx = signalIdx;
-        const e10 = getVal(ema10, centerIdx, 10);
-        const e20 = getVal(ema20, centerIdx, 20);
-        const e30 = getVal(ema30, centerIdx, 30);
-        const e40 = getVal(ema40, centerIdx, 40);
-
-        if(e10 !== -1 && e20 !== -1 && e30 !== -1 && e40 !== -1) {
-            const maxEma = Math.max(e10, e20, e30, e40);
-            const minEma = Math.min(e10, e20, e30, e40);
-            const cHigh = highs[centerIdx];
-            const cLow = lows[centerIdx];
-            
-            const tolerance = 0.001; 
-            const isCrossing = cHigh >= maxEma * (1 - tolerance) && cLow <= minEma * (1 + tolerance);
-            if (isCrossing) isThrustValid = true;
+    const signalCandleAmp = (highs[signalIdx] - lows[signalIdx]) / opens[signalIdx];
+    
+    if (signalCandleAmp >= 0.01) {
+        isThrustValid = true;
+    } else {
+        // Check Left Window: [signalIdx-3, signalIdx]
+        const leftStart = Math.max(0, signalIdx - 3);
+        let leftMax = -Infinity;
+        let leftMin = Infinity;
+        for (let i = leftStart; i <= signalIdx; i++) {
+            if (highs[i] > leftMax) leftMax = highs[i];
+            if (lows[i] < leftMin) leftMin = lows[i];
+        }
+        const leftAmp = (leftMax - leftMin) / opens[leftStart];
+        
+        // Check Right Window: [signalIdx, signalIdx+3]
+        const rightEnd = Math.min(closes.length - 1, signalIdx + 3);
+        let rightMax = -Infinity;
+        let rightMin = Infinity;
+        for (let i = signalIdx; i <= rightEnd; i++) {
+            if (highs[i] > rightMax) rightMax = highs[i];
+            if (lows[i] < rightMin) rightMin = lows[i];
+        }
+        const rightAmp = (rightMax - rightMin) / opens[signalIdx];
+        
+        if (leftAmp >= 0.01 || rightAmp >= 0.01) {
+            isThrustValid = true;
         }
     }
 
@@ -211,7 +233,6 @@ export function analyzeList3Structure(
             crossCount: crossCount,
             locationPct: locationPct,
             lag: idx - signalIdx, 
-            timestamp: Date.now(),
             signalTime: task.time,
             signalPrice: signalClose,
             signalHigh: signalHigh, 
@@ -219,7 +240,11 @@ export function analyzeList3Structure(
             postSignalExtreme: postSignalExtreme,
             periodChange: task.periodChange, // Pass-through
             isReverse3K,
-            ema80: getVal(ema80, signalIdx, 80)
+            ema10: getVal(ema10, idx, 10),
+            ema20: getVal(ema20, idx, 20),
+            ema30: getVal(ema30, idx, 30),
+            ema40: getVal(ema40, idx, 40),
+            ema80: getVal(ema80, idx, 80)
         }
     };
 }

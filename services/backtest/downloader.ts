@@ -14,11 +14,29 @@ export class BacktestDownloader {
     ): Promise<void> {
         try {
             await backtestDb.init();
+            
+            // Optimization: Check if we already have data covering this range to avoid redundant network calls
+            const existing = await backtestDb.getKLines(symbol, interval, startTime, endTime);
+            
             let currentStart = startTime;
+            if (existing.length > 0) {
+                // Find the latest timestamp in the existing klines
+                const latest = existing[existing.length - 1].time;
+                // If it covers our range (allow 1 candle gap for in-progress klines)
+                if (latest >= endTime - 60000) {
+                    if (onProgress) onProgress(100, endTime, endTime);
+                    return;
+                }
+                // Otherwise start from the next candle
+                currentStart = latest + 1;
+            }
+
             const totalMs = endTime - startTime;
+            if (totalMs <= 0) return;
 
             while (currentStart < endTime) {
-                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&startTime=${currentStart}&limit=1000`;
+                const safeSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
+                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${interval}&startTime=${currentStart}&limit=1000`;
                 
                 const response = await fetchWithFallback(url, {}, (data) => Array.isArray(data), directMode);
                 const data = await response.json();
@@ -44,8 +62,8 @@ export class BacktestDownloader {
                     onProgress(progress, currentStart, endTime);
                 }
 
-                // Reduced delay for parallel efficiency, but still respectful
-                await new Promise(resolve => setTimeout(resolve, 50));
+                // Further reduced delay for high-speed fiber connections, but still respectful of API limits
+                await new Promise(resolve => setTimeout(resolve, 10));
             }
         } catch (err) {
             console.error(`Download error for ${symbol} ${interval}:`, err);

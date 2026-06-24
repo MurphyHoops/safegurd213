@@ -31,7 +31,8 @@ export interface BacktestResult {
 
 export class BacktestService {
     static async fetchKLines(symbol: string, interval: string, limit: number = 1000): Promise<KLine[]> {
-        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+        const safeSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
+        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${interval}&limit=${limit}`;
         const res = await fetchWithFallback(url, { timeout: 30000 });
         const data = await res.json();
         

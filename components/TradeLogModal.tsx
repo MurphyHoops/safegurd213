@@ -12,12 +12,12 @@ interface Props {
   onOpenChart?: (symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string) => void;
 }
 
-type FilterType = 'ALL' | 'OPEN' | 'WIN' | 'LOSS' | 'RECOVERY' | 'HEDGE' | 'DEBT' | 'NORMAL_WIN' | 'NORMAL_LOSS' | 'UNHEDGED_WIN' | 'UNHEDGED_LOSS' | 'LONG' | 'SHORT';
+type FilterType = 'ALL' | 'OPEN' | 'WIN' | 'LOSS' | 'RECOVERY' | 'HEDGE' | 'DEBT' | 'NORMAL_WIN' | 'NORMAL_LOSS' | 'UNHEDGED_WIN' | 'UNHEDGED_LOSS' | 'LONG' | 'SHORT' | 'NEW_OPEN';
 
 // Extracted FilterChip to prevent re-creation on every render
-const FilterChip = ({ type, label, icon: Icon, colorClass, activeFilter, setActiveFilter }: any) => (
+const FilterChip = ({ type, label, icon: Icon, colorClass, activeFilter, handleFilterChange }: any) => (
     <button 
-        onClick={() => setActiveFilter(type)}
+        onClick={() => handleFilterChange(type)}
         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${
             activeFilter === type 
             ? `${colorClass} ring-1 ring-offset-1 ring-offset-slate-900 ring-current` 
@@ -38,32 +38,48 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
   const [isGroupedView, setIsGroupedView] = useState(false); // Default to List View
   const [groupSortConfig, setGroupSortConfig] = useState<{ key: 'TIME' | 'AMOUNT', direction: 'DESC' | 'ASC' }>({ key: 'TIME', direction: 'DESC' });
   const [listSortConfig, setListSortConfig] = useState<{ key: 'TIME' | 'AMOUNT', direction: 'DESC' | 'ASC' }>({ key: 'TIME', direction: 'DESC' });
+  
+  // Time Range States
+  const [startTime, setStartTime] = useState<string>('');
+  const [endTime, setEndTime] = useState<string>('');
 
   // Removed auto-switch to Grouped View to restore individual log display as requested
+  const handleFilterChange = (newFilter: FilterType) => {
+      setActiveFilter(newFilter);
+      setSelectedRecoveryId(null);
+      setSelectedDebtId(null);
+  };
+
+  const handleSearchChange = (val: string) => {
+      setSearchTerm(val);
+      if (!val && (activeFilter === 'LONG' || activeFilter === 'SHORT')) {
+          handleFilterChange('ALL');
+      }
+  };
+
   useEffect(() => {
       if (initialSearch) {
           setIsGroupedView(false);
       }
   }, [initialSearch]);
 
-  useEffect(() => {
-      setSelectedRecoveryId(null);
-      setSelectedDebtId(null);
-  }, [activeFilter]);
-
-  // Reset LONG/SHORT filter if search term is cleared
-  useEffect(() => {
-      if (!searchTerm && (activeFilter === 'LONG' || activeFilter === 'SHORT')) {
-          setActiveFilter('ALL');
-      }
-  }, [searchTerm, activeFilter]);
-
   // --- 0. SHARED STATS & IDENTIFIERS ---
   const { everHedgedIds, recoveryStats, activeHedgeStats } = useMemo(() => {
       const ids = new Set<string>();
+      const startMs = startTime ? new Date(startTime).getTime() : 0;
+      const endMs = endTime ? new Date(endTime).getTime() : Infinity;
       
+      const filteredTradeLogs = tradeLogs.filter(l => {
+          const logTime = l.exit_timestamp || l.entry_timestamp;
+          return logTime >= startMs && logTime <= endMs;
+      });
+
+      const filteredPositions = positions.filter(p => {
+          return p.entryTime >= startMs && p.entryTime <= endMs;
+      });
+
       // Pass 1: Direct links from logs
-      tradeLogs.forEach(l => {
+      filteredTradeLogs.forEach(l => {
           if (l.main_entry_id) {
               ids.add(l.main_entry_id);
               ids.add(l.entry_id);
@@ -78,7 +94,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
       });
 
       // Pass 2: Direct links from active positions
-      positions.forEach(p => {
+      filteredPositions.forEach(p => {
           if (p.mainPositionId) {
               ids.add(p.mainPositionId);
               ids.add(p.entryId);
@@ -89,9 +105,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
       });
 
       // Pass 3: Recursive expansion (catch chains like A -> B -> C)
-      for (let i = 0; i < 5; i++) { // Increased passes for deeper chains
+      for (let i = 0; i < 10; i++) { // Increased passes for deeper chains
           let added = false;
-          tradeLogs.forEach(l => {
+          filteredTradeLogs.forEach(l => {
               if (l.main_entry_id && (ids.has(l.main_entry_id) || ids.has(l.entry_id))) {
                   if (!ids.has(l.main_entry_id) || !ids.has(l.entry_id)) {
                       ids.add(l.main_entry_id);
@@ -107,7 +123,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                   }
               }
           });
-          positions.forEach(p => {
+          filteredPositions.forEach(p => {
               if (p.mainPositionId && (ids.has(p.mainPositionId) || ids.has(p.entryId))) {
                   if (!ids.has(p.mainPositionId) || !ids.has(p.entryId)) {
                       ids.add(p.mainPositionId);
@@ -121,14 +137,14 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
 
       // 1. Group all logs and positions by symbol
       const logsBySymbol = new Map<string, TradeLog[]>();
-      tradeLogs.forEach(l => {
+      filteredTradeLogs.forEach(l => {
           const list = logsBySymbol.get(l.symbol) || [];
           list.push(l);
           logsBySymbol.set(l.symbol, list);
       });
 
       const positionsBySymbol = new Map<string, Position[]>();
-      positions.forEach(p => {
+      filteredPositions.forEach(p => {
           const list = positionsBySymbol.get(p.symbol) || [];
           list.push(p);
           positionsBySymbol.set(p.symbol, list);
@@ -192,12 +208,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
           });
 
           let symbolHedgeCount = 0;
-          let symbolGrossProfit = 0;
-          let symbolTotalLoss = 0;
-          let symbolNetProfit = 0;
-          let symbolLastStopLossTime = 0;
-          const symbolRelatedIds = new Set<string>();
-          let representativeLog: TradeLog | null = null;
+          let symbolGrossTotal = 0;
+          let symbolLossTotal = 0;
+          let symbolNetTotal = 0;
+          let symbolHedgeTotalCount = 0;
+          let symbolCycleLastStopLossTime = 0;
+          const allSymbolRelatedIds = new Set<string>();
 
           cycles.forEach(cycleIds => {
               const cycleLogs = symbolLogs.filter(l => cycleIds.has(l.entry_id));
@@ -213,9 +229,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                   let cycleHasClosedHedge = false;
                   let cycleHasMainEntry = false;
                   let cycleLastStopLossTime = 0;
+                  const cycleRelatedIds = new Set<string>();
 
                   cycleLogs.forEach(l => {
                       if (l.status !== 'CLOSED') return;
+                      cycleRelatedIds.add(l.entry_id);
+                      allSymbolRelatedIds.add(l.entry_id);
 
                       const p = Number(l.profit_usdt || 0);
                       if (p > 0) cycleGrossProfit += p;
@@ -235,22 +254,32 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                       if (!l.main_entry_id) {
                           cycleHasMainEntry = true;
                       }
-                      
-                      symbolRelatedIds.add(l.entry_id);
-                      
-                      if (!representativeLog || (l.exit_timestamp || 0) > (representativeLog!.exit_timestamp || 0)) {
-                          representativeLog = l;
-                      }
                   });
 
                   // Only count if it was actually a hedge cycle (at least one hedge or one main position with hedges)
                   if (cycleHasClosedHedge || (cycleHasMainEntry && cycleLogs.some(l => !!l.main_entry_id))) {
-                      symbolHedgeCount += cycleStopLossCount;
-                      symbolGrossProfit += cycleGrossProfit;
-                      symbolTotalLoss += cycleTotalLoss;
-                      symbolNetProfit += (cycleGrossProfit - cycleTotalLoss);
-                      if (cycleLastStopLossTime > symbolLastStopLossTime) {
-                          symbolLastStopLossTime = cycleLastStopLossTime;
+                      const cycleNetProfit = cycleGrossProfit - cycleTotalLoss;
+                      
+                      // Find best representative log for this cycle
+                      let repLog = cycleLogs.find(l => !l.main_entry_id && !l.parent_entry_id && l.status === 'CLOSED') || 
+                                   cycleLogs.sort((a,b) => (b.exit_timestamp || 0) - (a.exit_timestamp || 0))[0];
+
+                      rSummaries.push({
+                          mainLog: repLog,
+                          grossProfit: cycleGrossProfit,
+                          totalLoss: cycleTotalLoss,
+                          netProfit: cycleNetProfit,
+                          hedgeCount: cycleStopLossCount,
+                          lastStopLossTime: cycleLastStopLossTime,
+                          relatedIds: cycleRelatedIds
+                      });
+
+                      symbolGrossTotal += cycleGrossProfit;
+                      symbolLossTotal += cycleTotalLoss;
+                      symbolNetTotal += cycleNetProfit;
+                      symbolHedgeTotalCount += cycleStopLossCount;
+                      if (cycleLastStopLossTime > symbolCycleLastStopLossTime) {
+                          symbolCycleLastStopLossTime = cycleLastStopLossTime;
                       }
                   }
               } else {
@@ -317,25 +346,16 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
               }
           });
 
-          if (symbolRelatedIds.size > 0 && representativeLog) {
-              rSummaries.push({
-                  mainLog: representativeLog,
-                  grossProfit: symbolGrossProfit,
-                  totalLoss: symbolTotalLoss,
-                  netProfit: symbolNetProfit,
-                  hedgeCount: symbolHedgeCount,
-                  lastStopLossTime: symbolLastStopLossTime,
-                  relatedIds: symbolRelatedIds
-              });
+          if (allSymbolRelatedIds.size > 0) {
               rStats.set(symbol, {
-                  netProfit: symbolNetProfit,
-                  grossProfit: symbolGrossProfit,
-                  totalLoss: symbolTotalLoss,
-                  hedgeCount: symbolHedgeCount,
-                  lastStopLossTime: symbolLastStopLossTime
+                  netProfit: symbolNetTotal,
+                  grossProfit: symbolGrossTotal,
+                  totalLoss: symbolLossTotal,
+                  hedgeCount: symbolHedgeTotalCount,
+                  lastStopLossTime: symbolCycleLastStopLossTime
               });
-              rRelatedIdsMap.set(symbol, symbolRelatedIds);
-              rTotal += symbolNetProfit;
+              rRelatedIdsMap.set(symbol, allSymbolRelatedIds);
+              rTotal += symbolNetTotal;
           }
       });
       
@@ -344,34 +364,46 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
           recoveryStats: { map: rStats, total: rTotal, summaries: rSummaries, relatedIdsMap: rRelatedIdsMap },
           activeHedgeStats: { map: aStats, totalLoss: aTotalLoss, summaries: aSummaries, relatedIdsMap: aRelatedIdsMap }
       };
-  }, [tradeLogs, positions]);
+  }, [tradeLogs, positions, startTime, endTime]);
 
   // --- 1. OVERVIEW STATISTICS (Strictly based on User Requirements) ---
   const overviewStats = useMemo(() => {
+      const startMs = startTime ? new Date(startTime).getTime() : 0;
+      const endMs = endTime ? new Date(endTime).getTime() : Infinity;
+
+      const filteredTradeLogs = tradeLogs.filter(l => {
+          const logTime = l.exit_timestamp || l.entry_timestamp;
+          return logTime >= startMs && logTime <= endMs;
+      });
+
+      const filteredPositions = positions.filter(p => {
+          return p.entryTime >= startMs && p.entryTime <= endMs;
+      });
+
       // A. 未对冲盈利 (Unhedged Profit) - Active, never hedged, PnL > 0
-      const unhedgedWinPositions = positions.filter(p => !p.isHedged && p.unrealizedPnL > 0 && !everHedgedIds.has(p.entryId));
+      const unhedgedWinPositions = filteredPositions.filter(p => !p.isHedged && p.unrealizedPnL > 0 && !everHedgedIds.has(p.entryId));
       const totalUnhedgedWin = unhedgedWinPositions.reduce((acc, p) => acc + p.unrealizedPnL, 0);
 
       // B. 未对冲亏损 (Unhedged Loss) - Active, never hedged, PnL < 0
-      const unhedgedLossPositions = positions.filter(p => !p.isHedged && p.unrealizedPnL < 0 && !everHedgedIds.has(p.entryId));
+      const unhedgedLossPositions = filteredPositions.filter(p => !p.isHedged && p.unrealizedPnL < 0 && !everHedgedIds.has(p.entryId));
       const totalUnhedgedLoss = unhedgedLossPositions.reduce((acc, p) => acc + p.unrealizedPnL, 0);
 
       // C. 常规止盈 (Regular Take Profit) - Closed, never hedged, Profit > 0
-      const normalWinLogs = tradeLogs.filter(l => {
+      const normalWinLogs = filteredTradeLogs.filter(l => {
           const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id));
           return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) > 0 && !isHedged;
       });
       const totalNormalWin = normalWinLogs.reduce((acc, l) => acc + (l.profit_usdt || 0), 0);
 
       // C2. 常规止损 (Regular Stop Loss) - Closed, never hedged, Profit < 0
-      const normalLossLogs = tradeLogs.filter(l => {
+      const normalLossLogs = filteredTradeLogs.filter(l => {
           const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id));
           return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) < 0 && !isHedged;
       });
       const totalNormalLoss = normalLossLogs.reduce((acc, l) => acc + (l.profit_usdt || 0), 0);
 
       // G. 当前盈亏 (Current PnL) - All active positions
-      const totalCurrentPnL = positions.reduce((acc, p) => acc + p.unrealizedPnL, 0);
+      const totalCurrentPnL = filteredPositions.reduce((acc, p) => acc + p.unrealizedPnL, 0);
 
       // D. 负债对冲止损 (Debt Hedging Stop Loss) - Only losses from ACTIVE hedge cycles
       const totalDebt = activeHedgeStats.totalLoss;
@@ -379,9 +411,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
       const totalRecovery = recoveryStats.total;
 
       // F. 对冲中 (Hedging In Progress)
-      const activeHedgePairs = positions.filter(p => p.isHedged && !p.mainPositionId);
+      const activeHedgePairs = filteredPositions.filter(p => p.isHedged && !p.mainPositionId);
       const inProgressHedgeStats = activeHedgePairs.reduce((acc, mainPos) => {
-          const hedgePos = positions.find(p => p.mainPositionId === mainPos.entryId);
+          const hedgePos = filteredPositions.find(p => p.mainPositionId === mainPos.entryId);
           
           let pairProfit = 0;
           let pairLoss = 0;
@@ -423,12 +455,20 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
   // --- 2. FILTER LOGIC ---
   const filteredLogs = useMemo(() => {
       const term = searchTerm.toLowerCase();
+      const startMs = startTime ? new Date(startTime).getTime() : 0;
+      const endMs = endTime ? new Date(endTime).getTime() : Infinity;
       
-      // 1. Base Filter (Search Text)
-      let filtered = tradeLogs.filter(log => 
-          log.symbol.toLowerCase().includes(term) ||
-          log.entry_id.toLowerCase().includes(term)
-      );
+      // 1. Base Filter (Search Text & Time Range)
+      let filtered = tradeLogs.filter(log => {
+          const matchesTerm = log.symbol.toLowerCase().includes(term) ||
+              log.entry_id.toLowerCase().includes(term);
+          
+          if (!matchesTerm) return false;
+          
+          // Use exit_timestamp if available (for closed trades), else use entry_timestamp
+          const logTime = log.exit_timestamp || log.entry_timestamp;
+          return logTime >= startMs && logTime <= endMs;
+      });
 
       // 2. Category Filter
       if (activeFilter !== 'ALL') {
@@ -445,11 +485,14 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                   return pos ? pos.isHedged === true : false;
               }
               
-              // DEBT: Active hedge cycles with losses
+                      // DEBT: Active hedge cycles with losses
               if (activeFilter === 'DEBT') {
                   if (selectedDebtId) {
                       const summary = activeHedgeStats.summaries.find(s => s.mainLog.entry_id === selectedDebtId);
-                      return summary ? summary.relatedIds.has(log.entry_id) : false;
+                      const selectedDebtLog = tradeLogs.find(l => l.entry_id === selectedDebtId);
+                      const targetSymbol = selectedDebtLog?.symbol;
+                      // 这里确保relatedIds包含的日志条目属于当前选中债务的币种
+                      return summary ? (summary.relatedIds.has(log.entry_id) && (!targetSymbol || log.symbol === targetSymbol)) : false;
                   } else {
                       return activeHedgeStats.summaries.some(s => s.mainLog.entry_id === log.entry_id);
                   }
@@ -502,6 +545,14 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                   return pos ? (pos.unrealizedPnL < 0 && !pos.isHedged) : false;
               }
 
+              // NEW_OPEN: Active, never hedged
+              if (activeFilter === 'NEW_OPEN') {
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  if (log.status !== 'OPEN' || !!log.main_entry_id || isHedged) return false;
+                  const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id);
+                  return pos ? !pos.isHedged : false;
+              }
+
               if (activeFilter === 'LONG') {
                   // Find all main LONG positions
                   const mainLongIds = new Set(
@@ -528,7 +579,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
           });
       }
       return filtered;
-  }, [tradeLogs, searchTerm, activeFilter, positions, everHedgedIds, recoveryStats]);
+  }, [tradeLogs, searchTerm, activeFilter, positions, everHedgedIds, recoveryStats, activeHedgeStats]);
 
   // Grouped Data Calculation (Standard Logic)
   const groupedData = useMemo(() => {
@@ -589,6 +640,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
       if (isGroupedView) return filteredLogs;
       let sorted = [...filteredLogs];
       sorted.sort((a, b) => {
+          if (activeFilter === 'DEBT' && selectedDebtId) { 
+              const timeA = a.exit_timestamp || a.entry_timestamp || 0;
+              const timeB = b.exit_timestamp || b.entry_timestamp || 0;
+              if (timeA !== timeB) return timeA - timeB; // ASC (oldest first)
+              return a.entry_id.localeCompare(b.entry_id); // Stable secondary key
+          }
           if (listSortConfig.key === 'TIME') {
               const timeA = a.exit_timestamp || a.entry_timestamp;
               const timeB = b.exit_timestamp || b.entry_timestamp;
@@ -611,7 +668,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
           }
       });
       return sorted;
-  }, [filteredLogs, isGroupedView, activeFilter, listSortConfig, positions]);
+  }, [filteredLogs, isGroupedView, activeFilter, listSortConfig, positions, selectedDebtId]);
 
   const renderJson = (data: any) => {
       return (
@@ -687,7 +744,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                             type="text" 
                             placeholder="搜索币种/ID..." 
                             value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
+                            onChange={(e) => handleSearchChange(e.target.value)}
                             className="bg-slate-800 border border-slate-700 rounded-full pl-8 pr-4 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 w-48"
                         />
                         <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -723,25 +780,79 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
             </div>
 
             {/* Filter Bar */}
-            <div className="flex flex-wrap items-center gap-2">
-                <FilterChip type="ALL" label="全部" icon={Layers} colorClass="bg-slate-700 text-white border-slate-500" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
-                <FilterChip type="UNHEDGED_WIN" label="未对冲盈利" icon={TrendingUp} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
-                <FilterChip type="UNHEDGED_LOSS" label="未对冲亏损" icon={TrendingDown} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
-                <FilterChip type="NORMAL_WIN" label="常规止盈" icon={Banknote} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
-                <FilterChip type="NORMAL_LOSS" label="常规止损" icon={Banknote} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
-                <FilterChip type="DEBT" label="负债对冲止损" icon={Banknote} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
-                <FilterChip type="RECOVERY" label="解套对冲盈利" icon={RotateCcw} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
-                <FilterChip type="HEDGE" label="对冲中" icon={Shield} colorClass="bg-indigo-900/40 text-indigo-400 border-indigo-500/30" activeFilter={activeFilter} setActiveFilter={setActiveFilter} />
+            <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                    <FilterChip type="ALL" label="全部" icon={Layers} colorClass="bg-slate-700 text-white border-slate-500" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="NEW_OPEN" label="新开仓" icon={Activity} colorClass="bg-blue-900/40 text-blue-400 border-blue-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="UNHEDGED_WIN" label="未对冲盈利" icon={TrendingUp} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="UNHEDGED_LOSS" label="未对冲亏损" icon={TrendingDown} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="NORMAL_WIN" label="常规止盈" icon={Banknote} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="NORMAL_LOSS" label="常规止损" icon={Banknote} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="DEBT" label="负债对冲止损" icon={Banknote} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="RECOVERY" label="解套对冲盈利" icon={RotateCcw} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="HEDGE" label="对冲中" icon={Shield} colorClass="bg-indigo-900/40 text-indigo-400 border-indigo-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                </div>
+
+                <div className="flex items-center gap-2 bg-slate-800/50 p-1.5 rounded-lg border border-slate-700/50">
+                    <Clock size={14} className="text-slate-500 ml-1" />
+                    <input 
+                        type="datetime-local" 
+                        value={startTime}
+                        onChange={(e) => setStartTime(e.target.value)}
+                        className="bg-transparent border-none text-[10px] text-slate-300 focus:outline-none w-32"
+                    />
+                    <span className="text-slate-600">-</span>
+                    <input 
+                        type="datetime-local" 
+                        value={endTime}
+                        onChange={(e) => setEndTime(e.target.value)}
+                        className="bg-transparent border-none text-[10px] text-slate-300 focus:outline-none w-32"
+                    />
+                    {(startTime || endTime) && (
+                        <button 
+                            onClick={() => { setStartTime(''); setEndTime(''); }}
+                            className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-1 rounded-md transition-colors"
+                        >
+                            <RotateCcw size={10} />
+                        </button>
+                    )}
+                </div>
                 
-                {activeFilter === 'RECOVERY' && selectedRecoveryId && (
+                {/* 常态化返回及退出按钮组 */}
+                <div className="flex items-center gap-2">
                     <button 
                         onClick={() => {
-                            setSelectedRecoveryId(null);
                             setSelectedLog(null);
+                            handleFilterChange('ALL');
                         }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all border bg-slate-800 text-slate-300 border-slate-600 hover:bg-slate-700 hover:text-white ml-auto"
+                        className="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold transition-all border border-slate-500/50 bg-slate-800 text-slate-100 hover:bg-slate-700 active:scale-95 shadow-lg"
                     >
-                        <RotateCcw size={14} className="rotate-90" /> 向上级
+                        <ArrowLeft size={14} />
+                        <span>返回主页</span>
+                    </button>
+                    <button 
+                        onClick={onClose}
+                        className="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold transition-all border border-red-500/50 bg-red-900/50 text-red-100 hover:bg-red-800/80 active:scale-95 shadow-lg"
+                    >
+                        <X size={14} />
+                        <span>退出</span>
+                    </button>
+                </div>
+                
+                {/* Manual Return Button next to filters for sub-views */}
+                {(activeFilter !== 'ALL' || selectedRecoveryId || selectedDebtId || selectedLog) && (
+                    <button 
+                        onClick={() => {
+                            if (selectedLog) {
+                                setSelectedLog(null);
+                            } else {
+                                handleFilterChange('ALL');
+                            }
+                        }}
+                        className="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold transition-all border border-indigo-500/50 bg-indigo-500/20 text-indigo-100 hover:bg-indigo-500/40 shadow-[0_0_15px_rgba(99,102,241,0.2)] active:scale-95 animate-pulse"
+                    >
+                        <ArrowLeft size={14} className="text-white" />
+                        <span>返回上一级</span>
                     </button>
                 )}
             </div>
@@ -867,7 +978,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                 <tr><td colSpan={6} className="text-center py-10 text-slate-600">无数据</td></tr>
                             )}
                             {groupedData.map((group, idx) => (
-                                <tr key={group.symbol} className="hover:bg-slate-800/30 transition-colors">
+                                <tr key={`${group.symbol}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
                                     <td className="px-4 py-3 text-xs font-mono text-slate-600">{idx + 1}</td>
                                     <td className="px-4 py-3 font-bold text-slate-200">
                                         <div className="flex items-center gap-2">
@@ -902,8 +1013,8 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                     <td className="px-4 py-3 text-right">
                                         <button 
                                             onClick={() => {
-                                                setSearchTerm(group.symbol);
-                                                setActiveFilter('ALL');
+                                                handleSearchChange(group.symbol);
+                                                handleFilterChange('ALL');
                                                 setIsGroupedView(false);
                                             }}
                                             className="p-1.5 bg-slate-800 hover:bg-indigo-600 text-slate-400 hover:text-white rounded transition-colors inline-flex items-center gap-1"
@@ -1079,6 +1190,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                                         <button 
                                                             onClick={(e) => { 
                                                                 e.stopPropagation(); 
+                                                                handleFilterChange('DEBT');
                                                                 setSelectedDebtId(log.entry_id);
                                                             }} 
                                                             className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-400 hover:text-blue-400 transition-all border border-slate-700" 
@@ -1130,7 +1242,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                                 >
                                                     {log.symbol}
                                                 </span>
-                                                <button onClick={(e) => { e.stopPropagation(); setSearchTerm(log.symbol); setActiveFilter('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><History size={12} /></button>
+                                                <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><History size={12} /></button>
                                             </div>
                                             <div className="text-[10px] text-slate-500 font-mono font-normal">{log.entry_id.slice(-6)}</div>
                                         </td>
@@ -1298,12 +1410,85 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
             
             {/* Details Panel */}
             {selectedLog && !isGroupedView && (
-                <div className="w-full md:w-1/3 bg-slate-900 p-4 border-l border-slate-800 overflow-y-auto absolute md:static inset-0 z-20 md:z-auto flex flex-col">
-                    <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2 flex-shrink-0">
-                        <h3 className="font-bold text-white flex items-center gap-2"><Activity size={16} className="text-indigo-400"/>交易详情分析</h3>
+                <div className="w-full md:w-2/5 bg-slate-900 p-4 border-l border-slate-800 overflow-y-auto absolute md:static inset-0 z-20 md:z-auto flex flex-col">
+                    <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3 flex-shrink-0">
+                        <div className="flex items-center gap-3">
+                            <button 
+                                onClick={() => setSelectedLog(null)} 
+                                className="p-1.5 hover:bg-slate-800 rounded bg-slate-800 border border-slate-700 text-slate-400 hover:text-white transition-colors flex items-center gap-1"
+                            >
+                                <ArrowLeft size={16}/>
+                                <span className="text-xs font-bold">返回列表</span>
+                            </button>
+                            <h3 className="font-bold text-white flex items-center gap-2"><Activity size={16} className="text-indigo-400"/>交易全过程审计</h3>
+                        </div>
                         <button onClick={() => setSelectedLog(null)} className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"><X size={16}/></button>
                     </div>
-                    <div className="space-y-4 text-sm flex-1 overflow-y-auto pr-1">
+                    
+                    <div className="space-y-4 text-sm flex-1 overflow-y-auto pr-1 custom-scrollbar">
+                        {/* 1. Timeline of Events (The requested Full Record) */}
+                        <div className="bg-slate-950/50 rounded-lg border border-slate-800 p-3 mb-4">
+                            <h4 className="text-[10px] uppercase text-indigo-400 font-black mb-3 tracking-widest flex items-center gap-2">
+                                <History size={12}/> 交易生命周期纪录 (由主仓位归档)
+                            </h4>
+                            <div className="space-y-0.5 relative before:absolute before:left-[7px] before:top-2 before:bottom-2 before:w-px before:bg-slate-800">
+                                {Array.isArray(selectedLog?.events) && selectedLog.events.length > 0 ? (
+                                    selectedLog.events.map((ev, idx) => (
+                                        <div key={idx} className="relative pl-6 py-2 group hover:bg-slate-800/20 rounded transition-colors">
+                                            <div className={`absolute left-0 top-[11px] w-[15px] h-[15px] rounded-full border-2 border-slate-900 z-10 ${
+                                                ev.action.includes('对冲') ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]' : 
+                                                ev.action.includes('开仓') ? 'bg-emerald-500' : 
+                                                ev.action.includes('减仓') ? 'bg-purple-500' :
+                                                ev.action.includes('补回') ? 'bg-amber-500' :
+                                                'bg-red-500'
+                                            }`}></div>
+                                            <div className="flex flex-col">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="font-bold text-slate-200 text-xs">
+                                                        {ev.action} 
+                                                        {ev.pnl !== undefined && (
+                                                            <span className={`ml-2 text-[10px] ${ev.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                (实现: {ev.pnl > 0 ? '+' : ''}{ev.pnl.toFixed(2)} U)
+                                                            </span>
+                                                        )}
+                                                    </span>
+                                                    <span className="text-[10px] text-slate-500 font-mono">{new Date(ev.timestamp).toLocaleTimeString()}</span>
+                                                </div>
+                                                <div className="flex items-center gap-3 mt-1">
+                                                    <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                                                        <Banknote size={10} className="text-slate-600"/> {ev.price.toFixed(4)}
+                                                    </span>
+                                                    <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                                                        <PieChart size={10} className="text-slate-600"/> {ev.amount.toFixed(4)}
+                                                    </span>
+                                                </div>
+                                                <p className="text-[10px] text-slate-500 mt-1 italic border-l border-slate-800 pl-2">依据: {ev.reason}</p>
+                                            </div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-center py-6">
+                                        <AlertCircle size={24} className="mx-auto text-slate-700 mb-2 opacity-50"/>
+                                        <p className="text-xs text-slate-600">该记录无子事件详情 (可能是历史旧记录)</p>
+                                        <button 
+                                            onClick={() => {
+                                                // Try to find related logs manually for old records
+                                                const related = tradeLogs.filter(l => l.symbol === selectedLog.symbol && (l.main_entry_id === selectedLog.entry_id || l.entry_id === selectedLog.main_entry_id));
+                                                if (related.length > 0) {
+                                                    handleSearchChange(selectedLog.symbol);
+                                                    setSelectedLog(null);
+                                                    handleFilterChange('ALL');
+                                                }
+                                            }}
+                                            className="mt-2 text-[10px] text-indigo-400 hover:underline"
+                                        >
+                                            尝试在流水中查找关联币种记录
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
                         <div className="grid grid-cols-2 gap-4 bg-slate-800/30 p-2 rounded border border-slate-700">
                             <div><span className="text-xs text-slate-500 block mb-1">开仓时间</span><p className="font-mono text-slate-300 text-xs">{new Date(selectedLog.entry_timestamp).toLocaleString()}</p></div>
                             <div><span className="text-xs text-slate-500 block mb-1">平仓时间</span><p className="font-mono text-slate-300 text-xs">{selectedLog.exit_timestamp ? new Date(selectedLog.exit_timestamp).toLocaleString() : '持仓中'}</p></div>
