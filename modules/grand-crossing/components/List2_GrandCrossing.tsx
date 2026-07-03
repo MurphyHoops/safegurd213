@@ -3,8 +3,9 @@ import React, { useState, useMemo } from 'react';
 import { List2Config, ScannerItem, ScanConfig, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { List2Control } from './Control';
 import { List2Item } from './Item';
-import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle } from 'lucide-react';
+import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History } from 'lucide-react';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
+import { ScannerHistoryModal } from '../../momentum-audit/components/ScannerHistoryModal';
 
 interface Props {
     networkStatus?: 'healthy' | 'delayed' | 'disconnected';
@@ -30,6 +31,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     // View Mode State: ALL | LONG | SHORT
     const [viewMode, setViewMode] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
     const [showVisualizer, setShowVisualizer] = useState(false);
+    const [showHistory, setShowHistory] = useState(false);
 
     // Separate Lists (Defensive: ensure filteredList2 is an array)
     const { longs, shorts } = useMemo(() => {
@@ -90,6 +92,14 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                             <span>清空</span>
                         </button>
                         <button 
+                            onClick={() => setShowHistory(true)}
+                            className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-emerald-900/50 rounded border border-emerald-500/30 text-emerald-500 transition-all text-[10px] font-bold mr-1"
+                            title="查看历史记录"
+                        >
+                            <History size={12} />
+                            <span>历史</span>
+                        </button>
+                        <button 
                             onClick={() => setShowVisualizer(true)}
                             className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-indigo-400 transition-all border border-transparent hover:border-indigo-500/30"
                             title="放大查看 K 线大图"
@@ -108,6 +118,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         onClose={() => setShowVisualizer(false)}
                     />
                 )}
+                {showHistory && <ScannerHistoryModal listType="LIST2" setChartData={setChartData} onClose={() => setShowHistory(false)} />}
 
                 {/* Filter Tabs */}
                 <div className="flex px-2 pb-2 gap-1">

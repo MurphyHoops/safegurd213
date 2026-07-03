@@ -13,6 +13,19 @@ interface Signal {
     type: 'LONG' | 'SHORT';
 }
 
+interface ComputedSignal extends Signal {
+    signalIdx?: number;
+    midPrice?: number;
+    breakthroughPrice?: number;
+    ampVal?: number;
+    volRatioVal?: number;
+    bodyRatioVal?: number;
+    drop300?: number;
+    rise300?: number;
+    openRiseFromMin?: number;
+    openDropFromMax?: number;
+}
+
 interface ExtraLine {
     price: number;
     label: string;
@@ -37,6 +50,8 @@ interface Props {
   highlightTf?: string; // Timeframe to highlight (Brightened)
   showAuditLines?: boolean; // New: Only show "Audit" specific markers (List 4/5)
   tradeLogs?: TradeLog[]; // Added tradeLogs prop
+  appearedTime?: number; // Time the signal appeared
+  disappearedTime?: number; // Time the signal disappeared
   onClose: () => void;
   onTimeframeChange?: (timeframe: string) => void;
 }
@@ -50,7 +65,7 @@ interface KlineData {
   volume: number;
 }
 
-const TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+const TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '1w', '1M', '3M'];
 
 const sanitizeTf = (tf: string): string => {
     if (!tf) return '15m';
@@ -86,12 +101,114 @@ const getTfMinutes = (tf: string) => {
     return 15;
 };
 
-import { TradeLog } from '../types';
+import { TradeLog, PositionSide } from '../types';
 import { createPortal } from 'react-dom';
 
-const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 1000, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], onClose, onTimeframeChange }) => {
+async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
+    const controllers: AbortController[] = [];
+    const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
+    const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
+    const futuresMeUrl = `https://fapi.binance.me/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
+    const spotApi1Url = `https://api1.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
+
+    // Preferred candidates: Local Proxy (super-fast from server, unblocked in cloud)
+    const preferredCandidates = [
+        { url: `/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, name: 'Local-Proxy-Futures' },
+        { url: `/api/proxy?url=${encodeURIComponent(spotUrl)}&priority=high`, name: 'Local-Proxy-Spot' }
+    ];
+
+    // Backup candidates: Direct and Public Proxy (only tried if local proxy delays/fails)
+    const backupCandidates = [
+        { url: spotUrl, name: 'Spot-Direct' },
+        { url: spotApi1Url, name: 'Spot-API1-Direct' },
+        { url: futuresUrl, name: 'Futures-Direct' },
+        { url: futuresMeUrl, name: 'Futures-Me-Direct' },
+        { url: `https://corsproxy.io/?${encodeURIComponent(futuresUrl)}`, name: 'Public-CORS-Proxy' }
+    ];
+
+    const createFetchPromise = async (url: string, sourceName: string, delayMs: number = 0): Promise<{ data: any[][], source: string }> => {
+        if (delayMs > 0) {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+        
+        const controller = new AbortController();
+        controllers.push(controller);
+        
+        const timeoutId = setTimeout(() => {
+            controller.abort();
+        }, 8000); // 8 seconds timeout per source
+        
+        try {
+            console.log(`[KlineRace] Starting fetch from ${sourceName} (delay: ${delayMs}ms): ${url}`);
+            const res = await fetch(url, {
+                signal: controller.signal,
+                headers: { 'Accept': 'application/json' }
+            });
+            clearTimeout(timeoutId);
+            if (!res.ok) {
+                const err = new Error(`HTTP ${res.status}`);
+                if (res.status === 400) {
+                    (err as any).isInvalidSymbol = true;
+                }
+                throw err;
+            }
+            const text = await res.text();
+            let data: any;
+            try {
+                data = JSON.parse(text);
+            } catch (je) {
+                throw new Error(`Invalid JSON response`);
+            }
+            if (Array.isArray(data) && data.length > 0) {
+                console.log(`[KlineRace] Winner: ${sourceName}! Loaded ${data.length} klines.`);
+                return { data, source: sourceName };
+            }
+            throw new Error(`Invalid format or empty array`);
+        } catch (err: any) {
+            clearTimeout(timeoutId);
+            throw err;
+        }
+    };
+
+    // Happy Eyeballs: Start preferred candidates immediately (0ms delay),
+    // and queue backup candidates with a 300ms delay.
+    const preferredPromises = preferredCandidates.map(c => createFetchPromise(c.url, c.name, 0));
+    const backupPromises = backupCandidates.map(c => createFetchPromise(c.url, c.name, 300));
+    const allPromises = [...preferredPromises, ...backupPromises];
+
+    return new Promise((resolve, reject) => {
+        let errorCount = 0;
+        const errors: any[] = [];
+        
+        allPromises.forEach((p) => {
+            p.then((result) => {
+                // Cancel all other ongoing fetches to release resources/bandwidth
+                controllers.forEach(ctrl => {
+                    try { ctrl.abort(); } catch(e){}
+                });
+                resolve(result);
+            }).catch((err) => {
+                if (err.isInvalidSymbol) {
+                    controllers.forEach(ctrl => {
+                        try { ctrl.abort(); } catch(e){}
+                    });
+                    reject(err);
+                    return;
+                }
+                errorCount++;
+                errors.push(err);
+                if (errorCount === allPromises.length) {
+                    reject(new Error(`All sources failed: ${errors.map(e => e.message || e).join(', ')}`));
+                }
+            });
+        });
+    });
+}
+
+const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange }) => {
   const backtest = useOptionalBacktest();
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
+  const serializedConfig = JSON.stringify(list2Config);
   
   // Sync timeframe with initialTimeframe if it changes (e.g. when clicking a different row for same symbol)
   useEffect(() => {
@@ -111,6 +228,91 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   // Computed Signals State (Full History)
   const [computedSignals, setComputedSignals] = useState<Signal[]>([]);
 
+  // Memoize signal statistics calculation to prevent heavy re-calculation on every mouse move
+  const computedSignalsWithStats = useMemo<ComputedSignal[]>(() => {
+      if (computedSignals.length === 0 || fullData.length === 0) return [];
+      
+      const tfMinutes = getTfMinutes(timeframe);
+      const intervalMs = tfMinutes * 60 * 1000;
+      const tolerance = intervalMs * 0.6;
+
+      return computedSignals.map((sig) => {
+          let signalIdx = fullData.findIndex(k => k.time === sig.time);
+          if (signalIdx === -1) {
+              let minDiff = Infinity;
+              fullData.forEach((k, i) => {
+                  const diff = Math.abs(k.time - sig.time);
+                  if (diff < minDiff && diff <= tolerance) {
+                      minDiff = diff;
+                      signalIdx = i;
+                  }
+              });
+          }
+          if (signalIdx === -1) {
+              return { ...sig, signalIdx: -1 };
+          }
+
+          const d = fullData[signalIdx];
+          const isLong = sig.type === 'LONG';
+          
+          // Calculate mid-axis (中轴) of the signal candle
+          const midPrice = (d.high + d.low) / 2;
+          
+          // Calculate breakthrough line (进攻突破线)
+          const amplitude = d.high - d.low;
+          const breakthroughPrice = isLong ? d.high + amplitude * 0.3 : d.low - amplitude * 0.3;
+
+          // Compute signal parameters
+          const refPrice = (signalIdx > 0 && fullData[signalIdx - 1]) ? fullData[signalIdx - 1].close : d.open;
+          const ampVal = refPrice > 0 ? ((d.high - d.low) / refPrice) * 100 : 0;
+          
+          const volumeLookback = 20;
+          let sumVol = 0;
+          let countVol = 0;
+          const lookbackStart = Math.max(0, signalIdx - volumeLookback);
+          for (let idx = lookbackStart; idx < signalIdx; idx++) {
+              sumVol += fullData[idx].volume;
+              countVol++;
+          }
+          const avgVol = countVol > 0 ? (sumVol / countVol) : d.volume;
+          const volRatioVal = avgVol > 0 ? (d.volume / avgVol) * 100 : 100;
+          
+          const bodyRatioVal = d.high > d.low ? (Math.abs(d.close - d.open) / (d.high - d.low)) * 100 : 0;
+          
+          let maxHigh300 = d.high;
+          let minLow300 = d.low;
+          const lookback300Start = Math.max(0, signalIdx - 300);
+          for (let idx = lookback300Start; idx <= signalIdx; idx++) {
+              if (fullData[idx].high > maxHigh300) {
+                  maxHigh300 = fullData[idx].high;
+              }
+              if (fullData[idx].low < minLow300) {
+                  minLow300 = fullData[idx].low;
+              }
+          }
+          
+          const drop300 = maxHigh300 > 0 ? ((maxHigh300 - d.close) / maxHigh300) * 100 : 0;
+          const rise300 = minLow300 > 0 ? ((d.close - minLow300) / minLow300) * 100 : 0;
+          
+          const openRiseFromMin = minLow300 > 0 ? ((d.open - minLow300) / minLow300) * 100 : 0;
+          const openDropFromMax = maxHigh300 > 0 ? ((maxHigh300 - d.open) / maxHigh300) * 100 : 0;
+
+          return {
+              ...sig,
+              signalIdx,
+              midPrice,
+              breakthroughPrice,
+              ampVal,
+              volRatioVal,
+              bodyRatioVal,
+              drop300,
+              rise300,
+              openRiseFromMin,
+              openDropFromMax
+          };
+      });
+  }, [computedSignals, fullData, timeframe]);
+
   // Daily (Major Trend) Stats State
   interface DailyStats {
       lookbackDays: number;
@@ -127,7 +329,10 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
   // Background fetch of daily (1d) klines for Major Trend Statistics Dashboard
   useEffect(() => {
+      if (loading) return;
+      
       let isMounted = true;
+      let timerId: any;
       
       const calculateDailyStats = async () => {
           let lookbackDays = 300;
@@ -165,9 +370,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               }
           } else {
               try {
-                  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}`;
-                  const res = await fetchWithFallback(url, { timeout: 10000 }, (d) => Array.isArray(d), directMode);
-                  const json = await res.json();
+                  const { data: json, source } = await raceFetchKlines(safeSymbol, '1d', limit);
+                  console.log(`[KlineChart] Loaded daily stats from ${source}, ${json.length} records`);
                   if (Array.isArray(json) && json.length > 0) {
                       dailyKlines = json.map((k: any) => ({
                           time: k[0],
@@ -238,11 +442,15 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       };
 
-      calculateDailyStats();
+      timerId = setTimeout(() => {
+          calculateDailyStats();
+      }, 300);
+
       return () => {
           isMounted = false;
+          clearTimeout(timerId);
       };
-  }, [symbol, backtest?.isPlaying, directMode]);
+  }, [symbol, backtest?.isPlaying, directMode, loading]);
 
 
   // Viewport State
@@ -268,7 +476,12 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   useEffect(() => {
       if (fullData.length === 0 || !list2Config) {
           // If no config provided, fallback to props signals or empty
-          if (signals.length > 0) setComputedSignals(signals);
+          if (signals.length > 0) {
+              setComputedSignals(prev => {
+                  if (JSON.stringify(prev) === JSON.stringify(signals)) return prev;
+                  return signals;
+              });
+          }
           return;
       }
 
@@ -312,9 +525,12 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
       // De-duplicate signals by time AND type (allow both Long and Short at same time)
       const uniqueSignals = Array.from(new Map(allSignals.map(item => [`${item.time}-${item.type}`, item])).values());
-      setComputedSignals(uniqueSignals);
+      setComputedSignals(prev => {
+          if (JSON.stringify(prev) === JSON.stringify(uniqueSignals)) return prev;
+          return uniqueSignals;
+      });
 
-  }, [fullData, list2Config, symbol, timeframe]); // signals prop is ignored if we compute fresh ones
+  }, [fullData, serializedConfig, symbol, timeframe]); // signals prop is ignored if we compute fresh ones
 
   useEffect(() => {
     console.log("[KlineChart] Effect running with dependencies:", {symbol, timeframe, retryCount});
@@ -354,8 +570,37 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setLastUpdated(Date.now());
 
                     if (isInitialLoad) {
-                        setStartIndex(Math.max(0, mappedKlines.length - 80));
-                        setIsAutoScroll(true);
+                        const defaultVisible = limit > 600 ? 160 : (limit > 300 ? 120 : 80);
+                        setVisibleCount(defaultVisible);
+                        
+                        let targetIdx = -1;
+                        if (signals && signals.length > 0) {
+                            const sig = signals[0];
+                            targetIdx = mappedKlines.findIndex(k => k.time === sig.time);
+                            if (targetIdx === -1) {
+                                let minDiff = Infinity;
+                                mappedKlines.forEach((k, i) => {
+                                    const diff = Math.abs(k.time - sig.time);
+                                    if (diff < minDiff) {
+                                        minDiff = diff;
+                                        targetIdx = i;
+                                    }
+                                });
+                            }
+                        } else if (highlightTime) {
+                            targetIdx = mappedKlines.findIndex(k => k.time === highlightTime);
+                        } else if (entryTime) {
+                            targetIdx = mappedKlines.findIndex(k => k.time === entryTime);
+                        }
+
+                        if (targetIdx !== -1) {
+                            const calculatedStart = targetIdx - (defaultVisible - 1 - 18);
+                            setStartIndex(Math.max(0, Math.min(calculatedStart, mappedKlines.length - defaultVisible)));
+                            setIsAutoScroll(false);
+                        } else {
+                            setStartIndex(Math.max(0, mappedKlines.length - defaultVisible));
+                            setIsAutoScroll(true);
+                        }
                     }
                 }
             } catch (e) {
@@ -379,22 +624,12 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         try {
             // Fix missing USDT issue
             const safeSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
-            // Use the provided limit or default to 299
-            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}&_t=${Date.now()}`;
-            const validator = (data: any) => Array.isArray(data) && data.length > 0;
             
-            console.log(`[KlineChart] Calling fetchWithFallback for ${symbol}`);
-            const res = await fetchWithFallback(
-                url, 
-                { cache: 'no-store', timeout: 15000, priority: 'HIGH' } as any, 
-                validator, 
-                directMode
-            );
-            console.log(`[KlineChart] fetchWithFallback returned for ${symbol}, status: ${res.status}`);
+            console.log(`[KlineChart] Starting parallel race fetch for ${safeSymbol} (${timeframe})`);
+            const { data: json, source } = await raceFetchKlines(safeSymbol, timeframe, limit);
+            console.log(`[KlineChart] Winner of race: ${source}, loaded ${json.length} records`);
             
             if (isMounted) {
-                const json = await res.json();
-                console.log(`[KlineChart] Data received for ${symbol}, length: ${Array.isArray(json) ? json.length : 'not array'}`);
                 if (Array.isArray(json) && json.length > 0) {
                     const klines: KlineData[] = json.map((k: any) => ({
                         time: k[0],
@@ -421,9 +656,48 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
                     if (isInitialLoad) {
                         const defaultVisible = limit > 600 ? 160 : (limit > 300 ? 120 : 80);
-                        setStartIndex(Math.max(0, klines.length - defaultVisible));
                         setVisibleCount(defaultVisible);
-                        setIsAutoScroll(true);
+                        
+                        let targetIdx = -1;
+                        if (appearedTime) {
+                            targetIdx = klines.findIndex(k => k.time === appearedTime);
+                            if (targetIdx === -1) {
+                                let minDiff = Infinity;
+                                klines.forEach((k, i) => {
+                                    const diff = Math.abs(k.time - appearedTime);
+                                    if (diff < minDiff) {
+                                        minDiff = diff;
+                                        targetIdx = i;
+                                    }
+                                });
+                            }
+                        } else if (signals && signals.length > 0) {
+                            const sig = signals[0];
+                            targetIdx = klines.findIndex(k => k.time === sig.time);
+                            if (targetIdx === -1) {
+                                let minDiff = Infinity;
+                                klines.forEach((k, i) => {
+                                    const diff = Math.abs(k.time - sig.time);
+                                    if (diff < minDiff) {
+                                        minDiff = diff;
+                                        targetIdx = i;
+                                    }
+                                });
+                            }
+                        } else if (highlightTime) {
+                            targetIdx = klines.findIndex(k => k.time === highlightTime);
+                        } else if (entryTime) {
+                            targetIdx = klines.findIndex(k => k.time === entryTime);
+                        }
+
+                        if (targetIdx !== -1) {
+                            const calculatedStart = targetIdx - (defaultVisible - 1 - 18);
+                            setStartIndex(Math.max(0, Math.min(calculatedStart, klines.length - defaultVisible)));
+                            setIsAutoScroll(false);
+                        } else {
+                            setStartIndex(Math.max(0, klines.length - defaultVisible));
+                            setIsAutoScroll(true);
+                        }
                     }
                 } else {
                     throw new Error("Empty data returned");
@@ -433,7 +707,11 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
             console.warn(`[KlineChart] Failed to fetch real kline data for ${symbol}:`, e);
             if (isMounted) {
                 if (isInitialLoad) {
-                    setError("无法连接行情源，请检查网络或开启直连模式");
+                    if (e.isInvalidSymbol || e.message?.includes("400")) {
+                        setError(`交易对 ${symbol} 在币安暂未上市或不支持，暂无K线数据。`);
+                    } else {
+                        setError("无法连接行情源，请检查网络或开启直连模式");
+                    }
                     setFullData([]);
                 }
                 setLoading(false);
@@ -498,14 +776,16 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       const width = rect.width;
       const paddingRight = 80; 
       const chartWidth = width - paddingRight;
+      const rightBuffer = 20;
+      const effectiveCount = visibleCount + rightBuffer;
       setMouseY(y);
       if (x >= 0 && x <= chartWidth) {
           const ratio = x / chartWidth;
-          const relativeIdx = Math.floor(ratio * visibleCount);
+          const relativeIdx = Math.floor(ratio * effectiveCount);
           const actualIdx = startIndex + relativeIdx;
-          if (actualIdx >= 0 && actualIdx < fullData.length) {
+          if (actualIdx >= startIndex && actualIdx < startIndex + visibleCount && actualIdx < fullData.length) {
               setHoverIndex(actualIdx);
-          }
+          } else { setHoverIndex(null); }
       } else { setHoverIndex(null); }
       if (isDragging) {
           const deltaX = e.clientX - dragStartX.current;
@@ -543,8 +823,14 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       if (!tradeLogs) return markers;
 
       tradeLogs.filter(l => l.symbol === symbol).forEach(l => {
-          if (l.entry_timestamp) markers.push({ time: l.entry_timestamp, type: 'OPEN', label: '开仓', price: l.entry_price });
-          if (l.exit_timestamp) markers.push({ time: l.exit_timestamp, type: 'CLOSE', label: '平仓', price: l.exit_price || 0 });
+          if (l.entry_timestamp) {
+              const dirLabel = l.direction === PositionSide.LONG ? '多' : '空';
+              markers.push({ time: l.entry_timestamp, type: 'OPEN', label: `开仓${dirLabel}`, price: l.entry_price });
+          }
+          if (l.exit_timestamp) {
+              const dirLabel = l.direction === PositionSide.LONG ? '多' : '空';
+              markers.push({ time: l.exit_timestamp, type: 'CLOSE', label: `平仓${dirLabel}`, price: l.exit_price || 0 });
+          }
           
           if (l.signal_details && l.signal_details.timestamp) {
                markers.push({ time: l.signal_details.timestamp, type: 'SIGNAL', label: '信号' });
@@ -586,6 +872,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       const chartHeight = height * 0.8;
       const volumeHeight = height * 0.2;
       const padding = { top: 30, right: 80, bottom: 20, left: 0 };
+      const rightBuffer = 20;
+      const effectiveCount = visibleCount + rightBuffer;
 
       let minPrice = Infinity, maxPrice = -Infinity, maxVol = 0;
       visibleData.forEach(d => {
@@ -613,13 +901,13 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       minPrice -= priceRange * 0.05; maxPrice += priceRange * 0.05;
       const safePriceRange = (maxPrice - minPrice) || 1; 
 
-      const getX = (index: number) => (index / visibleCount) * (width - padding.right);
+      const getX = (index: number) => (index / effectiveCount) * (width - padding.right);
       const getY = (price: number) => chartHeight - ((price - minPrice) / safePriceRange) * (chartHeight - padding.top) + padding.top;
       const getPriceByY = (y: number) => {
           const ratio = (chartHeight - y + padding.top) / (chartHeight - padding.top);
           return minPrice + ratio * safePriceRange;
       };
-      const candleWidth = Math.max(1, (width - padding.right) / visibleCount * 0.7);
+      const candleWidth = Math.max(1, (width - padding.right) / effectiveCount * 0.7);
 
       const candles = visibleData.map((d, i) => {
           const x = getX(i);
@@ -676,25 +964,14 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       });
 
       // Signals Rendering
-      const signalsToShow = computedSignals; 
-      const signalMarkers: React.ReactNode[] = [];
       const tfMinutes = getTfMinutes(timeframe);
       const intervalMs = tfMinutes * 60 * 1000;
-      const tolerance = intervalMs * 0.6; 
+      const signalsToShow = computedSignalsWithStats; 
+      const signalMarkers: React.ReactNode[] = [];
 
       if (signalsToShow.length > 0) {
           signalsToShow.forEach((sig, idx) => {
-              let signalIdx = fullData.findIndex(k => k.time === sig.time);
-              if (signalIdx === -1) {
-                  let minDiff = Infinity;
-                  fullData.forEach((k, i) => {
-                      const diff = Math.abs(k.time - sig.time);
-                      if (diff < minDiff && diff <= tolerance) {
-                          minDiff = diff;
-                          signalIdx = i;
-                      }
-                  });
-              }
+              const signalIdx = sig.signalIdx ?? -1;
               
               if (signalIdx !== -1 && signalIdx >= startIndex && signalIdx < startIndex + visibleCount) {
                   const i = signalIdx - startIndex;
@@ -703,13 +980,10 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                       const x = getX(i) + candleWidth / 2;
                       const isLong = sig.type === 'LONG';
                       
-                      // Calculate mid-axis (中轴) of the signal candle
-                      const midPrice = (d.high + d.low) / 2;
+                      const midPrice = sig.midPrice ?? ((d.high + d.low) / 2);
                       const midY = getY(midPrice);
                       
-                      // Calculate breakthrough line (进攻突破线)
-                      const amplitude = d.high - d.low;
-                      const breakthroughPrice = isLong ? d.high + amplitude * 0.3 : d.low - amplitude * 0.3;
+                      const breakthroughPrice = sig.breakthroughPrice ?? (isLong ? d.high + (d.high - d.low) * 0.3 : d.low - (d.high - d.low) * 0.3);
                       const breakthroughY = getY(breakthroughPrice);
                       
                       if (showAuditLines) {
@@ -767,34 +1041,75 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                           );
                       }
 
-                      if (!showAuditLines) {
-                          signalMarkers.push(
-                              <g key={`sig-guide-${idx}`} pointerEvents="none">
-                                  <line 
-                                      x1={x} 
-                                      y1={padding.top} 
-                                      x2={x} 
-                                      y2={chartHeight} 
-                                      stroke={isLong ? "#0ECB81" : "#F6465D"} 
-                                      strokeWidth={1} 
-                                      strokeDasharray="3 3" 
-                                      opacity={0.5} 
-                                  />
-                                  <circle cx={x} cy={padding.top - 4} r={3} fill={isLong ? "#0ECB81" : "#F6465D"} opacity={0.8} />
-                                  <text 
-                                      x={x} 
-                                      y={padding.top - 10} 
-                                      fill={isLong ? "#0ECB81" : "#F6465D"} 
-                                      fontSize="9" 
-                                      fontWeight="bold" 
-                                      textAnchor="middle" 
-                                      style={{ textShadow: '0 0 4px rgba(0,0,0,0.9)' }}
-                                  >
-                                      信号K线
-                                  </text>
-                              </g>
-                          );
-                      }
+                      const ampVal = sig.ampVal ?? 0;
+                      const volRatioVal = sig.volRatioVal ?? 100;
+                      const bodyRatioVal = sig.bodyRatioVal ?? 0;
+                      const drop300 = sig.drop300 ?? 0;
+                      const rise300 = sig.rise300 ?? 0;
+                      const openRiseFromMin = sig.openRiseFromMin ?? 0;
+                      const openDropFromMax = sig.openDropFromMax ?? 0;
+
+                      // Always draw the vertical guide line and parameters on its left and right sides
+                      const textGroupY = padding.top + 25;
+                      signalMarkers.push(
+                          <g key={`sig-guide-${idx}`} pointerEvents="none">
+                              {/* Vertical Guide Line */}
+                              <line 
+                                  x1={x} 
+                                  y1={padding.top} 
+                                  x2={x} 
+                                  y2={chartHeight} 
+                                  stroke={isLong ? "#0ECB81" : "#F6465D"} 
+                                  strokeWidth={1} 
+                                  strokeDasharray="3 3" 
+                                  opacity={0.6} 
+                              />
+                              <circle cx={x} cy={padding.top - 4} r={3} fill={isLong ? "#0ECB81" : "#F6465D"} opacity={0.8} />
+                              <text 
+                                  x={x} 
+                                  y={padding.top - 10} 
+                                  fill={isLong ? "#0ECB81" : "#F6465D"} 
+                                  fontSize="9" 
+                                  fontWeight="bold" 
+                                  textAnchor="middle" 
+                                  style={{ textShadow: '0 0 4px rgba(0,0,0,0.9)' }}
+                              >
+                                  信号K线
+                              </text>
+
+                              {/* Left Side Parameters (End-aligned, x = x - 8) */}
+                              <text x={x - 8} y={textGroupY} fill="#CBD5E1" fontSize="9" textAnchor="end" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
+                                  振幅: {ampVal.toFixed(2)}%
+                              </text>
+                              <text x={x - 8} y={textGroupY + 13} fill="#CBD5E1" fontSize="9" textAnchor="end" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
+                                  量比: {volRatioVal.toFixed(1)}%
+                              </text>
+                              <text x={x - 8} y={textGroupY + 26} fill="#CBD5E1" fontSize="9" textAnchor="end" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
+                                  实体比例: {bodyRatioVal.toFixed(1)}%
+                              </text>
+
+                              {/* Right Side Parameters (Start-aligned, x = x + 8) */}
+                              {isLong ? (
+                                  <>
+                                      <text x={x + 8} y={textGroupY} fill="#34D399" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
+                                          收盘距离过去300天跌幅: -{drop300.toFixed(2)}%
+                                      </text>
+                                      <text x={x + 8} y={textGroupY + 13} fill="#34D399" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
+                                          开盘距离最低涨幅: +{openRiseFromMin.toFixed(2)}%
+                                      </text>
+                                  </>
+                              ) : (
+                                  <>
+                                      <text x={x + 8} y={textGroupY} fill="#F87171" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
+                                          收盘距离过去300天涨幅: +{rise300.toFixed(2)}%
+                                      </text>
+                                      <text x={x + 8} y={textGroupY + 13} fill="#F87171" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
+                                          开盘距离最高点跌幅: -{openDropFromMax.toFixed(2)}%
+                                      </text>
+                                  </>
+                              )}
+                          </g>
+                      );
 
                       if (isLong) {
                           const y = getY(d.low) + 15;
@@ -875,6 +1190,62 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                   <g pointerEvents="none">
                       <line x1={x} y1={0} x2={x} y2={chartHeight} stroke="#A855F7" strokeWidth={1.5} strokeDasharray="4 2" />
                       <text x={x} y={padding.top + 10} fill="#A855F7" fontSize="10" fontWeight="bold" textAnchor="middle" style={{textShadow: '0 0 3px black'}}>L4 ENTRY</text>
+                  </g>
+              );
+          }
+      }
+
+      // Appeared Line (出现)
+      let appearedLine = null;
+      if (appearedTime) {
+          let hlIdx = fullData.findIndex(k => k.time === appearedTime);
+          if (hlIdx === -1) {
+              let minDiff = Infinity;
+              fullData.forEach((k, i) => {
+                  const diff = Math.abs(k.time - appearedTime);
+                  if (diff < minDiff && diff < intervalMs) {
+                      minDiff = diff;
+                      hlIdx = i;
+                  }
+              });
+          }
+
+          if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
+              const i = hlIdx - startIndex;
+              const x = getX(i) + candleWidth / 2;
+              appearedLine = (
+                  <g pointerEvents="none">
+                      <line x1={x} y1={0} x2={x} y2={chartHeight} stroke="#0ECB81" strokeWidth={1.5} strokeDasharray="3 3" />
+                      <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#0ECB81" rx={2} opacity={0.9} />
+                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">出现</text>
+                  </g>
+              );
+          }
+      }
+
+      // Disappeared Line (消失)
+      let disappearedLine = null;
+      if (disappearedTime) {
+          let hlIdx = fullData.findIndex(k => k.time === disappearedTime);
+          if (hlIdx === -1) {
+              let minDiff = Infinity;
+              fullData.forEach((k, i) => {
+                  const diff = Math.abs(k.time - disappearedTime);
+                  if (diff < minDiff && diff < intervalMs) {
+                      minDiff = diff;
+                      hlIdx = i;
+                  }
+              });
+          }
+
+          if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
+              const i = hlIdx - startIndex;
+              const x = getX(i) + candleWidth / 2;
+              disappearedLine = (
+                  <g pointerEvents="none">
+                      <line x1={x} y1={0} x2={x} y2={chartHeight} stroke="#F6465D" strokeWidth={1.5} strokeDasharray="3 3" />
+                      <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#F6465D" rx={2} opacity={0.9} />
+                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">消失</text>
                   </g>
               );
           }
@@ -1063,6 +1434,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               {renderEMA(80, '#06B6D4')}
               {signalMarkers}
               {highlightLine}
+              {appearedLine}
+              {disappearedLine}
               {entryVisuals}
               {extraVisuals}
               {measurementLines}

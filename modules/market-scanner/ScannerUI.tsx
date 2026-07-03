@@ -100,7 +100,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
                 console.log(`[Auto Transfer] Added ${addedCount} discovered symbols to Watchlist:`, candidatesList);
             }
         }
-    }, [majorTrendCandidates, scanConfig.majorTrend?.enabled, scanConfig.majorTrend?.autoTransfer, scanConfig.customSymbols, setScanConfig]);
+    }, [majorTrendCandidates, scanConfig.majorTrend?.enabled, scanConfig.majorTrend?.autoTransfer]);
 
     // --- EFFECT: Sync with Legacy System ---
     const lastListStrRef = React.useRef<string>('');

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { X, FileText, Activity, Code, Clock, ArrowRight, ArrowLeft, Search, TrendingUp, TrendingDown, AlertCircle, Calculator, Link, Shield, PieChart, BarChart2, History, Filter, RotateCcw, Layers, Banknote, List, LayoutGrid, Trash2 } from 'lucide-react';
+import { X, FileText, Activity, Code, Clock, ArrowRight, ArrowLeft, Search, TrendingUp, TrendingDown, AlertCircle, Calculator, Link, Shield, PieChart, BarChart2, History, Filter, RotateCcw, Layers, Banknote, List, LayoutGrid, Trash2, Brain } from 'lucide-react';
 import { TradeLog, SystemEvent, PositionSide, Position } from '../types';
 
 interface Props {
@@ -12,7 +12,7 @@ interface Props {
   onOpenChart?: (symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string) => void;
 }
 
-type FilterType = 'ALL' | 'OPEN' | 'WIN' | 'LOSS' | 'RECOVERY' | 'HEDGE' | 'DEBT' | 'NORMAL_WIN' | 'NORMAL_LOSS' | 'UNHEDGED_WIN' | 'UNHEDGED_LOSS' | 'LONG' | 'SHORT' | 'NEW_OPEN';
+type FilterType = 'ALL' | 'OPEN' | 'WIN' | 'LOSS' | 'RECOVERY' | 'HEDGE' | 'DEBT' | 'NORMAL_WIN' | 'NORMAL_LOSS' | 'UNHEDGED_WIN' | 'UNHEDGED_LOSS' | 'LONG' | 'SHORT' | 'NEW_OPEN' | 'AI_WIN';
 
 // Extracted FilterChip to prevent re-creation on every render
 const FilterChip = ({ type, label, icon: Icon, colorClass, activeFilter, handleFilterChange }: any) => (
@@ -262,17 +262,19 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                       
                       // Find best representative log for this cycle
                       let repLog = cycleLogs.find(l => !l.main_entry_id && !l.parent_entry_id && l.status === 'CLOSED') || 
-                                   cycleLogs.sort((a,b) => (b.exit_timestamp || 0) - (a.exit_timestamp || 0))[0];
+                                   [...cycleLogs].sort((a,b) => (b.exit_timestamp || 0) - (a.exit_timestamp || 0))[0];
 
-                      rSummaries.push({
-                          mainLog: repLog,
-                          grossProfit: cycleGrossProfit,
-                          totalLoss: cycleTotalLoss,
-                          netProfit: cycleNetProfit,
-                          hedgeCount: cycleStopLossCount,
-                          lastStopLossTime: cycleLastStopLossTime,
-                          relatedIds: cycleRelatedIds
-                      });
+                      if (repLog) {
+                          rSummaries.push({
+                              mainLog: repLog,
+                              grossProfit: cycleGrossProfit,
+                              totalLoss: cycleTotalLoss,
+                              netProfit: cycleNetProfit,
+                              hedgeCount: cycleStopLossCount,
+                              lastStopLossTime: cycleLastStopLossTime,
+                              relatedIds: cycleRelatedIds
+                          });
+                      }
 
                       symbolGrossTotal += cycleGrossProfit;
                       symbolLossTotal += cycleTotalLoss;
@@ -388,12 +390,21 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
       const unhedgedLossPositions = filteredPositions.filter(p => !p.isHedged && p.unrealizedPnL < 0 && !everHedgedIds.has(p.entryId));
       const totalUnhedgedLoss = unhedgedLossPositions.reduce((acc, p) => acc + p.unrealizedPnL, 0);
 
-      // C. 常规止盈 (Regular Take Profit) - Closed, never hedged, Profit > 0
+      // C. 常规止盈 (Regular Take Profit) - Closed, never hedged, Profit > 0 (excluding AI closes)
       const normalWinLogs = filteredTradeLogs.filter(l => {
           const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id));
-          return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) > 0 && !isHedged;
+          const isAiClose = l.exit_reason?.includes('AI 智能') || l.exit_reason?.includes('AI智能') || l.exit_reason?.includes('AI逃顶') || l.exit_reason?.toUpperCase().includes('AI');
+          return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) > 0 && !isHedged && !isAiClose;
       });
       const totalNormalWin = normalWinLogs.reduce((acc, l) => acc + (l.profit_usdt || 0), 0);
+
+      // AI 智能止盈 (AI Smart Take Profit) - Closed, never hedged, Profit > 0 (AI closes)
+      const aiWinLogs = filteredTradeLogs.filter(l => {
+          const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id));
+          const isAiClose = l.exit_reason?.includes('AI 智能') || l.exit_reason?.includes('AI智能') || l.exit_reason?.includes('AI逃顶') || l.exit_reason?.toUpperCase().includes('AI');
+          return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) > 0 && !isHedged && isAiClose;
+      });
+      const totalAiWin = aiWinLogs.reduce((acc, l) => acc + (l.profit_usdt || 0), 0);
 
       // C2. 常规止损 (Regular Stop Loss) - Closed, never hedged, Profit < 0
       const normalLossLogs = filteredTradeLogs.filter(l => {
@@ -441,6 +452,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
           totalUnhedgedWin,
           totalUnhedgedLoss,
           totalNormalWin,
+          totalAiWin,
           totalNormalLoss,
           totalCurrentPnL,
           totalDebt: Math.abs(totalDebt), // Show as positive debt amount
@@ -488,13 +500,13 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                       // DEBT: Active hedge cycles with losses
               if (activeFilter === 'DEBT') {
                   if (selectedDebtId) {
-                      const summary = activeHedgeStats.summaries.find(s => s.mainLog.entry_id === selectedDebtId);
+                      const summary = activeHedgeStats.summaries.find(s => s.mainLog?.entry_id === selectedDebtId);
                       const selectedDebtLog = tradeLogs.find(l => l.entry_id === selectedDebtId);
                       const targetSymbol = selectedDebtLog?.symbol;
                       // 这里确保relatedIds包含的日志条目属于当前选中债务的币种
                       return summary ? (summary.relatedIds.has(log.entry_id) && (!targetSymbol || log.symbol === targetSymbol)) : false;
                   } else {
-                      return activeHedgeStats.summaries.some(s => s.mainLog.entry_id === log.entry_id);
+                      return activeHedgeStats.summaries.some(s => s.mainLog?.entry_id === log.entry_id);
                   }
               }
 
@@ -512,15 +524,23 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                       return false;
                   } else {
                       // Only show the representative main entry log for each symbol
-                      const summary = recoveryStats.summaries.find(s => s.mainLog.entry_id === log.entry_id);
+                      const summary = recoveryStats.summaries.find(s => s.mainLog?.entry_id === log.entry_id);
                       return !!summary;
                   }
               }
 
-              // NORMAL_WIN: Never hedged, normal profit closed
+              // NORMAL_WIN: Never hedged, normal profit closed (excluding AI)
               if (activeFilter === 'NORMAL_WIN') {
                   const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
-                  return !log.main_entry_id && log.status === 'CLOSED' && (log.profit_usdt || 0) > 0 && !isHedged;
+                  const isAiClose = log.exit_reason?.includes('AI 智能') || log.exit_reason?.includes('AI智能') || log.exit_reason?.includes('AI逃顶') || log.exit_reason?.toUpperCase().includes('AI');
+                  return !log.main_entry_id && log.status === 'CLOSED' && (log.profit_usdt || 0) > 0 && !isHedged && !isAiClose;
+              }
+
+              // AI_WIN: Never hedged, AI profit closed (specifically AI)
+              if (activeFilter === 'AI_WIN') {
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  const isAiClose = log.exit_reason?.includes('AI 智能') || log.exit_reason?.includes('AI智能') || log.exit_reason?.includes('AI逃顶') || log.exit_reason?.toUpperCase().includes('AI');
+                  return !log.main_entry_id && log.status === 'CLOSED' && (log.profit_usdt || 0) > 0 && !isHedged && isAiClose;
               }
 
               // NORMAL_LOSS: Never hedged, normal loss closed
@@ -787,6 +807,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                     <FilterChip type="UNHEDGED_WIN" label="未对冲盈利" icon={TrendingUp} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="UNHEDGED_LOSS" label="未对冲亏损" icon={TrendingDown} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="NORMAL_WIN" label="常规止盈" icon={Banknote} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="AI_WIN" label="AI智能止盈" icon={Brain} colorClass="bg-purple-900/40 text-purple-400 border-purple-500/30 font-black animate-pulse" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="NORMAL_LOSS" label="常规止损" icon={Banknote} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="DEBT" label="负债对冲止损" icon={Banknote} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="RECOVERY" label="解套对冲盈利" icon={RotateCcw} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
@@ -889,6 +910,13 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                     <span className="font-mono font-bold text-emerald-500 text-sm">+{overviewStats.totalNormalWin.toFixed(2)} U</span>
                 </div>
                 <div className="h-6 w-px bg-slate-800"></div>
+                <div className={`flex flex-col transition-all ${activeFilter === 'AI_WIN' ? 'scale-105 ring-1 ring-purple-500/30 bg-purple-500/5 p-1 rounded animate-pulse' : 'opacity-70'}`}>
+                    <span className="text-[10px] text-slate-500 font-bold uppercase flex items-center gap-1">
+                        <Brain size={10} className="text-purple-400" /> AI智能止盈
+                    </span>
+                    <span className="font-mono font-bold text-purple-400 text-sm">+{overviewStats.totalAiWin.toFixed(2)} U</span>
+                </div>
+                <div className="h-6 w-px bg-slate-800"></div>
                 <div className={`flex flex-col transition-all ${activeFilter === 'NORMAL_LOSS' ? 'scale-105 ring-1 ring-red-500/30 bg-red-500/5 p-1 rounded' : 'opacity-70'}`}>
                     <span className="text-[10px] text-slate-500 font-bold uppercase flex items-center gap-1">
                         <Banknote size={10} /> 常规止损
@@ -953,7 +981,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                     onClick={() => setGroupSortConfig(p => ({ key: 'AMOUNT', direction: p.key === 'AMOUNT' && p.direction === 'DESC' ? 'ASC' : 'DESC' }))}
                                 >
                                     <div className="flex items-center justify-end gap-1">
-                                        {activeFilter === 'DEBT' ? '负债总额 (U)' : activeFilter === 'RECOVERY' ? '回血总额 (U)' : activeFilter === 'NORMAL_WIN' ? '止盈总额 (U)' : activeFilter === 'UNHEDGED_WIN' ? '盈利总额 (U)' : activeFilter === 'UNHEDGED_LOSS' ? '亏损总额 (U)' : '累计盈亏 (U)'}
+                                        {activeFilter === 'DEBT' ? '负债总额 (U)' : activeFilter === 'RECOVERY' ? '回血总额 (U)' : activeFilter === 'NORMAL_WIN' ? '止盈总额 (U)' : activeFilter === 'AI_WIN' ? 'AI智能止盈总额 (U)' : activeFilter === 'UNHEDGED_WIN' ? '盈利总额 (U)' : activeFilter === 'UNHEDGED_LOSS' ? '亏损总额 (U)' : '累计盈亏 (U)'}
                                         <span className={`text-[10px] ${groupSortConfig.key === 'AMOUNT' ? 'text-indigo-400' : 'text-slate-600 group-hover:text-slate-400'}`}>
                                             {groupSortConfig.key === 'AMOUNT' ? (groupSortConfig.direction === 'DESC' ? '↓' : '↑') : '↕'}
                                         </span>

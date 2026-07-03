@@ -130,7 +130,93 @@ function generateMockKLines(symbol: string, interval: string, limit: number): an
  * Robust fetcher with multiple fallbacks for CORS/Network restrictions.
  * Strategy: Direct Connection -> Stable Proxies -> High Speed Proxies -> Backup
  */
+interface CacheEntry {
+    data: any;
+    timestamp: number;
+    ttl: number;
+}
+
+const clientSideCache = new Map<string, CacheEntry>();
+
+const normalizeUrlForCache = (urlStr: string): string => {
+    try {
+        const urlObj = new URL(urlStr, typeof window !== 'undefined' ? window.location.origin : undefined);
+        urlObj.searchParams.delete('_t');
+        urlObj.searchParams.delete('cb');
+        return urlObj.toString();
+    } catch (e) {
+        return urlStr;
+    }
+};
+
+const getCacheTTL = (url: string): number => {
+    if (url.includes('interval=1d') || url.includes('interval=1w') || url.includes('interval=1M')) {
+        return 60000; // 60 seconds for daily/weekly/monthly klines
+    }
+    if (url.includes('/klines')) {
+        return 15000; // 15 seconds for shorter klines (1m, 15m, etc.)
+    }
+    if (url.includes('ticker/price')) {
+        return 2000; // 2 seconds for ticker price
+    }
+    if (url.includes('ticker/24hr')) {
+        return 10000; // 10 seconds for 24h ticker info
+    }
+    return 5000; // 5 seconds default
+};
+
 export const fetchWithFallback = async (
+    url: string, 
+    options?: Omit<RequestInit, 'priority'> & { timeout?: number, priority?: 'HIGH' | 'NORMAL' | 'LOW' }, 
+    validator?: (data: any) => boolean, 
+    directMode: boolean = false
+): Promise<Response> => {
+    
+    // GUARD: Internet connectivity check
+    if (typeof window !== 'undefined' && window.navigator && window.navigator.onLine === false) {
+        throw new Error("Network is offline. Fetch aborted.");
+    }
+    
+    // GUARD: Never fetch empty/malformed symbols
+    if (url.includes('symbol=USDT&') || url.includes('symbol=&') || url.endsWith('symbol=USDT') || url.endsWith('symbol=')) {
+        return new Response(JSON.stringify([]), { status: 200 }); // Return empty array to avoid unhandled rejections
+    }
+
+    // CLIENT CACHE HIT
+    const cacheKey = normalizeUrlForCache(url);
+    const cached = clientSideCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp < cached.ttl)) {
+        return new Response(JSON.stringify(cached.data), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json', 'X-Cache': 'HIT' }
+        });
+    }
+
+    // Call inner implementation
+    const response = await _fetchWithFallbackInner(url, options, validator, directMode);
+
+    // Cache successful responses
+    if (response.ok) {
+        try {
+            const clone = response.clone();
+            const text = await clone.text();
+            const parsed = JSON.parse(text);
+            const ttl = getCacheTTL(url);
+            clientSideCache.set(cacheKey, {
+                data: parsed,
+                timestamp: Date.now(),
+                ttl
+            });
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    return response;
+};
+
+const _fetchWithFallbackInner = async (
     url: string, 
     options?: Omit<RequestInit, 'priority'> & { timeout?: number, priority?: 'HIGH' | 'NORMAL' | 'LOW' }, 
     validator?: (data: any) => boolean, 
@@ -149,7 +235,10 @@ export const fetchWithFallback = async (
 
     // 1. Enter Queue with priority (Charts go higher priority than background scans)
     const priority = options?.priority || (url.includes('ticker/24hr') ? 'LOW' : 'NORMAL');
-    await acquireSlot(priority);
+    const isHighPriority = priority === 'HIGH';
+    if (!isHighPriority) {
+        await acquireSlot(priority);
+    }
     
     try {
         // Circuit Breaker: Prevent tight loops when network is fully disconnected
@@ -159,7 +248,7 @@ export const fetchWithFallback = async (
         }
 
         // DETECT HEAVY PAYLOAD
-        const isHeavyPayload = url.includes('ticker/24hr');
+        const isHeavyPayload = url.includes('ticker/24hr') || url.includes('ticker/price');
         const isKlinePayload = url.includes('/klines');
         
         // Increase timeout significantly for heavy payloads.
@@ -235,7 +324,7 @@ export const fetchWithFallback = async (
         }
 
         // Proxy List Strategy
-        const proxyLocalServer = `/api/proxy?url=${encodedUrl}`;
+        const proxyLocalServer = `/api/proxy?url=${encodedUrl}${priority === 'HIGH' ? '&priority=high' : ''}`;
         const proxyCorsProxyIO = `https://corsproxy.io/?${encodeURIComponent(currentUrl)}`;
         const proxyCodeTabs = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(currentUrl)}`;
         const proxyAllOriginsRaw = `https://api.allorigins.win/raw?url=${encodeURIComponent(currentUrl)}`;
@@ -347,13 +436,22 @@ export const fetchWithFallback = async (
             }
         }
 
-        for (const proxy of proxies) {
+        // Filter out already failed race batch items for HIGH priority to prevent wasting another 45+ seconds of sequential retries
+        const remainingProxies = priority === 'HIGH' 
+            ? proxies.filter(p => p !== proxyLocalServer && p !== proxyCorsProxyIO && p !== proxyCodeTabs)
+            : proxies;
+
+        for (const proxy of remainingProxies) {
             try {
                 const response = await fetchProxy(proxy);
                 continuousFailures = 0;
                 return response;
             } catch (e: any) {
                 lastError = e;
+                if (e.message && (e.message.includes('HTTP 400') || e.message.includes('HTTP 404'))) {
+                    console.warn(`[API] Early abort proxy loop due to ${e.message} for ${url}`);
+                    throw e;
+                }
             }
         }
         
@@ -382,6 +480,8 @@ export const fetchWithFallback = async (
 
         throw lastError || new Error("Failed after all line attempts");
     } finally {
-        releaseSlot();
+        if (!isHighPriority) {
+            releaseSlot();
+        }
     }
 };

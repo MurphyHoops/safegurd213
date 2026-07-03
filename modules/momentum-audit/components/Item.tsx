@@ -108,7 +108,15 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                         <div className="text-red-400 font-bold text-[10px] flex items-center justify-center gap-1 mb-1">
                             <AlertTriangle size={12}/> {item.fuseReason?.includes('动态方向锁') ? '触发动态方向锁锁定' : '触发防追高熔断'}
                         </div>
-                        <div className="text-[9px] text-slate-400">{item.fuseReason}</div>
+                        {item.fuseDetails ? (
+                            <div className="text-[9px] text-slate-300 space-y-0.5 mt-1 border-t border-red-500/20 pt-1">
+                                <div>周期: <span className="font-bold text-white">{item.fuseDetails.period || '-'}</span></div>
+                                <div>设定阈值: <span className="font-bold text-red-400">{item.fuseDetails.threshold ?? 0}%</span></div>
+                                <div>当前比例: <span className="font-bold text-white">{item.fuseDetails.actual ?? 0}%</span></div>
+                            </div>
+                        ) : (
+                            <div className="text-[9px] text-slate-400 mt-1">{item.fuseReason || '已熔断'}</div>
+                        )}
                     </div>
                 ) : (
                     <>

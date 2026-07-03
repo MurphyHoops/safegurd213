@@ -11,6 +11,57 @@ import { checkConventionalProfit } from './conventional';
  *    - 如果收益率回落并低于 fallbackProfitPercent (退回常规阈值，例如 1%)，则“恢复常规平仓” (调用 checkConventionalProfit 结合 conventional 配置执行常规或基础监控)。
  * 4. 如果没有开启或未满足启动门槛，则可以直接执行常规止盈检测以获得基础防护。
  */
+/**
+ * 获取 AI 智能开启的真实百分比阈值
+ */
+export function getAiActivationThreshold(aiSettings: any): number {
+    if (!aiSettings) return 3.5;
+    if (aiSettings.activationProfitPercent !== undefined && aiSettings.activationProfitPercent !== null) {
+        return aiSettings.activationProfitPercent;
+    }
+    if (aiSettings.activationProfit !== undefined && aiSettings.activationProfit !== null) {
+        const val = aiSettings.activationProfit;
+        // 如果是出厂默认值 60，我们映射为 6.0% (十倍关系)
+        if (val === 60) {
+            return 6.0;
+        }
+        return val;
+    }
+    return 3.5;
+}
+
+/**
+ * 检查阶梯保底锁定
+ */
+function checkStepBasedProfit(
+    position: Position,
+    settings: any, // Using any due to AiProfitSettings not being imported in this file scope if not fully defined in types.ts context
+    close: (symbol: string, side: PositionSide, reason: string, ratio: number) => void
+): boolean {
+    if (!settings.stepBasedLockEnabled || !settings.steps || settings.steps.length === 0) {
+        return false;
+    }
+
+    const currentPnl = position.unrealizedPnLPercentage;
+    // Sort steps by threshold descending
+    const sortedSteps = [...settings.steps].sort((a: any, b: any) => b.threshold - a.threshold);
+
+    // Find the step corresponding to the current pnl drop
+    for (const step of sortedSteps) {
+        if (currentPnl <= step.threshold) {
+             // Trigger close based on this step
+             close(
+                position.symbol,
+                position.side,
+                `AI 阶梯保底平仓: 利润 ${currentPnl.toFixed(2)}% 低于阶梯阈值 ${step.threshold}%，触发保底锁定`,
+                100
+             );
+             return true;
+        }
+    }
+    return false;
+}
+
 export function checkAiProfit(
     position: Position,
     profitSettings: ProfitSettings,
@@ -45,7 +96,7 @@ export function checkAiProfit(
 
     // 1. 单币智能或 AI 启动控制
     const useSmartAI = settings.aiSmartModeEnabled ?? true; 
-    const actThreshold = settings.activationProfitPercent ?? 3.5;
+    const actThreshold = getAiActivationThreshold(settings);
     const fallbackThreshold = settings.fallbackProfitPercent ?? 1.0;
 
     // 如果未达到 AI 智能启动盈利阈值，或者当前盈利已经跌破退回常规平仓阈值
@@ -55,6 +106,12 @@ export function checkAiProfit(
             return checkConventionalProfit(position, profitSettings.conventional, close);
         }
         
+        // --- 新增：阶梯保底锁定逻辑 ---
+        if (currentPnl < actThreshold && settings.stepBasedLockEnabled) {
+             if (checkStepBasedProfit(position, settings, close)) return true;
+        }
+        // -----------------------------
+
         if (currentPnl < fallbackThreshold) {
             // 盈利低于退回常规阀值 -> 恢复常规平仓逻辑
             return checkConventionalProfit(position, profitSettings.conventional, close);

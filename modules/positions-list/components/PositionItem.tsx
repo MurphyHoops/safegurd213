@@ -2,6 +2,26 @@ import React from 'react';
 import { Position, PositionSide } from '../../../types';
 import { Shield, Target, Zap, History, BarChart2, Settings, Brain } from 'lucide-react';
 import { formatPrice } from '../../../services/symbolUtils';
+import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
+import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
+
+/**
+ * 本地获取 AI 智能开启的真实百分比阈值，避免循环依赖
+ */
+function getAiActivationThreshold(aiSettings: any): number {
+    if (!aiSettings) return 3.5;
+    if (aiSettings.activationProfitPercent !== undefined && aiSettings.activationProfitPercent !== null) {
+        return aiSettings.activationProfitPercent;
+    }
+    if (aiSettings.activationProfit !== undefined && aiSettings.activationProfit !== null) {
+        const val = aiSettings.activationProfit;
+        if (val === 60) {
+            return 6.0;
+        }
+        return val;
+    }
+    return 3.5;
+}
 
 interface Props {
     p: Position;
@@ -18,13 +38,39 @@ interface Props {
     onShowHistory: (symbol: string) => void;
     onClosePosition: (symbol: string, side: PositionSide) => void;
     onOpenSettings?: (position: Position) => void;
+    aiSmartMasterEnabled?: boolean;
+    globalProfitSettings?: any;
 }
 
 export const PositionItem: React.FC<Props> = ({
     p, idx, livePrice, currentPnl, currentPnlPct, showHedgeStats, totalDebt, isHedgedMode, isModule1Active, hasAmmo,
-    onOpenChart, onShowHistory, onClosePosition, onOpenSettings
+    onOpenChart, onShowHistory, onClosePosition, onOpenSettings, aiSmartMasterEnabled = true, globalProfitSettings
 }) => {
     const isHedgedActive = p.isHedged || !!p.mainPositionId;
+
+    // AI Dynamic Status & Activation Checks
+    const profitSettings = p.customProfitSettings || globalProfitSettings;
+    const currentProfitMode = profitSettings?.profitMode;
+    const oEnabledMap = profitSettings?.oEnabledMap || {};
+    const isAiMode = currentProfitMode === 'AI' || oEnabledMap['AI'] === true;
+    const isAiEnabled = p.customProfitSettings
+        ? (p.customProfitSettings.profitMode === 'AI' || p.customProfitSettings.oEnabledMap?.['AI'] === true)
+        : ((aiSmartMasterEnabled ?? true) || isAiMode);
+
+    const aiSettings = profitSettings?.ai || {
+        activationProfitPercent: 3.5,
+        fallbackProfitPercent: 1.0,
+        aiSmartModeEnabled: true,
+        minPosition: 100
+    };
+    const actThreshold = getAiActivationThreshold(aiSettings);
+    const fallbackThreshold = aiSettings.fallbackProfitPercent ?? 1.0;
+    const minPosition = aiSettings.minPosition ?? 100;
+
+    const maxPnl = p.maxPnLPercent || 0;
+    const positionValue = p.amount * p.entryPrice;
+    const isPositionSizeMet = positionValue >= minPosition;
+    const isAiActivated = isAiEnabled && (maxPnl >= actThreshold) && (currentPnlPct >= fallbackThreshold) && isPositionSizeMet;
 
     return (
         <div 
@@ -72,16 +118,26 @@ export const PositionItem: React.FC<Props> = ({
                             <span>+{(p.cumulativeHedgeProfit || 0).toFixed(1)}U</span>
                         </div>
                     )}
-                    {p.customProfitSettings && (
+                    {isAiEnabled && (
                         isHedgedActive ? (
                             <div className="flex items-center gap-1 bg-[#1a232e] text-slate-500 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-slate-800" title="该币有单币AI智能配置，但由于已启动对冲，智能平仓已自动解锁停用">
                                 <Brain size={8} />
                                 <span className="line-through scale-[0.95] origin-left">AI智能</span>
                             </div>
-                        ) : (
-                            <div className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 text-[8px] font-black px-1.5 py-0.5 rounded-sm border border-emerald-500/35 animate-pulse" title="该币已启动单币AI智能托管监控">
+                        ) : isAiActivated ? (
+                            <div className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 text-[8px] font-black px-1.5 py-0.5 rounded-sm border border-emerald-500/35 animate-pulse" title={`AI智能逃顶已激活！最高利润: ${maxPnl.toFixed(2)}% (已越过 ${actThreshold}% 启动线)`}>
                                 <Brain size={8} />
-                                <span>AI智能</span>
+                                <span>AI智能-追盈中</span>
+                            </div>
+                        ) : !isPositionSizeMet ? (
+                            <div className="flex items-center gap-1 bg-red-500/10 text-red-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-red-500/30" title={`金额未达标！当前持仓金额: ${positionValue.toFixed(1)}U < AI起投金额: ${minPosition}U`}>
+                                <Brain size={8} className="text-red-400/70" />
+                                <span>金额未达标</span>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-1 bg-slate-800/40 text-slate-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-slate-700/60" title={`AI智能监控中 (待触发启动门槛)。当前最高利润: ${maxPnl.toFixed(2)}% / 启动门槛: ${actThreshold}%`}>
+                                <Brain size={8} className="text-slate-500" />
+                                <span>AI待命</span>
                             </div>
                         )
                     )}
@@ -96,7 +152,11 @@ export const PositionItem: React.FC<Props> = ({
                 </div>
                 <div className="flex items-center gap-1.5 font-mono text-[10px] shrink-0">
                     <span className="text-slate-500">{new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}</span>
-                    <span className={`font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{formatPrice(livePrice)}</span>
+                    {p.isBacktestRecord ? (
+                        <span className={`font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{formatPrice(livePrice)}</span>
+                    ) : (
+                        <RealtimePriceSpan symbol={p.symbol} fallbackPrice={livePrice} className={`font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} />
+                    )}
                 </div>
             </div>
 
@@ -107,13 +167,39 @@ export const PositionItem: React.FC<Props> = ({
                     <span className="text-slate-500">U</span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                    <span className={`font-mono text-xs font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {currentPnl >= 0 ? '+' : ''}{p.amount > 1000 ? currentPnl.toFixed(2) : currentPnl.toFixed(4)}
-                    </span>
-                    <span className="text-slate-700 text-[10px]">/</span>
-                    <span className={`font-mono text-xs font-bold ${currentPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {currentPnlPct >= 0 ? '+' : ''}{currentPnlPct.toFixed(3)}%
-                    </span>
+                    {p.isBacktestRecord ? (
+                        <>
+                            <span className={`font-mono text-xs font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {currentPnl >= 0 ? '+' : ''}{p.amount > 1000 ? currentPnl.toFixed(2) : currentPnl.toFixed(4)}
+                            </span>
+                            <span className="text-slate-700 text-[10px]">/</span>
+                            <span className={`font-mono text-xs font-bold ${currentPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {currentPnlPct >= 0 ? '+' : ''}{currentPnlPct.toFixed(3)}%
+                            </span>
+                        </>
+                    ) : (
+                        <>
+                            <RealtimePnlSpan 
+                                symbol={p.symbol} 
+                                entryPrice={p.entryPrice} 
+                                amount={p.amount} 
+                                side={p.side === PositionSide.LONG ? 'LONG' : 'SHORT'} 
+                                isPct={false} 
+                                fallbackValue={currentPnl} 
+                                className={`font-mono text-xs font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} 
+                            />
+                            <span className="text-slate-700 text-[10px]">/</span>
+                            <RealtimePnlSpan 
+                                symbol={p.symbol} 
+                                entryPrice={p.entryPrice} 
+                                amount={p.amount} 
+                                side={p.side === PositionSide.LONG ? 'LONG' : 'SHORT'} 
+                                isPct={true} 
+                                fallbackValue={currentPnlPct} 
+                                className={`font-mono text-xs font-bold ${currentPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`} 
+                            />
+                        </>
+                    )}
                 </div>
                 {showHedgeStats && (
                     <div className="flex items-center gap-1 text-[9px] text-slate-400 bg-slate-800/50 px-1.5 py-0.5 rounded shrink-0">
@@ -141,11 +227,42 @@ export const PositionItem: React.FC<Props> = ({
                     ) : (
                         <button 
                             onClick={(e) => { e.stopPropagation(); onOpenSettings?.(p); }} 
-                            className={`px-1.5 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer font-bold ${p.customProfitSettings ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.15)]' : 'bg-[#141a22] text-slate-400 hover:bg-slate-800 hover:text-white border border-slate-800'}`} 
-                            title="单币AI智能平仓 (参数设置与算法启动)"
+                            className={`px-1.5 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer font-bold ${
+                                !isAiEnabled
+                                    ? 'bg-[#141a22] text-slate-400 hover:bg-slate-800 hover:text-white border border-slate-800'
+                                    : !isAiActivated
+                                        ? !isPositionSizeMet
+                                            ? 'bg-red-500/5 text-red-400 hover:bg-red-500/15 border border-red-500/20 shadow-[0_0_8px_rgba(239,68,68,0.05)]'
+                                            : 'bg-amber-500/5 text-amber-500/80 hover:bg-amber-500/15 border border-amber-500/20 shadow-[0_0_8px_rgba(245,158,11,0.05)]'
+                                        : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/35 shadow-[0_0_10px_rgba(16,185,129,0.2)] animate-pulse'
+                            }`} 
+                            title={
+                                !isAiEnabled
+                                    ? "未启用智能平仓 (可点击开启/配置)"
+                                    : !isAiActivated
+                                        ? !isPositionSizeMet
+                                            ? `持仓金额 (${positionValue.toFixed(1)}U) 未达到起投限制 (${minPosition}U) (点击配置)`
+                                            : `AI智能已就绪 (待命)。当前最高利润: ${maxPnl.toFixed(2)}% / 启动阈值: ${actThreshold}% (点击配置)`
+                                        : p.customProfitSettings 
+                                            ? `单币独立AI智能逃顶激活监控中 (最高利润: ${maxPnl.toFixed(2)}% > ${actThreshold}%)` 
+                                            : `全局AI智能逃顶激活监控中 (最高利润: ${maxPnl.toFixed(2)}% > ${actThreshold}%)`
+                            }
                         >
-                            <Brain size={11} className={p.customProfitSettings ? 'animate-pulse text-emerald-400' : 'text-slate-400'} />
-                            <span className="text-[10px] scale-[0.9] origin-left">智能平仓</span>
+                            <Brain 
+                                size={11} 
+                                className={
+                                    !isAiEnabled
+                                        ? 'text-slate-400'
+                                        : !isAiActivated
+                                            ? !isPositionSizeMet
+                                                ? 'text-red-400/60'
+                                                : 'text-amber-500/60'
+                                            : 'animate-pulse text-emerald-400'
+                                } 
+                            />
+                            <span className="text-[10px] scale-[0.9] origin-left">
+                                {p.customProfitSettings ? '智能平仓(单币)' : '智能平仓'}
+                            </span>
                         </button>
                     )}
                     <button onClick={(e) => { e.stopPropagation(); onShowHistory(p.symbol); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="历史记录"><History size={12}/></button>

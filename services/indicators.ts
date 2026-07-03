@@ -5,6 +5,7 @@
 
 // Calculate EMA (Exponential Moving Average)
 export function calculateEMA(prices: number[], period: number): number[] {
+  if (prices.length < period) return [];
   const k = 2 / (period + 1);
   const emaArray: number[] = [];
 

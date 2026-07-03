@@ -40,22 +40,20 @@ export const useBacktestMomentumAudit = (
         removeTriggeredMinutes: 15,
         removeFuseMinutes: 15,
         antiChaseConfig: { 
-            longMaxDist1: 40, longMaxDist2: 35, longMaxDist3: 30, longMaxDist4: 25, longMaxDist5: 20, longMaxDist6: 15, longMaxDist7: 10,
-            longPeriod1: 43200, longPeriod2: 10080, longPeriod3: 1440, longPeriod4: 240, longPeriod5: 60, longPeriod6: 5, longPeriod7: 1,
-            shortMaxDist1: 40, shortMaxDist2: 35, shortMaxDist3: 30, shortMaxDist4: 25, shortMaxDist5: 20, shortMaxDist6: 15, shortMaxDist7: 10,
-            shortPeriod1: 43200, shortPeriod2: 10080, shortPeriod3: 1440, shortPeriod4: 240, shortPeriod5: 60, shortPeriod6: 5, shortPeriod7: 1
+            longThresholds: { "2160": 0, "720": 0, "168": 0, "24": 0, "1": 0 },
+            shortThresholds: { "2160": 0, "720": 0, "168": 0, "24": 0, "1": 0 },
         },
         enableAutoDirGuard: false,
         autoDirConfig: {
-            longMaxDist1: 40, longMaxDist2: 35, longMaxDist3: 30, longMaxDist4: 25, longMaxDist5: 20, longMaxDist6: 15, longMaxDist7: 10,
-            longPeriod1: 43200, longPeriod2: 10080, longPeriod3: 1440, longPeriod4: 240, longPeriod5: 60, longPeriod6: 5, longPeriod7: 1,
-            shortMaxDist1: 40, shortMaxDist2: 35, shortMaxDist3: 30, shortMaxDist4: 25, shortMaxDist5: 20, shortMaxDist6: 15, shortMaxDist7: 10,
-            shortPeriod1: 43200, shortPeriod2: 10080, shortPeriod3: 1440, shortPeriod4: 240, shortPeriod5: 60, shortPeriod6: 5, shortPeriod7: 1
+            limit1Q: 0,
+            limit1M: 0,
+            limit1W: 0,
+            limit1D: 0,
+            limit1H: 0
         }
     });
 
     const [results, setResults] = useState<ScannerItem[]>([]);
-    const [status, setStatus] = useState<'IDLE' | 'AUDITING'>('IDLE');
     const lastResultsStrRef = useRef<string>('');
     const executedRef = useRef<Set<string>>(new Set());
 
@@ -80,7 +78,6 @@ export const useBacktestMomentumAudit = (
             return;
         }
 
-        setStatus('AUDITING');
         const auditedResults = analyzeList4Momentum(candidates, config);
         
         const isMasterAutoOn = actionConfig?.autoExecute;
@@ -172,7 +169,6 @@ export const useBacktestMomentumAudit = (
             lastResultsStrRef.current = resultsStr;
             setResults(finalResults);
         }
-        setStatus('IDLE');
     }, [candidates, config, virtualTime, manualExclusions, activePositions, realPrices, actionConfig?.autoExecute]);
 
     useEffect(() => {
@@ -192,7 +188,6 @@ export const useBacktestMomentumAudit = (
         config,
         setConfig,
         results,
-        status,
         removeItem,
         clearItems
     };

@@ -74,6 +74,10 @@ export const useBacktestGrandCrossing = (
           })
           .filter((r) => r.lag! <= retention && r.lag! >= 0)
           .filter((r) => {
+            if (config.strictFiltering) {
+              const ratio = r.bodyRatio ?? 0; // Use strict default of 0
+              if (ratio < (config.minBodyRatio || 0)) return false;
+            }
             return !expiredList2SignalCacheRef.current.has(
               `${item.symbol}-${r.tf}-${r.direction}`,
             );
@@ -97,78 +101,111 @@ export const useBacktestGrandCrossing = (
     performUpdate();
   }, [candidates, performUpdate]);
 
+  const isScanningRef = useRef<boolean>(false);
+  const pendingTfsRef = useRef<Set<string>>(new Set());
+
   const runScan = async (targetTfs: string[]) => {
     if (candidates.length === 0) return;
-    setStatus("SCANNING");
-    onLog?.(
-      "INFO",
-      `[回测-列表2] 触发扫描, 周期: ${targetTfs.join(", ")}, 币种数: ${candidates.length}`,
-    );
+    
+    targetTfs.forEach(tf => pendingTfsRef.current.add(tf));
 
-    for (const tf of targetTfs) {
-      onLog?.("INFO", `[回测-列表2] 正在扫描 ${tf} 周期...`);
-      for (const item of candidates) {
-        try {
-          const klines = await fetchVirtualKlines(item.symbol, tf, 150);
-          if (klines.length > 0) {
-            const closes = klines.map((k) => k.close);
-            const highs = klines.map((k) => k.high);
-            const lows = klines.map((k) => k.low);
-            const opens = klines.map((k) => k.open);
-            const volumes = klines.map((k) => k.volume);
-            const timestamps = klines.map((k) => k.time);
-
-            const maxNewLag = isPlaying ? Math.max(1, Math.ceil(speed)) : 1;
-
-            let results = analyzeList2Crossing(
-              item.symbol,
-              tf,
-              closes,
-              highs,
-              lows,
-              opens,
-              volumes,
-              timestamps,
-              { ...config, maxLag: 15 } as any,
-              maxNewLag,
-            );
-
-            // Filter by expired cache
-            results = results.filter(
-              (r) =>
-                !expiredList2SignalCacheRef.current.has(
-                  `${item.symbol}-${r.tf}-${r.direction}`,
-                ),
-            );
-
-            if (results.length > 0) {
-              const cacheKey = `${item.symbol}-FULL`;
-              const existing = cacheRef.current.get(cacheKey);
-              const merged = existing
-                ? [...(existing.groupedResults || [])]
-                : [];
-              const cleanMerged = merged.filter((r) => r.tf !== tf);
-              cleanMerged.push(...results);
-
-              cacheRef.current.set(cacheKey, {
-                ...item,
-                groupedResults: cleanMerged,
-                direction: cleanMerged[0].direction,
-                tf: cleanMerged[0].tf,
-                lastUpdated: virtualTime,
-              });
-
-              onLog?.(
-                "SUCCESS",
-                `[回测-列表2] 发现信号: ${item.symbol} ${tf} ${cleanMerged[0].direction}`,
-              );
-            }
-          }
-        } catch (e) {}
-      }
+    if (isScanningRef.current) {
+      return;
     }
-    performUpdate();
-    setStatus("IDLE");
+
+    isScanningRef.current = true;
+    setStatus("SCANNING");
+
+    try {
+      while (pendingTfsRef.current.size > 0) {
+        const tfsToScan = Array.from(pendingTfsRef.current);
+        pendingTfsRef.current.clear();
+
+        onLog?.(
+          "INFO",
+          `[回测-列表2] 触发扫描, 周期: ${tfsToScan.join(", ")}, 币种数: ${candidates.length}`,
+        );
+
+        for (const tf of tfsToScan) {
+          onLog?.("INFO", `[回测-列表2] 正在扫描 ${tf} 周期...`);
+          for (const item of candidates) {
+            try {
+              const klines = await fetchVirtualKlines(item.symbol, tf, 150);
+              if (klines.length > 0) {
+                const closes = klines.map((k) => k.close);
+                const highs = klines.map((k) => k.high);
+                const lows = klines.map((k) => k.low);
+                const opens = klines.map((k) => k.open);
+                const volumes = klines.map((k) => k.volume);
+                const timestamps = klines.map((k) => k.time);
+
+                const maxNewLag = isPlaying ? Math.max(1, Math.ceil(speed)) : 1;
+
+                let results = analyzeList2Crossing(
+                  item.symbol,
+                  tf,
+                  closes,
+                  highs,
+                  lows,
+                  opens,
+                  volumes,
+                  timestamps,
+                  { ...config, maxLag: 15 } as any,
+                  maxNewLag,
+                );
+
+                // Filter by expired cache
+                results = results.filter(
+                  (r) =>
+                    !expiredList2SignalCacheRef.current.has(
+                      `${item.symbol}-${r.tf}-${r.direction}`,
+                    ),
+                );
+
+                if (results.length > 0) {
+                  const cacheKey = `${item.symbol}-FULL`;
+                  const existing = cacheRef.current.get(cacheKey);
+                  const merged = existing
+                    ? [...(existing.groupedResults || [])]
+                    : [];
+                  const cleanMerged = merged.filter((r) => r.tf !== tf);
+                  cleanMerged.push(...results);
+
+                  let finalMerged = cleanMerged;
+                  if (config.strictFiltering) {
+                    finalMerged = cleanMerged.filter((r) => {
+                      const ratio = r.bodyRatio ?? 0;
+                      return ratio >= (config.minBodyRatio || 0);
+                    });
+                  }
+
+                  if (finalMerged.length > 0) {
+                    cacheRef.current.set(cacheKey, {
+                      ...item,
+                      groupedResults: finalMerged,
+                      direction: finalMerged[0].direction,
+                      tf: finalMerged[0].tf,
+                      lastUpdated: virtualTime,
+                    });
+                  } else {
+                    cacheRef.current.delete(cacheKey);
+                  }
+
+                  onLog?.(
+                    "SUCCESS",
+                    `[回测-列表2] 发现信号: ${item.symbol} ${tf} ${cleanMerged[0].direction}`,
+                  );
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } finally {
+      performUpdate();
+      isScanningRef.current = false;
+      setStatus("IDLE");
+    }
   };
 
   // Trigger scan based on virtual time

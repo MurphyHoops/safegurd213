@@ -55,6 +55,24 @@
         "winRate": { "type": "number" },
         "trades": { "type": "array" }
       }
+    },
+    "MomentumHistory": {
+      "title": "Momentum History",
+      "description": "Historical records of signals for audit.",
+      "type": "object",
+      "properties": {
+        "symbol": { "type": "string" },
+        "direction": { "type": "string" },
+        "price": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "listType": { "type": "string" },
+        "uid": { "type": "string" },
+        "itemData": { "type": "object" },
+        "disappearedAt": { "type": "number" },
+        "signalTime": { "type": "number" },
+        "disappearanceReason": { "type": "string" }
+      },
+      "required": ["symbol", "timestamp", "listType", "uid"]
     }
   },
   "firestore": {
@@ -65,6 +83,10 @@
     "/backtests/{testId}": {
       "schema": "BacktestResult",
       "description": "Historical simulation results."
+    },
+    "/momentum_history/{historyId}": {
+      "schema": "MomentumHistory",
+      "description": "Historical records of signals for audit."
     }
   }
 }

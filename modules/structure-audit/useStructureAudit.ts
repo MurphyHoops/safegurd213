@@ -254,23 +254,28 @@ export const useStructureAudit = (
 
         const s = entry.structure;
         const cfg = configRef.current;
+        const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+        
         let passes = true;
-        if (cfg.strictTrend && !s.isStrictTrend) passes = false;
-        if (cfg.checkCandleColor && !s.isColorValid) passes = false;
-        if (cfg.enableAmplitudeAudit) {
-          if (s.locationPct > cfg.maxLocation) passes = false;
-          if (s.crossCount < cfg.minCrossCount) passes = false;
-          if (s.bbw > cfg.maxBBW) passes = false;
+        if (!areAllRulesOff) {
+            if (cfg.strictTrend && !s.isStrictTrend) passes = false;
+            if (cfg.checkCandleColor && !s.isColorValid) passes = false;
+            if (cfg.enableAmplitudeAudit) {
+              if (s.locationPct > cfg.maxLocation) passes = false;
+              if (s.crossCount < cfg.minCrossCount) passes = false;
+              if (s.bbw > cfg.maxBBW) passes = false;
+            }
+            if (cfg.enableRsi !== false) {
+              if (entry.direction === "LONG") {
+                if (s.rsi < cfg.rsiLongMin || s.rsi > cfg.rsiLongMax)
+                  passes = false;
+              } else {
+                if (s.rsi < cfg.rsiShortMin || s.rsi > cfg.rsiShortMax)
+                  passes = false;
+              }
+            }
         }
-        if (cfg.enableRsi !== false) {
-          if (entry.direction === "LONG") {
-            if (s.rsi < cfg.rsiLongMin || s.rsi > cfg.rsiLongMax)
-              passes = false;
-          } else {
-            if (s.rsi < cfg.rsiShortMin || s.rsi > cfg.rsiShortMax)
-              passes = false;
-          }
-        }
+        
         if (
           cfg.timeframes &&
           cfg.timeframes.length > 0 &&
@@ -504,29 +509,59 @@ export const useStructureAudit = (
                   const safeSymbol = item.symbol.endsWith("USDT")
                     ? item.symbol
                     : `${item.symbol}USDT`;
-                  // Fetch up to 14 days of 1h data (336h) and 24 hours of 1m data (1440m)
-                  const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1h&limit=336&_t=${Date.now()}`;
-                  const res1h = await fetchWithFallback(
-                    url1h,
-                    { cache: "no-store" },
-                    (d) => Array.isArray(d),
-                    directMode,
-                  );
-                  const raw1h = await res1h.json();
-
+                  // Fetch up to 1000h of 1h data, 540 of 4h data (equivalent to 2160 hours), and 24 hours of 1m data (1440m)
+                  const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1h&limit=1000&_t=${Date.now()}`;
+                  const url4h = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=4h&limit=540&_t=${Date.now()}`;
                   const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=1440&_t=${Date.now()}`;
-                  const res1m = await fetchWithFallback(
-                    url1m,
-                    { cache: "no-store" },
-                    (d) => Array.isArray(d),
-                    directMode,
-                  );
+                  
+                  const [res1h, res4h, res1m] = await Promise.all([
+                    fetchWithFallback(
+                      url1h,
+                      { cache: "no-store" },
+                      (d) => Array.isArray(d),
+                      directMode,
+                    ),
+                    fetchWithFallback(
+                      url4h,
+                      { cache: "no-store" },
+                      (d) => Array.isArray(d),
+                      directMode,
+                    ),
+                    fetchWithFallback(
+                      url1m,
+                      { cache: "no-store" },
+                      (d) => Array.isArray(d),
+                      directMode,
+                    ),
+                  ]);
+
+                  const raw1h = await res1h.json();
+                  const raw4h = await res4h.json();
                   const raw1m = await res1m.json();
 
                   const h1h = raw1h.map((k: any) => parseFloat(k[2]));
                   const l1h = raw1h.map((k: any) => parseFloat(k[3]));
                   const h1m = raw1m.map((k: any) => parseFloat(k[2]));
                   const l1m = raw1m.map((k: any) => parseFloat(k[3]));
+
+                  // Construct up-sampled historical 1h arrays using 4h data to cover the full 1Q window (2160 hours)
+                  const oldest1hTime = raw1h.length > 0 ? raw1h[0][0] : Date.now();
+                  const olderHighs: number[] = [];
+                  const olderLows: number[] = [];
+                  
+                  raw4h.forEach((k: any) => {
+                    if (k[0] < oldest1hTime) {
+                      const h = parseFloat(k[2]);
+                      const l = parseFloat(k[3]);
+                      for (let j = 0; j < 4; j++) {
+                        olderHighs.push(h);
+                        olderLows.push(l);
+                      }
+                    }
+                  });
+
+                  const combinedHighs = [...olderHighs, ...h1h].slice(-2200);
+                  const combinedLows = [...olderLows, ...l1h].slice(-2200);
 
                   // PRE-CALCULATE EXTREMES (SCALAR)
                   // This avoids expensive slice/Math.max in list4_momentum every tick
@@ -543,8 +578,8 @@ export const useStructureAudit = (
                   };
 
                   historyExtremes = {
-                    highs1h: h1h,
-                    lows1h: l1h,
+                    highs1h: combinedHighs,
+                    lows1h: combinedLows,
                     highs1m: h1m,
                     lows1m: l1m,
                     // Pre-calculated results for quick lookup
@@ -557,10 +592,10 @@ export const useStructureAudit = (
                       high_240m: calcExtreme(h1m, 240, "MAX"),
                       low_1440m: calcExtreme(l1m, 1440, "MIN"),
                       high_1440m: calcExtreme(h1m, 1440, "MAX"),
-                      low_10080m: calcExtreme(l1h, 168, "MIN"), // 7 days
-                      high_10080m: calcExtreme(h1h, 168, "MAX"),
-                      low_43200m: calcExtreme(l1h, 336, "MIN"), // 14 days (approx window)
-                      high_43200m: calcExtreme(h1h, 336, "MAX"),
+                      low_10080m: calcExtreme(combinedLows, 168, "MIN"), // 7 days
+                      high_10080m: calcExtreme(combinedHighs, 168, "MAX"),
+                      low_43200m: calcExtreme(combinedLows, 720, "MIN"), // 30 days (720 hours)
+                      high_43200m: calcExtreme(combinedHighs, 720, "MAX"),
                     },
                   };
                 } catch (e) {
@@ -733,12 +768,6 @@ export const useStructureAudit = (
       } else if (currentHash !== lastHash) {
         // If the List 2 signal changed/aged, re-scan
         itemsToScan.push(c);
-      } else {
-        // If already in List 3 but has unlatched TFs, re-scan to check for trend achievement
-        const hasUnlatched = cached.list3Results?.some((r) => !r.latched);
-        if (hasUnlatched) {
-          itemsToScan.push(c);
-        }
       }
     });
 

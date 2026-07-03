@@ -147,6 +147,11 @@ class PriceRegistry {
         }
     }
 
+    public forceUpdatePrice(symbol: string, price: number) {
+        const cleanSymbol = normalizeSymbol(symbol);
+        this.updatePrices({ [cleanSymbol]: price });
+    }
+
     public getPrice(symbol: string): number | undefined {
         const cleanSymbol = normalizeSymbol(symbol);
         if (this.prices[cleanSymbol] !== undefined) return this.prices[cleanSymbol];

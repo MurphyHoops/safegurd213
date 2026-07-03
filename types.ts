@@ -185,6 +185,12 @@ export interface SimpleStopLossSettings {
     closePercent: number;
 }
 
+export interface ProfitStep {
+    threshold: number; // The "失效值" (e.g., 5%, 4%, 2%)
+    profitPercent: number; // Profit to lock at this step
+    callbackPercent: number; // Callback to trigger at this step
+}
+
 export interface AiProfitSettings {
     sensitivity: number; // 1-10
     aggressiveness: number; // 1-10
@@ -196,6 +202,8 @@ export interface AiProfitSettings {
     atrMultiplier?: number;
     momentumWeight?: number;
     volResonance?: number;
+    steps?: ProfitStep[];
+    stepBasedLockEnabled?: boolean;
 }
 
 export interface ProfitSettings {

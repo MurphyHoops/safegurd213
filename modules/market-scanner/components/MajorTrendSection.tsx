@@ -32,7 +32,7 @@ export const MajorTrendSection: React.FC<Props> = ({
     config, setConfig, isMajorScanning, majorProgress, candidateCount, onRunDiscovery, isPrimaryMode 
 }) => {
     const [isExpanded, setIsExpanded] = useState(isPrimaryMode || false);
-    const activeConfig = config || DEFAULT_CONFIG;
+    const activeConfig = { ...DEFAULT_CONFIG, ...config };
 
     const toggleEnabled = (e: React.MouseEvent) => {
         e.stopPropagation();

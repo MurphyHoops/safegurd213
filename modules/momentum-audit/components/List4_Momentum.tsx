@@ -1,12 +1,13 @@
 
 import React, { useMemo, useState } from 'react';
-import { Flame, Compass, AlertTriangle, Maximize2, Trash2 } from 'lucide-react';
+import { Flame, Compass, AlertTriangle, Maximize2, Trash2, History } from 'lucide-react';
 import { List4Config, List3Config, ScannerItem, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../../types';
 import { List4Control } from './Control';
 import { ErrorBoundary } from '../../../components/ErrorBoundary';
 import { List4Item } from './Item';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
+import { ScannerHistoryModal } from './ScannerHistoryModal';
 
 interface Props {
     config: List4Config;
@@ -21,6 +22,7 @@ interface Props {
 
 const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config, executeTradeSafe, setChartData, onRemoveItem, onClearItems }) => {
     const [showVisualizer, setShowVisualizer] = useState(false);
+    const [showHistory, setShowHistory] = useState(false);
     
     // --- DYNAMIC SUBSET FILTERING ---
     const filteredList = useMemo(() => {
@@ -57,6 +59,14 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                             <span>清空</span>
                         </button>
                         <button 
+                            onClick={() => setShowHistory(true)}
+                            className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-emerald-900/50 rounded border border-emerald-500/30 text-emerald-500 transition-all text-[10px] font-bold mr-1"
+                            title="查看历史记录"
+                        >
+                            <History size={12} />
+                            <span>历史</span>
+                        </button>
+                        <button 
                             onClick={() => setShowVisualizer(true)}
                             className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-indigo-400 transition-all border border-transparent hover:border-indigo-500/30"
                             title="放大查看 K 线大图"
@@ -76,6 +86,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                         onClose={() => setShowVisualizer(false)}
                     />
                 )}
+                {showHistory && <ScannerHistoryModal listType="LIST4" setChartData={setChartData} onClose={() => setShowHistory(false)} />}
                 
                 <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar bg-amber-900/5">
                     {filteredList.map((item, idx) => (

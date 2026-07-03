@@ -1,7 +1,8 @@
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Shield, ShieldAlert, ShieldCheck, Hourglass, Zap, Trash2 } from 'lucide-react';
 import { ScannerItem, List2Config } from '../../../components/Scanner/scannerTypes';
+import { verifyAndFixSymbolPrice } from '../../../services/priceVerifier';
 
 const getTfMinutes = (tf: string) => {
     const unit = tf.slice(-1);
@@ -25,6 +26,10 @@ interface Props {
 export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setChartData, onRemove }) => {
     const defaultTf = activeFilterTf || item.groupedResults?.[0]?.tf || '15m';
     const isLong = item.direction === 'LONG';
+
+    useEffect(() => {
+        verifyAndFixSymbolPrice(item.symbol);
+    }, [item.symbol]);
 
     const handleItemClick = () => {
         const signals: { time: number, type: 'LONG' | 'SHORT' }[] = [];

@@ -309,26 +309,43 @@ export const SystemMonitorModule: React.FC = () => {
                             </button>
                         )}
                         <div className="flex flex-col gap-1">
-                            <button 
-                                onClick={() => {
-                                    localStorage.removeItem('SAVIOR_LOGS');
-                                    localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');
-                                    localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');
-                                    localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');
-                                    
-                                    const now = Date.now();
-                                    setLastRepair(now);
-                                    try {
-                                        localStorage.setItem('SAVIOR_MONITOR_LAST_REPAIR', now.toString());
-                                    } catch (_) {}
-                                    
-                                    useMonitorStore.getState().addLog('INFO', 'KERNEL', '扫描器缓存已清理');
-                                    runDiagnostic();
-                                }}
-                                className="w-full py-1.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded text-[9px] font-bold hover:bg-blue-500/20 transition-colors"
-                            >
-                                执行修复：清理扫描器臃肿缓存
-                            </button>
+                            <div className="flex gap-1 items-center">
+                                <button 
+                                    onClick={() => {
+                                        localStorage.removeItem('SAVIOR_LOGS');
+                                        localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');
+                                        localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');
+                                        localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');
+                                        
+                                        const now = Date.now();
+                                        setLastRepair(now);
+                                        try {
+                                            localStorage.setItem('SAVIOR_MONITOR_LAST_REPAIR', now.toString());
+                                        } catch (_) {}
+                                        
+                                        useMonitorStore.getState().addLog('INFO', 'KERNEL', '扫描器缓存已清理');
+                                        runDiagnostic();
+                                    }}
+                                    className="flex-1 py-1.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded text-[9px] font-bold hover:bg-blue-500/20 transition-colors"
+                                >
+                                    执行修复：清理扫描器臃肿缓存
+                                </button>
+                                <button 
+                                    onClick={() => {
+                                        const h = prompt("请输入自动修复间隔（单位：小时）：", autoRepairInterval.toString());
+                                        if (h !== null) {
+                                            const val = parseFloat(h);
+                                            if (!isNaN(val) && val > 0) {
+                                                setAutoRepairInterval(val);
+                                            }
+                                        }
+                                    }}
+                                    className="px-2 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded text-[9px] font-bold hover:bg-emerald-500/20 transition-colors flex items-center gap-1 shrink-0"
+                                >
+                                    <Settings size={10} />
+                                    设置时间 ({autoRepairInterval}) 小时
+                                </button>
+                            </div>
                             <span className="text-[8px] text-slate-500 text-center">
                                 ⏱️ 自动修复：每 {autoRepairInterval} 小时执行 (上次修复: {new Date(lastRepair).toLocaleTimeString([], { hour12: false })})
                             </span>

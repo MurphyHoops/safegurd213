@@ -27,7 +27,12 @@ export const PositionSettingsModal: React.FC<Props> = ({
         return JSON.parse(JSON.stringify(globalSettings.profit));
     });
 
-    const [activeTab, setActiveTab] = useState<'SMART_PROFIT' | 'STOP_LOSS'>('SMART_PROFIT');
+    const [activeTab, setActiveTab] = useState<'SMART_PROFIT' | 'CONVENTIONAL_PROFIT' | 'STOP_LOSS'>(() => {
+        if (position.customProfitSettings?.profitMode === 'CONVENTIONAL') {
+            return 'CONVENTIONAL_PROFIT';
+        }
+        return 'SMART_PROFIT';
+    });
 
     useEffect(() => {
         if (isOpen) {
@@ -37,6 +42,11 @@ export const PositionSettingsModal: React.FC<Props> = ({
                     ? JSON.parse(JSON.stringify(position.customProfitSettings))
                     : JSON.parse(JSON.stringify(globalSettings.profit))
             );
+            if (position.customProfitSettings?.profitMode === 'CONVENTIONAL') {
+                setActiveTab('CONVENTIONAL_PROFIT');
+            } else {
+                setActiveTab('SMART_PROFIT');
+            }
         }
     }, [isOpen, position.customProfitSettings, globalSettings.profit]);
 
@@ -96,10 +106,16 @@ export const PositionSettingsModal: React.FC<Props> = ({
         }
 
         if (useCustom) {
-            // Apply current active tab mode in the custom config
+            // Determine custom profit mode based on active tab
+            let modeToSave = localSettings.profitMode || 'AI';
+            if (activeTab === 'CONVENTIONAL_PROFIT') {
+                modeToSave = 'CONVENTIONAL';
+            } else if (activeTab === 'SMART_PROFIT') {
+                modeToSave = 'AI';
+            }
             const finalSettings: ProfitSettings = {
                 ...localSettings,
-                profitMode: 'AI', // This automatically uses our updated AI smart takeprofit core
+                profitMode: modeToSave as any,
                 enabled: true
             };
             onSave(position.symbol, finalSettings);
@@ -146,6 +162,25 @@ export const PositionSettingsModal: React.FC<Props> = ({
         }));
     };
 
+    const updateConventional = (key: string, value: any) => {
+        setLocalSettings(prev => {
+            const next = { ...prev };
+            if (!next.conventional) {
+                next.conventional = {
+                    minPosition: 100,
+                    profitPercent: 5.0,
+                    callbackPercent: 1.0,
+                    closePercent: 100
+                };
+            }
+            next.conventional = {
+                ...next.conventional,
+                [key]: value
+            };
+            return next;
+        });
+    };
+
     // Get current visual parameters for prompt representation
     const aiParams = localSettings.ai || {
         aiSmartModeEnabled: true,
@@ -154,6 +189,13 @@ export const PositionSettingsModal: React.FC<Props> = ({
         atrMultiplier: 2.5,
         momentumWeight: 5,
         volResonance: 6
+    };
+
+    const convParams = localSettings.conventional || {
+        minPosition: 100,
+        profitPercent: 5.0,
+        callbackPercent: 1.0,
+        closePercent: 100
     };
 
     const slParams = localSettings.stopLoss || {
@@ -193,6 +235,13 @@ export const PositionSettingsModal: React.FC<Props> = ({
                 {/* Sub Tab Navigation */}
                 <div className="flex px-4 py-2 bg-[#0d1116] border-b border-slate-800/60 justify-between items-center shrink-0">
                     <div className="flex gap-1.5">
+                        <button
+                            onClick={() => setActiveTab('CONVENTIONAL_PROFIT')}
+                            className={`px-3 py-1 text-[11px] font-bold rounded-md flex items-center gap-1.5 transition-all ${activeTab === 'CONVENTIONAL_PROFIT' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <Target size={12} />
+                            <span>1常规止盈止损</span>
+                        </button>
                         <button
                             onClick={() => setActiveTab('SMART_PROFIT')}
                             className={`px-3 py-1 text-[11px] font-bold rounded-md flex items-center gap-1.5 transition-all ${activeTab === 'SMART_PROFIT' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
@@ -248,6 +297,92 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                 className={`w-10 h-5.5 rounded-full p-0.5 transition-all duration-200 cursor-pointer ${useCustom ? 'bg-emerald-600' : 'bg-slate-800 border border-slate-700'}`}
                             >
                                 <div className={`w-4.5 h-4.5 bg-white rounded-full shadow-lg transition-transform duration-200 ${useCustom ? 'translate-x-4.5' : 'translate-x-0'}`}/>
+                            </div>
+                        </div>
+                    )}
+
+                    {(useCustom || position.symbol === 'GLOBAL_DEFAULT') && activeTab === 'CONVENTIONAL_PROFIT' && (
+                        <div className="space-y-4 animate-in fade-in duration-200">
+                            <div className="bg-slate-900/40 p-4 rounded-lg border border-slate-800 space-y-4">
+                                <div className="pb-2 border-b border-slate-800/60">
+                                    <span className="font-bold text-white flex items-center gap-1.5 text-blue-400">
+                                        <Target size={12} />
+                                        1 止盈止损（常规平仓配置）
+                                    </span>
+                                    <p className="text-[9px] text-slate-500 leading-normal mt-1">设置本币种专用的经典移动回撤止盈，满足指定收益率及回撤比例后自动执行平仓分步或全仓退出。</p>
+                                </div>
+
+                                <div className="space-y-3.5">
+                                    {/* Item 1: minPosition */}
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <span className="text-[10px] text-slate-300 font-bold">激活门槛 (本金 USDT)</span>
+                                            <p className="text-[9px] text-slate-500 leading-normal">仅在仓位总本金大于或等于该数值时执行独立常规止盈</p>
+                                        </div>
+                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
+                                            <input 
+                                                type="number" 
+                                                value={convParams.minPosition ?? 100} 
+                                                onChange={(e) => updateConventional('minPosition', Number(e.target.value))}
+                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-white font-bold"
+                                            />
+                                            <span className="text-[9px] text-slate-500 ml-1">U</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Item 2: profitPercent */}
+                                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/40">
+                                        <div>
+                                            <span className="text-[10px] text-slate-300 font-bold">触发收益率 (%)</span>
+                                            <p className="text-[9px] text-slate-500 leading-normal">当该仓位收益率（浮盈）达到此数值时启动回撤监控（如：5.0%）</p>
+                                        </div>
+                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
+                                            <input 
+                                                type="number" 
+                                                step="0.1"
+                                                value={convParams.profitPercent ?? 5.0} 
+                                                onChange={(e) => updateConventional('profitPercent', Number(e.target.value))}
+                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-emerald-400 font-bold"
+                                            />
+                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Item 3: callbackPercent */}
+                                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/40">
+                                        <div>
+                                            <span className="text-[10px] text-slate-300 font-bold">回撤平仓比例 (%)</span>
+                                            <p className="text-[9px] text-slate-500 leading-normal">启动常规止盈监控后，若收益率从最高点回撤此比例则执行平仓（如：1.0%）</p>
+                                        </div>
+                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
+                                            <input 
+                                                type="number" 
+                                                step="0.1"
+                                                value={convParams.callbackPercent ?? 1.0} 
+                                                onChange={(e) => updateConventional('callbackPercent', Number(e.target.value))}
+                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-orange-400 font-bold"
+                                            />
+                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Item 4: closePercent */}
+                                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/40">
+                                        <div>
+                                            <span className="text-[10px] text-slate-300 font-bold">平仓数量权重 (%)</span>
+                                            <p className="text-[9px] text-slate-500 leading-normal">触发此平仓规则时，执行平仓或减仓的本金比例（例如 100% 代表全平）</p>
+                                        </div>
+                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
+                                            <input 
+                                                type="number" 
+                                                value={convParams.closePercent ?? 100} 
+                                                onChange={(e) => updateConventional('closePercent', Number(e.target.value))}
+                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-white font-bold"
+                                            />
+                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     )}

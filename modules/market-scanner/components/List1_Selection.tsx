@@ -69,7 +69,7 @@ const List1_Selection: React.FC<Props> = ({
 }) => {
     const [showVisualizer, setShowVisualizer] = useState(false);
     return (
-        <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 min-w-[300px] w-[300px] overflow-y-auto custom-scrollbar`}>
+        <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 flex-1 min-w-[300px] overflow-y-auto custom-scrollbar`}>
             <List1Control
                 scanConfig={scanConfig} setScanConfig={setScanConfig} isScanning={isScanning} 
                 scanStatusText={scanStatusText} isPaused={isPaused} setIsPaused={setIsPaused} onScan={onScan} 
@@ -112,8 +112,8 @@ const List1_Selection: React.FC<Props> = ({
             {showVisualizer && (
                 <ScannerVisualizerModal 
                     title="1. 市场初筛"
-                    items={list1.map(i => ({ symbol: i.symbol, timeframe: '1d' }))}
-                    defaultTf="1d"
+                    items={list1.map(i => ({ symbol: i.symbol, timeframe: scanConfig.list1DefaultTf || '1d' }))}
+                    defaultTf={scanConfig.list1DefaultTf || '1d'}
                     defaultLimit={500}
                     onClose={() => setShowVisualizer(false)}
                 />

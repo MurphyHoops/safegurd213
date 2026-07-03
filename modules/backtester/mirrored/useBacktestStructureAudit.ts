@@ -44,6 +44,9 @@ export const useBacktestStructureAudit = (
     const [manualExclusions, setManualExclusions] = useState<Set<string>>(new Set());
     const expiredSignalCacheRef = useRef<Set<string>>(new Set());
     const loggedSignalsRef = useRef<Set<string>>(new Set());
+    
+    const isScanningRef = useRef<boolean>(false);
+    const hasPendingScanRef = useRef<boolean>(false);
 
     useEffect(() => {
         if (candidates.length === 0) loggedSignalsRef.current.clear();
@@ -63,21 +66,41 @@ export const useBacktestStructureAudit = (
         }
     }, [config]);
 
+    const realPricesRef = useRef(realPrices);
+    useEffect(() => {
+        realPricesRef.current = realPrices;
+    }, [realPrices]);
+
+    const virtualTimeRef = useRef(virtualTime);
+    useEffect(() => {
+        virtualTimeRef.current = virtualTime;
+    }, [virtualTime]);
+
     const performAudit = useCallback(async () => {
-        if (candidates.length === 0) {
-            if (resultsRef.current.length !== 0) {
-                lastResultsStrRef.current = '[]';
-                setResults([]);
-                callbacksRef.current.onResultsUpdate([]);
-                resultsRef.current = [];
-            }
+        if (isScanningRef.current) {
+            hasPendingScanRef.current = true;
             return;
         }
 
+        isScanningRef.current = true;
         setStatus('AUDITING');
-        const newResults: ScannerItem[] = [];
 
-        for (const item of candidates) {
+        try {
+            if (candidates.length === 0) {
+                if (resultsRef.current.length !== 0) {
+                    lastResultsStrRef.current = '[]';
+                    setResults([]);
+                    callbacksRef.current.onResultsUpdate([]);
+                    resultsRef.current = [];
+                }
+                return;
+            }
+
+            const newResults: ScannerItem[] = [];
+            const currentRealPrices = realPricesRef.current;
+            const currentVirtualTime = virtualTimeRef.current;
+
+            for (const item of candidates) {
             if (manualExclusions.has(item.symbol)) continue;
             if (!item.groupedResults) continue;
             
@@ -87,7 +110,7 @@ export const useBacktestStructureAudit = (
             let historyExtremes = item.historyExtremes;
             if (!historyExtremes) {
                 try {
-                    const klines1h = await fetchVirtualKlines(item.symbol, '1h', 336);
+                    const klines1h = await fetchVirtualKlines(item.symbol, '1h', 2300);
                     const klines1m = await fetchVirtualKlines(item.symbol, '1m', 1440);
                     
                     if (klines1h.length > 0 && klines1m.length > 0) {
@@ -122,8 +145,8 @@ export const useBacktestStructureAudit = (
                                 symbol: item.symbol, 
                                 tf: signal.tf || '15m', 
                                 direction: signal.direction || 'LONG', 
-                                time: virtualTime, 
-                                price: realPrices[normalizeSymbol(item.symbol)] 
+                                time: currentVirtualTime, 
+                                price: currentRealPrices[normalizeSymbol(item.symbol)] 
                             },
                             closes, highs, lows, opens, volumes, config, klines
                         );
@@ -166,10 +189,10 @@ export const useBacktestStructureAudit = (
                              const opens = klines.map(k => k.open);
                              const volumes = klines.map(k => k.volume);
                              
-                             const rL = analyzeList3Structure({ symbol: item.symbol, tf, direction: 'LONG', time: virtualTime, price: realPrices[normalizeSymbol(item.symbol)] }, closes, highs, lows, opens, volumes, config, klines);
+                             const rL = analyzeList3Structure({ symbol: item.symbol, tf, direction: 'LONG', time: currentVirtualTime, price: currentRealPrices[normalizeSymbol(item.symbol)] }, closes, highs, lows, opens, volumes, config, klines);
                              if (rL?.structure?.isStrictTrend) adjacentStrictTrends[`${tf}-LONG`] = true; else adjacentStrictTrends[`${tf}-LONG`] = false;
 
-                             const rS = analyzeList3Structure({ symbol: item.symbol, tf, direction: 'SHORT', time: virtualTime, price: realPrices[normalizeSymbol(item.symbol)] }, closes, highs, lows, opens, volumes, config, klines);
+                             const rS = analyzeList3Structure({ symbol: item.symbol, tf, direction: 'SHORT', time: currentVirtualTime, price: currentRealPrices[normalizeSymbol(item.symbol)] }, closes, highs, lows, opens, volumes, config, klines);
                              if (rS?.structure?.isStrictTrend) adjacentStrictTrends[`${tf}-SHORT`] = true; else adjacentStrictTrends[`${tf}-SHORT`] = false;
                          }
                      }
@@ -186,8 +209,17 @@ export const useBacktestStructureAudit = (
             setResults(newResults);
             callbacksRef.current.onResultsUpdate(newResults);
         }
+    } finally {
+        isScanningRef.current = false;
         setStatus('IDLE');
-    }, [candidates, config, fetchVirtualKlines, realPrices, virtualTime, manualExclusions]);
+        if (hasPendingScanRef.current) {
+            hasPendingScanRef.current = false;
+            setTimeout(() => {
+                performAudit();
+            }, 0);
+        }
+    }
+    }, [candidates, config, fetchVirtualKlines, manualExclusions]);
 
     const removeSignal = useCallback((uniqueId: string) => {
         expiredSignalCacheRef.current.add(uniqueId);

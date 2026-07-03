@@ -4,6 +4,7 @@ import { ScanConfig, ScannerItem } from '../../components/Scanner/scannerTypes';
 import { processMarketData } from '../../services/rules/list1_market';
 import { fetchWithFallback } from '../../services/apiService';
 import { audioService } from '../../services/audioService';
+import { calculateEMA } from '../../services/indicators';
 
 export const useScannerLogic = (
     initialConfig: ScanConfig, 
@@ -552,12 +553,12 @@ export const useScannerLogic = (
                 // Process Batch Chunk
                 await Promise.all(chunk.map(async (symbol) => {
                     try {
-                        const limit = cfg.lookbackDays + 20; 
-                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=${limit}`;
+                        const limit = cfg.filterTimeParam + 20; 
+                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${cfg.filterKLinePeriod}&limit=${limit}`;
                         const res = await fetchWithFallback(url, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
                         const klines = await res.json();
                         
-                        if (!Array.isArray(klines) || klines.length < cfg.lookbackDays * 0.5) return;
+                        if (!Array.isArray(klines) || klines.length < cfg.filterTimeParam * 0.5) return;
 
                         const prices = klines.map((k: any) => parseFloat(k[4])); 
                         const currentPrice = prices[prices.length - 1];
@@ -591,6 +592,7 @@ export const useScannerLogic = (
                             if (dist > cfg.maxExtremeDistance) return;
                         }
 
+                    // ... after sideways accumulation check
                         const sidewaysIndex = prices.length - 1 - cfg.sidewaysDays;
                         if (sidewaysIndex >= 0) {
                             const referencePrice = prices[sidewaysIndex];
@@ -599,6 +601,41 @@ export const useScannerLogic = (
                                 return;
                             }
                         }
+
+                        // --- NEW ADVANCED FILTERS ---
+                        if (cfg.filterEmaPeriod > 0) {
+                            if (prices.length < cfg.filterEmaPeriod) return;
+                            const ema = calculateEMA(prices, cfg.filterEmaPeriod);
+                            let crossCount = 0;
+                            let lastDirection: 'UP' | 'DOWN' | null = null;
+                            let lastCrossIndex = -1;
+
+                            for (let i = cfg.filterEmaPeriod - 1; i < prices.length; i++) {
+                                const emaVal = ema[i - (cfg.filterEmaPeriod - 1)];
+                                const currentDirection = prices[i] > emaVal ? 'UP' : 'DOWN';
+                                if (lastDirection && currentDirection !== lastDirection) {
+                                    crossCount++;
+                                    lastCrossIndex = i;
+                                }
+                                lastDirection = currentDirection;
+                            }
+
+                            if (crossCount >= cfg.filterCrossingCount) return;
+
+                            // Check post-cross performance
+                            if (lastCrossIndex !== -1 && lastCrossIndex < prices.length - 1) {
+                                const crossPrice = prices[lastCrossIndex];
+                                const maxFuturePrice = Math.max(...prices.slice(lastCrossIndex + 1));
+                                const minFuturePrice = Math.min(...prices.slice(lastCrossIndex + 1));
+
+                                const maxPumpAfterCross = ((maxFuturePrice - crossPrice) / crossPrice) * 100;
+                                const maxDropAfterCross = ((minFuturePrice - crossPrice) / crossPrice) * 100;
+
+                                if (lastDirection === 'UP' && maxPumpAfterCross > cfg.filterLongMaxPump) return;
+                                if (lastDirection === 'DOWN' && maxDropAfterCross < cfg.filterShortMinDrop) return;
+                            }
+                        }
+                        // --- END ADVANCED FILTERS ---
 
                         validSymbols.add(symbol);
                     } catch (e) {}

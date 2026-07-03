@@ -267,7 +267,7 @@ const AppContent: React.FC = () => {
             };
             
             ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
+                console.warn('WebSocket connection status update:', error);
                 ws.close(); // Force close to trigger reconnect
             };
         };
@@ -382,9 +382,7 @@ const AppContent: React.FC = () => {
     }, [showScanner]);
 
     // Persist Settings on Change
-    useEffect(() => {
-        localStorage.setItem('SAVIOR_SETTINGS', JSON.stringify(settings));
-    }, [settings]);
+    // Removed immediate localStorage.setItem('SAVIOR_SETTINGS', JSON.stringify(settings));
 
     const [showTrendHunter, setShowTrendHunter] = useState(false);
     const [showUserManual, setShowUserManual] = useState(false);

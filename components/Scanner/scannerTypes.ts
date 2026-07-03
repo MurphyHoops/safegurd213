@@ -129,6 +129,11 @@ export interface ScannerItem {
     // Fuse Fields
     fuseBlocked?: boolean;
     fuseReason?: string;
+    fuseDetails?: {
+        period: string;
+        threshold: number;
+        actual: number;
+    };
     fuseLatched?: boolean; // NEW: Audit Latch status
 
     // Smart Selection Fields
@@ -148,6 +153,7 @@ export interface ScannerItem {
         lows1m?: number[];
         scalars?: Record<string, number>; // NEW: Pre-calculated extremes for optimization
     };
+    removalReason?: string;
 }
 
 export interface List2Config {
@@ -204,68 +210,40 @@ export interface List4Config {
     removeInvalidCandles?: number; // 结构破坏后多少根K线消除 (0 = 不消除)
     removeTradedCandles?: number;  // 已开仓后多少根K线消除 (0 = 不消除)
     antiChaseConfig: {
-        longMaxDist1: number; // %
-        longMaxDist2: number; // %
-        longMaxDist3: number; // %
-        longMaxDist4: number; // %
-        longMaxDist5: number; // %
-        longMaxDist6: number; // %
-        longMaxDist7: number; // %
-        longPeriod1: number;  // mins
-        longPeriod2: number;  // mins
-        longPeriod3: number;  // mins
-        longPeriod4: number;  // mins
-        longPeriod5: number;  // mins
-        longPeriod6: number;  // mins
-        longPeriod7: number;  // mins
-        
-        shortMaxDist1: number; // %
-        shortMaxDist2: number; // %
-        shortMaxDist3: number; // %
-        shortMaxDist4: number; // %
-        shortMaxDist5: number; // %
-        shortMaxDist6: number; // %
-        shortMaxDist7: number; // %
-        shortPeriod1: number;  // mins
-        shortPeriod2: number;  // mins
-        shortPeriod3: number;  // mins
-        shortPeriod4: number;  // mins
-        shortPeriod5: number;  // mins
-        shortPeriod6: number;  // mins
-        shortPeriod7: number;  // mins
+        longThresholds: { [key: string]: number };
+        shortThresholds: { [key: string]: number };
     };
     enableAutoDirGuard?: boolean;
     autoDirConfig?: {
-        longMaxDist1: number; // %
-        longMaxDist2: number; // %
-        longMaxDist3: number; // %
-        longMaxDist4: number; // %
-        longMaxDist5: number; // %
-        longMaxDist6: number; // %
-        longMaxDist7: number; // %
-        longPeriod1: number;  // mins
-        longPeriod2: number;  // mins
-        longPeriod3: number;  // mins
-        longPeriod4: number;  // mins
-        longPeriod5: number;  // mins
-        longPeriod6: number;  // mins
-        longPeriod7: number;  // mins
-        
-        shortMaxDist1: number; // %
-        shortMaxDist2: number; // %
-        shortMaxDist3: number; // %
-        shortMaxDist4: number; // %
-        shortMaxDist5: number; // %
-        shortMaxDist6: number; // %
-        shortMaxDist7: number; // %
-        shortPeriod1: number;  // mins
-        shortPeriod2: number;  // mins
-        shortPeriod3: number;  // mins
-        shortPeriod4: number;  // mins
-        shortPeriod5: number;  // mins
-        shortPeriod6: number;  // mins
-        shortPeriod7: number;  // mins
+        limit1Q: number; // %
+        limit1M: number; // %
+        limit1W: number; // %
+        limit1D: number; // %
+        limit1H: number; // %
     };
+    enableAdvancedFilter?: boolean;
+    isAdvancedFilterCollapsed?: boolean;
+    autoClearAdvancedFilterMinutes?: number;
+    advancedFilterConfig?: {
+        filterTimeParam: number; 
+        filterKLinePeriod: '1h' | '1d' | '1w' | '1M' | '1Q';
+        filterEmaPeriod: number;
+        filterCrossingCount: number;
+        filterLongMaxPump: number;
+        filterShortMinDrop: number;
+    };
+    advancedFilterGroups?: AdvancedFilterGroup[];
+}
+
+export interface AdvancedFilterGroup {
+    id: number;
+    enabled: boolean;
+    filterTimeParam: number;
+    filterKLinePeriod: '1h' | '4h' | '1d' | '1w' | '1M' | '1Q';
+    filterEmaPeriod: number;
+    filterCrossingCount: number;
+    filterLongMaxPump: number;
+    filterShortMinDrop: number;
 }
 
 export interface ActionConfig {
@@ -313,6 +291,14 @@ export interface MajorTrendConfig {
     sidewaysMaxPump: number; // 涨跌幅小于 A%
     sidewaysMaxDrop: number; // 跌幅小于 B%
     autoTransfer?: boolean; // 自动移入监控列表
+    
+    // Advanced Filters
+    filterTimeParam?: number; // e.g., 300
+    filterKLinePeriod?: '1h' | '1d' | '1w' | '1M';
+    filterEmaPeriod?: number;
+    filterCrossingCount?: number;
+    filterLongMaxPump?: number;
+    filterShortMinDrop?: number;
 }
 
 export interface ScanConfig {
@@ -325,6 +311,7 @@ export interface ScanConfig {
     useCustomOnly: boolean;
     batchSize: number; 
     limit: number;
+    list1DefaultTf?: string; // Default for K-line charts in List 1
     smartMode?: SmartScanConfig;
     majorTrend?: MajorTrendConfig;
     breakerConfig?: {
@@ -345,4 +332,4 @@ export type StructureScanStatus = {
     currentAction?: string;
 };
 
-export const COLUMN_WIDTH_CLASS = "min-w-[260px] w-[260px]";
+export const COLUMN_WIDTH_CLASS = "flex-1 min-w-[260px]";

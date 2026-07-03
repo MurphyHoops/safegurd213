@@ -176,13 +176,14 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
     };
 
     // --- BACKUP & RESTORE LOGIC ---
-    const handleExportSettings = () => {
+    const handleExportSettings = (name: string) => {
         const dataStr = JSON.stringify(settings, null, 2);
         const blob = new Blob([dataStr], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `savior_settings_${new Date().toISOString().slice(0,10)}.json`;
+        const fileName = name ? `${name.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().slice(0,10)}.json` : `savior_settings_${new Date().toISOString().slice(0,10)}.json`;
+        a.download = fileName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

@@ -260,7 +260,7 @@ export const useGrandCrossing = (
         // --- RE-FILTERING LOGIC (Reactive to Config Changes) ---
         // If strict filtering is ON, and signal doesn't meet the ratio, remove it
         if (cfg.strictFiltering) {
-          const ratio = r.bodyRatio ?? 100; // Assume 100 for legacy if we want to be safe, or 0 to be strict
+          const ratio = r.bodyRatio ?? 0; // Set default to 0 to be strictly compliant and filter out malformed/legacy signals
           if (ratio < (cfg.minBodyRatio || 0)) return false;
         }
 
@@ -933,7 +933,7 @@ export const useGrandCrossing = (
           if (!isNotExpired) return false;
 
           if (configRef.current.strictFiltering) {
-            const ratio = r.bodyRatio ?? 100;
+            const ratio = r.bodyRatio ?? 0; // Set default to 0 to be strictly compliant and filter out malformed/legacy signals
             if (ratio < (configRef.current.minBodyRatio || 0)) return false;
           }
           return true;

@@ -1,9 +1,10 @@
 
-import React from 'react';
-import { Activity } from 'lucide-react';
+import React, { useState } from 'react';
+import { Activity, History } from 'lucide-react';
 import { List2Config, ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { TimeframeSelector } from './TimeframeSelector';
 import { ConfigSection } from './ConfigSection';
+import { ScannerHistoryModal } from '../../momentum-audit/components/ScannerHistoryModal';
 
 interface List2PanelProps {
     config: List2Config;
@@ -20,14 +21,17 @@ interface List2PanelProps {
 }
 
 export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, pollingStatus }) => {
+    const [showHistory, setShowHistory] = useState(false);
     
     return (
         <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-3 shrink-0">
             <div className="flex flex-col gap-2.5">
                 {/* Row 1: Title */}
-                <div className="font-bold text-blue-400 text-sm flex items-center gap-2">
-                    <Activity size={14} className="text-blue-500" /> 
-                    <span>2. 均线穿越 (Grand Crossing)</span>
+                <div className="flex items-center justify-between">
+                    <div className="font-bold text-blue-400 text-sm flex items-center gap-2">
+                        <Activity size={14} className="text-blue-500" /> 
+                        <span>2. 均线穿越 (Grand Crossing)</span>
+                    </div>
                 </div>
                 
                 {/* Row 2: Secondary Controls */}

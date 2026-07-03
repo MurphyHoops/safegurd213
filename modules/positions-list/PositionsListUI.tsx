@@ -268,6 +268,8 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                             onShowHistory={onShowHistory}
                             onClosePosition={onClosePosition}
                             onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
+                            aiSmartMasterEnabled={settings?.profit?.aiSmartMasterEnabled}
+                            globalProfitSettings={settings?.profit}
                         />
                     );
                 })

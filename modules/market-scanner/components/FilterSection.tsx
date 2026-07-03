@@ -82,6 +82,13 @@ export const FilterSection: React.FC<Props> = ({
                                 className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
                             />
                         </div>
+                        <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
+                            <span className="text-[9px] text-slate-500">列表1默认K线周期</span>
+                            <select className="w-16 bg-transparent font-mono text-[10px] text-right outline-none text-white" value={scanConfig.list1DefaultTf || '1d'} onChange={e => setScanConfig(p => ({...p, list1DefaultTf: e.target.value}))}>
+                                <option value="1d">天</option>
+                                <option value="1w">周</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
             ) : (

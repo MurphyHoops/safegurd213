@@ -34,17 +34,16 @@ const DEFAULT_CONFIG: List4Config = {
     removeInvalidCandles: 0,
     removeTradedCandles: 0,
     antiChaseConfig: { 
-        longMaxDist1: 40, longMaxDist2: 35, longMaxDist3: 30, longMaxDist4: 25, longMaxDist5: 20, longMaxDist6: 15, longMaxDist7: 10,
-        longPeriod1: 43200, longPeriod2: 10080, longPeriod3: 1440, longPeriod4: 240, longPeriod5: 60, longPeriod6: 5, longPeriod7: 129600,
-        shortMaxDist1: 40, shortMaxDist2: 35, shortMaxDist3: 30, shortMaxDist4: 25, shortMaxDist5: 20, shortMaxDist6: 15, shortMaxDist7: 10,
-        shortPeriod1: 43200, shortPeriod2: 10080, shortPeriod3: 1440, shortPeriod4: 240, shortPeriod5: 60, shortPeriod6: 5, shortPeriod7: 129600
+        longThresholds: { "2160": 0, "720": 0, "168": 0, "24": 0, "1": 0 },
+        shortThresholds: { "2160": 0, "720": 0, "168": 0, "24": 0, "1": 0 },
     },
     enableAutoDirGuard: false,
     autoDirConfig: {
-        longMaxDist1: 40, longMaxDist2: 35, longMaxDist3: 30, longMaxDist4: 25, longMaxDist5: 20, longMaxDist6: 15, longMaxDist7: 10,
-        longPeriod1: 43200, longPeriod2: 10080, longPeriod3: 1440, longPeriod4: 240, longPeriod5: 60, longPeriod6: 5, longPeriod7: 129600,
-        shortMaxDist1: 40, shortMaxDist2: 35, shortMaxDist3: 30, shortMaxDist4: 25, shortMaxDist5: 20, shortMaxDist6: 15, shortMaxDist7: 10,
-        shortPeriod1: 43200, shortPeriod2: 10080, shortPeriod3: 1440, shortPeriod4: 240, shortPeriod5: 60, shortPeriod6: 5, shortPeriod7: 129600
+        limit1Q: 0,
+        limit1M: 0,
+        limit1W: 0,
+        limit1D: 0,
+        limit1H: 0
     }
 };
 
@@ -56,23 +55,30 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
     // Track executed signals to prevent duplicate orders for the same signal event
     // Map stores signalId -> status ('SUCCESS' | lastFailureTime)
     const executionStatusRef = useRef<Map<string, 'SUCCESS' | number>>(new Map());
+    const list4Ref = useRef(list4);
+    const activePositionsRef = useRef(activePositions);
+    const executeTradeSafeRef = useRef(executeTradeSafe);
+    const onLogRef = useRef(onLog);
+    
+    useEffect(() => { list4Ref.current = list4; }, [list4]);
+    useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
+    useEffect(() => { executeTradeSafeRef.current = executeTradeSafe; }, [executeTradeSafe]);
+    useEffect(() => { onLogRef.current = onLog; }, [onLog]);
 
     // --- AUTO EXECUTION EFFECT ---
     useEffect(() => {
         // MUST have local auto-ON AND Master Switch ON
         const isMasterAutoOn = actionConfig?.autoExecute;
         
-        if (!config.autoExecute) {
-            return;
-        }
-
-        if (!isMasterAutoOn) {
+        if (!config.autoExecute || !isMasterAutoOn) {
             return;
         }
 
         const now = Date.now();
+        const currentList4 = list4Ref.current;
+        const currentPositions = activePositionsRef.current;
 
-        list4.forEach(item => {
+        currentList4.forEach(item => {
             // Logic: Must be TRIGGERED
             if (item.momentum?.status === 'TRIGGERED') {
                 const cleanSym = normalizeSymbol(item.symbol);
@@ -99,7 +105,7 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                 }
                 
                 // Check 2: Do we ALREADY have an open position for this symbol + direction?
-                const alreadyHasPosition = activePositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === item.direction);
+                const alreadyHasPosition = currentPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === item.direction);
 
                 if (!alreadyHasPosition) {
                     console.log(`[List4 Auto] 🚀 突破确认！立即开仓 ${cleanSym} @ ${item.price} Reason: ${item.tf} Momentum Breakout`);
@@ -112,7 +118,7 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                         amplitude: (item.structure.signalHigh - item.structure.signalLow) / item.structure.signalLow
                     } : undefined;
 
-                    const success = executeTradeSafe(
+                    const success = executeTradeSafeRef.current(
                         cleanSym, 
                         item.direction as PositionSide, 
                         item.price, 
@@ -128,12 +134,11 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                         // Mark as failed with current timestamp to allow retry later
                         executionStatusRef.current.set(uniqueId, now);
                         console.warn(`[List4 Auto] ❌ ${cleanSym} 开仓执行失败 (执行器拒绝)`);
-                        // No need for onLog here as executeTradeSafe already logs the reason
                     }
                 }
             }
         });
-    }, [list4, config.autoExecute, executeTradeSafe, activePositions, actionConfig?.autoExecute, onLog]);
+    }, [list4, activePositions, config.autoExecute, actionConfig?.autoExecute]);
 
     return (
         <List4_Momentum 

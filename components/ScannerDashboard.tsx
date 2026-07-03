@@ -35,12 +35,30 @@ import { MomentumAuditModule } from "../modules/momentum-audit";
 import { LiveBattlefieldModule } from "../modules/live-battlefield";
 import { TacticalCommandModule } from "../modules/tactical-command";
 
+const MemoizedGrandCrossingModule = React.memo(GrandCrossingModule, (prev, next) => {
+  return prev.networkStatus === next.networkStatus && 
+         prev.candidates === next.candidates && 
+         prev.directMode === next.directMode;
+});
+const MemoizedStructureAuditModule = React.memo(StructureAuditModule, (prev, next) => {
+  return prev.candidates === next.candidates && 
+         prev.activePositions === next.activePositions && 
+         prev.directMode === next.directMode;
+});
+const MemoizedMomentumAuditModule = React.memo(MomentumAuditModule, (prev, next) => {
+  return prev.candidates === next.candidates && 
+         prev.activePositions === next.activePositions && 
+         prev.list3Config === next.list3Config;
+});
+
 // --- MIRRORED MODULES ---
 import { BacktestGrandCrossingModule } from "../modules/backtester/mirrored/BacktestGrandCrossingUI";
 import { BacktestStructureAuditModule } from "../modules/backtester/mirrored/BacktestStructureAuditUI";
 import { BacktestMomentumAuditModule } from "../modules/backtester/mirrored/BacktestMomentumAuditUI";
 
 import { NetworkWidget } from "./NetworkWidget";
+import { auth } from "../firebase";
+import { preloadAllHistories, useAutoHistoryLogger, migrateDefaultHistoryToUser } from "../modules/momentum-audit/components/ScannerHistoryModal";
 
 import {
   ScannerItem,
@@ -129,7 +147,7 @@ const ScannerDashboardInner: React.FC<
 
   // --- UI STATE ---
   const [isMinimized, setIsMinimized] = useState(false);
-  const [showLogPanel, setShowLogPanel] = useState(true);
+  const [showLogPanel, setShowLogPanel] = useState(false);
   const [chartData, setChartData] = useState<any>(null);
   const [scannerMode, setScannerMode] = usePersistedState<
     "LIVE" | "BACKTEST" | "SMART"
@@ -556,17 +574,52 @@ const ScannerDashboardInner: React.FC<
   const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
 
   const handleList1Results = useCallback((results: ScannerItem[]) => {
-    setList1Candidates(results);
+    setList1Candidates(prev => {
+        // Only update if content is fundamentally different to avoid loop
+        if (JSON.stringify(prev) === JSON.stringify(results)) {
+            return prev;
+        }
+        return results;
+    });
   }, []);
 
   const handleList2Results = useCallback((results: ScannerItem[]) => {
-    setList2Results(results);
+    setList2Results(prev => {
+        // Only update if content is fundamentally different to avoid loop
+        if (JSON.stringify(prev) === JSON.stringify(results)) {
+            return prev;
+        }
+        return results;
+    });
   }, []);
 
   const handleList3Results = useCallback((results: ScannerItem[]) => {
-    setList3Results(results);
+    setList3Results(prev => {
+        // Only update if content is fundamentally different to avoid loop
+        if (JSON.stringify(prev) === JSON.stringify(results)) {
+            return prev;
+        }
+        return results;
+    });
   }, []);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
+
+  // --- AUTOMATIC HISTORY LOGGER & CACHE PRE-LOADER ---
+  // Tracks active signals in List 2 and List 3 to auto-log them when they appear
+  useAutoHistoryLogger('LIST2', list2Results);
+  useAutoHistoryLogger('LIST3', list3Results);
+
+  // Preloads the local cache of histories in the background when the user logs in
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (user) {
+        preloadAllHistories(user.uid);
+        migrateDefaultHistoryToUser(user.uid);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
   const [liveStats, setLiveStats] = useState({
     symbolCount: 0,
     totalValue: 0,
@@ -1024,8 +1077,12 @@ const ScannerDashboardInner: React.FC<
     ],
   );
 
+  const prevIsVisibleRef = useRef(isVisible);
   useEffect(() => {
-    if (isVisible) setIsMinimized(false);
+    if (isVisible && !prevIsVisibleRef.current) {
+      setIsMinimized(false);
+    }
+    prevIsVisibleRef.current = isVisible;
   }, [isVisible]);
 
   const containerStyle: React.CSSProperties = {
@@ -1156,7 +1213,7 @@ const ScannerDashboardInner: React.FC<
                   }}
                 />
               ) : (
-                <GrandCrossingModule
+                <MemoizedGrandCrossingModule
                   networkStatus={networkStatus}
                   candidates={list1Candidates}
                   onResultsUpdate={handleList2Results}
@@ -1189,7 +1246,7 @@ const ScannerDashboardInner: React.FC<
                   actionConfig={actionConfig}
                 />
               ) : (
-                <StructureAuditModule
+                <MemoizedStructureAuditModule
                   candidates={list2Results}
                   onResultsUpdate={handleList3Results}
                   onConfigUpdate={setList3Config}
@@ -1220,7 +1277,7 @@ const ScannerDashboardInner: React.FC<
                   onLog={onLog}
                 />
               ) : (
-                <MomentumAuditModule
+                <MemoizedMomentumAuditModule
                   candidates={list3Results}
                   setChartData={safeSetChartData}
                   executeTradeSafe={executeTradeSafe}
@@ -1322,6 +1379,8 @@ const ScannerDashboardInner: React.FC<
           extraLines={chartData.extraLines}
           directMode={directMode}
           showAuditLines={chartData.showAuditLines}
+          appearedTime={chartData.appearedTime}
+          disappearedTime={chartData.disappearedTime}
           onClose={() => setChartData(null)}
         />
       )}

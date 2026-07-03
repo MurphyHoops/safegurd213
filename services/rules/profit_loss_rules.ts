@@ -2,7 +2,7 @@ import { Position, AppSettings, PositionSide } from '../../types';
 import { checkConventionalProfit } from './profit/conventional';
 import { checkSmartProfit } from './profit/smart';
 import { checkAtrProfit } from './profit/atr';
-import { checkAiProfit } from './profit/ai';
+import { checkAiProfit, getAiActivationThreshold } from './profit/ai';
 export { checkGlobalRules } from './profit/global';
 
 /**
@@ -44,7 +44,21 @@ export function checkIndividualPositionRules(
     // 如果止盈未开启，则跳过
     if (!profitSettings.enabled) return false;
 
-    // --- 核心逻辑修改：支持多模式并联运行 ---
+    // --- 优先检查：如果启用了全局/单币AI智能平仓，且该币种最高利润达到了AI启动阈值，强制走AI智能逃顶逻辑 ---
+    const isAiMasterEnabled = settings?.profit?.aiSmartMasterEnabled ?? true;
+    const aiSettings = profitSettings.ai || { activationProfitPercent: 3.5, fallbackProfitPercent: 1.0, aiSmartModeEnabled: true };
+    const actThreshold = getAiActivationThreshold(aiSettings);
+    const maxPnl = position.maxPnLPercent || 0;
+
+    if (isAiMasterEnabled && maxPnl >= actThreshold) {
+        if (checkAiProfit(position, profitSettings, closePosition, true)) {
+            return true;
+        }
+        // 被 AI 智能接管监控中，暂时拦截其他低级常规触发
+        return false;
+    }
+
+    // --- 核心逻辑：支持多模式并联运行 ---
     // 1. 检查主模式 (Tab 选中的模式)
     let triggered = false;
     switch (profitSettings.profitMode) {

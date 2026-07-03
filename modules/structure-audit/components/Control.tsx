@@ -16,7 +16,9 @@ export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, cou
     
     return (
         <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-2 shrink-0">
-            <div className="font-bold text-slate-200 text-sm flex items-center gap-2 mb-1">3. 结构审计 (Structure Audit)</div>
+            <div className="flex items-center justify-between mb-1">
+                <div className="font-bold text-slate-200 text-sm flex items-center gap-2">3. 结构审计 (Structure Audit)</div>
+            </div>
             <div className="flex items-center justify-between bg-blue-900/20 px-2 py-1.5 rounded border border-blue-500/30">
                 <div className="flex items-center gap-1 text-blue-300 font-bold text-[10px]"><Zap size={11} className="text-blue-400" />自动策略开仓 (Auto Strategy)</div>
                 <div onClick={() => setConfig(p => ({...p, autoSimOpen: !p.autoSimOpen}))} className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${config.autoSimOpen ? 'bg-blue-600' : 'bg-slate-700'}`}><div className={`w-3 h-3 bg-white rounded-full transition-transform shadow-sm ${config.autoSimOpen ? 'translate-x-4' : ''}`} /></div>

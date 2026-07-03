@@ -11,11 +11,12 @@ interface Props {
     onOpenManual: () => void;
     onViewSource: () => void;
     onFactoryReset: () => void;
-    onExportSettings: () => void;
+    onExportSettings: (name: string) => void;
     onImportSettings: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
 const SystemModule: React.FC<Props> = ({ settings, onChange, onOpenManual, onViewSource, onFactoryReset, onExportSettings, onImportSettings }) => {
+    const [backupName, setBackupName] = React.useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const remainingDays = subscriptionService.getDaysRemaining();
 
@@ -102,9 +103,16 @@ const SystemModule: React.FC<Props> = ({ settings, onChange, onOpenManual, onVie
                 
                 {/* Redundant Manual Button Removed - Now in Module 6 */}
 
-                <div className="grid grid-cols-2 gap-2">
+                 <div className="grid grid-cols-2 gap-2">
+                    <input
+                        type="text"
+                        value={backupName}
+                        onChange={(e) => setBackupName(e.target.value)}
+                        placeholder="请输入备份名称 (可选)"
+                        className="w-full py-1 px-2 text-[10px] bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 mb-2 col-span-2"
+                    />
                     <button 
-                        onClick={onExportSettings}
+                        onClick={() => onExportSettings(backupName)}
                         className="w-full py-2 flex items-center justify-center gap-2 text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition-colors border border-slate-700"
                     >
                         <Download size={12} /> 📤 导出备份配置

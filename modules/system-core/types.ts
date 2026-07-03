@@ -7,6 +7,6 @@ export interface SystemCoreProps {
     onOpenManual: () => void;
     onViewSource: () => void;
     onFactoryReset: () => void;
-    onExportSettings: () => void;
+    onExportSettings: (name: string) => void;
     onImportSettings: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }

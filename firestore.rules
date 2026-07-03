@@ -66,6 +66,13 @@ service cloud.firestore {
              data.uid == request.auth.uid;
     }
 
+    function isValidMomentumHistory(data) {
+      return data.symbol is string &&
+             data.timestamp is number &&
+             data.listType is string &&
+             data.uid == request.auth.uid;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -80,6 +87,13 @@ service cloud.firestore {
     match /backtests/{testId} {
       allow read: if isDocOwner();
       allow create: if isAuthenticated() && isValidBacktest(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /momentum_history/{historyId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidMomentumHistory(request.resource.data);
+      allow update: if isDocOwner() && isValidMomentumHistory(request.resource.data);
       allow delete: if isDocOwner();
     }
   }

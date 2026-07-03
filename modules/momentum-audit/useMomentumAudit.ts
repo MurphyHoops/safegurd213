@@ -7,6 +7,9 @@ import { analyzeList4Momentum } from '../../services/rules/list4_momentum';
 import { Position } from '../../types';
 import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
 import { saveState } from '../../utils/persistence';
+import { db, auth } from '../../firebase';
+import { collection, addDoc } from 'firebase/firestore';
+import { useAutoHistoryLogger } from './components/ScannerHistoryModal';
 
 // Helper to get minutes from tf string
 const getTfMinutes = (tf: string) => {
@@ -53,6 +56,18 @@ export const useMomentumAudit = (
     const tradedSignalCacheRef = useRef<Map<string, number>>(new Map());
     const triggeredSignalCacheRef = useRef<Map<string, number>>(new Map());
     const fuseBlockedSignalCacheRef = useRef<Map<string, number>>(new Map());
+    const advancedFilterBlockedSignalCacheRef = useRef<Map<string, number>>(new Map(
+        (() => {
+            try {
+                const saved = localStorage.getItem('SCANNER_LIST4_ADV_FILTER_BLOCK_TS');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    return Array.isArray(parsed) ? parsed.map((i: any) => [i.key, i.value]) : [];
+                }
+            } catch (e) {}
+            return [];
+        })()
+    ));
     const fuseAuditLatchRef = useRef<Map<string, { blocked: boolean, reason: string }>>(new Map(
         (() => {
             try {
@@ -81,15 +96,24 @@ export const useMomentumAudit = (
     // Keep refs synced
     useEffect(() => { realPricesRef.current = realPrices; }, [realPrices]);
     useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
-    useEffect(() => { configRef.current = config; }, [config]);
+    useEffect(() => { 
+        configRef.current = config; 
+        fuseAuditLatchRef.current.clear();
+        localStorage.removeItem('SCANNER_LIST4_FUSE_LATCH');
+    }, [config]);
     useEffect(() => { list3ConfigRef.current = list3Config; }, [list3Config]);
     useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
     useEffect(() => { onRemoveSignalRef.current = onRemoveSignal; }, [onRemoveSignal]);
     useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+    const list4Ref = useRef(list4);
+    useEffect(() => { list4Ref.current = list4; }, [list4]);
+
+    // Track active List 4 signals and automatically log them to history
+    useAutoHistoryLogger('LIST4', list4, activePositions);
 
     // --- CORE LOGIC: Analysis ---
-    // This function is pure logic, reading from Refs
-    const runMomentumAnalysis = useCallback(() => {
+    // Using refs for core logic to ensure stability and avoid re-renders
+    const runMomentumAnalysis = useRef(() => {
         const currentPrices = realPricesRef.current;
         const currentCandidates = candidatesRef.current;
         const currentConfig = configRef.current;
@@ -149,7 +173,7 @@ export const useMomentumAudit = (
                         // Inject latched results to avoid re-calculating inside analyzeList4Momentum
                         fuseBlocked: latchedAudit?.blocked || false,
                         fuseReason: latchedAudit?.reason || '',
-                        fuseLatched: true // Information for the rules to skip calc
+                        fuseLatched: latchedAudit?.blocked || false // Only latch if it was actually blocked
                     });
                 });
             }
@@ -185,6 +209,7 @@ export const useMomentumAudit = (
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
+                        item.removalReason = `结构破坏 (设定分钟: ${currentConfig.removeInvalidMinutes || 'N/A'}, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
                         onRemoveSignalRef.current?.(uniqueId);
                     }
                 }
@@ -194,6 +219,7 @@ export const useMomentumAudit = (
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
+                        item.removalReason = `结构破坏 (设定分钟: ${currentConfig.removeInvalidMinutes}, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
                         onRemoveSignalRef.current?.(uniqueId);
                     }
                 }
@@ -216,6 +242,7 @@ export const useMomentumAudit = (
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
+                        item.removalReason = `触发后超时 (设定: ${currentConfig.removeTriggeredMinutes}分钟, 持续: ${Math.round(elapsedMs / 60000)}分钟)`;
                         onRemoveSignalRef.current?.(uniqueId);
                     }
                 }
@@ -225,23 +252,44 @@ export const useMomentumAudit = (
 
             // Check "Fuse Blocked" (fuseBlocked)
             if (item.fuseBlocked) {
-                if (!fuseBlockedSignalCacheRef.current.has(uniqueId)) {
-                    fuseBlockedSignalCacheRef.current.set(uniqueId, now);
-                }
+                const isAdvancedFilter = item.fuseReason?.startsWith('高级过滤');
                 
-                if (currentConfig.removeFuseMinutes && currentConfig.removeFuseMinutes > 0) {
-                    const fuseTime = fuseBlockedSignalCacheRef.current.get(uniqueId) || now;
-                    const elapsedMs = now - fuseTime;
-                    const maxMs = currentConfig.removeFuseMinutes * 60 * 1000;
+                if (isAdvancedFilter) {
+                    if (!advancedFilterBlockedSignalCacheRef.current.has(uniqueId)) {
+                        advancedFilterBlockedSignalCacheRef.current.set(uniqueId, now);
+                    }
+                    if (currentConfig.autoClearAdvancedFilterMinutes && currentConfig.autoClearAdvancedFilterMinutes > 0) {
+                        const fuseTime = advancedFilterBlockedSignalCacheRef.current.get(uniqueId) || now;
+                        const elapsedMs = now - fuseTime;
+                        const maxMs = currentConfig.autoClearAdvancedFilterMinutes * 60 * 1000;
+                        if (elapsedMs >= maxMs) {
+                            expiredSignalCacheRef.current.add(uniqueId);
+                            shouldKeep = false;
+                            item.removalReason = `高级过滤触发: ${item.fuseReason} (设定: ${currentConfig.autoClearAdvancedFilterMinutes}分钟, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
+                            onRemoveSignalRef.current?.(uniqueId);
+                        }
+                    }
+                } else {
+                    if (!fuseBlockedSignalCacheRef.current.has(uniqueId)) {
+                        fuseBlockedSignalCacheRef.current.set(uniqueId, now);
+                    }
                     
-                    if (elapsedMs >= maxMs) {
-                        expiredSignalCacheRef.current.add(uniqueId);
-                        shouldKeep = false;
-                        onRemoveSignalRef.current?.(uniqueId);
+                    if (currentConfig.removeFuseMinutes && currentConfig.removeFuseMinutes > 0) {
+                        const fuseTime = fuseBlockedSignalCacheRef.current.get(uniqueId) || now;
+                        const elapsedMs = now - fuseTime;
+                        const maxMs = currentConfig.removeFuseMinutes * 60 * 1000;
+                        
+                        if (elapsedMs >= maxMs) {
+                            expiredSignalCacheRef.current.add(uniqueId);
+                            shouldKeep = false;
+                            item.removalReason = `防追高熔断超时: ${item.fuseReason} (设定: ${currentConfig.removeFuseMinutes}分钟, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
+                            onRemoveSignalRef.current?.(uniqueId);
+                        }
                     }
                 }
             } else {
                 fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                advancedFilterBlockedSignalCacheRef.current.delete(uniqueId);
             }
 
             // Check "Position Opened" (TRADED)
@@ -259,6 +307,7 @@ export const useMomentumAudit = (
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
+                        item.removalReason = `已开仓后超时 (设定K线: ${currentConfig.removeTradedCandles}, 持续时间: ${Math.round(elapsedMs / 60000)}分钟)`;
                         onRemoveSignalRef.current?.(uniqueId);
                     }
                 }
@@ -291,16 +340,55 @@ export const useMomentumAudit = (
         }
 
         // 4. Update State
-        setList4(finalItems);
+        const sameLength = list4Ref.current.length === finalItems.length;
+        const sameIds = sameLength && list4Ref.current.every((item, i) => 
+            `${item.symbol}-${item.tf}-${item.direction}` === `${finalItems[i].symbol}-${finalItems[i].tf}-${finalItems[i].direction}`
+        );
 
-        // Persistence (every 10s or on change)
+        if (!sameLength || !sameIds) {
+            setList4(finalItems);
+        }
+
+    // Persistence (every 10s or on change)
         const persistenceKey = 'SCANNER_LIST4_PERSIST_TS';
         const lastPersist = Number(sessionStorage.getItem(persistenceKey) || 0);
         if (now - lastPersist > 10000) {
             saveState('SCANNER_LIST4_RESULTS', finalItems, 100);
             saveState('SCANNER_LIST4_FUSE_LATCH', Array.from(fuseAuditLatchRef.current.entries()).map(([key, value]) => ({ key, value })), 500);
+            saveState('SCANNER_LIST4_ADV_FILTER_BLOCK_TS', Array.from(advancedFilterBlockedSignalCacheRef.current.entries()).map(([key, value]) => ({ key, value })), 1000);
             saveState('SCANNER_LIST4_EXPIRED_SIGNALS', Array.from(expiredSignalCacheRef.current), 1000);
             sessionStorage.setItem(persistenceKey, now.toString());
+        }
+    });
+    // Debounce analysis to prevent rapid re-renders
+    const timerRef = useRef<any>(null);
+    const debouncedRunAnalysis = useRef(() => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+            runMomentumAnalysis.current();
+        }, 100); // 100ms debounce
+    });
+
+    const logToHistory = useCallback(async (item: ScannerItem, reason: string) => {
+        if (!auth.currentUser) return;
+        try {
+            await addDoc(collection(db, 'momentum_history'), {
+                symbol: item.symbol,
+                direction: item.direction,
+                price: item.price,
+                timestamp: Date.now(),
+                listType: 'LIST4',
+                uid: auth.currentUser.uid,
+                reason: reason,
+                itemData: {
+                    symbol: item.symbol,
+                    price: item.price,
+                    tf: item.tf || '',
+                    direction: item.direction || ''
+                }
+            });
+        } catch (e) {
+            console.error('Failed to log to history:', e);
         }
     }, []);
 
@@ -326,16 +414,16 @@ export const useMomentumAudit = (
     // --- HEARTBEAT TIMER ---
     // REFACTORED: From setInterval (300ms) to Event-Driven Subscription
     useEffect(() => {
-        // Run immediately on mount
-        runMomentumAnalysis();
-
         // Subscribe to price updates
         const unsubscribe = priceRegistry.registerListener(() => {
-            runMomentumAnalysis();
+            debouncedRunAnalysis.current();
         });
 
+        // Run analysis once after mount to initialize state
+        debouncedRunAnalysis.current();
+
         return () => unsubscribe();
-    }, [runMomentumAnalysis]);
+    }, []);
     // ^ Removed candidates, config, list3Config because runMomentumAnalysis relies on refs, 
     // and runMomentumAnalysis itself is memoized.
 

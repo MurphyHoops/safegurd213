@@ -1,3 +1,15 @@
+// --- 0. DEBUG PERFORMANCE.MEASURE ---
+if (typeof window !== 'undefined' && window.performance && typeof window.performance.measure === 'function') {
+    const originalMeasure = window.performance.measure;
+    window.performance.measure = function(name: string, startMark?: string | PerformanceMeasureOptions, endMark?: string) {
+        try {
+            return originalMeasure.apply(this, arguments as any);
+        } catch (e) {
+            console.error('🛡️ [Performance Monitor] Failed to measure:', name, startMark, endMark, e);
+            throw e;
+        }
+    };
+}
 // --- 1. SETUP PERSISTENT RAW SYSTEM LOG INTERCEPTOR ---
 const persistRawSystemLog = (level: 'INFO' | 'WARN' | 'ERROR' | 'PERF', module: string, message: string, details?: any) => {
     try {

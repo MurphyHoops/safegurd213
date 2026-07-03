@@ -88,10 +88,12 @@ const cleanPayloadForPersistence = (key: string, data: any): any => {
             
             const newItem = { ...item };
             
-            // Clean historyExtremes (heavy raw array lists over 1000+ floats)
+            // Clean historyExtremes (truncate raw array lists to last 2300 items to support advanced filtering while saving space)
             if (newItem.historyExtremes && typeof newItem.historyExtremes === 'object') {
                 newItem.historyExtremes = {
-                    scalars: newItem.historyExtremes.scalars
+                    scalars: newItem.historyExtremes.scalars,
+                    highs1h: newItem.historyExtremes.highs1h ? newItem.historyExtremes.highs1h.slice(-2300) : undefined,
+                    lows1h: newItem.historyExtremes.lows1h ? newItem.historyExtremes.lows1h.slice(-2300) : undefined
                 };
             }
             return newItem;

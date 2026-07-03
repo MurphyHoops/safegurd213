@@ -7,6 +7,7 @@ import {
   ShieldCheck,
   Maximize2,
   Trash2,
+  History,
 } from "lucide-react";
 import {
   List3Config,
@@ -19,6 +20,7 @@ import { PositionSide, Position } from "../../../types";
 import { List3Control } from "./Control";
 import { List3Item } from "./Item";
 import { ScannerVisualizerModal } from "../../../components/ScannerVisualizerModal";
+import { ScannerHistoryModal } from "../../momentum-audit/components/ScannerHistoryModal";
 
 interface Props {
   config: List3Config;
@@ -56,6 +58,7 @@ const List3_Structure: React.FC<Props> = ({
   onClearItems,
 }) => {
   const [showVisualizer, setShowVisualizer] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   // --- DYNAMIC FILTERING LOGIC ---
   const filteredList = useMemo(() => {
@@ -111,6 +114,11 @@ const List3_Structure: React.FC<Props> = ({
 
   // --- AUTO EXECUTE LOGIC ---
   const executedRef = useRef<Set<string>>(new Set());
+  const activePositionsRef = useRef(activePositions);
+  const executeTradeSafeRef = useRef(executeTradeSafe);
+
+  useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
+  useEffect(() => { executeTradeSafeRef.current = executeTradeSafe; }, [executeTradeSafe]);
 
   useEffect(() => {
     const isMasterAutoOn = actionConfig?.autoExecute;
@@ -147,7 +155,7 @@ const List3_Structure: React.FC<Props> = ({
         const alreadyExecutedSession = executedRef.current.has(uniqueId);
 
         // Check 2: Do we ALREADY have an open position for this symbol + direction?
-        const alreadyHasPosition = activePositions.some(
+        const alreadyHasPosition = activePositionsRef.current.some(
           (p) => p.symbol === item.symbol && p.side === side,
         );
 
@@ -156,7 +164,7 @@ const List3_Structure: React.FC<Props> = ({
             `[List3 Auto] Triggering executeTradeSafe for ${uniqueId} @ ${item.price}`,
           );
 
-          const success = (executeTradeSafe as any)(
+          const success = (executeTradeSafeRef.current as any)(
             item.symbol,
             side,
             item.price,
@@ -176,7 +184,7 @@ const List3_Structure: React.FC<Props> = ({
         }
       });
     });
-  }, [filteredList, config.autoSimOpen, executeTradeSafe, activePositions]);
+  }, [filteredList, config.autoSimOpen, actionConfig?.autoExecute]);
 
   // Active Rules for Display (IDLE State)
   const activeRules = useMemo(() => {
@@ -278,6 +286,14 @@ const List3_Structure: React.FC<Props> = ({
               <span>清空</span>
             </button>
             <button
+              onClick={() => setShowHistory(true)}
+              className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-emerald-900/50 rounded border border-emerald-500/30 text-emerald-500 transition-all text-[10px] font-bold mr-1"
+              title="查看历史记录"
+            >
+              <History size={12} />
+              <span>历史</span>
+            </button>
+            <button
               onClick={() => setShowVisualizer(true)}
               className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-indigo-400 transition-all border border-transparent hover:border-indigo-500/30"
               title="放大查看 K 线大图"
@@ -301,6 +317,9 @@ const List3_Structure: React.FC<Props> = ({
           defaultTf="15m"
           onClose={() => setShowVisualizer(false)}
         />
+      )}
+      {showHistory && (
+        <ScannerHistoryModal listType="LIST3" setChartData={setChartData} onClose={() => setShowHistory(false)} />
       )}
 
       <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar bg-slate-950/20">

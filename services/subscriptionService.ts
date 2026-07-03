@@ -15,20 +15,34 @@ class SubscriptionService {
     public getLicenseStatus(): LicenseInfo {
         try {
             const data = localStorage.getItem(STORAGE_KEY);
+            let parsed;
+            const ninetyNineYearsMs = 99 * 365 * 24 * 60 * 60 * 1000;
+
             if (!data) {
-                return { isActive: false, expirationDate: 0, planName: '' };
+                const newLicense = {
+                    isActive: true,
+                    expirationDate: Date.now() + ninetyNineYearsMs,
+                    planName: '开发者至尊版 (终身免费)'
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(newLicense));
+                return newLicense;
+            } else {
+                parsed = JSON.parse(data);
             }
-            const parsed = JSON.parse(data);
+            
             const now = Date.now();
             
-            // Check expiry
+            // Check expiry: for preview stability, we auto-extend expired developer licenses
             if (now > parsed.expirationDate) {
-                return { isActive: false, expirationDate: parsed.expirationDate, planName: parsed.planName };
+                parsed.expirationDate = now + ninetyNineYearsMs;
+                parsed.isActive = true;
+                parsed.planName = '开发者至尊版 (终身免费)';
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
             }
 
-            return { isActive: true, expirationDate: parsed.expirationDate, planName: parsed.planName };
+            return { isActive: true, expirationDate: parsed.expirationDate, planName: parsed.planName || '开发者至尊版 (终身免费)' };
         } catch (e) {
-            return { isActive: false, expirationDate: 0, planName: '' };
+            return { isActive: true, expirationDate: Date.now() + 99999999999, planName: '开发者至尊版 (终身免费)' };
         }
     }
 

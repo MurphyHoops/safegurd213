@@ -206,12 +206,48 @@ async function startServer() {
 
     // --- SERVER-SIDE PROXY (KERNEL BYPASS) ---
     // This bypasses browser CORS and IP restrictions by fetching data from the server node.
+    interface ServerCacheEntry {
+        data: any;
+        timestamp: number;
+        ttl: number;
+    }
+
+    const serverCache = new Map<string, ServerCacheEntry>();
+
+    const getServerCacheTTL = (url: string): number => {
+        if (url.includes("/klines")) {
+            if (url.includes("interval=1d") || url.includes("interval=1w")) return 30000; // 30s
+            return 10000; // 10s for other klines
+        }
+        if (url.includes("ticker/price")) return 2000; // 2s
+        if (url.includes("ticker/24hr")) return 5000; // 5s
+        return 2000; // 2s default
+    };
+
+    const normalizeUrlForCache = (urlStr: string): string => {
+        try {
+            const urlObj = new URL(urlStr);
+            urlObj.searchParams.delete('_t');
+            urlObj.searchParams.delete('cb');
+            return urlObj.toString();
+        } catch (e) {
+            return urlStr;
+        }
+    };
+
     app.get("/api/proxy", async (req, res) => {
       let targetUrl = req.query.url as string;
       if (!targetUrl) return res.status(400).json({ error: "Missing URL parameter" });
+
+      // SERVER-SIDE CACHE HIT
+      const cacheKey = normalizeUrlForCache(targetUrl);
+      const cached = serverCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < cached.ttl) {
+          return res.json(cached.data);
+      }
   
       // Handle missing USDT suffix for binance kline/ticker queries
-      if (targetUrl.includes("binance.com")) {
+      if (targetUrl.includes("binance")) {
           try {
               const parsedUrl = new URL(targetUrl);
               const symbolParam = parsedUrl.searchParams.get("symbol");
@@ -226,20 +262,58 @@ async function startServer() {
           }
       }
   
-      const maxRetries = 8; // Increased from 6
+      const isHighPriority = (req.query.priority === "high") || targetUrl.includes("/klines");
+      const maxRetries = isHighPriority ? 6 : 2;
       let attempt = 0;
       let urlToFetch = targetUrl;
   
       while (attempt < maxRetries) {
           attempt++;
+          
+          // Determine the URL to fetch for this attempt
+          if (targetUrl.includes("binance")) {
+              if (attempt === 1) {
+                  urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
+              } else if (attempt === 2) {
+                  urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.me");
+              } else {
+                  // Public proxies - always map to the standard fapi.binance.com domain
+                  const standardTargetUrl = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
+                  const encodedOrig = encodeURIComponent(standardTargetUrl);
+                  const cacheBuster = `cb=${Date.now()}`;
+                  
+                  if (attempt === 3) {
+                      urlToFetch = `https://corsproxy.io/?${encodedOrig}&${cacheBuster}`;
+                  } else if (attempt === 4) {
+                      urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
+                  } else if (attempt === 5) {
+                      urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`;
+                  } else {
+                      urlToFetch = `https://corsproxy.org/?${encodedOrig}`;
+                  }
+              }
+          } else {
+              if (attempt === 1) {
+                  urlToFetch = targetUrl;
+              } else {
+                  const encodedOrig = encodeURIComponent(targetUrl);
+                  urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&cb=${Date.now()}`;
+              }
+          }
+
           try {
               console.log(`[Proxy] Attempt ${attempt} / ${maxRetries}: Fetching ${urlToFetch}`);
               
               const controller = new AbortController();
+              const isPublicProxy = urlToFetch.includes("allorigins") || 
+                                    urlToFetch.includes("corsproxy") || 
+                                    urlToFetch.includes("codetabs");
+                                    
+              const timeoutMs = isPublicProxy ? 15000 : 3500;
               const timeoutId = setTimeout(() => {
                   if (controller.signal.aborted) return;
                   controller.abort();
-              }, 12000); // 12 seconds per attempt
+              }, timeoutMs);
   
               // Distribute across different user agents to reduce blocking
               const userAgents = [
@@ -249,12 +323,18 @@ async function startServer() {
                   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
               ];
   
+              const headers: Record<string, string> = {
+                  "Accept": "application/json"
+              };
+              
+              // Only add scraper-like custom headers if we are hitting Binance directly
+              if (!isPublicProxy) {
+                  headers["User-Agent"] = userAgents[attempt % userAgents.length];
+                  headers["Cache-Control"] = "no-cache";
+              }
+  
               const response = await fetch(urlToFetch, {
-                  headers: {
-                      "User-Agent": userAgents[attempt % userAgents.length],
-                      "Accept": "application/json",
-                      "Cache-Control": "no-cache"
-                  },
+                  headers,
                   signal: controller.signal
               });
               clearTimeout(timeoutId);
@@ -269,68 +349,52 @@ async function startServer() {
                   }
                   const data = JSON.parse(text);
                   console.log(`[Proxy] Success on attempt ${attempt} for ${urlToFetch}`);
+                  
+                  // Cache successful responses
+                  const ttl = getServerCacheTTL(targetUrl);
+                  serverCache.set(cacheKey, {
+                      data,
+                      timestamp: Date.now(),
+                      ttl
+                  });
+  
                   return res.json(data);
               }
   
-              console.warn(`[Proxy] Attempt ${attempt} failed with status ${response.status} for ${urlToFetch}`);
-              
-              // If it's 403 Forbidden, skip to the next public proxy immediately if we are already using one
-              if (response.status === 403 && attempt > 4) {
-                 continue; 
-              }
-
-              // If it's 400 Bad Request due to "Invalid symbol", check if appending USDT works
-              if (response.status === 400 && urlToFetch.includes("binance") && !urlToFetch.includes("USDT")) {
-                  try {
-                      const parsedUrl = new URL(urlToFetch);
-                      const symbolParam = parsedUrl.searchParams.get("symbol");
-                      if (symbolParam) {
-                          parsedUrl.searchParams.set("symbol", `${symbolParam}USDT`);
-                          urlToFetch = parsedUrl.toString();
-                          attempt--; // Fix attempt
-                          continue;
-                      }
-                  } catch (e) {}
-              }
-  
-          } catch (error: any) {
-              console.error(`[Proxy] Attempt ${attempt} encountered error: ${error.message}`);
-          }
-  
-          // Setup alternative endpoint or a public proxy bypass for the next attempt
-          if (targetUrl.includes("binance")) {
-              const domainPool = [
-                  "fapi.binance.com", 
-                  "fapi.binance.me", 
-                  "fapi.binance.info", 
-                  "fapi1.binance.com", 
-                  "fapi2.binance.com", 
-                  "fapi3.binance.com",
-                  "fapi4.binance.com",
-                  "fapi5.binance.com",
-                  "fstream.binance.com"
-              ];
-              
-              if (attempt <= 4) {
-                  // Rotate domains within Binance infrastructure
-                  urlToFetch = targetUrl.replace(/fapi[0-9]*\.binance\.(com|me|info)/, domainPool[attempt % domainPool.length]);
+              if (response.status === 400 || response.status === 404) {
+                  console.log(`[Proxy] Attempt ${attempt} returned status ${response.status} (invalid symbol/resource) for ${urlToFetch}`);
               } else {
-                  // Secondary fallback: Use public CORS proxies with different parameters to bypass caches/blocks
-                  const encodedOrig = encodeURIComponent(targetUrl);
-                  const cacheBuster = `cb=${Date.now()}`;
-                  const serverSideProxies = [
-                      `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`,
-                      `https://corsproxy.io/?${encodedOrig}&${cacheBuster}`,
-                      `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`,
-                      `https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all`, // Placeholder for better ones
-                      `https://corsproxy.org/?${encodedOrig}`
-                  ];
-                  urlToFetch = serverSideProxies[(attempt - 5) % serverSideProxies.length];
-                  console.log(`[Proxy] Switching to server-side public egress node: ${urlToFetch}`);
+                  console.warn(`[Proxy] Attempt ${attempt} failed with status ${response.status} for ${urlToFetch}`);
               }
-          } else {
-              const encodedOrig = encodeURIComponent(targetUrl);
-              urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&cb=${Date.now()}`;
+              
+              if (response.status === 400 || response.status === 404) {
+                  // If it's 400 Bad Request due to "Invalid symbol", check if appending USDT works
+                  if (response.status === 400 && urlToFetch.includes("binance") && !urlToFetch.includes("USDT")) {
+                      try {
+                          const parsedUrl = new URL(urlToFetch);
+                          const symbolParam = parsedUrl.searchParams.get("symbol");
+                          if (symbolParam) {
+                              parsedUrl.searchParams.set("symbol", `${symbolParam}USDT`);
+                              targetUrl = parsedUrl.toString();
+                              attempt--; // Retrying the same attempt index with USDT
+                              continue;
+                          }
+                      } catch (e) {}
+                  }
+                  
+                  // Otherwise, return 400/404 immediately to avoid wasting time with retries!
+                  console.log(`[Proxy] Immediately stopping on status ${response.status} for ${urlToFetch} (no retries for 400/404)`);
+                  const text = await response.text();
+                  try {
+                      return res.status(response.status).json(JSON.parse(text));
+                  } catch (e) {
+                      return res.status(response.status).send(text);
+                  }
+              }
+              
+              throw new Error(`Response status ${response.status}`);
+          } catch (error: any) {
+              console.error(`[Proxy] Attempt ${attempt} encountered error: ${error.message || error}`);
           }
       }
   
@@ -367,7 +431,7 @@ async function startServer() {
     const path = await import('path');
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.all('*', (req, res) => {
+    app.use((req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

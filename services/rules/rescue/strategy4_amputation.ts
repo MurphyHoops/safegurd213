@@ -74,16 +74,13 @@ export function checkStrategy4_Amputation(
         // 1. 盈利率自峰值绝对回调百分点达到“解套回撤清仓”设定值，且当前盈利【必须依然大于等于】“盈利覆盖安全垫”设定值才能清仓
         const pricePullback = peakPnLPercent - winningPnLPercent;
         const hasPulledBack = pricePullback >= breathingSpace && winningPnL >= targetProfit;
-        const hitsBreakeven = winningPnL <= breakevenWinningPnL;
 
         if (hasNewPeak && addLog) {
-            addLog('INFO', `📈 [断臂保收新高] ${mainPosition.symbol} 达到完全覆盖保本。最新最高赢利率: ${winningPnLPercent.toFixed(2)}% | 对应清仓触发线 (回调 ${breathingSpace}%): ${(winningPnLPercent - breathingSpace).toFixed(2)}% (盈利至少需要: ${targetProfit.toFixed(2)}U)`);
+            addLog('INFO', `📈 [断臂保收新高] ${mainPosition.symbol} 达到完全覆盖保本并刷新高。最新最高赢利率: ${winningPnLPercent.toFixed(2)}% | 对应清仓触发线 (回调 ${breathingSpace}%): ${(winningPnLPercent - breathingSpace).toFixed(2)}% (盈利至少需要维持在安全垫: ${targetProfit.toFixed(2)}U)`);
         }
 
-        if (hasPulledBack || hitsBreakeven) {
-            const exitReason = hasPulledBack 
-                ? `3. 断臂呼吸解套: 盈利率自最高点(${peakPnLPercent.toFixed(2)}%)回调达到设定的回撤空间${breathingSpace}% (当前: ${winningPnLPercent.toFixed(2)}% | 盈利 ${winningPnL.toFixed(2)}U >= 安全垫 ${targetProfit.toFixed(2)}U)`
-                : `3. 断臂保收解套: 盈利回撤至安全保本线(${breakevenWinningPnL.toFixed(2)}U)`;
+        if (hasPulledBack) {
+            const exitReason = `3. 断臂呼吸解套: 盈利率自最高点(${peakPnLPercent.toFixed(2)}%)回调达到设定的回撤空间${breathingSpace}% (当前: ${winningPnLPercent.toFixed(2)}% | 盈利 ${winningPnL.toFixed(2)}U >= 设定安全垫 ${targetProfit.toFixed(2)}U)`;
             
             if (hedgePosition) {
                 closePair(mainPosition.entryId, hedgePosition.entryId, exitReason);

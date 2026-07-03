@@ -56,6 +56,27 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
   const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>([]);
   const [list2Results, setList2Results] = useState<ScannerItem[]>([]);
   const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
+
+  const handleList1Results = useCallback((results: ScannerItem[]) => {
+    setList1Candidates(prev => {
+        if (JSON.stringify(prev) === JSON.stringify(results)) return prev;
+        return results;
+    });
+  }, []);
+
+  const handleList2Results = useCallback((results: ScannerItem[]) => {
+    setList2Results(prev => {
+        if (JSON.stringify(prev) === JSON.stringify(results)) return prev;
+        return results;
+    });
+  }, []);
+
+  const handleList3Results = useCallback((results: ScannerItem[]) => {
+    setList3Results(prev => {
+        if (JSON.stringify(prev) === JSON.stringify(results)) return prev;
+        return results;
+    });
+  }, []);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
   const [liveStats, setLiveStats] = useState({ symbolCount: 0, totalValue: 0, totalPnl: 0 });
   const liveStatsPulseRef = useRef('');
@@ -181,7 +202,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
 
               <div className="flex-1 flex overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
                   <BacktestMarketScannerModule 
-                      onCandidatesUpdate={setList1Candidates} 
+                      onCandidatesUpdate={handleList1Results} 
                       setChartData={setChartData}
                       directMode={true}
                       scanConfig={scanConfig}
@@ -189,7 +210,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
                   />
                   <BacktestGrandCrossingModule 
                       candidates={list1Candidates} 
-                      onResultsUpdate={setList2Results}
+                      onResultsUpdate={handleList2Results}
                       scanConfig={scanConfig}
                       setScanConfig={setScanConfig}
                       setChartData={setChartData}
@@ -198,7 +219,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
                   />
                   <BacktestStructureAuditModule 
                       candidates={list2Results}
-                      onResultsUpdate={setList3Results}
+                      onResultsUpdate={handleList3Results}
                       onConfigUpdate={setList3Config}
                       onRemoveSignalReady={handleRemoveSignalReady}
                       realPrices={realPrices}
