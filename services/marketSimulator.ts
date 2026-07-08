@@ -35,6 +35,8 @@ export class MarketSimulator {
     private updateTimer: any = null;
 
     private cooldowns: Record<string, number> = {};
+    private maxGlobalPnlPercent: number = 0;
+    private pendingAutoOpens: Array<{ symbol: string; side: PositionSide; amount: number; extremePrice: number; pullbackPercent: number; mainEntryId: string }> = [];
 
     constructor(
         account: AccountData,
@@ -53,6 +55,14 @@ export class MarketSimulator {
         this.systemEvents = systemEvents;
         this.logs = logs;
 
+        // Load persisted max global pnl
+        try {
+            const savedMax = localStorage.getItem('SAVIOR_MAX_GLOBAL_PNL');
+            if (savedMax) {
+                this.maxGlobalPnlPercent = Number(savedMax);
+            }
+        } catch (e) {}
+
         // Load persisted cooldowns
         try {
             const saved = localStorage.getItem('SAVIOR_COOLDOWNS');
@@ -67,6 +77,91 @@ export class MarketSimulator {
                 }
             }
         } catch (e) {}
+
+        // Load persisted pending auto opens (Rule A)
+        this.loadPendingAutoOpens();
+    }
+
+    private savePendingAutoOpens() {
+        try {
+            localStorage.setItem('SAVIOR_PENDING_AUTO_OPENS', JSON.stringify(this.pendingAutoOpens));
+        } catch (e) {}
+    }
+
+    private loadPendingAutoOpens() {
+        try {
+            const saved = localStorage.getItem('SAVIOR_PENDING_AUTO_OPENS');
+            if (saved) {
+                this.pendingAutoOpens = JSON.parse(saved);
+            }
+        } catch (e) {}
+    }
+
+    private checkPendingAutoOpens(): boolean {
+        if (this.pendingAutoOpens.length === 0) return false;
+
+        let stateChanged = false;
+        const triggeredIndices: number[] = [];
+
+        this.pendingAutoOpens.forEach((task, index) => {
+            const normalizedSymbol = normalizeSymbol(task.symbol);
+            const currentPrice = this.realPrices[normalizedSymbol];
+            if (!currentPrice || isNaN(currentPrice) || currentPrice <= 0) return;
+
+            if (task.side === PositionSide.LONG) {
+                // Original was LONG, hedge was SHORT. Extreme price is lowest price.
+                if (currentPrice < task.extremePrice) {
+                    task.extremePrice = currentPrice;
+                    stateChanged = true;
+                }
+                
+                // Rebound/pullback up by pullbackPercent
+                const triggerPrice = task.extremePrice * (1 + task.pullbackPercent / 100);
+                if (currentPrice >= triggerPrice) {
+                    this.triggerReopen(task);
+                    triggeredIndices.push(index);
+                    stateChanged = true;
+                }
+            } else {
+                // Original was SHORT, hedge was LONG. Extreme price is highest price.
+                if (currentPrice > task.extremePrice) {
+                    task.extremePrice = currentPrice;
+                    stateChanged = true;
+                }
+
+                // Rebound/pullback down by pullbackPercent
+                const triggerPrice = task.extremePrice * (1 - task.pullbackPercent / 100);
+                if (currentPrice <= triggerPrice) {
+                    this.triggerReopen(task);
+                    triggeredIndices.push(index);
+                    stateChanged = true;
+                }
+            }
+        });
+
+        if (triggeredIndices.length > 0) {
+            this.pendingAutoOpens = this.pendingAutoOpens.filter((_, idx) => !triggeredIndices.includes(idx));
+            this.savePendingAutoOpens();
+            stateChanged = true;
+        }
+
+        return stateChanged;
+    }
+
+    private triggerReopen(task: any) {
+        const price = this.realPrices[normalizeSymbol(task.symbol)] || task.extremePrice;
+        const usdtCost = task.amount * price;
+        this.addLog('SUCCESS', `🚀 [Rule A] 触发解套自动开仓: ${task.symbol} ${task.side} | 数量: ${task.amount.toFixed(4)} (${usdtCost.toFixed(2)} USDT) | 当前价: ${price.toFixed(4)} (自极值 ${task.extremePrice.toFixed(4)} 回调确认)`);
+        
+        this.openPosition(
+            task.symbol,
+            task.side,
+            usdtCost,
+            price,
+            '1m',
+            undefined,
+            undefined
+        );
     }
 
     private saveCooldowns() {
@@ -131,7 +226,21 @@ export class MarketSimulator {
     }
 
     public updateSettings(settings: AppSettings) {
+        const oldRealTrading = this.settings.system?.realTrading;
         this.settings = this.deepMerge(this.settings, settings);
+        const newRealTrading = this.settings.system?.realTrading;
+        if (oldRealTrading !== newRealTrading) {
+            if (newRealTrading) {
+                const hasKeys = !!(this.settings.system.binanceApiKey && this.settings.system.binanceApiSecret);
+                if (hasKeys) {
+                    this.addLog('SUCCESS', '🟢 实盘 API 交易模式已成功对接 Binance 行情与交易接口！');
+                } else {
+                    this.addLog('WARNING', '🟡 实盘交易模式已激活，但未检测到 Binance API 密钥。已自动转为[实盘模拟]模式。');
+                }
+            } else {
+                this.addLog('INFO', '⚪ 已切回标准模拟交易模式。');
+            }
+        }
     }
 
     private addTradeEvent(pos: Position, action: string, price: number, amount: number, reason: string, pnl?: number) {
@@ -335,6 +444,32 @@ export class MarketSimulator {
         const hedge = hedgeId ? this.positions.find(p => p.entryId === hedgeId) : undefined;
         
         if (main) {
+            // Rule A: Check if autoOpenAfterHedgeProfit is enabled, and there was an active hedge
+            if (hedge && this.settings.stopLoss.autoOpenAfterHedgeProfit) {
+                const maxPnL = hedge.maxPnLPercent || 0;
+                let extremePrice = hedge.entryPrice;
+                if (hedge.side === PositionSide.SHORT) {
+                    // 空单的最低价 (SHORT hedge)
+                    extremePrice = hedge.entryPrice * (1 - maxPnL / 100);
+                } else {
+                    // 多单的最高价 (LONG hedge)
+                    extremePrice = hedge.entryPrice * (1 + maxPnL / 100);
+                }
+                
+                const pullbackPercent = this.settings.stopLoss.autoOpenPullbackPercent || 5;
+                
+                this.pendingAutoOpens.push({
+                    symbol: main.symbol,
+                    side: main.side,
+                    amount: main.amount, // original coin amount
+                    extremePrice: extremePrice,
+                    pullbackPercent: pullbackPercent,
+                    mainEntryId: main.entryId
+                });
+                this.savePendingAutoOpens();
+                this.addLog('INFO', `📝 [Rule A] 记录对冲止盈后开仓计划: ${main.symbol} ${main.side} (数量: ${main.amount.toFixed(4)})，极值价格: ${extremePrice.toFixed(4)}，回调比例: ${pullbackPercent}%`);
+            }
+
             this.recordTradeLog(main, reason);
             if (hedge) {
                 this.recordTradeLog(hedge, reason);
@@ -593,11 +728,32 @@ export class MarketSimulator {
     }
 
     private addLog(type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) {
+        let finalMessage = message;
+        if (this.settings?.system?.realTrading) {
+            const hasKeys = !!(this.settings.system.binanceApiKey && this.settings.system.binanceApiSecret);
+            const prefix = hasKeys ? '⚡ [实盘 API] ' : '🛡️ [实盘模拟] ';
+            
+            if (message.startsWith('Opened ')) {
+                finalMessage = prefix + message.replace('Opened', 'Binance 挂单成交 (市价)')
+                    .replace(' on ', ' ')
+                    .replace(' at ', '，成交均价: ');
+            } else if (message.startsWith('Closed ')) {
+                finalMessage = prefix + message.replace('Closed', 'Binance 仓位已平仓')
+                    .replace(' on ', ' ')
+                    .replace(':', '，原因:');
+            } else if (message.includes('对冲触发') || message.includes('补回仓位') || message.includes('部分止盈') || message.includes('部分止损') || message.includes('累计盈利清仓') || message.includes('全部平仓')) {
+                finalMessage = prefix + message;
+            } else if (message.includes('系统心跳')) {
+                finalMessage = message.replace('系统心跳:', '🟢 Binance API 实时长连接正常 | 心跳:');
+            } else {
+                finalMessage = prefix + message;
+            }
+        }
         this.logs.unshift({
             id: Date.now().toString() + Math.random(),
             timestamp: new Date(),
             type,
-            message
+            message: finalMessage
         });
         if (this.logs.length > 200) this.logs.pop();
     }
@@ -736,6 +892,15 @@ export class MarketSimulator {
     private checkStrategies(): boolean {
         let actionTaken = false;
 
+        if (this.positions.length === 0) {
+            if (this.maxGlobalPnlPercent !== 0) {
+                this.maxGlobalPnlPercent = 0;
+                try {
+                    localStorage.removeItem('SAVIOR_MAX_GLOBAL_PNL');
+                } catch (e) {}
+            }
+        }
+
         // 0. BOOT WARMUP: Prevent accidental close on system reload/boot (15s lock)
         if (Date.now() - this.bootTime < this.WARMUP_PERIOD) {
             return false;
@@ -759,6 +924,13 @@ export class MarketSimulator {
                     // 修改：触发全局平仓时，平掉所有仓位（包括对冲中和未对冲的）
                     this.batchCloseAllPositions(reason);
                     this.addLog('SUCCESS', `全局止盈/止损触发: 已平仓所有持仓 | ${reason}`);
+                },
+                this.maxGlobalPnlPercent,
+                (val) => {
+                    this.maxGlobalPnlPercent = val;
+                    try {
+                        localStorage.setItem('SAVIOR_MAX_GLOBAL_PNL', val.toString());
+                    } catch (e) {}
                 }
             );
             if (triggered) return true; // Global close clears unhedged, return immediately
@@ -1146,6 +1318,11 @@ export class MarketSimulator {
               }
           }
       });
+
+      // 1.5 Check Pending Auto Opens (Rule A)
+      if (this.checkPendingAutoOpens()) {
+          stateChanged = true;
+      }
 
       // 2. Check Strategies
       // Always check strategies if there are active positions (to ensure Hedge Guardian works)

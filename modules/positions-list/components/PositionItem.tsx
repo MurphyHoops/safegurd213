@@ -40,11 +40,14 @@ interface Props {
     onOpenSettings?: (position: Position) => void;
     aiSmartMasterEnabled?: boolean;
     globalProfitSettings?: any;
+    isManuallyClosed?: boolean;
+    hasCustomSettings?: boolean;
 }
 
+// @LOCKED: PositionItem logic
 export const PositionItem: React.FC<Props> = ({
     p, idx, livePrice, currentPnl, currentPnlPct, showHedgeStats, totalDebt, isHedgedMode, isModule1Active, hasAmmo,
-    onOpenChart, onShowHistory, onClosePosition, onOpenSettings, aiSmartMasterEnabled = true, globalProfitSettings
+    onOpenChart, onShowHistory, onClosePosition, onOpenSettings, aiSmartMasterEnabled = true, globalProfitSettings, isManuallyClosed, hasCustomSettings
 }) => {
     const isHedgedActive = p.isHedged || !!p.mainPositionId;
 
@@ -75,7 +78,7 @@ export const PositionItem: React.FC<Props> = ({
     return (
         <div 
             onClick={() => onOpenChart(p.symbol, p.entryPrice, p.entryTime)}
-            className={`flex items-center px-4 py-2 border-b border-slate-800/40 hover:bg-[#1e2329]/50 transition-colors group relative overflow-hidden shrink-0 cursor-pointer ${p.isHedged ? 'bg-indigo-900/5' : ''}`}
+            className={`flex items-center px-4 py-2 border-b border-slate-800/40 hover:bg-[#1e2329]/50 transition-colors group relative overflow-hidden shrink-0 cursor-pointer ${p.isHedged ? 'bg-indigo-900/5' : ''} ${isManuallyClosed ? 'bg-amber-900/20' : ''} ${hasCustomSettings ? 'bg-red-950/20 border-l-4 border-l-red-500/80 shadow-[inset_1px_0_0_rgba(239,68,68,0.2)]' : ''}`}
         >
             <div className={`absolute left-0 top-1 bottom-1 w-0.5 rounded-r ${currentPnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
             
@@ -120,7 +123,7 @@ export const PositionItem: React.FC<Props> = ({
                     )}
                     {isAiEnabled && (
                         isHedgedActive ? (
-                            <div className="flex items-center gap-1 bg-[#1a232e] text-slate-500 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-slate-800" title="该币有单币AI智能配置，但由于已启动对冲，智能平仓已自动解锁停用">
+                            <div className="flex items-center gap-1 bg-[#1a232e] text-slate-500 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-slate-800" title="该币有单币AI智能配置，但由于已启动对冲，AI智能平仓已自动解锁停用">
                                 <Brain size={8} />
                                 <span className="line-through scale-[0.95] origin-left">AI智能</span>
                             </div>
@@ -219,52 +222,82 @@ export const PositionItem: React.FC<Props> = ({
                     {isHedgedActive ? (
                         <div 
                             className="px-1.5 py-1 rounded-md bg-[#13171e] text-slate-500 border border-slate-800/80 flex items-center gap-1 cursor-not-allowed select-none" 
-                            title="该币已进入对冲保护状态，智能平仓自动锁定停用"
+                            title="该币已进入对冲保护状态，AI智能平仓自动锁定停用"
                         >
                             <Brain size={11} className="text-slate-600" />
-                            <span className="text-[10px] scale-[0.9] origin-left line-through font-bold">智能平仓</span>
+                            <span className="text-[10px] scale-[0.9] origin-left line-through font-bold">AI智能平仓</span>
                         </div>
-                    ) : (
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onOpenSettings?.(p); }} 
-                            className={`px-1.5 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer font-bold ${
-                                !isAiEnabled
-                                    ? 'bg-[#141a22] text-slate-400 hover:bg-slate-800 hover:text-white border border-slate-800'
-                                    : !isAiActivated
-                                        ? !isPositionSizeMet
-                                            ? 'bg-red-500/5 text-red-400 hover:bg-red-500/15 border border-red-500/20 shadow-[0_0_8px_rgba(239,68,68,0.05)]'
-                                            : 'bg-amber-500/5 text-amber-500/80 hover:bg-amber-500/15 border border-amber-500/20 shadow-[0_0_8px_rgba(245,158,11,0.05)]'
-                                        : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/35 shadow-[0_0_10px_rgba(16,185,129,0.2)] animate-pulse'
-                            }`} 
-                            title={
-                                !isAiEnabled
-                                    ? "未启用智能平仓 (可点击开启/配置)"
-                                    : !isAiActivated
-                                        ? !isPositionSizeMet
-                                            ? `持仓金额 (${positionValue.toFixed(1)}U) 未达到起投限制 (${minPosition}U) (点击配置)`
-                                            : `AI智能已就绪 (待命)。当前最高利润: ${maxPnl.toFixed(2)}% / 启动阈值: ${actThreshold}% (点击配置)`
-                                        : p.customProfitSettings 
-                                            ? `单币独立AI智能逃顶激活监控中 (最高利润: ${maxPnl.toFixed(2)}% > ${actThreshold}%)` 
-                                            : `全局AI智能逃顶激活监控中 (最高利润: ${maxPnl.toFixed(2)}% > ${actThreshold}%)`
+                    ) : (() => {
+                        const getButtonDetails = () => {
+                            if (p.customProfitSettings) {
+                                if (!p.customProfitSettings.enabled) {
+                                    return {
+                                        text: '❌ 托管关闭',
+                                        classes: 'bg-slate-900 text-slate-500 border border-slate-800 hover:bg-slate-800 hover:text-slate-300',
+                                        title: '当前币种已关闭平仓托管 (点击开启/设置)',
+                                        iconColor: 'text-slate-600'
+                                    };
+                                }
+                                if (p.customProfitSettings.profitMode === 'AI') {
+                                    return {
+                                        text: isAiActivated ? '🤖 AI智能逃顶中' : '🤖 AI智能 (单币)',
+                                        classes: isAiActivated 
+                                            ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/35 shadow-[0_0_10px_rgba(16,185,129,0.2)] animate-pulse'
+                                            : 'bg-emerald-500/5 text-emerald-400 hover:bg-emerald-500/15 border border-emerald-500/20',
+                                        title: `单币AI智能自适应托管中 (最高浮盈: ${maxPnl.toFixed(2)}% / 启动阈值: ${actThreshold}%)(点击修改)`,
+                                        iconColor: 'text-emerald-400'
+                                    };
+                                } else {
+                                    return {
+                                        text: '⚙️ 常规智能 (单币)',
+                                        classes: 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/30',
+                                        title: `单币常规智能托管中 (固定参数模式)(点击修改)`,
+                                        iconColor: 'text-amber-400'
+                                    };
+                                }
+                            } else {
+                                // Inheriting Global
+                                if (!globalProfitSettings?.enabled) {
+                                    return {
+                                        text: '❌ 托管关闭 (全局)',
+                                        classes: 'bg-[#141a22] text-slate-500 border border-slate-850 hover:bg-slate-800 hover:text-slate-300',
+                                        title: '正在继承全局禁用状态：未开启平仓托管 (点击分配单币托管)',
+                                        iconColor: 'text-slate-600'
+                                    };
+                                }
+                                if (globalProfitSettings?.profitMode === 'AI') {
+                                    return {
+                                        text: isAiActivated ? '🤖 AI智能逃顶中' : '🤖 AI智能 (全局)',
+                                        classes: isAiActivated
+                                            ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/35 shadow-[0_0_10px_rgba(16,185,129,0.2)] animate-pulse'
+                                            : 'bg-[#141a22] text-slate-400 hover:bg-slate-800 hover:text-slate-300 border border-slate-800',
+                                        title: `继承全局AI智能平仓规则。最高浮盈: ${maxPnl.toFixed(2)}% / 启动阈值: ${actThreshold}% (点击分配单币托管)`,
+                                        iconColor: 'text-emerald-500/70'
+                                    };
+                                } else {
+                                    return {
+                                        text: '⚙️ 常规智能 (全局)',
+                                        classes: 'bg-[#141a22] text-slate-400 hover:bg-slate-800 hover:text-slate-300 border border-slate-800',
+                                        title: `继承全局常规固化平仓规则 (点击分配单币托管)`,
+                                        iconColor: 'text-amber-500/70'
+                                    };
+                                }
                             }
-                        >
-                            <Brain 
-                                size={11} 
-                                className={
-                                    !isAiEnabled
-                                        ? 'text-slate-400'
-                                        : !isAiActivated
-                                            ? !isPositionSizeMet
-                                                ? 'text-red-400/60'
-                                                : 'text-amber-500/60'
-                                            : 'animate-pulse text-emerald-400'
-                                } 
-                            />
-                            <span className="text-[10px] scale-[0.9] origin-left">
-                                {p.customProfitSettings ? '智能平仓(单币)' : '智能平仓'}
-                            </span>
-                        </button>
-                    )}
+                        };
+                        const btn = getButtonDetails();
+                        return (
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); onOpenSettings?.(p); }} 
+                                className={`px-1.5 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer font-bold ${btn.classes}`}
+                                title={btn.title}
+                            >
+                                <Brain size={11} className={btn.iconColor} />
+                                <span className="text-[10px] scale-[0.9] origin-left">
+                                    {btn.text}
+                                </span>
+                            </button>
+                        );
+                    })()}
                     <button onClick={(e) => { e.stopPropagation(); onShowHistory(p.symbol); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="历史记录"><History size={12}/></button>
                     <button onClick={(e) => { e.stopPropagation(); onOpenChart(p.symbol, p.entryPrice, p.entryTime); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="K线图"><BarChart2 size={12}/></button>
                     <button 

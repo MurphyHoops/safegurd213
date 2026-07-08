@@ -1,7 +1,13 @@
+// @LOCKED: PositionSettingsModal logic
 import React, { useState, useEffect } from 'react';
 import { Position, ProfitSettings, AppSettings, PositionSide } from '../../../types';
 import { X, Settings, Target, Shield, HelpCircle, Save, RotateCcw, AlertCircle, Sparkles, Brain, Cpu, CheckCircle } from 'lucide-react';
 import { audioService } from '../../../services/audioService';
+import { ConventionalMode } from '../../profit-manager/components/ConventionalMode';
+import { AtrTrendMode } from '../../profit-manager/components/AtrTrendMode';
+import { SmartMode } from '../../profit-manager/components/SmartMode';
+import { GlobalMode } from '../../profit-manager/components/GlobalMode';
+import { AiMode } from '../../profit-manager/components/AiMode';
 
 interface Props {
     position: Position;
@@ -27,12 +33,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
         return JSON.parse(JSON.stringify(globalSettings.profit));
     });
 
-    const [activeTab, setActiveTab] = useState<'SMART_PROFIT' | 'CONVENTIONAL_PROFIT' | 'STOP_LOSS'>(() => {
-        if (position.customProfitSettings?.profitMode === 'CONVENTIONAL') {
-            return 'CONVENTIONAL_PROFIT';
-        }
-        return 'SMART_PROFIT';
-    });
+    const [activeTab, setActiveTab] = useState<'STOP_LOSS' | 'CUSTOM_PROFIT'>('CUSTOM_PROFIT');
 
     useEffect(() => {
         if (isOpen) {
@@ -42,11 +43,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
                     ? JSON.parse(JSON.stringify(position.customProfitSettings))
                     : JSON.parse(JSON.stringify(globalSettings.profit))
             );
-            if (position.customProfitSettings?.profitMode === 'CONVENTIONAL') {
-                setActiveTab('CONVENTIONAL_PROFIT');
-            } else {
-                setActiveTab('SMART_PROFIT');
-            }
+            setActiveTab('CUSTOM_PROFIT');
         }
     }, [isOpen, position.customProfitSettings, globalSettings.profit]);
 
@@ -67,28 +64,26 @@ export const PositionSettingsModal: React.FC<Props> = ({
             }
             next.profitMode = 'AI';
             next.enabled = true;
+            next.ai.aiSmartModeEnabled = true;
 
             if (presetName === 'HIGH_FREQ') {
-                next.ai.aiSmartModeEnabled = true;
-                next.ai.activationProfitPercent = 2.0;    // 2.0%
-                next.ai.fallbackProfitPercent = 0.5;      // 0.5%
-                next.ai.atrMultiplier = 1.5;              // 1.5
+                next.ai.activationProfitPercent = 2.0;
+                next.ai.fallbackProfitPercent = 0.5;
+                next.ai.atrMultiplier = 1.5;
                 next.ai.momentumWeight = 4;
                 next.ai.volResonance = 5;
                 audioService.speak("已为您匹配：高频波动收割预设方案", true);
             } else if (presetName === 'BALANCED') {
-                next.ai.aiSmartModeEnabled = true;
-                next.ai.activationProfitPercent = 4.5;    // 4.5%
-                next.ai.fallbackProfitPercent = 1.5;      // 1.5%
-                next.ai.atrMultiplier = 2.8;              // 2.8
+                next.ai.activationProfitPercent = 4.5;
+                next.ai.fallbackProfitPercent = 1.5;
+                next.ai.atrMultiplier = 2.8;
                 next.ai.momentumWeight = 6;
                 next.ai.volResonance = 6;
                 audioService.speak("已为您匹配：中线平衡稳健预设方案", true);
             } else if (presetName === 'EXPLOSIVE') {
-                next.ai.aiSmartModeEnabled = true;
-                next.ai.activationProfitPercent = 8.5;    // 8.5%
-                next.ai.fallbackProfitPercent = 2.5;      // 2.5%
-                next.ai.atrMultiplier = 3.5;              // 3.5 (宽幅追踪，防震荡)
+                next.ai.activationProfitPercent = 8.5;
+                next.ai.fallbackProfitPercent = 2.5;
+                next.ai.atrMultiplier = 3.5;
                 next.ai.momentumWeight = 8;
                 next.ai.volResonance = 8;
                 audioService.speak("已为您匹配：主力暴涨主升浪逃顶预设方案", true);
@@ -106,16 +101,8 @@ export const PositionSettingsModal: React.FC<Props> = ({
         }
 
         if (useCustom) {
-            // Determine custom profit mode based on active tab
-            let modeToSave = localSettings.profitMode || 'AI';
-            if (activeTab === 'CONVENTIONAL_PROFIT') {
-                modeToSave = 'CONVENTIONAL';
-            } else if (activeTab === 'SMART_PROFIT') {
-                modeToSave = 'AI';
-            }
             const finalSettings: ProfitSettings = {
                 ...localSettings,
-                profitMode: modeToSave as any,
                 enabled: true
             };
             onSave(position.symbol, finalSettings);
@@ -162,6 +149,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
         }));
     };
 
+// @LOCKED: PositionSettingsModal logic
     const updateConventional = (key: string, value: any) => {
         setLocalSettings(prev => {
             const next = { ...prev };
@@ -177,6 +165,15 @@ export const PositionSettingsModal: React.FC<Props> = ({
                 ...next.conventional,
                 [key]: value
             };
+            return next;
+        });
+    };
+
+    const updateNested = (subsection: string, key: string, value: any) => {
+        setLocalSettings(prev => {
+            const next = { ...prev };
+            const currentSub = (next as any)[subsection] || {};
+            (next as any)[subsection] = { ...currentSub, [key]: value };
             return next;
         });
     };
@@ -222,7 +219,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                 ) : (
                                     <span className="text-white font-mono font-black text-sm tracking-widest bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">{position.symbol}</span>
                                 )}
-                                <span className="text-xs text-emerald-400 font-bold">智能平仓体系</span>
+                                <span className="text-xs text-emerald-400 font-bold">AI 智能平仓</span>
                             </div>
                             <p className="text-[10px] text-slate-400 mt-0.5">多维量价感知 · 动态ATR容忍回调 · 精准逃顶最大化收益</p>
                         </div>
@@ -231,25 +228,18 @@ export const PositionSettingsModal: React.FC<Props> = ({
                         <X size={16} />
                     </button>
                 </div>
-
-                {/* Sub Tab Navigation */}
                 <div className="flex px-4 py-2 bg-[#0d1116] border-b border-slate-800/60 justify-between items-center shrink-0">
                     <div className="flex gap-1.5">
                         <button
-                            onClick={() => setActiveTab('CONVENTIONAL_PROFIT')}
-                            className={`px-3 py-1 text-[11px] font-bold rounded-md flex items-center gap-1.5 transition-all ${activeTab === 'CONVENTIONAL_PROFIT' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                            type="button"
+                            onClick={() => setActiveTab('CUSTOM_PROFIT')}
+                            className={`px-3 py-1 text-[11px] font-bold rounded-md flex items-center gap-1.5 transition-all ${activeTab === 'CUSTOM_PROFIT' ? 'bg-orange-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
                         >
                             <Target size={12} />
-                            <span>1常规止盈止损</span>
+                            <span>单币自定义平仓</span>
                         </button>
                         <button
-                            onClick={() => setActiveTab('SMART_PROFIT')}
-                            className={`px-3 py-1 text-[11px] font-bold rounded-md flex items-center gap-1.5 transition-all ${activeTab === 'SMART_PROFIT' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
-                        >
-                            <Sparkles size={12} />
-                            <span>AI智能盈利平仓</span>
-                        </button>
-                        <button
+                            type="button"
                             onClick={() => setActiveTab('STOP_LOSS')}
                             className={`px-3 py-1 text-[11px] font-bold rounded-md flex items-center gap-1.5 transition-all ${activeTab === 'STOP_LOSS' ? 'bg-red-600/90 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
                         >
@@ -271,7 +261,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
                             <Brain size={20} className="text-emerald-400 shrink-0" />
                             <div>
                                 <h4 className="font-bold text-emerald-400">全局AI智能平仓主预设</h4>
-                                <p className="text-[10px] text-slate-400">正在编辑系统默认使用的智能移动波段追踪参数。持仓列表中未设置独立风控规则的币种将自动继承此组参数。</p>
+                                <p className="text-[10px] text-slate-400">正在编辑系统默认使用的智能移动波段追踪参数。持仓列表中未设置独立风控规则 of 币种将自动继承此组参数。</p>
                             </div>
                         </div>
                     ) : (
@@ -301,248 +291,159 @@ export const PositionSettingsModal: React.FC<Props> = ({
                         </div>
                     )}
 
-                    {(useCustom || position.symbol === 'GLOBAL_DEFAULT') && activeTab === 'CONVENTIONAL_PROFIT' && (
+                    {(useCustom || position.symbol === 'GLOBAL_DEFAULT') && activeTab === 'CUSTOM_PROFIT' && (
                         <div className="space-y-4 animate-in fade-in duration-200">
-                            <div className="bg-slate-900/40 p-4 rounded-lg border border-slate-800 space-y-4">
-                                <div className="pb-2 border-b border-slate-800/60">
-                                    <span className="font-bold text-white flex items-center gap-1.5 text-blue-400">
-                                        <Target size={12} />
-                                        1 止盈止损（常规平仓配置）
-                                    </span>
-                                    <p className="text-[9px] text-slate-500 leading-normal mt-1">设置本币种专用的经典移动回撤止盈，满足指定收益率及回撤比例后自动执行平仓分步或全仓退出。</p>
+                            {/* Grouped Mode Selector */}
+                            <div className="space-y-2 bg-[#0c0f14] p-3 rounded-lg border border-slate-800/80">
+                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                                    <Cpu size={12} className="text-emerald-400 animate-pulse" />
+                                    <span>选择托管止盈方案类别</span>
                                 </div>
-
-                                <div className="space-y-3.5">
-                                    {/* Item 1: minPosition */}
-                                    <div className="flex items-center justify-between">
-                                        <div>
-                                            <span className="text-[10px] text-slate-300 font-bold">激活门槛 (本金 USDT)</span>
-                                            <p className="text-[9px] text-slate-500 leading-normal">仅在仓位总本金大于或等于该数值时执行独立常规止盈</p>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
-                                            <input 
-                                                type="number" 
-                                                value={convParams.minPosition ?? 100} 
-                                                onChange={(e) => updateConventional('minPosition', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-white font-bold"
-                                            />
-                                            <span className="text-[9px] text-slate-500 ml-1">U</span>
-                                        </div>
-                                    </div>
-
-                                    {/* Item 2: profitPercent */}
-                                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/40">
-                                        <div>
-                                            <span className="text-[10px] text-slate-300 font-bold">触发收益率 (%)</span>
-                                            <p className="text-[9px] text-slate-500 leading-normal">当该仓位收益率（浮盈）达到此数值时启动回撤监控（如：5.0%）</p>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
-                                            <input 
-                                                type="number" 
-                                                step="0.1"
-                                                value={convParams.profitPercent ?? 5.0} 
-                                                onChange={(e) => updateConventional('profitPercent', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-emerald-400 font-bold"
-                                            />
-                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
-                                        </div>
-                                    </div>
-
-                                    {/* Item 3: callbackPercent */}
-                                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/40">
-                                        <div>
-                                            <span className="text-[10px] text-slate-300 font-bold">回撤平仓比例 (%)</span>
-                                            <p className="text-[9px] text-slate-500 leading-normal">启动常规止盈监控后，若收益率从最高点回撤此比例则执行平仓（如：1.0%）</p>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
-                                            <input 
-                                                type="number" 
-                                                step="0.1"
-                                                value={convParams.callbackPercent ?? 1.0} 
-                                                onChange={(e) => updateConventional('callbackPercent', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-orange-400 font-bold"
-                                            />
-                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
-                                        </div>
-                                    </div>
-
-                                    {/* Item 4: closePercent */}
-                                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-800/40">
-                                        <div>
-                                            <span className="text-[10px] text-slate-300 font-bold">平仓数量权重 (%)</span>
-                                            <p className="text-[9px] text-slate-500 leading-normal">触发此平仓规则时，执行平仓或减仓的本金比例（例如 100% 代表全平）</p>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800 shrink-0">
-                                            <input 
-                                                type="number" 
-                                                value={convParams.closePercent ?? 100} 
-                                                onChange={(e) => updateConventional('closePercent', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] focus:outline-none text-white font-bold"
-                                            />
-                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {(useCustom || position.symbol === 'GLOBAL_DEFAULT') && activeTab === 'SMART_PROFIT' && (
-                        <div className="space-y-4 animate-in fade-in duration-200">
-                            
-                            {/* Preset Selection Panel */}
-                            <div className="bg-slate-900/30 p-3.5 rounded-lg border border-slate-800/80 space-y-2.5">
-                                <span className="font-black text-slate-300 text-[10px] tracking-wider uppercase block">⚡️ 极速AI策略参数一键匹配</span>
-                                <div className="grid grid-cols-3 gap-2">
-                                    <button
-                                        onClick={() => applyPreset('HIGH_FREQ')}
-                                        className="py-2.5 px-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 rounded text-center transition-all cursor-pointer group"
-                                    >
-                                        <div className="font-black text-emerald-400 text-[10px]">高频波动收割</div>
-                                        <div className="text-[8px] text-slate-500 mt-0.5 group-hover:text-slate-400">浮盈 2% 启动 / 紧凑止盈</div>
-                                    </button>
-                                    <button
-                                        onClick={() => applyPreset('BALANCED')}
-                                        className="py-2.5 px-2 bg-slate-800 hover:bg-slate-700 border border-emerald-500/20 hover:border-slate-500 rounded text-center transition-all cursor-pointer group"
-                                    >
-                                        <div className="font-black text-blue-400 text-[10px]">中线自适应稳健</div>
-                                        <div className="text-[8px] text-slate-500 mt-0.5 group-hover:text-slate-400">浮盈 4.5% 启动 / ATR平衡</div>
-                                    </button>
-                                    <button
-                                        onClick={() => applyPreset('EXPLOSIVE')}
-                                        className="py-2.5 px-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 rounded text-center transition-all cursor-pointer group"
-                                    >
-                                        <div className="font-black text-amber-400 text-[10px]">暴涨主升浪逃顶</div>
-                                        <div className="text-[8px] text-slate-500 mt-0.5 group-hover:text-slate-400">浮盈 8.5% 启动 / 宽幅追踪</div>
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Configuration Items */}
-                            <div className="bg-slate-900/40 p-4 rounded-lg border border-slate-800 space-y-3.5">
                                 
-                                {/* Item 1: Smart AI Toggle */}
-                                <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
-                                    <div className="space-y-0.5">
-                                        <span className="font-bold text-white flex items-center gap-1.5">
-                                            <Cpu size={12} className="text-emerald-400" />
-                                            启用AI动态风控算力托管
-                                        </span>
-                                        <p className="text-[9px] text-slate-500 leading-normal">关闭后将忽略AI对波动指标的自适应调节算力</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {/* AI Family */}
+                                    <div className="bg-[#12161d] p-2 rounded-lg border border-slate-800/80 space-y-2">
+                                        <div className="flex items-center gap-1 text-emerald-400 font-bold text-[10px] pb-1 border-b border-slate-800/40">
+                                            <Brain size={11} className="text-emerald-400" />
+                                            <span>AI 智能自适应平仓</span>
+                                        </div>
+                                        <div className="flex flex-col gap-1.5">
+                                            {[
+                                                { id: 'AI', label: '🧠 AI智能逃顶', desc: '多指标与ATR自适应追踪逃顶' },
+                                                { id: 'ATR', label: '📈 ATR趋势平仓', desc: '吊灯轨道与移动平均线跟踪' }
+                                            ].map((m) => {
+                                                const isActive = (localSettings.profitMode || 'CONVENTIONAL') === m.id;
+                                                const isOEnabled = localSettings.oEnabledMap?.[m.id] || false;
+                                                return (
+                                                    <div key={m.id} className={`flex items-center rounded overflow-hidden border transition-all ${isActive ? 'bg-emerald-950/20 border-emerald-500/40' : 'bg-[#161a22] border-slate-800/80 hover:border-slate-700/60'}`}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setLocalSettings(prev => ({ ...prev, profitMode: m.id as any }))}
+                                                            className="flex-1 text-left px-2 py-1.5 cursor-pointer min-h-[44px]"
+                                                        >
+                                                            <div className={`font-bold text-[10px] ${isActive ? 'text-emerald-400 font-black' : 'text-slate-300'}`}>{m.label}</div>
+                                                            <div className="text-[8px] text-slate-500 scale-[0.95] origin-left leading-normal mt-0.5">{m.desc}</div>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setLocalSettings(prev => {
+                                                                    const oEnabledMap = prev.oEnabledMap ? { ...prev.oEnabledMap } : {};
+                                                                    oEnabledMap[m.id] = !oEnabledMap[m.id];
+                                                                    return { ...prev, oEnabledMap };
+                                                                });
+                                                            }}
+                                                            className="w-7 h-full min-h-[44px] flex items-center justify-center border-l border-slate-800/60 hover:bg-slate-800/30 cursor-pointer shrink-0"
+                                                            title="并联开关 (选中后该模式将作为后台规则同步运行)"
+                                                        >
+                                                            <div className={`w-2 h-2 rounded-full transition-all ${
+                                                                isOEnabled 
+                                                                ? 'bg-orange-550 shadow-[0_0_8px_rgba(249,115,22,1)] scale-110' 
+                                                                : 'border border-slate-600 bg-transparent opacity-30'
+                                                            }`} />
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                    <div 
-                                        onClick={() => updateAiField('aiSmartModeEnabled', !(aiParams.aiSmartModeEnabled ?? true))} 
-                                        className={`w-8 h-4.5 rounded-full p-0.5 transition-colors cursor-pointer ${aiParams.aiSmartModeEnabled ?? true ? 'bg-emerald-600' : 'bg-slate-800'}`}
-                                    >
-                                        <div className={`w-3.5 h-3.5 bg-white rounded-full shadow transition-transform ${aiParams.aiSmartModeEnabled ?? true ? 'translate-x-3.5' : 'translate-x-0'}`}/>
+
+                                    {/* Conventional Family */}
+                                    <div className="bg-[#12161d] p-2 rounded-lg border border-slate-800/80 space-y-2">
+                                        <div className="flex items-center gap-1 text-amber-450 font-bold text-[10px] pb-1 border-b border-slate-800/40">
+                                            <Settings size={11} className="text-amber-450" />
+                                            <span>常规固定 阶梯平仓</span>
+                                        </div>
+                                        <div className="flex flex-col gap-1.5">
+                                            {[
+                                                { id: 'CONVENTIONAL', label: '⚙️ 常规止盈回调', desc: '固定比率止盈与波动追踪' },
+                                                { id: 'SMART', label: '🔒 智能阶梯保底', desc: '目标百分比阶梯止盈锁利' }
+                                            ].map((m) => {
+                                                const isActive = (localSettings.profitMode || 'CONVENTIONAL') === m.id;
+                                                const isOEnabled = localSettings.oEnabledMap?.[m.id] || false;
+                                                return (
+                                                    <div key={m.id} className={`flex items-center rounded overflow-hidden border transition-all ${isActive ? 'bg-amber-950/20 border-amber-500/40' : 'bg-[#161a22] border-slate-800/80 hover:border-slate-700/60'}`}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setLocalSettings(prev => ({ ...prev, profitMode: m.id as any }))}
+                                                            className="flex-1 text-left px-2 py-1.5 cursor-pointer min-h-[44px]"
+                                                        >
+                                                            <div className={`font-bold text-[10px] ${isActive ? 'text-amber-400 font-black' : 'text-slate-300'}`}>{m.label}</div>
+                                                            <div className="text-[8px] text-slate-500 scale-[0.95] origin-left leading-normal mt-0.5">{m.desc}</div>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setLocalSettings(prev => {
+                                                                    const oEnabledMap = prev.oEnabledMap ? { ...prev.oEnabledMap } : {};
+                                                                    oEnabledMap[m.id] = !oEnabledMap[m.id];
+                                                                    return { ...prev, oEnabledMap };
+                                                                });
+                                                            }}
+                                                            className="w-7 h-full min-h-[44px] flex items-center justify-center border-l border-slate-800/60 hover:bg-slate-800/30 cursor-pointer shrink-0"
+                                                            title="并联开关 (选中后该模式将作为后台规则同步运行)"
+                                                        >
+                                                            <div className={`w-2 h-2 rounded-full transition-all ${
+                                                                isOEnabled 
+                                                                ? 'bg-orange-550 shadow-[0_0_8px_rgba(249,115,22,1)] scale-110' 
+                                                                : 'border border-slate-600 bg-transparent opacity-30'
+                                                            }`} />
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 </div>
+                            </div>
 
-                                {/* Item 2: Activation Threshold */}
-                                <div className="space-y-1.5">
-                                    <div className="flex justify-between items-center">
-                                        <div className="space-y-0.5">
-                                            <span className="font-bold text-slate-200">AI 智能启动盈利阈值</span>
-                                            <span className="text-[8px] text-amber-500/90 font-bold ml-1.5 bg-amber-500/10 px-1 rounded">建议范围: 1.5% - 15.0%</span>
+                            <div className="bg-slate-900/40 p-3 rounded border border-slate-700/50">
+                                {/* CONVENTIONAL */}
+                                {(localSettings.profitMode || 'CONVENTIONAL') === 'CONVENTIONAL' && <ConventionalMode settings={localSettings} updateNested={updateNested} />}
+                                {/* ATR TREND MODE */}
+                                {localSettings.profitMode === 'ATR' && <AtrTrendMode settings={localSettings} updateNested={updateNested} />}
+                                {/* SMART */}
+                                {localSettings.profitMode === 'SMART' && <SmartMode settings={localSettings} updateNested={updateNested} />}
+                                {/* GLOBAL MODE */}
+                                {localSettings.profitMode === 'GLOBAL' && <GlobalMode settings={localSettings} updateNested={updateNested} />}
+                                {/* AI MODE */}
+                                {localSettings.profitMode === 'AI' && (
+                                    <div className="space-y-4 animate-in fade-in duration-200">
+                                        {/* Preset Selection Panel */}
+                                        <div className="bg-slate-900/30 p-3.5 rounded-lg border border-slate-800/80 space-y-2.5">
+                                            <span className="font-black text-slate-300 text-[10px] tracking-wider uppercase block">⚡️ 极速AI策略参数一键匹配</span>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => applyPreset('HIGH_FREQ')}
+                                                    className="py-2.5 px-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 rounded text-center transition-all cursor-pointer group"
+                                                >
+                                                    <div className="font-black text-emerald-400 text-[10px]">高频波动收割</div>
+                                                    <div className="text-[8px] text-slate-500 mt-0.5 group-hover:text-slate-400">浮盈 2% 启动 / 紧凑止盈</div>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => applyPreset('BALANCED')}
+                                                    className="py-2.5 px-2 bg-slate-800 hover:bg-slate-700 border border-emerald-500/20 hover:border-slate-500 rounded text-center transition-all cursor-pointer group"
+                                                >
+                                                    <div className="font-black text-blue-400 text-[10px]">中线自适应稳健</div>
+                                                    <div className="text-[8px] text-slate-500 mt-0.5 group-hover:text-slate-400">浮盈 4.5% 启动 / ATR平衡</div>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => applyPreset('EXPLOSIVE')}
+                                                    className="py-2.5 px-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 rounded text-center transition-all cursor-pointer group"
+                                                >
+                                                    <div className="font-black text-amber-400 text-[10px]">暴涨主升浪逃顶</div>
+                                                    <div className="text-[8px] text-slate-500 mt-0.5 group-hover:text-slate-400">浮盈 8.5% 启动 / 宽幅追踪</div>
+                                                </button>
+                                            </div>
                                         </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800">
-                                            <input 
-                                                type="number" 
-                                                step="0.1"
-                                                value={aiParams.activationProfitPercent ?? 3.5} 
-                                                onChange={(e) => updateAiField('activationProfitPercent', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] font-bold focus:outline-none text-emerald-400"
-                                            />
-                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
-                                        </div>
+                                        <AiMode settings={localSettings} updateNested={updateNested} />
                                     </div>
-                                    <p className="text-[9px] text-slate-500 leading-normal">当该币收益率达到此门槛时，AI追踪器正式启动。未达到前，维持用下方或常规规则监控价格。</p>
-                                </div>
-
-                                {/* Item 3: Fallback Threshold */}
-                                <div className="space-y-1.5 pt-1.5 border-t border-slate-800/40">
-                                    <div className="flex justify-between items-center">
-                                        <div className="space-y-0.5">
-                                            <span className="font-bold text-slate-200">退回常规/保护性止盈线</span>
-                                            <span className="text-[8px] text-amber-500/90 font-bold ml-1.5 bg-amber-500/10 px-1 rounded">建议范围: 0.2% - 5.0%</span>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800">
-                                            <input 
-                                                type="number" 
-                                                step="0.1"
-                                                value={aiParams.fallbackProfitPercent ?? 1.0} 
-                                                onChange={(e) => updateAiField('fallbackProfitPercent', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] font-bold focus:outline-none text-orange-400"
-                                            />
-                                            <span className="text-[9px] text-slate-500 ml-1">%</span>
-                                        </div>
-                                    </div>
-                                    <p className="text-[9px] text-slate-500 leading-normal">开启AI追踪后若发生冲高回落，收益率跌破此水位时，系统退回并按“常规止盈平仓”，保障利润落袋。</p>
-                                </div>
-
-                                {/* Item 4: Adaptive ATR Multiplier */}
-                                <div className="space-y-1.5 pt-1.5 border-t border-slate-800/40">
-                                    <div className="flex justify-between items-center">
-                                        <div className="space-y-0.5">
-                                            <span className="font-bold text-slate-200">自适应 ATR 波动性受容系数</span>
-                                            <span className="text-[8px] text-emerald-400 font-bold ml-1.5 bg-emerald-500/10 px-1 rounded">建议范围: 1.0 - 5.0</span>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800">
-                                            <input 
-                                                type="number" 
-                                                step="0.1"
-                                                value={aiParams.atrMultiplier ?? 2.5} 
-                                                onChange={(e) => updateAiField('atrMultiplier', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] font-bold focus:outline-none text-white"
-                                            />
-                                            <span className="text-[9px] text-slate-500 ml-1">倍</span>
-                                        </div>
-                                    </div>
-                                    <p className="text-[9px] text-slate-500 leading-normal">设定为价格波动容限。乘数越大，允许价格剧烈横盘回落的空间越宽，避免在拉升期由于正常洗盘被提早震荡出局。</p>
-                                </div>
-
-                                {/* Item 5: Momentum Weight */}
-                                <div className="space-y-1.5 pt-1.5 border-t border-slate-800/40">
-                                    <div className="flex justify-between items-center">
-                                        <div className="space-y-0.5">
-                                            <span className="font-bold text-slate-200">涨跌幅强力动能因子敏感权重</span>
-                                            <span className="text-[8px] text-emerald-400 font-bold ml-1.5 bg-emerald-500/10 px-1 rounded">建议范围: 1 - 10</span>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800">
-                                            <input 
-                                                type="number" 
-                                                min="1"
-                                                max="10"
-                                                value={aiParams.momentumWeight ?? 5} 
-                                                onChange={(e) => updateAiField('momentumWeight', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] font-bold focus:outline-none text-white"
-                                            />
-                                        </div>
-                                    </div>
-                                    <p className="text-[9px] text-slate-500 leading-normal">当偏离度（Deviation）达到极端值时（如急速暴涨5%以上），权重越高越有利于AI极速收紧回撤幅度、确保保本安全逃大顶。</p>
-                                </div>
-
-                                {/* Item 6: Volume Resonance */}
-                                <div className="space-y-1.5 pt-1.5 border-t border-slate-800/40">
-                                    <div className="flex justify-between items-center">
-                                        <div className="space-y-0.5">
-                                            <span className="font-bold text-slate-200">量价共振出货警告共振权重</span>
-                                            <span className="text-[8px] text-emerald-400 font-bold ml-1.5 bg-emerald-500/10 px-1 rounded">建议范围: 1 - 10</span>
-                                        </div>
-                                        <div className="flex items-center bg-[#0b0e11] rounded px-2.5 py-1 border border-slate-800">
-                                            <input 
-                                                type="number" 
-                                                min="1"
-                                                max="10"
-                                                value={aiParams.volResonance ?? 6} 
-                                                onChange={(e) => updateAiField('volResonance', Number(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-[11px] font-bold focus:outline-none text-white"
-                                            />
-                                        </div>
-                                    </div>
-                                    <p className="text-[9px] text-slate-500 leading-normal">检测量比激增（天量滞涨）。若主力在顶峰疯狂出货导致成交量暴涨，该权重越高促使AI感知越锋利，回落出场容限越缩窄。</p>
-                                </div>
-
+                                )}
                             </div>
                         </div>
                     )}
@@ -556,7 +457,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                     <div className="space-y-0.5">
                                         <span className="font-bold text-white flex items-center gap-1.5 text-red-400">
                                             <Shield size={12} />
-                                            激活本币种防爆仓独立止损
+                                            激活本币种 AI 智能平仓止损
                                         </span>
                                         <p className="text-[9px] text-slate-500 leading-normal">开启后本项持仓将拥有专属底线防护，不受全局止损覆盖。</p>
                                     </div>

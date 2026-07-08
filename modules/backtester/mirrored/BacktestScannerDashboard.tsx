@@ -27,12 +27,14 @@ interface Props {
     directMode?: boolean;
     onLog?: (type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => void;
     isBacktest?: boolean;
+    embedMode?: boolean;
 }
 
 export const BacktestScannerDashboard: React.FC<Props> = ({ 
     settings, isVisible, onClose, onOpenPosition, onClosePosition, 
     realPrices = {}, activePositions = [], balance = 0, directMode = false, onLog,
-    isBacktest = true
+    isBacktest = true,
+    embedMode = false
 }) => {
   
   const [isMinimized, setIsMinimized] = useState(false);
@@ -183,6 +185,71 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
   const handleCloseShorts = useCallback(() => activePositions.filter(p => p.side === PositionSide.SHORT).forEach(p => onClosePosition(p.symbol, p.side)), [activePositions, onClosePosition]);
 
   if (!isVisible) return null;
+
+  if (embedMode) {
+      return (
+          <div className="w-full h-full flex flex-col overflow-hidden bg-[#0b0e11] shrink-0">
+              <div className="flex-1 flex overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
+                  <BacktestMarketScannerModule 
+                      onCandidatesUpdate={handleList1Results} 
+                      setChartData={setChartData}
+                      directMode={true}
+                      scanConfig={scanConfig}
+                      setScanConfig={setScanConfig}
+                  />
+                  <BacktestGrandCrossingModule 
+                      candidates={list1Candidates} 
+                      onResultsUpdate={handleList2Results}
+                      scanConfig={scanConfig}
+                      setScanConfig={setScanConfig}
+                      setChartData={setChartData}
+                      directMode={true}
+                      onLog={onLog}
+                  />
+                  <BacktestStructureAuditModule 
+                      candidates={list2Results}
+                      onResultsUpdate={handleList3Results}
+                      onConfigUpdate={setList3Config}
+                      onRemoveSignalReady={handleRemoveSignalReady}
+                      realPrices={realPrices}
+                      setChartData={setChartData}
+                      executeTradeSafe={executeTradeSafe}
+                      activePositions={activePositions}
+                      directMode={true}
+                      actionConfig={actionConfig}
+                      onLog={onLog}
+                  />
+                  <BacktestMomentumAuditModule 
+                      candidates={list3Results}
+                      setChartData={setChartData}
+                      executeTradeSafe={executeTradeSafe}
+                      list3Config={list3Config}
+                      realPrices={realPrices}
+                      activePositions={activePositions}
+                      onRemoveSignal={handleRemoveSignal}
+                      actionConfig={actionConfig}
+                      onLog={onLog}
+                  />
+                  <LiveBattlefieldModule 
+                      positions={activePositions}
+                      realPrices={realPrices}
+                      setChartData={setChartData}
+                      onClosePosition={onClosePosition}
+                      onStatsUpdate={handleLiveStatsUpdate}
+                  />
+                  <TacticalCommandModule 
+                      currentStats={liveStats}
+                      onConfigUpdate={setActionConfig}
+                      onPanicSell={handlePanicSell} 
+                      onSecureProfit={handleSecureProfit}
+                      onCutLosses={handleCutLosses} 
+                      onCloseLongs={handleCloseLongs} 
+                      onCloseShorts={handleCloseShorts}
+                  />
+              </div>
+          </div>
+      );
+  }
 
   return (
       <div className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 z-[1100]">

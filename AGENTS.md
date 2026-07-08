@@ -20,3 +20,11 @@ This lock ensures stability while development shifts to the **Backtest Mode (Sim
 **CRITICAL**: The core running rules, logic, and configuration for the following features in List 4 (Momentum Audit) are now locked and **MUST NOT** be modified unless explicitly instructed by a special directive:
 1. **防追高熔断 (Anti-Chase Fuse)**: Features that prevent chasing extreme price movements away from reference baseline lows/highs.
 2. **动态方向锁 (Dynamic Direction Lock)**: Features that dynamically restrict trade directions (e.g., locking Long/Short) to prevent entering trades against dominant momentum trends.
+
+## K-Line Data Fetching - Code Lock
+**CRITICAL**: The core K-line data fetching mechanism, including the tiered proxy fallback strategy in `raceFetchKlines`, is now locked to maintain stability.
+- `/components/KlineChartModal.tsx` (Specifically `raceFetchKlines` function) - **LOCKED**
+- `/services/realtime/BinanceRealtimeService.ts` - **LOCKED**
+- `/components/ScannerDashboard.tsx` (Specifically real-time price handling logic) - **LOCKED**
+- `/components/TradeLogModal.tsx` (Specifically logic for transaction log navigation and filtering) - **LOCKED**
+Do NOT modify this logic unless explicitly instructed to fix a critical regression.

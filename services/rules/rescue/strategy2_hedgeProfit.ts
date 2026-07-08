@@ -5,7 +5,8 @@ export function checkStrategy2_HedgeProfit(
     hedgePosition: Position | undefined,
     settings: AppSettings,
     closePair: (mainId: string, hedgeId: string, reason: string) => void,
-    closeHedgeOnly: (hedgeId: string, profit: number, reason: string) => void
+    closeHedgeOnly: (hedgeId: string, profit: number, reason: string) => void,
+    addLog?: (type: string, message: string) => void
 ): boolean {
     const slSettings = settings.stopLoss;
     if (!slSettings.hedgeProfitClear) return false;
@@ -61,6 +62,19 @@ export function checkStrategy2_HedgeProfit(
         const expectedExtraProfit = totalDebt * (slSettings.hedgeCoverPercent || 0) / 100;
         
         if (netProfit >= expectedExtraProfit - 0.01) { // 容忍浮点数误差
+            // 检查 Rule B: 原仓位(主仓)盈利解套，对冲单存在且亏损
+            if (mainPnL > 0 && hedgePosition && hedgePnL < 0) {
+                const reasonMsg = `4.2 [Rule B] 原仓位盈利解套: 原仓位盈利达到解套点且对冲仓位亏损。只清理对冲单，标记主仓位已解套。`;
+                closeHedgeOnly(hedgePosition.entryId, hedgePnL, reasonMsg);
+                
+                mainPosition.isUnshackled = true;
+                mainPosition.isHedged = false; // 重置对冲标记，允许之后做标准平仓和不再被锁定
+                
+                addLog?.('SUCCESS', `💰 [Rule B] 原仓位盈利解套: 对冲仓位已平仓清理 (亏损: ${hedgePnL.toFixed(2)}), 原主仓位标记为“已解套仓位”，后续将按普通规则平仓。`);
+                return true;
+            }
+
+            // 否则 (Rule A 或常规平仓): 清理整对仓位 (closePair)
             const reasonMsg = `4.2 对冲盈利解套: 总盈利 ${currentFloatingProfit.toFixed(2)} >= 目标 ${threshold.toFixed(2)} (净赚: ${netProfit.toFixed(2)})`;
             if (hedgePosition) {
                 closePair(mainPosition.entryId, hedgePosition.entryId, reasonMsg);

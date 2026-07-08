@@ -17,4 +17,5 @@ export interface PositionsListProps {
     onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;
+    manuallyClosedSymbols: Set<string>;
 }

@@ -1,6 +1,6 @@
 
-import React from 'react';
-import { Loader2, RefreshCw, Play, Pause } from 'lucide-react';
+import React, { useState } from 'react';
+import { Loader2, RefreshCw, Play, Pause, ChevronDown, ChevronRight } from 'lucide-react';
 import { ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
 
@@ -18,6 +18,8 @@ interface Props {
 }
 
 export const ActionSection: React.FC<Props> = ({ scanConfig, setScanConfig, scanInterval, setScanInterval, isScanning, isPaused, setIsPaused, countdown, scanStatusText, onScan }) => {
+    const [isBreakerExpanded, setIsBreakerExpanded] = useState(false);
+
     return (
         <div className="space-y-3">
             {/* Unified Status Row */}
@@ -56,44 +58,56 @@ export const ActionSection: React.FC<Props> = ({ scanConfig, setScanConfig, scan
                 </div>
             </div>
 
-            {/* Breaker Config */}
+            {/* Breaker Config with Folding/Collapsible Support */}
             <div className="bg-[#1e2329] border border-slate-700 rounded p-2 text-[10px] space-y-2 mt-2">
-                <div className="flex items-center justify-between">
-                    <span className="text-slate-400 font-bold">防恐慌熔断</span>
-                    <button 
-                        onClick={() => {
-                            if (!scanConfig) {
-                                console.error("[Monitor] ActionSection: Missing scanConfig on click");
-                                return;
-                            }
-                            setScanConfig(p => ({
-                                ...p, 
-                                breakerConfig: { ...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), enabled: !p.breakerConfig?.enabled }
-                            }))
-                        }}
-                        className={`w-8 h-4 rounded-full relative transition-colors ${scanConfig?.breakerConfig?.enabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
-                    >
-                        <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${scanConfig?.breakerConfig?.enabled ? 'right-0.5' : 'left-0.5'}`} />
-                    </button>
+                <div 
+                    className="flex items-center justify-between cursor-pointer select-none"
+                    onClick={() => setIsBreakerExpanded(!isBreakerExpanded)}
+                >
+                    <div className="flex items-center gap-1">
+                        {isBreakerExpanded ? <ChevronDown size={11} className="text-slate-400" /> : <ChevronRight size={11} className="text-slate-400" />}
+                        <span className="text-slate-400 font-bold">防恐慌熔断</span>
+                    </div>
+                    <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <span className={`text-[8px] px-1 rounded ${scanConfig?.breakerConfig?.enabled ? 'bg-emerald-950 text-emerald-400' : 'bg-slate-800 text-slate-500'}`}>
+                            {scanConfig?.breakerConfig?.enabled ? '运行中' : '未启用'}
+                        </span>
+                        <button 
+                            onClick={() => {
+                                if (!scanConfig) {
+                                    console.error("[Monitor] ActionSection: Missing scanConfig on click");
+                                    return;
+                                }
+                                setScanConfig(p => ({
+                                    ...p, 
+                                    breakerConfig: { ...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), enabled: !p.breakerConfig?.enabled }
+                                }))
+                            }}
+                            className={`w-8 h-4 rounded-full relative transition-colors ${scanConfig?.breakerConfig?.enabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                        >
+                            <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${scanConfig?.breakerConfig?.enabled ? 'right-0.5' : 'left-0.5'}`} />
+                        </button>
+                    </div>
                 </div>
-                {scanConfig?.breakerConfig?.enabled && (
-                    <div className="grid grid-cols-2 gap-2">
-                        <div>
-                             <span className="text-slate-500">监测(分)</span>
-                             <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center" value={scanConfig.breakerConfig?.triggerMinutes ?? 15} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), triggerMinutes: parseInt(e.target.value) || 0}}))} />
-                        </div>
-                         <div>
-                             <span className="text-slate-500">触发跌幅%</span>
-                             <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center" value={scanConfig.breakerConfig?.minDropPercent ?? 3} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), minDropPercent: parseInt(e.target.value) || 0}}))} />
-                        </div>
-                        <div>
-                             <span className="text-slate-500">币种占比%</span>
-                             <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center" value={scanConfig.breakerConfig?.minCoinsPercent ?? 50} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), minCoinsPercent: parseInt(e.target.value) || 0}}))} />
-
-                        </div>
-                         <div>
-                             <span className="text-slate-500">锁定(分)</span>
-                             <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center" value={scanConfig.breakerConfig?.autoRecoverMinutes ?? 30} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), autoRecoverMinutes: parseInt(e.target.value) || 0}}))} />
+                {isBreakerExpanded && (
+                    <div className="space-y-2 border-t border-slate-800/80 pt-2">
+                        <div className="grid grid-cols-2 gap-2">
+                            <div>
+                                 <span className="text-slate-500">监测(分)</span>
+                                 <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center h-5" value={scanConfig.breakerConfig?.triggerMinutes ?? 15} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), triggerMinutes: parseInt(e.target.value) || 0}}))} />
+                            </div>
+                             <div>
+                                 <span className="text-slate-500">触发跌幅%</span>
+                                 <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center h-5" value={scanConfig.breakerConfig?.minDropPercent ?? 3} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), minDropPercent: parseInt(e.target.value) || 0}}))} />
+                            </div>
+                            <div>
+                                 <span className="text-slate-500">币种占比%</span>
+                                 <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center h-5" value={scanConfig.breakerConfig?.minCoinsPercent ?? 50} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), minCoinsPercent: parseInt(e.target.value) || 0}}))} />
+                            </div>
+                             <div>
+                                 <span className="text-slate-500">锁定(分)</span>
+                                 <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded text-white text-center h-5" value={scanConfig.breakerConfig?.autoRecoverMinutes ?? 30} onChange={e => setScanConfig(p => ({...p, breakerConfig: {...(p.breakerConfig || { enabled: false, triggerMinutes: 15, minDropPercent: 3, minCoinsPercent: 50, autoRecoverMinutes: 30 }), autoRecoverMinutes: parseInt(e.target.value) || 0}}))} />
+                            </div>
                         </div>
                     </div>
                 )}

@@ -70,6 +70,7 @@ export interface Position {
         volumeSwell: number;
     };
     customProfitSettings?: ProfitSettings;
+    isUnshackled?: boolean;
 }
 
 export interface LogEntry {
@@ -176,6 +177,8 @@ export interface GlobalSettings {
     lossPercent: number;
     profitAmount: number;
     lossAmount: number;
+    conventionalEnabled?: boolean;
+    tiers?: SmartProfitTier[];
 }
 
 export interface SimpleStopLossSettings {
@@ -251,6 +254,8 @@ export interface StopLossSettings {
     hedgeOpenRatio: number;
     hedgeCoverPercent: number;
     hedgeProfitClearStopLoss: number;
+    autoOpenAfterHedgeProfit: boolean; // 新增功能
+    autoOpenPullbackPercent: number;  // 新增功能
     callbackProfitClear: boolean;
     callbackHedgeRatio: number;
     callbackCoverPercent: number;
@@ -276,6 +281,7 @@ export interface SystemSettings {
     binanceApiKey?: string;
     binanceApiSecret?: string;
     directMode?: boolean;
+    realTrading?: boolean;
 }
 
 export interface ScannerSettings {

@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
+import { binanceRealtimeService } from "../services/realtime/BinanceRealtimeService";
 import { ScannerSettings, PositionSide, Position, KLine } from "../types";
 import {
   X,
@@ -147,6 +148,15 @@ const ScannerDashboardInner: React.FC<
 
   // --- UI STATE ---
   const [isMinimized, setIsMinimized] = useState(false);
+  const [realPrices, setRealPrices] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const handlePrices = (prices: Map<string, number>) => {
+      setRealPrices(Object.fromEntries(prices));
+    };
+    binanceRealtimeService.on('pricesUpdated', handlePrices);
+    return () => binanceRealtimeService.off('pricesUpdated', handlePrices);
+  }, []);
   const [showLogPanel, setShowLogPanel] = useState(false);
   const [chartData, setChartData] = useState<any>(null);
   const [scannerMode, setScannerMode] = usePersistedState<
@@ -1023,8 +1033,14 @@ const ScannerDashboardInner: React.FC<
     [scanConfig, activeMode, setActiveMode, setConfig24H, setConfig8AM],
   );
 
+  const scanConfigRef = useRef(scanConfig);
+  useEffect(() => {
+    scanConfigRef.current = scanConfig;
+  }, [scanConfig]);
+
   const safeSetChartData = useCallback((newData: any) => {
-    setChartData(newData);
+    // Merge with current list2Config to ensure chart analysis works in all modules
+    setChartData({ ...newData, list2Config: scanConfigRef.current.list2Config });
   }, []);
 
   const memoizedBacktestProps = useMemo(

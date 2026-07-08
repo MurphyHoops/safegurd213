@@ -26,7 +26,20 @@ export const DEFAULT_SETTINGS: AppSettings = {
             ]
         },
         ai: { sensitivity: 5, aggressiveness: 5, minPosition: 100, activationProfit: 60 },
-        global: { profitPercent: 0, lossPercent: 0, profitAmount: 0, lossAmount: 0 },
+        global: { 
+            profitPercent: 0, 
+            lossPercent: 0, 
+            profitAmount: 0, 
+            lossAmount: 0,
+            conventionalEnabled: false,
+            tiers: [
+                { threshold: 2, callback: 0.5, expiry: 5 },
+                { threshold: 5, callback: 1, expiry: 10 },
+                { threshold: 10, callback: 2, expiry: 20 },
+                { threshold: 20, callback: 4, expiry: 40 },
+                { threshold: 40, callback: 8, expiry: 60 }
+            ]
+        },
         stopLoss: { enabled: false, minPosition: 100, lossPercent: 5, closePercent: 100 }
     },
     hedging: {
@@ -52,6 +65,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
         hedgeOpenRatio: 150,
         hedgeCoverPercent: 10,
         hedgeProfitClearStopLoss: 2,
+        autoOpenAfterHedgeProfit: false,
+        autoOpenPullbackPercent: 1,
         callbackProfitClear: true,
         callbackHedgeRatio: 150,
         callbackCoverPercent: 10,
@@ -69,7 +84,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
     },
     martingale: { enabled: false },
-    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true },
+    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false },
     scanner: {
         minVolume: 1, 
         maxVolume: 0,

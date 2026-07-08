@@ -239,6 +239,73 @@ async function startServer() {
       let targetUrl = req.query.url as string;
       if (!targetUrl) return res.status(400).json({ error: "Missing URL parameter" });
 
+      // INTERCEPT MOCK/CUSTOM/SIMULATION SYMBOLS
+      let symbolParam = "";
+      try {
+          const parsedUrl = new URL(targetUrl);
+          symbolParam = parsedUrl.searchParams.get("symbol") || "";
+      } catch (e) {}
+
+      if (symbolParam) {
+          const upperSymbol = symbolParam.toUpperCase();
+          if (/[^\x00-\x7F]/.test(symbolParam) || upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
+              // It is a mock/simulation symbol!
+              if (targetUrl.includes("/klines")) {
+                  let interval = "5m";
+                  let limit = 100;
+                  try {
+                      const parsedUrl = new URL(targetUrl);
+                      interval = parsedUrl.searchParams.get("interval") || "5m";
+                      limit = parseInt(parsedUrl.searchParams.get("limit") || "100") || 100;
+                  } catch (e) {}
+                  console.log(`[Proxy Mock] Generating mock klines for ${symbolParam} (${interval})`);
+                  const mockData = generateMockKLines(symbolParam, interval, limit);
+                  return res.json(mockData);
+              }
+              if (targetUrl.includes("ticker/price")) {
+                  let hash = 0;
+                  for (let i = 0; i < symbolParam.length; i++) {
+                      hash = symbolParam.charCodeAt(i) + ((hash << 5) - hash);
+                  }
+                  const seed = Math.abs(hash);
+                  const price = 10 + (seed % 90) + (seed % 100) / 100;
+                  return res.json({ symbol: symbolParam, price: price.toString() });
+              }
+              if (targetUrl.includes("ticker/24hr") || targetUrl.includes("premiumIndex")) {
+                  let hash = 0;
+                  for (let i = 0; i < symbolParam.length; i++) {
+                      hash = symbolParam.charCodeAt(i) + ((hash << 5) - hash);
+                  }
+                  const seed = Math.abs(hash);
+                  const price = 10 + (seed % 90) + (seed % 100) / 100;
+                  return res.json({
+                      symbol: symbolParam,
+                      priceChange: "0.15",
+                      priceChangePercent: "1.50",
+                      weightedAvgPrice: price.toString(),
+                      lastPrice: price.toString(),
+                      lastQty: "1",
+                      openPrice: (price * 0.985).toString(),
+                      highPrice: (price * 1.02).toString(),
+                      lowPrice: (price * 0.97).toString(),
+                      volume: "5000000",
+                      quoteVolume: (5000000 * price).toString(),
+                      openTime: Date.now() - 86400000,
+                      closeTime: Date.now(),
+                      firstId: 1,
+                      lastId: 100,
+                      count: 100,
+                      markPrice: price.toString(),
+                      indexPrice: price.toString(),
+                      estimatedSettlePrice: price.toString(),
+                      lastFundingRate: "0.000100",
+                      interestRate: "0.000300",
+                      nextFundingTime: Date.now() + 4 * 3600 * 1000
+                  });
+              }
+          }
+      }
+
       // SERVER-SIDE CACHE HIT
       const cacheKey = normalizeUrlForCache(targetUrl);
       const cached = serverCache.get(cacheKey);

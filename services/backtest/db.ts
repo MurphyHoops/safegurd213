@@ -3,7 +3,7 @@ import { KLine } from '../../types';
 
 const DB_NAME = 'SaviorBacktestDB';
 const STORE_NAME = 'klines';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export class BacktestDB {
     private db: IDBDatabase | null = null;
@@ -24,6 +24,9 @@ export class BacktestDB {
                     const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
                     store.createIndex('symbol_interval', ['symbol', 'interval'], { unique: false });
                     store.createIndex('symbol_interval_time', ['symbol', 'interval', 'time'], { unique: true });
+                }
+                if (!db.objectStoreNames.contains('reports')) {
+                    db.createObjectStore('reports', { keyPath: 'id' });
                 }
             };
         });
@@ -67,6 +70,46 @@ export class BacktestDB {
         const store = this.getStore('readwrite');
         return new Promise((resolve, reject) => {
             const request = store.clear();
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async saveReport(report: any): Promise<void> {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db!.transaction('reports', 'readwrite');
+            const store = transaction.objectStore('reports');
+            const request = store.put(report);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async getReports(): Promise<any[]> {
+        if (!this.db) await this.init();
+        if (!this.db!.objectStoreNames.contains('reports')) {
+            return [];
+        }
+        return new Promise((resolve, reject) => {
+            const transaction = this.db!.transaction('reports', 'readonly');
+            const store = transaction.objectStore('reports');
+            const request = store.getAll();
+            request.onsuccess = () => {
+                const list = request.result || [];
+                list.sort((a: any, b: any) => b.runTime - a.runTime);
+                resolve(list);
+            };
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async deleteReport(id: string): Promise<void> {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db!.transaction('reports', 'readwrite');
+            const store = transaction.objectStore('reports');
+            const request = store.delete(id);
             request.onsuccess = () => resolve();
             request.onerror = () => reject(request.error);
         });

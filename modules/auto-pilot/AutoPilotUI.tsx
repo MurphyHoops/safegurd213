@@ -5,7 +5,7 @@ import { History, Activity } from 'lucide-react';
 import { AdvancedBacktester } from '../backtester/AdvancedBacktester';
 import { LiveDashboard } from './components/LiveDashboard';
 
-export const AutoPilotModule: React.FC<AutoPilotProps> = ({ isSimulating, onToggleSim, onOpenScanner, settings }) => {
+export const AutoPilotModule: React.FC<AutoPilotProps> = ({ isSimulating, onToggleSim, onOpenScanner, settings, onChange }) => {
     const [mode, setMode] = useState<'live' | 'backtest'>('live');
 
     return (
@@ -32,6 +32,8 @@ export const AutoPilotModule: React.FC<AutoPilotProps> = ({ isSimulating, onTogg
                         isSimulating={isSimulating}
                         onToggleSim={onToggleSim}
                         onOpenScanner={onOpenScanner}
+                        settings={settings}
+                        onChange={onChange}
                     />
                 ) : (
                     <AdvancedBacktester settings={settings} />

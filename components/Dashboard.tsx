@@ -31,6 +31,7 @@ interface Props {
     settings: AppSettings;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;
+    manuallyClosedSymbols?: Set<string>;
 }
 
 const Dashboard: React.FC<Props> = ({
@@ -51,7 +52,8 @@ const Dashboard: React.FC<Props> = ({
     onRowLongPress,
     networkStatus,
     isOnline,
-    onUpdateCustomSettings
+    onUpdateCustomSettings,
+    manuallyClosedSymbols = new Set<string>()
 }) => {
     
     return (
@@ -87,6 +89,7 @@ const Dashboard: React.FC<Props> = ({
                 onUpdateCustomSettings={onUpdateCustomSettings}
                 networkStatus={networkStatus}
                 isOnline={isOnline}
+                manuallyClosedSymbols={manuallyClosedSymbols}
             />
         </div>
     );

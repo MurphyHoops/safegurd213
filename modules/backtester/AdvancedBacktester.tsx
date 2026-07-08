@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
     Download, Play, Database, BarChart2, TrendingUp, History, 
     Activity, AlertCircle, Loader2, Calendar, Settings, Trash2,
-    CheckCircle2, Clock, Layers
+    CheckCircle2, Clock, Layers, HelpCircle, TrendingDown, Eye, BookOpen, ChevronRight, ChevronDown
 } from 'lucide-react';
 import { 
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
@@ -25,7 +25,7 @@ interface Props {
 }
 
 export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
-    const [activeTab, setActiveTab] = useState<'config' | 'discovery' | 'data' | 'results' | 'logs'>('config');
+    const [activeTab, setActiveTab] = useState<'config' | 'discovery' | 'data' | 'history' | 'results' | 'logs' | 'guide'>('guide');
     const [symbols, setSymbols] = useState<string>('BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,XRPUSDT,ADAUSDT,MATICUSDT,DOTUSDT,LINKUSDT');
     const [selectedIntervals, setSelectedIntervals] = useState<string[]>(['1m', '5m', '15m', '1h']);
     const [speed, setSpeed] = useState(1);
@@ -44,6 +44,49 @@ export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
     const [showUniverse, setShowUniverse] = useState(false);
     const [klinesMap, setKlinesMap] = useState<Record<string, Record<string, KLine[]>>>({});
     const [discoveryConfig, setDiscoveryConfig] = useState<ScanConfig>({ timeBasis: '24H', source: 'BOTH', minVolume: 1, maxVolume: 0, minChange: 1, customSymbols: '', useCustomOnly: false, batchSize: 40, limit: 520 });
+    const [reports, setReports] = useState<any[]>([]);
+    const [expandedGuideSection, setExpandedGuideSection] = useState<number | null>(0);
+
+    // Initialize and load reports
+    useEffect(() => {
+        const initAndLoad = async () => {
+            await backtestDb.init();
+            const list = await backtestDb.getReports();
+            setReports(list);
+        };
+        initAndLoad();
+    }, []);
+
+    const loadReports = async () => {
+        const list = await backtestDb.getReports();
+        setReports(list);
+    };
+
+    const handleDeleteReport = async (id: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (window.confirm('确定要删除该条回测历史记录吗？')) {
+            await backtestDb.deleteReport(id);
+            await loadReports();
+        }
+    };
+
+    const handleLoadReport = (report: any) => {
+        setResult({
+            stats: report.stats,
+            equityCurve: report.equityCurve,
+            trades: report.trades,
+            logs: report.logs
+        });
+        // Backfill config states for better inspection
+        setSymbols(report.symbols.join(','));
+        setSelectedIntervals(report.intervals);
+        setInitialBalance(report.initialBalance);
+        setDateRange({
+            start: new Date(report.startTime).toISOString().split('T')[0],
+            end: new Date(report.endTime).toISOString().split('T')[0]
+        });
+        setActiveTab('results');
+    };
 
     const handleDiscoveryBacktest = async (selectedSymbols: string[]) => {
         setSymbols(selectedSymbols.join(','));
@@ -170,6 +213,24 @@ export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
             }, (p) => setRunProgress(p));
 
             setResult(res);
+
+            // Persist report to IndexedDB
+            const report = {
+                id: `report_${Date.now()}`,
+                runTime: Date.now(),
+                symbols: symbolList,
+                intervals: selectedIntervals,
+                startTime: startTs,
+                endTime: endTs,
+                initialBalance,
+                stats: res.stats,
+                equityCurve: res.equityCurve,
+                trades: res.trades,
+                logs: res.logs
+            };
+            await backtestDb.saveReport(report);
+            await loadReports();
+
             setActiveTab('results');
         } catch (err: any) {
             setError(err.message || '回测运行失败');
@@ -190,28 +251,290 @@ export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
     return (
         <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-[700px]">
             {/* Header */}
-            <div className="bg-slate-900/80 border-b border-slate-800 p-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                    <div className="p-2 bg-amber-500/20 rounded-lg">
-                        <History className="text-amber-500" size={20} />
+            <div className="bg-slate-900/80 border-b border-slate-800 p-4 flex flex-col xl:flex-row gap-3 items-center justify-between">
+                <div className="flex items-center gap-3 w-full xl:w-auto">
+                    <div className="p-2 bg-indigo-500/20 rounded-lg shrink-0">
+                        <History className="text-indigo-400 animate-pulse" size={20} />
                     </div>
                     <div>
-                        <h3 className="text-sm font-bold text-white tracking-tight">全域扫描回测终端 v5.0</h3>
-                        <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Scanner Pipeline Simulation & Financial Audit</p>
+                        <div className="flex items-center gap-2">
+                            <h3 className="text-xs font-bold text-white tracking-tight">全域扫描回测终端</h3>
+                            <span className="text-[9px] bg-indigo-950 text-indigo-400 px-1.5 py-0.5 rounded border border-indigo-500/20 font-mono">v6.0 Pro</span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Scanner Pipeline Simulation & Report Center</p>
                     </div>
                 </div>
-                <div className="flex bg-slate-800 p-1 rounded-lg">
-                    <TabButton active={activeTab === 'config'} onClick={() => setActiveTab('config')} icon={Settings} label="配置" />
+                <div className="flex flex-wrap bg-slate-900 p-0.5 rounded-lg border border-slate-800 gap-0.5 w-full xl:w-auto overflow-x-auto justify-start xl:justify-end">
+                    <TabButton active={activeTab === 'guide'} onClick={() => setActiveTab('guide')} icon={BookOpen} label="说明指南" />
+                    <TabButton active={activeTab === 'config'} onClick={() => setActiveTab('config')} icon={Settings} label="回测配置" />
                     <TabButton active={activeTab === 'discovery'} onClick={() => setActiveTab('discovery')} icon={Layers} label="初筛发现" />
-                    <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={Database} label="数据" />
-                    <TabButton active={activeTab === 'results'} onClick={() => setActiveTab('results')} icon={BarChart2} label="结果" disabled={!result} />
-                    <TabButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} icon={Activity} label="日志" disabled={!result} />
+                    <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={Database} label="行情数据" />
+                    <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={History} label={`历史记录 (${reports.length})`} />
+                    <TabButton active={activeTab === 'results'} onClick={() => setActiveTab('results')} icon={BarChart2} label="回测结果" disabled={!result} />
+                    <TabButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} icon={Activity} label="运行日志" disabled={!result} />
                 </div>
             </div>
 
             {/* Content Area */}
             <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
                 <AnimatePresence mode="wait">
+                    {activeTab === 'guide' && (
+                        <motion.div 
+                            key="guide"
+                            initial={{ opacity: 0, y: 15 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -15 }}
+                            className="space-y-6 text-slate-300 text-xs"
+                        >
+                            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                                <div>
+                                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                                        <BookOpen className="text-indigo-400" size={16} />
+                                        全域流水线扫描回测操作说明
+                                    </h4>
+                                    <p className="text-[10px] text-slate-500 mt-1">
+                                        如何利用 6 级量化流水线在历史行情中进行策略验证与动态调整
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="space-y-3">
+                                {[
+                                    {
+                                        title: '🚀 极速入门与日常回测流程',
+                                        content: (
+                                            <div className="space-y-2 leading-relaxed">
+                                                <p>构建一次完整的历史行情仿真仅需三步：</p>
+                                                <ol className="list-decimal list-inside space-y-1 text-slate-400">
+                                                    <li>
+                                                        <strong className="text-slate-200">行情同步 (行情数据页)</strong>: 在输入框中输入币种（逗号分隔），设定时间范围后，点击“同步所有选定币种”。本系统将通过高性能下载服务从实盘拉取真实历史K线，并安全存储于您的本地浏览器数据库中。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">规则校验与运行 (回测配置页)</strong>: 设置初始模拟资金与步进速度。点击“开始极速回测”。回测引擎将启动后台多线程 Web Worker，对所有选定币种的历史行情进行毫秒级的模拟回放与策略检测。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">审计明细 (回测结果页)</strong>: 回测完成后将自动跳转至结果页。您可以查阅资产净值曲线、胜率、最大回撤、交易频次及每笔持仓的开平仓原因，并可通过“运行日志”对流水线的每一次拦截或触发进行精准审计。
+                                                    </li>
+                                                </ol>
+                                            </div>
+                                        )
+                                    },
+                                    {
+                                        title: '📈 6 级量化流水线仿真器原理 (L1 - L6)',
+                                        content: (
+                                            <div className="space-y-2 leading-relaxed">
+                                                <p>本回测系统忠实仿真了实盘交易中的全域 6 级扫描流水线：</p>
+                                                <ul className="list-disc list-inside space-y-2 text-slate-400">
+                                                    <li>
+                                                        <strong className="text-slate-200">List 1 (初筛拦截)</strong>: 过滤 24 小时内的基础交易额与价格涨跌幅门槛，剔除不活跃的币种，圈定爆发力高、振幅合适的候选池。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">List 2 (趋势确认)</strong>: 基于多周期均线系统进行方向与时机的捕捉。双均线金叉死叉作为核心进出场触发器。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">List 3 (阻力共振)</strong>: 审查多周期下的价格支撑位与阻力位（頂底 audits），保障每次建仓均在价格具有共振支撑的安全区间。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">List 4 (动量拦截 - 核心锁)</strong>: 包含两套最高优先级拦截法——<strong className="text-indigo-400">“防追高熔断”</strong>阻止买入过热资产，<strong className="text-indigo-400">“动态方向锁”</strong>限制顺逆势交易方向。这部分为算法安全核心，处于受保护锁定状态。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">List 5 & List 6 (交易与风控)</strong>: 提供严苛的持仓管理（多周期止盈止损、ATR自适应追踪止损、以及交易总仓位暴露控制），保障极端单边行情下仓位的整体安全。
+                                                    </li>
+                                                </ul>
+                                            </div>
+                                        )
+                                    },
+                                    {
+                                        title: '📊 历史记录的保存与跨年度审计',
+                                        content: (
+                                            <div className="space-y-2 leading-relaxed">
+                                                <p>
+                                                    每一次点击“开始极速回测”运行完毕后，系统都会自动为您生成一份完整的持久化快照：
+                                                </p>
+                                                <ul className="list-disc list-inside space-y-1 text-slate-400">
+                                                    <li>
+                                                        <strong className="text-slate-200">无缝持久化</strong>: 数据将安全保存在浏览器的 IndexedDB 数据库中，即便您关闭浏览器、清除普通缓存、或在多天后重新打开，您的全部回测记录都完好如初。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">多周期跨年度</strong>: 您可以通过选择不同的起始日期（如测试过去1年、2年或数年的周期）来进行长周期回测，系统将支持数以万计的成交明细和上百万根K线的大吞吐量持久存储。
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">便捷的对比与加载</strong>: 在“历史记录”选项卡中，您可以一目了然地对比不同参数组合下的最终胜率和收益，点击“查看”可瞬间复现当时所有的成交审计与日志。
+                                                    </li>
+                                                </ul>
+                                            </div>
+                                        )
+                                    },
+                                    {
+                                        title: '⚙️ 常见策略微调与优化思路',
+                                        content: (
+                                            <div className="space-y-2 leading-relaxed">
+                                                <p>通过分析回测结果，您可以进行针对性的调整以改善实盘交易表现：</p>
+                                                <ul className="list-disc list-inside space-y-2 text-slate-400">
+                                                    <li>
+                                                        <strong className="text-slate-200">问题：胜率高，但利润低或出现亏损？</strong><br />
+                                                        <span className="text-slate-400">说明止损偏窄或平仓时机太晚。请尝试增加 List 5 里的 ATR 保底系数，或者在 List 2 触发器中开启“移动追踪止盈”机制以锁住中途波段利润。</span>
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">问题：最大回撤（MDD）过大？</strong><br />
+                                                        <span className="text-slate-400">说明单次开仓仓位过重或在震荡市中频繁追高。请调小 App 设置中的单次最大仓位比例，并在 List 4 中调小防追高熔断的偏差百分比。</span>
+                                                    </li>
+                                                    <li>
+                                                        <strong className="text-slate-200">问题：成交次数太少，长期空仓？</strong><br />
+                                                        <span className="text-slate-400">说明入场过滤器过于苛刻。建议在“初筛发现”中引入更多候选币种，或者在 List 2 中将 `triggerMode` 从“NEW (仅金叉当根K线)”修改为“CROSS (均线顺向趋势中皆可)”。</span>
+                                                    </li>
+                                                </ul>
+                                            </div>
+                                        )
+                                    }
+                                ].map((section, idx) => {
+                                    const isOpen = expandedGuideSection === idx;
+                                    return (
+                                        <div key={idx} className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden transition-all">
+                                            <button 
+                                                onClick={() => setExpandedGuideSection(isOpen ? null : idx)}
+                                                className="w-full text-left p-3 flex items-center justify-between font-bold text-slate-200 hover:bg-slate-800/50 transition-colors"
+                                            >
+                                                <span>{section.title}</span>
+                                                {isOpen ? <ChevronDown size={16} className="text-indigo-400" /> : <ChevronRight size={16} className="text-slate-500" />}
+                                            </button>
+                                            <AnimatePresence initial={false}>
+                                                {isOpen && (
+                                                    <motion.div 
+                                                        initial={{ height: 0, opacity: 0 }}
+                                                        animate={{ height: 'auto', opacity: 1 }}
+                                                        exit={{ height: 0, opacity: 0 }}
+                                                        className="border-t border-slate-800/50"
+                                                    >
+                                                        <div className="p-4 bg-slate-950/60 text-slate-300">
+                                                            {section.content}
+                                                        </div>
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            <div className="pt-4 border-t border-slate-800 flex justify-center">
+                                <button 
+                                    onClick={() => setActiveTab('config')}
+                                    className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold text-xs flex items-center gap-2 transition-all shadow-lg"
+                                >
+                                    <Play size={12} />
+                                    直接进入回测配置
+                                </button>
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {activeTab === 'history' && (
+                        <motion.div 
+                            key="history"
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: 20 }}
+                            className="space-y-4 h-full flex flex-col"
+                        >
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h4 className="text-sm font-bold text-white">回测历史归档中心</h4>
+                                    <p className="text-[10px] text-slate-500">所有跨年度及日常测试记录均在此持久化存储，不受浏览器重置影响</p>
+                                </div>
+                                <span className="text-[10px] bg-slate-800 border border-slate-700 text-slate-300 px-2 py-1 rounded font-mono">
+                                    共计 {reports.length} 条有效记录
+                                </span>
+                            </div>
+
+                            {reports.length === 0 ? (
+                                <div className="flex-1 bg-slate-900 border border-dashed border-slate-800 rounded-xl flex flex-col items-center justify-center p-8 text-center text-slate-500">
+                                    <History size={40} className="text-slate-700 mb-3 animate-pulse" />
+                                    <p className="text-xs">暂无任何历史回测记录</p>
+                                    <p className="text-[10px] text-slate-600 mt-1">
+                                        运行任意一次回测，其成交细节、资金曲线与参数将被永久归档于此
+                                    </p>
+                                    <button 
+                                        onClick={() => setActiveTab('config')}
+                                        className="mt-4 px-4 py-1.5 bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-600/50 rounded text-[11px] font-bold transition-all"
+                                    >
+                                        去配置新回测
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col">
+                                    <div className="overflow-y-auto flex-1 custom-scrollbar">
+                                        <table className="w-full text-[11px] text-left">
+                                            <thead className="sticky top-0 bg-slate-900/90 backdrop-blur border-b border-slate-800 text-slate-500 font-mono uppercase text-[10px]">
+                                                <tr>
+                                                    <th className="p-3">测试时间</th>
+                                                    <th className="p-3">测试币种 / 时间周期</th>
+                                                    <th className="p-3 text-right">净收益 (PnL)</th>
+                                                    <th className="p-3 text-right">胜率</th>
+                                                    <th className="p-3 text-right">最大回撤</th>
+                                                    <th className="p-3 text-right">成交次数</th>
+                                                    <th className="p-3 text-center">操作</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-800/40">
+                                                {reports.slice().reverse().map((report: any) => {
+                                                    const isProfit = report.stats.totalPnl >= 0;
+                                                    return (
+                                                        <tr key={report.id} className="hover:bg-slate-800/30 transition-colors group">
+                                                            <td className="p-3 text-slate-400 font-mono">
+                                                                {new Date(report.runTime).toLocaleString()}
+                                                            </td>
+                                                            <td className="p-3">
+                                                                <div className="font-bold text-slate-200 truncate max-w-[200px]" title={report.symbols.join(', ')}>
+                                                                    {report.symbols.length > 3 ? `${report.symbols.slice(0, 3).join(', ')}等 ${report.symbols.length}币` : report.symbols.join(', ')}
+                                                                </div>
+                                                                <div className="text-[9px] text-slate-500 font-mono mt-0.5 flex gap-2">
+                                                                    <span>{report.intervals.join('/')}</span>
+                                                                    <span>•</span>
+                                                                    <span>{new Date(report.startTime).toLocaleDateString()}~{new Date(report.endTime).toLocaleDateString()}</span>
+                                                                </div>
+                                                            </td>
+                                                            <td className={`p-3 font-mono font-bold text-right ${isProfit ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                {isProfit ? '+' : ''}{report.stats.totalPnl.toFixed(2)} U
+                                                            </td>
+                                                            <td className="p-3 font-mono text-right text-indigo-400 font-bold">
+                                                                {report.stats.winRate.toFixed(1)}%
+                                                            </td>
+                                                            <td className="p-3 font-mono text-right text-red-400">
+                                                                {report.stats.maxDrawdown.toFixed(2)}%
+                                                            </td>
+                                                            <td className="p-3 font-mono text-right text-slate-300">
+                                                                {report.stats.totalTrades} 次
+                                                            </td>
+                                                            <td className="p-3 text-center">
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    <button 
+                                                                        onClick={() => handleLoadReport(report)}
+                                                                        className="px-2.5 py-1 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded text-[10px] font-bold transition-all flex items-center gap-1"
+                                                                    >
+                                                                        <Eye size={10} />
+                                                                        加载结果
+                                                                    </button>
+                                                                    <button 
+                                                                        onClick={(e) => handleDeleteReport(report.id, e)}
+                                                                        className="p-1 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-all"
+                                                                        title="删除此记录"
+                                                                    >
+                                                                        <Trash2 size={12} />
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                        </motion.div>
+                    )}
+
                     {activeTab === 'discovery' && (
                         <motion.div 
                             key="discovery"

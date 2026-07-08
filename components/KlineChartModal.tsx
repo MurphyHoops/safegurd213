@@ -104,105 +104,139 @@ const getTfMinutes = (tf: string) => {
 import { TradeLog, PositionSide } from '../types';
 import { createPortal } from 'react-dom';
 
+async function fetchKlinesViaWebSocket(safeSymbol: string, timeframe: string, limit: number, isFutures: boolean, delayMs: number = 0): Promise<{ data: any[][], source: string }> {
+    if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+    if (typeof WebSocket === 'undefined') {
+        throw new Error('WebSocket not supported in this environment');
+    }
+    return new Promise((resolve, reject) => {
+        const primaryDomain = isFutures ? 'fstream.binance.com' : 'ws-api.binance.com';
+        const backupDomain = isFutures ? 'fstream.binance.me' : 'ws-api.binance.me';
+        
+        let ws: WebSocket;
+        let activeDomain = primaryDomain;
+        
+        try {
+            ws = new WebSocket(`wss://${primaryDomain}/ws-api/v3`);
+        } catch (e) {
+            try {
+                activeDomain = backupDomain;
+                ws = new WebSocket(`wss://${backupDomain}/ws-api/v3`);
+            } catch (e2: any) {
+                reject(e2);
+                return;
+            }
+        }
+
+        const reqId = "ws_" + Math.random().toString(36).substring(2, 11);
+        
+        const timeoutId = setTimeout(() => {
+            try { ws.close(); } catch(e){}
+            reject(new Error(`WebSocket timeout (${activeDomain})`));
+        }, 2500); // Strict 2.5s timeout for the WS request
+
+        ws.onopen = () => {
+            const payload = {
+                id: reqId,
+                method: "klines",
+                params: {
+                    symbol: safeSymbol,
+                    interval: timeframe,
+                    limit: limit
+                }
+            };
+            try {
+                ws.send(JSON.stringify(payload));
+            } catch (e: any) {
+                clearTimeout(timeoutId);
+                try { ws.close(); } catch(err){}
+                reject(e);
+            }
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const response = JSON.parse(event.data);
+                if (response.id === reqId) {
+                    clearTimeout(timeoutId);
+                    try { ws.close(); } catch(e){}
+                    if (response.status === 200 && Array.isArray(response.result)) {
+                        console.log(`[KlineWS] Winner via ${activeDomain}! Loaded ${response.result.length} klines.`);
+                        resolve({ data: response.result, source: `WS-${isFutures ? 'Futures' : 'Spot'}` });
+                    } else if (response.error) {
+                        reject(new Error(`WS Error: ${response.error.message || 'Unknown error'}`));
+                    } else {
+                        reject(new Error('Invalid WS structure'));
+                    }
+                }
+            } catch (e: any) {
+                clearTimeout(timeoutId);
+                try { ws.close(); } catch(err){}
+                reject(e);
+            }
+        };
+
+        ws.onerror = (err) => {
+            clearTimeout(timeoutId);
+            try { ws.close(); } catch(e){}
+            reject(new Error(`WebSocket error on ${activeDomain}`));
+        };
+
+        ws.onclose = () => {
+            clearTimeout(timeoutId);
+            reject(new Error(`WebSocket closed on ${activeDomain}`));
+        };
+    });
+}
+
 async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
     const controllers: AbortController[] = [];
     const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
     const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
-    const futuresMeUrl = `https://fapi.binance.me/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
-    const spotApi1Url = `https://api1.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
 
-    // Preferred candidates: Local Proxy (super-fast from server, unblocked in cloud)
-    const preferredCandidates = [
-        { url: `/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, name: 'Local-Proxy-Futures' },
-        { url: `/api/proxy?url=${encodeURIComponent(spotUrl)}&priority=high`, name: 'Local-Proxy-Spot' }
+    // --- CONFIGURATION: PROXY POOL ---
+    // NOTE: Replace these placeholder URLs with your actual working proxy provider endpoints.
+    const PROXY_POOL = [
+        "https://proxy-provider-1.example.com",
+        "https://proxy-provider-2.example.com"
     ];
 
-    // Backup candidates: Direct and Public Proxy (only tried if local proxy delays/fails)
-    const backupCandidates = [
-        { url: spotUrl, name: 'Spot-Direct' },
-        { url: spotApi1Url, name: 'Spot-API1-Direct' },
-        { url: futuresUrl, name: 'Futures-Direct' },
-        { url: futuresMeUrl, name: 'Futures-Me-Direct' },
-        { url: `https://corsproxy.io/?${encodeURIComponent(futuresUrl)}`, name: 'Public-CORS-Proxy' }
-    ];
-
-    const createFetchPromise = async (url: string, sourceName: string, delayMs: number = 0): Promise<{ data: any[][], source: string }> => {
-        if (delayMs > 0) {
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-        
+    const fetchWithTimeout = async (url: string, sourceName: string, timeout = 5000): Promise<{ data: any[][], source: string }> => {
         const controller = new AbortController();
-        controllers.push(controller);
-        
-        const timeoutId = setTimeout(() => {
-            controller.abort();
-        }, 8000); // 8 seconds timeout per source
-        
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
         try {
-            console.log(`[KlineRace] Starting fetch from ${sourceName} (delay: ${delayMs}ms): ${url}`);
-            const res = await fetch(url, {
-                signal: controller.signal,
-                headers: { 'Accept': 'application/json' }
-            });
+            const res = await fetch(url, { signal: controller.signal });
+            const data = await res.json();
+            return { data, source: sourceName };
+        } finally {
             clearTimeout(timeoutId);
-            if (!res.ok) {
-                const err = new Error(`HTTP ${res.status}`);
-                if (res.status === 400) {
-                    (err as any).isInvalidSymbol = true;
-                }
-                throw err;
-            }
-            const text = await res.text();
-            let data: any;
-            try {
-                data = JSON.parse(text);
-            } catch (je) {
-                throw new Error(`Invalid JSON response`);
-            }
-            if (Array.isArray(data) && data.length > 0) {
-                console.log(`[KlineRace] Winner: ${sourceName}! Loaded ${data.length} klines.`);
-                return { data, source: sourceName };
-            }
-            throw new Error(`Invalid format or empty array`);
-        } catch (err: any) {
-            clearTimeout(timeoutId);
-            throw err;
         }
     };
 
-    // Happy Eyeballs: Start preferred candidates immediately (0ms delay),
-    // and queue backup candidates with a 300ms delay.
-    const preferredPromises = preferredCandidates.map(c => createFetchPromise(c.url, c.name, 0));
-    const backupPromises = backupCandidates.map(c => createFetchPromise(c.url, c.name, 300));
-    const allPromises = [...preferredPromises, ...backupPromises];
+    // Tier 1: Local Proxy & Direct (Fastest)
+    try {
+        return await Promise.race([
+            fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(futuresUrl)}`, 'Local-Proxy'),
+            fetchWithTimeout(spotUrl, 'Direct-Spot')
+        ]);
+    } catch (e) {
+        console.warn("[KlineRace] Tier 1 failed, trying Tier 2 (Proxy Pool)...");
+    }
 
-    return new Promise((resolve, reject) => {
-        let errorCount = 0;
-        const errors: any[] = [];
-        
-        allPromises.forEach((p) => {
-            p.then((result) => {
-                // Cancel all other ongoing fetches to release resources/bandwidth
-                controllers.forEach(ctrl => {
-                    try { ctrl.abort(); } catch(e){}
-                });
-                resolve(result);
-            }).catch((err) => {
-                if (err.isInvalidSymbol) {
-                    controllers.forEach(ctrl => {
-                        try { ctrl.abort(); } catch(e){}
-                    });
-                    reject(err);
-                    return;
-                }
-                errorCount++;
-                errors.push(err);
-                if (errorCount === allPromises.length) {
-                    reject(new Error(`All sources failed: ${errors.map(e => e.message || e).join(', ')}`));
-                }
-            });
-        });
-    });
+    // Tier 2: Proxy Pool (Sequential)
+    for (const proxyBase of PROXY_POOL) {
+        try {
+            const proxyUrl = `${proxyBase}/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
+            return await fetchWithTimeout(proxyUrl, `Proxy-${proxyBase}`);
+        } catch (e) {
+            console.warn(`[KlineRace] Proxy ${proxyBase} failed, trying next...`);
+        }
+    }
+
+    // Tier 3: Final fallback
+    return await fetchWithTimeout(futuresUrl, 'Final-Direct-Fallback');
 }
 
 const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange }) => {
@@ -454,7 +488,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
 
   // Viewport State
-  const [visibleCount, setVisibleCount] = useState(160); 
+  const [visibleCount, setVisibleCount] = useState(200); 
   const [startIndex, setStartIndex] = useState(0); 
   const [hoverIndex, setHoverIndex] = useState<number | null>(null); 
   const [mouseY, setMouseY] = useState<number | null>(null); 
@@ -570,7 +604,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setLastUpdated(Date.now());
 
                     if (isInitialLoad) {
-                        const defaultVisible = limit > 600 ? 160 : (limit > 300 ? 120 : 80);
+                        const defaultVisible = 200;
                         setVisibleCount(defaultVisible);
                         
                         let targetIdx = -1;
@@ -655,7 +689,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setLastUpdated(Date.now());
 
                     if (isInitialLoad) {
-                        const defaultVisible = limit > 600 ? 160 : (limit > 300 ? 120 : 80);
+                        const defaultVisible = 200;
                         setVisibleCount(defaultVisible);
                         
                         let targetIdx = -1;

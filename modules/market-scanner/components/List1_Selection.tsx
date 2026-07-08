@@ -115,6 +115,22 @@ const List1_Selection: React.FC<Props> = ({
                     items={list1.map(i => ({ symbol: i.symbol, timeframe: scanConfig.list1DefaultTf || '1d' }))}
                     defaultTf={scanConfig.list1DefaultTf || '1d'}
                     defaultLimit={500}
+                    watchlist={
+                        scannerMode === 'BACKTEST' && backtestProps
+                            ? (backtestProps.customSymbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+                            : Array.from(customSymbolSet)
+                    }
+                    onAddToWatchlist={(symbol) => {
+                        const cleanSym = symbol.replace('USDT', '').toUpperCase();
+                        if (scannerMode === 'BACKTEST' && backtestProps) {
+                            const current = (backtestProps.customSymbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+                            const set = new Set(current);
+                            set.add(cleanSym);
+                            backtestProps.setCustomSymbols(Array.from(set).join(', '));
+                        } else {
+                            onToggleSymbol(symbol);
+                        }
+                    }}
                     onClose={() => setShowVisualizer(false)}
                 />
             )}

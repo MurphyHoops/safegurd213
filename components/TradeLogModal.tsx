@@ -866,8 +866,15 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                         onClick={() => {
                             if (selectedLog) {
                                 setSelectedLog(null);
+                            } else if (selectedRecoveryId) {
+                                setSelectedRecoveryId(null);
+                                handleSearchChange('');
+                            } else if (selectedDebtId) {
+                                setSelectedDebtId(null);
+                                handleSearchChange('');
                             } else {
                                 handleFilterChange('ALL');
+                                handleSearchChange('');
                             }
                         }}
                         className="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold transition-all border border-indigo-500/50 bg-indigo-500/20 text-indigo-100 hover:bg-indigo-500/40 shadow-[0_0_15px_rgba(99,102,241,0.2)] active:scale-95 animate-pulse"
@@ -1169,7 +1176,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                                         <button 
                                                             onClick={(e) => { 
                                                                 e.stopPropagation(); 
+                                                                handleFilterChange('RECOVERY');
                                                                 setSelectedRecoveryId(log.entry_id);
+                                                                handleSearchChange(log.symbol); // Add search term to filter to symbol
                                                             }} 
                                                             className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-400 hover:text-blue-400 transition-all border border-slate-700" 
                                                             title="查看解套流水"
@@ -1220,6 +1229,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                                                 e.stopPropagation(); 
                                                                 handleFilterChange('DEBT');
                                                                 setSelectedDebtId(log.entry_id);
+                                                                handleSearchChange(log.symbol); // Add search term to filter to symbol
                                                             }} 
                                                             className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-400 hover:text-blue-400 transition-all border border-slate-700" 
                                                             title="查看对冲流水"
@@ -1535,6 +1545,18 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                     >
                                         <BarChart2 size={14} />
                                         <span className="text-[10px] font-bold">查看K线</span>
+                                    </button>
+                                    <button 
+                                        onClick={() => {
+                                            if (confirm(`确认要对 ${selectedLog.symbol} 进行手动开仓吗？`)) {
+                                                // @ts-ignore
+                                                window.openPositionManual?.(selectedLog.symbol, selectedLog.direction, selectedLog.cost_usdt / selectedLog.entry_price);
+                                            }
+                                        }}
+                                        className="p-1.5 bg-slate-800 hover:bg-emerald-600 text-slate-400 hover:text-white rounded transition-colors flex items-center gap-1"
+                                    >
+                                        <Activity size={14} />
+                                        <span className="text-[10px] font-bold">手动开仓</span>
                                     </button>
                                 </div>
                             </div>

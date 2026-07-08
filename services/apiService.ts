@@ -182,6 +182,82 @@ export const fetchWithFallback = async (
         return new Response(JSON.stringify([]), { status: 200 }); // Return empty array to avoid unhandled rejections
     }
 
+    // GUARD: Handle mock/custom/simulation symbols directly with zero network footprint
+    let symbolParam = '';
+    try {
+        const urlObj = new URL(url, typeof window !== 'undefined' ? window.location.origin : undefined);
+        symbolParam = urlObj.searchParams.get("symbol") || "";
+    } catch(e) {}
+    
+    if (symbolParam) {
+        const upperSymbol = symbolParam.toUpperCase();
+        if (/[^\x00-\x7F]/.test(symbolParam) || upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
+            // It is a mock/simulation symbol!
+            if (url.includes('/klines')) {
+                let interval = "5m";
+                let limit = 100;
+                try {
+                    const urlObj = new URL(url, typeof window !== 'undefined' ? window.location.origin : undefined);
+                    interval = urlObj.searchParams.get("interval") || "5m";
+                    limit = parseInt(urlObj.searchParams.get("limit") || "100") || 100;
+                } catch(e) {}
+                console.log(`[API Mock] Generating client-side mock klines for ${symbolParam} (${interval})`);
+                const mockData = generateMockKLines(symbolParam, interval, limit);
+                return new Response(JSON.stringify(mockData), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            if (url.includes('ticker/price')) {
+                let hash = 0;
+                for (let i = 0; i < symbolParam.length; i++) {
+                    hash = symbolParam.charCodeAt(i) + ((hash << 5) - hash);
+                }
+                const seed = Math.abs(hash);
+                const price = 10 + (seed % 90) + (seed % 100) / 100;
+                return new Response(JSON.stringify({ symbol: symbolParam, price: price.toString() }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            if (url.includes('ticker/24hr') || url.includes('premiumIndex')) {
+                let hash = 0;
+                for (let i = 0; i < symbolParam.length; i++) {
+                    hash = symbolParam.charCodeAt(i) + ((hash << 5) - hash);
+                }
+                const seed = Math.abs(hash);
+                const price = 10 + (seed % 90) + (seed % 100) / 100;
+                return new Response(JSON.stringify({
+                    symbol: symbolParam,
+                    priceChange: "0.15",
+                    priceChangePercent: "1.50",
+                    weightedAvgPrice: price.toString(),
+                    lastPrice: price.toString(),
+                    lastQty: "1",
+                    openPrice: (price * 0.985).toString(),
+                    highPrice: (price * 1.02).toString(),
+                    lowPrice: (price * 0.97).toString(),
+                    volume: "5000000",
+                    quoteVolume: (5000000 * price).toString(),
+                    openTime: Date.now() - 86400000,
+                    closeTime: Date.now(),
+                    firstId: 1,
+                    lastId: 100,
+                    count: 100,
+                    markPrice: price.toString(),
+                    indexPrice: price.toString(),
+                    estimatedSettlePrice: price.toString(),
+                    lastFundingRate: "0.000100",
+                    interestRate: "0.000300",
+                    nextFundingTime: Date.now() + 4 * 3600 * 1000
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+        }
+    }
+
     // CLIENT CACHE HIT
     const cacheKey = normalizeUrlForCache(url);
     const cached = clientSideCache.get(cacheKey);
@@ -448,7 +524,7 @@ const _fetchWithFallbackInner = async (
                 return response;
             } catch (e: any) {
                 lastError = e;
-                if (e.message && (e.message.includes('HTTP 400') || e.message.includes('HTTP 404'))) {
+                if (e.message && (e.message.includes('HTTP 404'))) {
                     console.warn(`[API] Early abort proxy loop due to ${e.message} for ${url}`);
                     throw e;
                 }

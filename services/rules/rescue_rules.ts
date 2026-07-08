@@ -50,7 +50,7 @@ export function checkRescueRules(
         }
 
         // 策略 2: 对冲盈利解套 (将错就错) - Needs to run even without active hedge to check if main position profit covers historical losses
-        if (checkStrategy2_HedgeProfit(position, hedgePosition, settings, closePair, closeHedgeOnly)) {
+        if (checkStrategy2_HedgeProfit(position, hedgePosition, settings, closePair, closeHedgeOnly, addLog)) {
             return true;
         }
 

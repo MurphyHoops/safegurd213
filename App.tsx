@@ -191,6 +191,14 @@ const AppContent: React.FC = () => {
 
     // --- WEBSOCKET CONNECTION & AUTO-RECOVERY ---
     useEffect(() => {
+        // @ts-ignore
+        window.openPositionManual = (symbol: string, side: PositionSide, amount: number) => {
+            if (simulatorRef.current) {
+                // @ts-ignore
+                simulatorRef.current.openPosition(symbol, side, amount, '手动开仓');
+            }
+        };
+
         const initSystem = async () => {
             console.log("[Boot] Initializing system services...");
             try {
@@ -667,19 +675,28 @@ const AppContent: React.FC = () => {
         simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas);
     }, []);
 
+    // @LOCKED: Manually closed state logic
+const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(new Set());
+
     const handleClosePosition = useCallback((symbol: string, side: PositionSide) => {
         const cleanSymbol = normalizeSymbol(symbol);
+        setManuallyClosedSymbols(prev => new Set(prev).add(cleanSymbol));
+        setTimeout(() => setManuallyClosedSymbols(prev => {
+            const next = new Set(prev);
+            next.delete(cleanSymbol);
+            return next;
+        }), 3000);
         simulatorRef.current?.closePosition(cleanSymbol, side, 'MANUAL');
     }, []);
 
     const handleUpdateCustomSettings = useCallback((symbol: string, customSettings?: any) => {
-        if (symbol === 'GLOBAL_MASTER_TOGGLE') {
+        if (symbol === 'GLOBAL_MASTER_TOGGLE' || symbol === 'GLOBAL_CUSTODY_MODE') {
             setSettings(prev => {
                 const next = {
                     ...prev,
                     profit: {
                         ...prev.profit,
-                        aiSmartMasterEnabled: customSettings.aiSmartMasterEnabled
+                        ...customSettings
                     }
                 };
                 saveState('SAVIOR_SETTINGS', next);
@@ -881,6 +898,7 @@ const AppContent: React.FC = () => {
                                 setShowTradeLogModal(true);
                             }}
                             hasHistory={() => tradeLogs.length > 0}
+                            manuallyClosedSymbols={manuallyClosedSymbols}
                             onClearPositions={() => {
                                 simulatorRef.current?.batchCloseAllPositions();
                                 if (simulatorRef.current) localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(simulatorRef.current.getPositions()));

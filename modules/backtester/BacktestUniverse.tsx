@@ -5,7 +5,7 @@ import Dashboard from '../../components/Dashboard';
 import SettingsPanel from '../../components/SettingsPanel';
 import { LogCenterModule } from '../log-center';
 import { BacktestScannerDashboard } from './mirrored/BacktestScannerDashboard';
-import { Play, Pause, SkipForward, RotateCcw, X, Clock } from 'lucide-react';
+import { Play, Pause, SkipForward, RotateCcw, X, Clock, TrendingUp, BarChart2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBacktest } from './BacktestContext';
 
@@ -35,6 +35,7 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
     const baseKlines = klinesMap[symbols[0]][baseInterval];
 
     const [showScanner, setShowScanner] = useState(true);
+    const [backtestViewMode, setBacktestViewMode] = useState<'DASHBOARD' | 'PIPELINE'>('PIPELINE'); // Default to PIPELINE view for a highly active sandbox feel!
 
     const timerRef = useRef<any>(null);
 
@@ -74,7 +75,8 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
             entryTime: virtualTime,
             isHedged: false,
             liquidationPrice: side === 'LONG' ? price * 0.95 : price * 1.05,
-            entryId: Date.now().toString()
+            entryId: Date.now().toString(),
+            isBacktestRecord: true // MARK FOR BACKTEST MONITOR
         };
         setPositions(prev => [...prev, newPos]);
         setLogs(prev => [{
@@ -174,6 +176,38 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                 </div>
 
                 <div className="flex items-center gap-4">
+                    {/* View Switcher for Sandbox Mode */}
+                    <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800 shrink-0 select-none">
+                        <button 
+                            onClick={() => {
+                                setBacktestViewMode('PIPELINE');
+                                setShowScanner(true);
+                            }}
+                            className={`px-3 py-1 text-[11px] font-bold rounded transition-all flex items-center gap-1.5 ${
+                                backtestViewMode === 'PIPELINE' 
+                                    ? 'bg-indigo-600 text-white shadow shadow-indigo-900/20' 
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                        >
+                            <TrendingUp size={12} />
+                            全域沙盒通道 (L1-L5)
+                        </button>
+                        <button 
+                            onClick={() => {
+                                setBacktestViewMode('DASHBOARD');
+                                setShowScanner(false);
+                            }}
+                            className={`px-3 py-1 text-[11px] font-bold rounded transition-all flex items-center gap-1.5 ${
+                                backtestViewMode === 'DASHBOARD' 
+                                    ? 'bg-indigo-600 text-white shadow shadow-indigo-900/20' 
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                        >
+                            <BarChart2 size={12} />
+                            沙盒综合仪表盘
+                        </button>
+                    </div>
+
                     <div className="text-right">
                         <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">回测净值 (EQUITY)</div>
                         <div className={`text-sm font-mono font-bold ${account.totalBalance >= initialBalance ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -187,74 +221,102 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
             </div>
 
             {/* Mirrored Main UI */}
-            <div className="flex-1 flex overflow-hidden relative">
-                <div className="w-80 border-r border-slate-800 flex-shrink-0 opacity-50 pointer-events-none">
-                    <SettingsPanel 
-                        settings={settings} 
-                        handleChange={() => {}}
-                        onFactoryReset={() => {}}
-                        onOpenScanner={() => {}}
-                        onToggleSim={() => {}}
-                        isSimulating={true}
+            <div className="flex-1 flex overflow-hidden relative bg-[#0b0e11]">
+                {backtestViewMode === 'DASHBOARD' ? (
+                    <>
+                        <div className="w-80 border-r border-slate-800 flex-shrink-0 opacity-50 pointer-events-none">
+                            <SettingsPanel 
+                                settings={settings} 
+                                handleChange={() => {}}
+                                onFactoryReset={() => {}}
+                                onOpenScanner={() => {}}
+                                onToggleSim={() => {}}
+                                isSimulating={true}
+                                realPrices={realPrices}
+                                previewData={[]}
+                                systemStats={{ balance: account.totalBalance, positionCount: positions.length, tradeCount: tradeLogs.length, logCount: logs.length }}
+                                onViewSource={() => {}}
+                                onOpenManual={() => {}}
+                                onRestoreSettings={() => {}}
+                                onBatchOpen={() => {}}
+                                onOpenSaviorLab={() => {}}
+                            />
+                        </div>
+
+                        <div className="flex-1 flex flex-col min-w-0">
+                            <div className="flex-1 overflow-auto p-2">
+                                <Dashboard 
+                                    account={account}
+                                    positions={positions}
+                                    tradeLogs={tradeLogs}
+                                    realPrices={realPrices}
+                                    networkStatus="healthy"
+                                    isOnline={true}
+                                    onRowLongPress={() => {}}
+                                    onShowHistory={() => {}}
+                                    hasHistory={() => tradeLogs.length > 0}
+                                    onClearPositions={() => setPositions([])}
+                                    onClosePosition={handleClosePosition}
+                                    onDeletePosition={handleClosePosition}
+                                    onBatchClose={() => setPositions([])}
+                                    onResetBalance={() => {}}
+                                    onClearRecords={() => {}}
+                                    onOpenChart={() => {}}
+                                    onOpenLogs={() => {}}
+                                    onOpenTradeModal={() => {}}
+                                    isSimulating={true}
+                                    onToggleSimulation={() => {}}
+                                    onShowSymbolTradeLogs={() => {}}
+                                    globalAutoReopen={false}
+                                    onToggleLoop={() => {}}
+                                    onOpenScanner={() => setShowScanner(true)}
+                                    settings={settings}
+                                />
+                            </div>
+                            <div className="h-48 border-t border-slate-800 shrink-0">
+                                <LogCenterModule logs={logs} onOpenChart={() => {}} />
+                            </div>
+                        </div>
+                    </>
+                ) : (
+                    <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                        {/* Interactive Sandbox Full Pipeline */}
+                        <div className="flex-1 overflow-hidden flex flex-col">
+                            <BacktestScannerDashboard 
+                                settings={settings.scanner} 
+                                isVisible={true}
+                                onClose={() => {}}
+                                onOpenPosition={handleOpenPosition}
+                                onClosePosition={handleClosePosition}
+                                realPrices={realPrices}
+                                activePositions={positions}
+                                balance={account.marginBalance}
+                                directMode={settings.system.directMode}
+                                onLog={handleLog}
+                                embedMode={true}
+                            />
+                        </div>
+                        <div className="h-48 border-t border-slate-800 shrink-0">
+                            <LogCenterModule logs={logs} onOpenChart={() => {}} />
+                        </div>
+                    </div>
+                )}
+
+                {/* Legacy Floating/Overlay Scanner for Dashboard View */}
+                {backtestViewMode === 'DASHBOARD' && (
+                    <BacktestScannerDashboard 
+                        settings={settings.scanner} 
+                        isVisible={showScanner}
+                        onClose={() => setShowScanner(false)}
+                        onOpenPosition={handleOpenPosition}
+                        onClosePosition={handleClosePosition}
                         realPrices={realPrices}
-                        previewData={[]}
-                        systemStats={{ balance: account.totalBalance, positionCount: positions.length, tradeCount: tradeLogs.length, logCount: logs.length }}
-                        onViewSource={() => {}}
-                        onOpenManual={() => {}}
-                        onRestoreSettings={() => {}}
-                        onBatchOpen={() => {}}
-                        onOpenSaviorLab={() => {}}
+                        activePositions={positions}
+                        balance={account.marginBalance}
+                        directMode={settings.system.directMode}
+                        onLog={handleLog}
                     />
-                </div>
-
-                <div className="flex-1 flex flex-col min-w-0">
-                    <div className="flex-1 overflow-auto p-2">
-                        <Dashboard 
-                            account={account}
-                            positions={positions}
-                            tradeLogs={tradeLogs}
-                            realPrices={realPrices}
-                            networkStatus="healthy"
-                            isOnline={true}
-                            onRowLongPress={() => {}}
-                            onShowHistory={() => {}}
-                            hasHistory={() => tradeLogs.length > 0}
-                            onClearPositions={() => setPositions([])}
-                            onClosePosition={handleClosePosition}
-                            onDeletePosition={handleClosePosition}
-                            onBatchClose={() => setPositions([])}
-                            onResetBalance={() => {}}
-                            onClearRecords={() => {}}
-                            onOpenChart={() => {}}
-                            onOpenLogs={() => {}}
-                            onOpenTradeModal={() => {}}
-                            isSimulating={true}
-                            onToggleSimulation={() => {}}
-                            onShowSymbolTradeLogs={() => {}}
-                            globalAutoReopen={false}
-                            onToggleLoop={() => {}}
-                            onOpenScanner={() => setShowScanner(true)}
-                            settings={settings}
-                        />
-                    </div>
-                    <div className="h-48 border-t border-slate-800">
-                        <LogCenterModule logs={logs} onOpenChart={() => {}} />
-                    </div>
-                </div>
-
-                {/* Mirrored Scanner Dashboard */}
-                <BacktestScannerDashboard 
-                    settings={settings.scanner} 
-                    isVisible={showScanner}
-                    onClose={() => setShowScanner(false)}
-                    onOpenPosition={handleOpenPosition}
-                    onClosePosition={handleClosePosition}
-                    realPrices={realPrices}
-                    activePositions={positions}
-                    balance={account.marginBalance}
-                    directMode={settings.system.directMode}
-                    onLog={handleLog}
-                />
+                )}
             </div>
         </div>
     );

@@ -235,7 +235,8 @@ export function analyzeList4Momentum(
                         const emaVal = slicedEma[i];
                         if (emaVal !== undefined) {
                             // If the High/Low span intersects with the EMA baseline, we count it as an intersection
-                            if (low <= emaVal && high >= emaVal) {
+                            // User requirement: EMA must be strictly within (low, high)
+                            if (low < emaVal && high > emaVal) {
                                 intersections++;
                                 lastIntersectionIdx = i;
                             }

@@ -5,7 +5,7 @@ import { List2Control } from './Control';
 import { List2Item } from './Item';
 import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History } from 'lucide-react';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
-import { ScannerHistoryModal } from '../../momentum-audit/components/ScannerHistoryModal';
+import { ScannerHistoryModal, useAutoHistoryLogger } from '../../momentum-audit/components/ScannerHistoryModal';
 
 interface Props {
     networkStatus?: 'healthy' | 'delayed' | 'disconnected';
@@ -28,6 +28,9 @@ interface Props {
 
 const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, setChartData, pollingStatus, activeScanTfs, onRemoveItem, onClearItems }) => {
     
+    // Auto History Logger for List 2 (Grand Crossing)
+    useAutoHistoryLogger('LIST2', filteredList2 || []);
+
     // View Mode State: ALL | LONG | SHORT
     const [viewMode, setViewMode] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
     const [showVisualizer, setShowVisualizer] = useState(false);

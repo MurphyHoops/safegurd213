@@ -1,16 +1,18 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { PositionsListProps } from './types';
 import { PositionSide, Position } from '../../types';
 import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
-import { ArrowUp, ArrowDown, List, Trash2, AlertCircle, AlertTriangle, Zap, RefreshCw, WifiOff, Activity, Brain, Settings } from 'lucide-react';
+import { ArrowUp, ArrowDown, List, Trash2, AlertCircle, AlertTriangle, Zap, RefreshCw, WifiOff, Activity, Brain, Settings, History, TrendingUp, BarChart2, ShieldCheck } from 'lucide-react';
 import { EmptyPositions } from './components/EmptyPositions';
 import { PositionItem } from './components/PositionItem';
 import { PositionSettingsModal } from './components/PositionSettingsModal';
 import { usePositionsListLogic } from './usePositionsListLogic';
 import { binanceWs } from '../../services/binanceWs';
 import { audioService } from '../../services/audioService';
+import { backtestDb } from '../../services/backtest/db';
 
+// @LOCKED: PositionsListUI logic
 export const PositionsListModule: React.FC<PositionsListProps> = ({
     positions,
     realPrices,
@@ -25,7 +27,8 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     onClearRecords,
     onUpdateCustomSettings,
     networkStatus,
-    isOnline
+    isOnline,
+    manuallyClosedSymbols
 }) => {
     const [sortMode, setSortMode] = useState<'DESC' | 'ASC'>('DESC');
     const [confirmClear, setConfirmClear] = useState(false);
@@ -58,6 +61,40 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
         }
     };
 
+    // --- BACKTEST/LIVE TAB STATE ---
+    const [activeTab, setActiveTab] = useState<'LIVE' | 'BACKTEST'>('LIVE');
+    const [latestReport, setLatestReport] = useState<any>(null);
+
+    const btPositions = positions.filter(p => p.isBacktestRecord);
+    const livePositionsFiltered = positions.filter(p => !p.isBacktestRecord);
+    const hasBacktestPositions = btPositions.length > 0;
+
+    // Auto-switch to BACKTEST tab if there are active backtest positions
+    useEffect(() => {
+        if (hasBacktestPositions) {
+            setActiveTab('BACKTEST');
+        } else {
+            setActiveTab('LIVE');
+        }
+    }, [hasBacktestPositions]);
+
+    // Load latest report stats
+    useEffect(() => {
+        const loadLatestReport = async () => {
+            try {
+                await backtestDb.init();
+                const reports = await backtestDb.getReports();
+                if (reports && reports.length > 0) {
+                    setLatestReport(reports[0]);
+                }
+            } catch (err) {
+                console.warn('Error loading backtest report for monitor:', err);
+            }
+        };
+        loadLatestReport();
+    }, [activeTab]);
+
+    const activePositionsList = activeTab === 'BACKTEST' ? btPositions : livePositionsFiltered;
     
     const {
         sortedPositions,
@@ -65,7 +102,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
         shortCount,
         hedgePairsCount,
         activeStrategies
-    } = usePositionsListLogic(positions, realPrices, sortMode, settings);
+    } = usePositionsListLogic(activePositionsList, realPrices, sortMode, settings);
 
     const strategiesDisplay = activeStrategies.length > 0 ? `(${activeStrategies.join(', ')})` : '';
 
@@ -74,12 +111,48 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     return (
         <div className="flex-1 overflow-y-auto rounded border border-slate-800 bg-[#0b0e11] custom-scrollbar flex flex-col relative">
             
+            {/* Top Tabs Bar */}
+            <div className="flex items-center justify-between border-b border-slate-800 bg-[#0d1015] p-1.5 shrink-0 select-none">
+                <div className="flex gap-1.5">
+                    <button 
+                        onClick={() => setActiveTab('LIVE')}
+                        className={`px-3 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 ${
+                            activeTab === 'LIVE' 
+                                ? 'bg-slate-800 text-white shadow border border-slate-700/50' 
+                                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/50'
+                        }`}
+                    >
+                        <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'LIVE' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
+                        实盘/模拟 监控
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('BACKTEST')}
+                        className={`px-3 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 ${
+                            activeTab === 'BACKTEST' 
+                                ? 'bg-[#181d30] text-indigo-300 border border-indigo-500/20 shadow' 
+                                : 'text-slate-400 hover:text-indigo-400 hover:bg-indigo-950/10'
+                        }`}
+                    >
+                        <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'BACKTEST' ? 'bg-indigo-400 animate-pulse' : 'bg-slate-500'}`} />
+                        回测仿真 监控
+                    </button>
+                </div>
+                
+                {activeTab === 'BACKTEST' && (
+                    <div className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest font-mono pr-2">
+                        仿真终端模式 (SIMULATION TERMINAL)
+                    </div>
+                )}
+            </div>
+
             <div className="sticky top-0 z-10 bg-[#0b0e11]/95 backdrop-blur-md border-b border-slate-800 px-4 py-2 flex justify-between items-center shrink-0">
                 <div className="flex items-center gap-4">
-                    <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">持仓监控 ({positions.length})</div>
+                    <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                        {activeTab === 'BACKTEST' ? '仿真持仓' : '当前持仓'} ({sortedPositions.length})
+                    </div>
                     <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
-                        <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>多: {longCount}</span>
-                        <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>空: {shortCount}</span>
+                        <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${activeTab === 'LIVE' ? 'animate-pulse' : ''}`}></span>多: {longCount}</span>
+                        <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className={`w-1.5 h-1.5 rounded-full bg-red-500 ${activeTab === 'LIVE' ? 'animate-pulse' : ''}`}></span>空: {shortCount}</span>
                         <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
                              对冲: {hedgePairsCount} <span className="text-indigo-400 uppercase ml-1 opacity-60">{strategiesDisplay}</span>
                         </span>
@@ -87,31 +160,46 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                 </div>
                 
                 <div className="flex items-center gap-2">
-                    {/* 智能平仓：总开关 (Master Toggle) */}
-                    <div 
-                        onClick={() => {
-                            const newVal = !(settings?.profit?.aiSmartMasterEnabled ?? true);
-                            onUpdateCustomSettings?.('GLOBAL_MASTER_TOGGLE', { aiSmartMasterEnabled: newVal });
-                            audioService.speak(newVal ? "全局智能平仓总开关已开启" : "已关闭全局智能平仓总开关", true);
-                        }}
-                        className={`flex items-center gap-2 px-2.5 py-1 rounded-full border cursor-pointer transition-all hover:scale-105 active:scale-95 mr-1 ${
-                            (settings?.profit?.aiSmartMasterEnabled ?? true) 
-                               ? 'bg-emerald-950/20 border-emerald-500/50 hover:border-emerald-400' 
-                               : 'bg-slate-900 border-slate-800 hover:border-slate-700'
-                        }`}
-                        title="点击 开启/关闭 全局智能平仓监控。关闭时自动退回当前系统常规平仓监控"
-                    >
-                        <div className={`w-1.5 h-1.5 rounded-full ${
-                            (settings?.profit?.aiSmartMasterEnabled ?? true) ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'
-                        }`} />
-                        <span className={`text-[9px] font-black tracking-wider font-mono ${
-                            (settings?.profit?.aiSmartMasterEnabled ?? true) ? 'text-emerald-400 font-bold' : 'text-slate-400'
-                        }`}>
-                            智能平仓: {(settings?.profit?.aiSmartMasterEnabled ?? true) ? 'ON' : 'OFF'}
-                        </span>
+                    {/* 一键托管模式选择器 (Dual-Mode One-Click Hosting Selector) */}
+                    <div className="flex items-center bg-[#10141a]/90 border border-slate-800 rounded-lg p-0.5 gap-0.5 shadow-md shrink-0 mr-1">
+                        <span className="text-[9px] font-black text-slate-500 px-2 select-none uppercase tracking-wider font-sans">一键托管:</span>
+                        
+                        {/* 模式一：AI 智能平仓 */}
+                        <button
+                            onClick={() => {
+                                onUpdateCustomSettings?.('GLOBAL_MASTER_TOGGLE', { aiSmartMasterEnabled: true, profitMode: 'AI' });
+                                audioService.speak("已切换为AI智能平仓托管模式。系统根据ATR与多维动能，动态最大化锁定收益逃顶！", true);
+                            }}
+                            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                                (settings?.profit?.aiSmartMasterEnabled ?? true)
+                                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.15)] font-black'
+                                    : 'text-slate-450 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
+                            }`}
+                            title="AI自适应波段追踪平仓：实时监控波动率(ATR)、量比共振及偏离度，最大化牛市逃顶收益"
+                        >
+                            <Brain size={11} className={(settings?.profit?.aiSmartMasterEnabled ?? true) ? 'text-emerald-400 animate-pulse' : 'text-slate-500'} />
+                            <span>🧠 AI智能平仓</span>
+                        </button>
+
+                        {/* 模式二：常规阶梯平仓 */}
+                        <button
+                            onClick={() => {
+                                onUpdateCustomSettings?.('GLOBAL_MASTER_TOGGLE', { aiSmartMasterEnabled: false, profitMode: 'CONVENTIONAL' });
+                                audioService.speak("已切换为常规阶梯平仓托管模式。系统将严格按照您预设的固定参数、回调百分比及阶梯保底平仓！", true);
+                            }}
+                            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                                !(settings?.profit?.aiSmartMasterEnabled ?? true)
+                                    ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-[0_0_8px_rgba(245,158,11,0.15)] font-black'
+                                    : 'text-slate-450 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
+                            }`}
+                            title="常规/智能参数平仓：基于固定止盈、跟踪回调比率和阶梯回撤，提供严苛稳健的参数化止盈"
+                        >
+                            <Settings size={11} className={!(settings?.profit?.aiSmartMasterEnabled ?? true) ? 'text-amber-400' : 'text-slate-500'} />
+                            <span>⚙️ 常规阶梯平仓</span>
+                        </button>
                     </div>
 
-                    {/* 智能平仓：设置参数 (Global Preset Config) */}
+                    {/* 托管参数一键全局配置 (Global Preset Config Gear) */}
                     <button 
                         onClick={() => {
                             setSettingsTargetPosition({
@@ -125,18 +213,18 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                 customProfitSettings: settings?.profit
                             } as any);
                         }}
-                        className="flex items-center gap-1.5 text-[10px] bg-slate-800 border border-slate-700 px-2.5 py-1 rounded text-slate-300 hover:text-emerald-400 font-bold transition-all mr-1 hover:border-emerald-500/40 hover:scale-105"
-                        title="配置全局智能平仓与多维量价追踪的默认预设规则"
+                        className="flex items-center gap-1.5 text-[10px] bg-slate-800 border border-slate-700 px-2.5 py-1 rounded-md text-slate-300 hover:text-emerald-400 font-bold transition-all mr-1 hover:border-emerald-500/40 hover:scale-105 cursor-pointer shadow-sm"
+                        title="点击配置 全局AI智能参数 (波动乘数、偏离度等) 与 全局常规参数 (止盈阈值、阶梯保底锁等)"
                     >
-                        <Brain size={12} className="text-emerald-400" />
-                        <span>智能参数</span>
+                        <Settings size={11} className="text-slate-400" />
+                        <span>托管参数配置</span>
                     </button>
 
                     <button 
                         onClick={onOpenTradeModal} 
                         className="flex items-center gap-1 text-[10px] bg-slate-800 border border-slate-700 px-2 py-1 rounded text-slate-300 hover:text-white transition-colors"
                     >
-                        <List size={12}/> 历史流水
+                        <List size={12}/> {activeTab === 'BACKTEST' ? '回测流水' : '历史流水'}
                     </button>
                     <button 
                         onClick={() => setSortMode(sortMode === 'DESC' ? 'ASC' : 'DESC')} 
@@ -163,7 +251,55 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
             </div>
             
             {sortedPositions.length === 0 ? (
-                <EmptyPositions onOpenScanner={onOpenScanner} />
+                activeTab === 'BACKTEST' ? (
+                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-slate-400 space-y-4">
+                        <div className="p-3 bg-indigo-500/10 rounded-full text-indigo-400">
+                            <History size={36} />
+                        </div>
+                        <div className="text-center max-w-sm">
+                            <h3 className="text-sm font-bold text-slate-200">无当前活跃的回测仿真持仓</h3>
+                            <p className="text-xs text-slate-500 mt-1">进入 [回测模式] 并启动 [交互式仿真沙盒] 以查看回测状态下的实时仿真持仓。</p>
+                        </div>
+                        
+                        {latestReport && (
+                            <div className="w-full max-w-md bg-slate-900/40 border border-slate-800/80 rounded-xl p-4 mt-4 space-y-3">
+                                <div className="flex items-center justify-between border-b border-slate-800/50 pb-2">
+                                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">最近一次回测报告汇总 (LATEST REPORT)</span>
+                                    <span className="text-[9px] font-mono text-indigo-400 bg-indigo-950 px-2 py-0.5 rounded border border-indigo-500/20">
+                                        {new Date(latestReport.runTime).toLocaleDateString()}
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总净值盈亏</div>
+                                        <div className={`text-base font-mono font-bold mt-1 ${latestReport.stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                            {latestReport.stats.totalPnl >= 0 ? '+' : ''}{latestReport.stats.totalPnl.toFixed(2)} USDT
+                                        </div>
+                                    </div>
+                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总交易次数</div>
+                                        <div className="text-base font-mono font-bold mt-1 text-slate-200">{latestReport.stats.totalTrades} 次</div>
+                                    </div>
+                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">胜率 (Win Rate)</div>
+                                        <div className="text-base font-mono font-bold mt-1 text-emerald-400">{latestReport.stats.winRate.toFixed(1)}%</div>
+                                    </div>
+                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">盈亏比 (PF)</div>
+                                        <div className="text-base font-mono font-bold mt-1 text-amber-400">{latestReport.stats.profitFactor.toFixed(2)}</div>
+                                    </div>
+                                </div>
+                                <div className="text-center pt-2 border-t border-slate-800/30">
+                                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">
+                                        币种: {latestReport.symbols.slice(0, 4).join(', ')}{latestReport.symbols.length > 4 ? ` 等 ${latestReport.symbols.length}个` : ''}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                ) : (
+                    <EmptyPositions onOpenScanner={onOpenScanner} />
+                )
             ) : (
                 sortedPositions.map((p, idx) => {
                     const livePrice = p.isBacktestRecord 
@@ -270,6 +406,8 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                             onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
                             aiSmartMasterEnabled={settings?.profit?.aiSmartMasterEnabled}
                             globalProfitSettings={settings?.profit}
+                            isManuallyClosed={manuallyClosedSymbols.has(p.symbol)}
+                            hasCustomSettings={!!p.customProfitSettings}
                         />
                     );
                 })

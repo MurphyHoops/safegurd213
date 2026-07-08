@@ -6,4 +6,5 @@ export interface AutoPilotProps {
     onToggleSim: () => void;
     onOpenScanner: () => void;
     settings: AppSettings;
+    onChange: (key: string, value: any) => void;
 }

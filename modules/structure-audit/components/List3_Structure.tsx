@@ -20,7 +20,7 @@ import { PositionSide, Position } from "../../../types";
 import { List3Control } from "./Control";
 import { List3Item } from "./Item";
 import { ScannerVisualizerModal } from "../../../components/ScannerVisualizerModal";
-import { ScannerHistoryModal } from "../../momentum-audit/components/ScannerHistoryModal";
+import { ScannerHistoryModal, useAutoHistoryLogger } from "../../momentum-audit/components/ScannerHistoryModal";
 
 interface Props {
   config: List3Config;
@@ -57,6 +57,9 @@ const List3_Structure: React.FC<Props> = ({
   onRemoveItem,
   onClearItems,
 }) => {
+  // Auto History Logger for List 3 (Structure Audit)
+  useAutoHistoryLogger('LIST3', list3 || [], activePositions || []);
+
   const [showVisualizer, setShowVisualizer] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 

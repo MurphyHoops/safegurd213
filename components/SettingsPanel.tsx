@@ -182,7 +182,8 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        const fileName = name ? `${name.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().slice(0,10)}.json` : `savior_settings_${new Date().toISOString().slice(0,10)}.json`;
+        const sanitized = name ? name.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '').trim() : '';
+        const fileName = sanitized ? `${sanitized}_${new Date().toISOString().slice(0,10)}.json` : `savior_settings_${new Date().toISOString().slice(0,10)}.json`;
         a.download = fileName;
         document.body.appendChild(a);
         a.click();
@@ -269,6 +270,7 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
                     onToggleSim={onToggleSim} 
                     onOpenScanner={onOpenScanner} 
                     settings={settings}
+                    onChange={(k, v) => handleChange('system', k, v)}
                 />
             )}
 

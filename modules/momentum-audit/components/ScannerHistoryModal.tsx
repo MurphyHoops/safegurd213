@@ -312,6 +312,14 @@ export const migrateDefaultHistoryToUser = async (uid: string) => {
     }
 };
 
+/**
+ * [AUDIT LOGIC CODE LOCK - LISTS 2, 3, 4 DISAPPEARANCE REASONS & FILTER RULES]
+ * CRITICAL: The core rules, logic, and configuration for logging candidates'
+ * entrance and exit reasons (disappearance causes) are now strictly LOCKED.
+ * Do NOT modify any details, filtering rule logs, or precision parameters in
+ * this section without explicit master developer instruction.
+ */
+
 // Hook to monitor when items enter a list and auto-log them
 export const useAutoHistoryLogger = (
     listType: 'LIST2' | 'LIST3' | 'LIST4',
@@ -466,47 +474,47 @@ export const useAutoHistoryLogger = (
                 const prevUniqueId = `${symbol}-${tf}-${direction}`;
                 const prevItem = prevFullItemsRef.current[prevUniqueId];
                 
-                let disappearanceReason = '未满足持续监控条件 (指标变动自动消失)';
+                let disappearanceReason = '指标不满足持续监控条件，系统自动移出';
                 
                 if (prevItem) {
                     if (listType === 'LIST4') {
                         // Check if position is active for this symbol/direction
                         const hasPosition = activePositionsRef.current?.some(p => p.symbol === symbol && p.side === direction);
                         if (hasPosition) {
-                            disappearanceReason = '动能激活成功，系统已自动开仓交易';
+                            disappearanceReason = `动能审计确认开仓成功\n[过滤规则]: 满足突破触发机制，系统自动开仓并建立实盘/回测仓位\n[细节]: 仓位方向: ${direction}, 进入价格: ${prevItem.price || '动态实时价'}`;
                         } else if (prevItem.removalReason) {
-                            disappearanceReason = prevItem.removalReason;
+                            disappearanceReason = `动能信号自动清理/超时清除\n[过滤规则]: ${prevItem.removalReason}\n[细节]: 信号周期: ${tf}, 方向: ${direction}`;
                         } else if (prevItem.fuseBlocked) {
-                            disappearanceReason = `触发防追高熔断/高级过滤保护被清除: ${prevItem.fuseReason || '熔断拦截'}`;
+                            disappearanceReason = `触发熔断/方向锁拦截被清除\n[过滤规则]: 价格严重偏离趋势安全通道(防追高熔断)或处于禁止开仓区间\n[细节]: 拦截原因: ${prevItem.fuseReason || '未踩稳均线支撑/阻力线，高位追多/低位追空拦截'}`;
                         } else if (prevItem.momentum?.status === 'INVALID') {
-                            disappearanceReason = `动能审计失效 / 趋势结构破坏 (${prevItem.momentum?.invalidReason || '多空方向反转'})`;
+                            disappearanceReason = `动能指标失效/结构破坏\n[过滤规则]: K线实体变向，主趋势多空排列对齐在周期内被打破\n[细节]: 破坏原因: ${prevItem.momentum?.invalidReason || '多空多级阻力逆转'}`;
                         } else {
-                            disappearanceReason = '超出信号有效期，周期K线到期自动衰减';
+                            disappearanceReason = `信号生命周期到期衰减\n[过滤规则]: 达到最大动能监控 K 线数量上限，信号自动过期清理\n[细节]: 周期: ${tf}, 方向: ${direction}`;
                         }
                     } else if (listType === 'LIST3') {
                         const matchedRes = prevItem.list3Results?.find((r: any) => r.tf === tf && r.direction === direction);
                         const struct = matchedRes?.structure || prevItem.structure || {};
                         if (struct.isStrictTrend === false) {
-                            disappearanceReason = '主趋势多头/空头排列被打破，不再满足趋势共振';
+                            disappearanceReason = `主趋势对齐失效\n[过滤规则]: 趋势审计 EMA10/20/30/40 短期排列被打破，多空共振排列瓦解\n[细节]: 当前不再满足严格的主趋势共振排序`;
                         } else if (struct.isColorValid === false) {
-                            disappearanceReason = '信号K线实体颜色与预测方向相反，结构失效';
+                            disappearanceReason = `K线颜色不一致/结构破坏\n[过滤规则]: 信号K线(Signal Candle)实体颜色与预测方向相反(如多头出阴线/空头出阳线)\n[细节]: 判定为假突破或多空反转`;
                         } else {
-                            disappearanceReason = '信号生命周期耗尽，未触发后续动能审计，超出 Validity Period 自动衰减';
+                            disappearanceReason = `未在有效期内触发后续审计，信号到期衰减\n[过滤规则]: 信号在指定的 Validity Period 周期内未能获得 List 4 动能审计确认，自动过期衰减\n[细节]: 周期: ${tf}, 限时到期`;
                         }
                     } else if (listType === 'LIST2') {
                         const matchedGroup = prevItem.groupedResults?.find((g: any) => g.tf === tf);
                         if (matchedGroup && !matchedGroup.isSqueeze) {
-                            disappearanceReason = '波动性(Squeeze)挤压状态释放，通道变宽，不满足低波安全建仓';
+                            disappearanceReason = `波动性释放/通道变宽\n[过滤规则]: 波动通道(Bollinger Bands Squeeze)挤压释放，不再满足低波、窄幅安全蓄势条件\n[细节]: 波动率(带宽)超过阀值: ${(matchedGroup.squeezeRatio || 0.5).toFixed(2)}`;
                         } else {
-                            disappearanceReason = '均线交叉结束 / 均线排列对齐形态失效';
+                            disappearanceReason = `均线交叉结束/均线排列对齐形态失效\n[过滤规则]: K线实体偏离或不再交织于短期均线，且不满足对齐对绞状态\n[细节]: EMA均线交叉已结束或对齐模式被破坏`;
                         }
                     }
                 }
                 
-                // If the coin is completely gone from screener
+                // If the coin is completely gone from screener (below thresholds)
                 const symbolStillInScreener = currentItems.some(item => item && item.symbol === symbol);
                 if (!symbolStillInScreener) {
-                    disappearanceReason = '该币种的24H交易额/涨跌幅低于筛选阈值，被移出系统全局扫描候选池';
+                    disappearanceReason = `币种活跃度低于筛选阈值\n[过滤规则]: 币种的24H成交额或24H涨跌幅百分比低于全局过滤器(List 1)的设定阈值，不再列为全局监控候选币种\n[细节]: 该币种 (${symbol}) 已被移出系统全局扫描候选池`;
                 }
                 
                 markSignalDisappeared(listType, symbol, tf, direction, userId, disappearanceReason);
@@ -521,6 +529,7 @@ export const useAutoHistoryLogger = (
 export const ScannerHistoryModal: React.FC<HistoryModalProps> = ({ onClose, listType, setChartData }) => {
     const [userId, setUserId] = useState<string>(() => auth.currentUser?.uid || '');
     const [records, setRecords] = useState<HistoryRecord[]>(() => getMemoryCache(listType, userId));
+    const [searchQuery, setSearchQuery] = useState<string>('');
     const [loading, setLoading] = useState(() => {
         const key = `${listType}_${userId || 'default'}`;
         return !cacheLoaded[key];
@@ -599,6 +608,11 @@ export const ScannerHistoryModal: React.FC<HistoryModalProps> = ({ onClose, list
         };
     }, [listType, userId]);
 
+    // Filter records by symbol search query
+    const filteredRecords = records.filter(r => 
+        !searchQuery || r.symbol.toLowerCase().includes(searchQuery.toLowerCase().trim())
+    );
+
     return (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl max-h-[80vh] flex flex-col rounded shadow-xl animate-in fade-in zoom-in-95 duration-100">
@@ -608,13 +622,35 @@ export const ScannerHistoryModal: React.FC<HistoryModalProps> = ({ onClose, list
                         <X size={16} />
                     </button>
                 </div>
+
+                {/* 搜索框 */}
+                <div className="px-3 py-2 border-b border-slate-800 bg-slate-950/40 flex items-center gap-2">
+                    <input
+                        type="text"
+                        placeholder="输入币名/代码进行模糊搜索 (不区分大小写，如: BTC)..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded px-2.5 py-1.5 text-[11px] font-medium text-slate-200 placeholder-slate-600 focus:outline-none w-full transition-all"
+                    />
+                    {searchQuery && (
+                        <button 
+                            onClick={() => setSearchQuery('')}
+                            className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors bg-slate-800/50 hover:bg-slate-800 px-2 py-1 rounded border border-slate-700/30 cursor-pointer flex-shrink-0"
+                        >
+                            清除
+                        </button>
+                    )}
+                </div>
+
                 <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
                     {loading && records.length === 0 ? (
                         <div className="text-center text-slate-500 py-10 text-xs font-medium">加载中...</div>
-                    ) : records.length === 0 ? (
-                        <div className="text-center text-slate-500 py-10 text-xs font-medium">暂无历史记录</div>
+                    ) : filteredRecords.length === 0 ? (
+                        <div className="text-center text-slate-500 py-10 text-xs font-medium">
+                            {searchQuery ? '未搜索到匹配的币种历史记录' : '暂无历史记录'}
+                        </div>
                     ) : (
-                        records.map(r => (
+                        filteredRecords.map(r => (
                             <div key={r.id} className="bg-slate-800/80 hover:bg-slate-800 p-3 rounded text-[10px] text-slate-300 border border-slate-700/60 transition-colors">
                                 <div className="flex justify-between font-bold text-slate-100 mb-1">
                                     <span 

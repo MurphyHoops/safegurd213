@@ -6,6 +6,7 @@ import { analyzeList4Momentum } from '../../../services/rules/list4_momentum';
 import { useBacktest } from '../BacktestContext';
 import { normalizeSymbol } from '../../../services/symbolUtils';
 import { Position } from '../../../types';
+import { useAutoHistoryLogger } from '../../momentum-audit/components/ScannerHistoryModal';
 
 const getTfMinutes = (tf: string) => {
     const unit = tf.slice(-1);
@@ -174,6 +175,9 @@ export const useBacktestMomentumAudit = (
     useEffect(() => {
         performAudit();
     }, [performAudit]);
+
+    // Track active List 4 signals and automatically log them to history (Backtest Mode)
+    useAutoHistoryLogger('LIST4', results, activePositions);
 
     const removeItem = useCallback((symbol: string) => {
         setManualExclusions(prev => new Set(prev).add(symbol));

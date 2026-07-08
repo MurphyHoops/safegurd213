@@ -312,6 +312,7 @@ export interface ScanConfig {
     batchSize: number; 
     limit: number;
     list1DefaultTf?: string; // Default for K-line charts in List 1
+    list2Config?: List2Config;
     smartMode?: SmartScanConfig;
     majorTrend?: MajorTrendConfig;
     breakerConfig?: {

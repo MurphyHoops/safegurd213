@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Maximize2, Search, BarChart2, ChevronUp, ChevronDown } from 'lucide-react';
+import { X, Maximize2, Search, BarChart2, ChevronUp, ChevronDown, Plus, Check } from 'lucide-react';
 import KlineChartModal from './KlineChartModal';
 
 interface VisualizerItem {
@@ -16,10 +16,12 @@ interface Props {
   defaultTf?: string;
   defaultLimit?: number;
   list2Config?: any;
+  watchlist?: string[];
+  onAddToWatchlist?: (symbol: string) => void;
   onClose: () => void;
 }
 
-export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultTf = '15m', defaultLimit = 299, list2Config, onClose }) => {
+export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultTf = '15m', defaultLimit = 299, list2Config, watchlist, onAddToWatchlist, onClose }) => {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(items[0]?.symbol || null);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -92,6 +94,27 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                         </button>
                     </div>
                 </div>
+             )}
+
+             {selectedSymbol && onAddToWatchlist && (
+                (() => {
+                    const cleanSym = selectedSymbol.replace('USDT', '');
+                    const isAdded = watchlist?.includes(cleanSym);
+                    return (
+                        <button
+                            onClick={() => !isAdded && onAddToWatchlist(selectedSymbol)}
+                            disabled={isAdded}
+                            className={`flex items-center gap-1.5 px-3 h-10 border rounded-lg text-xs font-bold transition-all shadow-sm ${
+                                isAdded
+                                    ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-400 cursor-not-allowed'
+                                    : 'bg-cyan-950/40 hover:bg-cyan-900/60 border-cyan-500/30 hover:border-cyan-400 text-cyan-400 hover:text-cyan-300 active:scale-95'
+                            }`}
+                        >
+                            {isAdded ? <Check size={14} /> : <Plus size={14} />}
+                            {isAdded ? '已在监控中' : '手动加入 监控列表'}
+                        </button>
+                    );
+                })()
              )}
 
              <button 
