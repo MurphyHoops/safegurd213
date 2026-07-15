@@ -21,7 +21,6 @@ import { StrategyRulesModal } from './Settings/StrategyRulesModal';
 
 interface Props {
     settings: AppSettings;
-    realPrices: Record<string, number>;
     previewData: { symbol: string }[];
     handleChange: (section: keyof AppSettings, key: string, value: any) => void;
     onBatchOpen: (simSettings: SimulationSettings) => void;

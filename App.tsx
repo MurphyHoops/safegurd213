@@ -30,6 +30,35 @@ import { DEFAULT_SETTINGS } from './config/defaultSettings';
 
 import { deepMerge, loadState, saveState } from './utils/persistence';
 
+const arePositionsEqual = (prev: Position[], next: Position[]): boolean => {
+    if (prev.length !== next.length) return false;
+    for (let i = 0; i < prev.length; i++) {
+        const p = prev[i];
+        const n = next[i];
+        if (
+            p.entryId !== n.entryId ||
+            p.symbol !== n.symbol ||
+            p.side !== n.side ||
+            p.amount !== n.amount ||
+            p.entryPrice !== n.entryPrice ||
+            p.markPrice !== n.markPrice ||
+            p.unrealizedPnL !== n.unrealizedPnL ||
+            p.isHedged !== n.isHedged ||
+            p.mainPositionId !== n.mainPositionId ||
+            p.isReopened !== n.isReopened ||
+            p.reopenCount !== n.reopenCount ||
+            p.cumulativeHedgeProfit !== n.cumulativeHedgeProfit ||
+            p.cumulativeHedgeLoss !== n.cumulativeHedgeLoss ||
+            p.cumulativeAmputationLoss !== n.cumulativeAmputationLoss ||
+            p.maxPnLPercent !== n.maxPnLPercent ||
+            JSON.stringify(p.customProfitSettings) !== JSON.stringify(n.customProfitSettings)
+        ) {
+            return false;
+        }
+    }
+    return true;
+};
+
 const AppContent: React.FC = () => {
 
     const [settings, setSettings] = useState<AppSettings>(() => {
@@ -149,6 +178,12 @@ const AppContent: React.FC = () => {
 
     // 补偿定时器：确保即便没有新日志进入，最后的缓冲日志也能被刷新
     useEffect(() => {
+        const interval = setInterval(() => {
+            simulatorRef.current?.verifyPositions(tradeLogs);
+        }, 5 * 60 * 1000);
+        return () => clearInterval(interval);
+    }, [tradeLogs]);
+    useEffect(() => {
         const timer = setInterval(() => {
             if (logsPendingRef.current.length > 0) {
                 updateLogsFromBuffer();
@@ -192,10 +227,45 @@ const AppContent: React.FC = () => {
     // --- WEBSOCKET CONNECTION & AUTO-RECOVERY ---
     useEffect(() => {
         // @ts-ignore
-        window.openPositionManual = (symbol: string, side: PositionSide, amount: number) => {
+        window.openPositionManual = (symbol: string, side: PositionSide, qty: number) => {
             if (simulatorRef.current) {
-                // @ts-ignore
-                simulatorRef.current.openPosition(symbol, side, amount, '手动开仓');
+                const cleanSymbol = normalizeSymbol(symbol);
+                let livePrice = simulatorRef.current.realPrices[cleanSymbol];
+                const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
+                const isMajorCoin = noScaleSymbols.includes(cleanSymbol);
+                if (!livePrice) {
+                    if (!isMajorCoin) {
+                        if (cleanSymbol.startsWith('1000')) {
+                            const base = cleanSymbol.replace(/^1000/, '');
+                            if (simulatorRef.current.realPrices[base]) {
+                                livePrice = simulatorRef.current.realPrices[base] * 1000;
+                            }
+                        } else {
+                            const scaled = '1000' + cleanSymbol;
+                            if (simulatorRef.current.realPrices[scaled]) {
+                                livePrice = simulatorRef.current.realPrices[scaled] / 1000;
+                            }
+                        }
+                    }
+                }
+                const finalPrice = livePrice && livePrice > 0 ? livePrice : 1;
+                const costUsdt = qty * finalPrice;
+                
+                const rawStrategyId = localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID");
+                let activeStrategyId = "strat-1";
+                if (rawStrategyId) {
+                    try {
+                        activeStrategyId = JSON.parse(rawStrategyId);
+                    } catch (e) {
+                        activeStrategyId = rawStrategyId;
+                    }
+                }
+
+                simulatorRef.current.openPosition(cleanSymbol, side, costUsdt, finalPrice, '1m', undefined, undefined, { 
+                    isReopened: false,
+                    strategyId: activeStrategyId 
+                });
+                setPositions([...simulatorRef.current.getPositions()]);
             }
         };
 
@@ -318,10 +388,10 @@ const AppContent: React.FC = () => {
                 }
             }
 
-            // 4. THROTTLE UI UPDATE: Max ~10 times per second (100ms)
+            // 4. THROTTLE UI UPDATE: Max ~3 times per second (300ms)
             // Provides extremely fluid, hyper-responsive visual momentum feedback without choking the UI thread
             const now = Date.now();
-            if (now - lastUiUpdateRef.current > 100) {
+            if (now - lastUiUpdateRef.current > 300) {
                 const snapshot = { ...priceBufferRef.current };
                 setRealPrices(snapshot);
                 lastUiUpdateRef.current = now;
@@ -581,7 +651,7 @@ const AppContent: React.FC = () => {
                 }
 
                 // Compare to previous sanitized state to avoid useless renders
-                if (JSON.stringify(prev) === JSON.stringify(sanitized)) {
+                if (arePositionsEqual(prev, sanitized)) {
                     return prev;
                 }
                 
@@ -670,9 +740,9 @@ const AppContent: React.FC = () => {
         }));
     };
 
-    const handleOpenPosition = useCallback((symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any) => {
+    const handleOpenPosition = useCallback((symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any, extraProps?: Partial<Position>) => {
         const cleanSymbol = normalizeSymbol(symbol);
-        simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas);
+        simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas, extraProps);
     }, []);
 
     // @LOCKED: Manually closed state logic
@@ -738,23 +808,40 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         simulatorRef.current?.openBatchPositions('BTCUSDT', 'RANDOM', 5, 100, false, 'BOTH', '24H', 10);
     };
 
+    const handleVerifyPosition = (position: Position) => {
+        simulatorRef.current?.verifyPosition(position, tradeLogs);
+    };
+
     const handleApplyRecommendation = (rec: any) => {
         simulatorRef.current?.applyStrategyRecommendation(rec);
         setRecommendation(null);
     };
 
-    // --- PERIODIC PERSISTENCE (Every 5s) ---
-    // Stable persistence loop using refs to prevent interval clearing on every state change
+    // Periodic persistence
     useEffect(() => {
         const interval = setInterval(() => {
             if (isProcessingRef.current) return;
-            // Use current refs to get latest data without re-mounting the interval
             saveState('SAVIOR_ACCOUNT', accountRef.current);
             saveState('SAVIOR_POSITIONS', positionsRef.current);
             saveState('SAVIOR_LOGS', logsRef.current, 150);
             saveState('SAVIOR_TRADELOGS', tradeLogsRef.current, 800);
+            saveState('SAVIOR_SETTINGS', settingsRef.current);
         }, 5000);
-        return () => clearInterval(interval);
+        
+        // Immediate persistence on unload
+        const handleBeforeUnload = () => {
+            saveState('SAVIOR_ACCOUNT', accountRef.current);
+            saveState('SAVIOR_POSITIONS', positionsRef.current);
+            saveState('SAVIOR_LOGS', logsRef.current, 150);
+            saveState('SAVIOR_TRADELOGS', tradeLogsRef.current, 800);
+            saveState('SAVIOR_SETTINGS', settingsRef.current);
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        
+        return () => {
+            clearInterval(interval);
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+        };
     }, []); // Run once at mount
 
     // --- NETWORK STATUS LOGGING & AUTO-RECOVERY ---
@@ -870,7 +957,6 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     onOpenScanner={() => setShowScanner(true)}
                     onToggleSim={() => setIsSimulating(!isSimulating)}
                     isSimulating={isSimulating}
-                    realPrices={realPrices}
                     previewData={[]}
                     systemStats={{ balance: account.totalBalance, positionCount: positions.length, tradeCount: tradeLogs.length, logCount: logs.length }}
                     onViewSource={() => setShowSourceCode(true)}
@@ -893,6 +979,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                             networkStatus={networkStatus}
                             isOnline={isOnline}
                             onRowLongPress={() => {}}
+                            onVerifyPosition={handleVerifyPosition}
                             onShowHistory={(symbol) => {
                                 setTradeLogSearchSymbol(symbol);
                                 setShowTradeLogModal(true);

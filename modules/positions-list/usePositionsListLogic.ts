@@ -46,7 +46,7 @@ export function usePositionsListLogic(positions: Position[], realPrices: Record<
             const pnlB = getLivePnLPercent(b);
             return pnlB - pnlA; // Within the same symbol, highest PnL first
         });
-    }, [positions, realPrices, sortMode]);
+    }, [positions, sortMode]);
 
     const longCount = positions.filter(p => p.side === PositionSide.LONG).length;
     const shortCount = positions.filter(p => p.side === PositionSide.SHORT).length;

@@ -18,7 +18,7 @@ export class MarketSimulator {
     private tradeLogs: TradeLog[];
     private systemEvents: SystemEvent[];
     private logs: LogEntry[];
-    private realPrices: Record<string, number> = {};
+    public realPrices: Record<string, number> = {};
     private symbolsWithFreshPrice: Set<string> = new Set();
     private bootTime: number = Date.now();
     private WARMUP_PERIOD = 15000; // 15s lock after boot to prevent stale data spikes
@@ -37,6 +37,7 @@ export class MarketSimulator {
     private cooldowns: Record<string, number> = {};
     private maxGlobalPnlPercent: number = 0;
     private pendingAutoOpens: Array<{ symbol: string; side: PositionSide; amount: number; extremePrice: number; pullbackPercent: number; mainEntryId: string }> = [];
+    private lastReopenTimes: Record<string, number> = {};
 
     constructor(
         account: AccountData,
@@ -264,28 +265,52 @@ export class MarketSimulator {
         }
     }
 
-    public openPosition(symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any) {
+    public openPosition(symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any, extraProps?: Partial<Position>) {
         if (!this.isNetworkHealthy) {
             this.addLog('WARNING', `网络异常拦截: 拒绝开仓 ${symbol} ${side}`);
             return;
         }
 
-        if (!price || isNaN(price) || price <= 0) {
-            this.addLog('DANGER', `拒绝开仓 ${symbol}: 无效的价格 (${price})`);
+        const upperSymbol = normalizeSymbol(symbol);
+
+        // Robust real-time execution price check:
+        // Use the actual current real-time market price if available to prevent opening at stale discovery prices.
+        let executionPrice = price;
+        let wsPrice = this.realPrices[upperSymbol];
+        
+        const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
+        const isMajorCoin = noScaleSymbols.includes(upperSymbol);
+
+        if (!wsPrice) {
+            if (!isMajorCoin) {
+                if (upperSymbol.startsWith('1000')) {
+                    const base = upperSymbol.replace(/^1000/, '');
+                    if (this.realPrices[base]) wsPrice = this.realPrices[base] * 1000;
+                } else {
+                    const scaled = '1000' + upperSymbol;
+                    if (this.realPrices[scaled]) wsPrice = this.realPrices[scaled] / 1000;
+                }
+            }
+        }
+
+        if (wsPrice && !isNaN(wsPrice) && wsPrice > 0) {
+            executionPrice = wsPrice;
+        }
+
+        if (!executionPrice || isNaN(executionPrice) || executionPrice <= 0) {
+            this.addLog('DANGER', `拒绝开仓 ${upperSymbol}: 无效的价格 (${executionPrice})`);
             return;
         }
 
-        const upperSymbol = normalizeSymbol(symbol);
-
         // Check cooldown to prevent "popping back" after clear
         const cooldownKey = `${upperSymbol}_${side}`;
-        if (this.cooldowns[cooldownKey] && Date.now() < this.cooldowns[cooldownKey]) {
+        if (this.cooldowns[cooldownKey] && Date.now() < this.cooldowns[cooldownKey] && !extraProps?.isReopened) {
             if (Date.now() - this.lastEmitTime < 10000) { 
                 return;
             }
         }
 
-        const existingPosition = this.positions.find(p => p.symbol === upperSymbol && p.side === side);
+        const existingPosition = this.positions.find(p => p.symbol === upperSymbol && p.side === side && p.entryId !== extraProps?.parentEntryId);
         if (existingPosition) {
             this.addLog('WARNING', `Duplicate position blocked: ${side} on ${upperSymbol} already exists.`);
             return;
@@ -294,35 +319,36 @@ export class MarketSimulator {
         const entryId = Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
         const simulatedAmplitude = 0.02;
         const finalSignalCandle = signalCandle || {
-            open: price,
-            close: price,
-            high: price * (1 + simulatedAmplitude/2),
-            low: price * (1 - simulatedAmplitude/2),
+            open: executionPrice,
+            close: executionPrice,
+            high: executionPrice * (1 + simulatedAmplitude/2),
+            low: executionPrice * (1 - simulatedAmplitude/2),
             amplitude: simulatedAmplitude
         };
 
         const trendFactor = side === PositionSide.LONG ? -1 : 1;
         const finalEntryEmas = entryEmas || {
-            ema10: price * (1 + trendFactor * 0.05),
-            ema20: price * (1 + trendFactor * 0.1),
-            ema40: price * (1 + trendFactor * 0.2),
-            ema80: price * (1 + trendFactor * 0.4)
+            ema10: executionPrice * (1 + trendFactor * 0.05),
+            ema20: executionPrice * (1 + trendFactor * 0.1),
+            ema40: executionPrice * (1 + trendFactor * 0.2),
+            ema80: executionPrice * (1 + trendFactor * 0.4)
         };
 
         const newPos: Position = {
             symbol: upperSymbol,
             side,
-            amount: amount / price,
-            entryPrice: price,
-            markPrice: price,
-            liquidationPrice: side === PositionSide.LONG ? price * 0.5 : price * 1.5,
+            amount: amount / executionPrice,
+            entryPrice: executionPrice,
+            markPrice: executionPrice,
+            liquidationPrice: side === PositionSide.LONG ? executionPrice * 0.5 : executionPrice * 1.5,
             unrealizedPnL: 0,
             unrealizedPnLPercentage: 0,
             entryId,
             entryTime: Date.now(),
             signalTf: signalTf,
             signalCandle: finalSignalCandle,
-            entryEmas: finalEntryEmas
+            entryEmas: finalEntryEmas,
+            ...extraProps
         };
         this.positions.push(newPos);
         
@@ -335,18 +361,20 @@ export class MarketSimulator {
             entry_timestamp: newPos.entryTime,
             direction: side,
             cost_usdt: amount,
-            entry_price: price,
+            entry_price: executionPrice,
+            correlationId: newPos.correlationId,
+            is_reopened: newPos.isReopened,
             timeframe: signalTf,
             events: [{
                 timestamp: newPos.entryTime,
                 action: '主仓开仓',
-                price: price,
+                price: executionPrice,
                 amount: newPos.amount,
                 reason: '初始进场'
             }]
         });
 
-        this.addLog('SUCCESS', `Opened ${side} on ${upperSymbol} at ${price} ${signalTf ? `(${signalTf})` : ''}`);
+        this.addLog('SUCCESS', `Opened ${side} on ${upperSymbol} at ${executionPrice} ${signalTf ? `(${signalTf})` : ''}`);
         this.emitUpdate(true);
     }
 
@@ -356,24 +384,52 @@ export class MarketSimulator {
             return;
         }
 
+        const upperSymbol = normalizeSymbol(mainPosition.symbol);
+
+        // Robust real-time execution price check:
+        let executionPrice = price;
+        let wsPrice = this.realPrices[upperSymbol];
+        
+        const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
+        const isMajorCoin = noScaleSymbols.includes(upperSymbol);
+
+        if (!wsPrice) {
+            if (!isMajorCoin) {
+                if (upperSymbol.startsWith('1000')) {
+                    const base = upperSymbol.replace(/^1000/, '');
+                    if (this.realPrices[base]) wsPrice = this.realPrices[base] * 1000;
+                } else {
+                    const scaled = '1000' + upperSymbol;
+                    if (this.realPrices[scaled]) wsPrice = this.realPrices[scaled] / 1000;
+                }
+            }
+        }
+
+        if (wsPrice && !isNaN(wsPrice) && wsPrice > 0) {
+            executionPrice = wsPrice;
+        }
+
         const entryId = 'HEDGE_' + Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
         const newPos: Position = {
             symbol: mainPosition.symbol,
             side,
-            amount: amount / price,
-            entryPrice: price,
-            markPrice: price,
-            liquidationPrice: side === PositionSide.LONG ? price * 0.5 : price * 1.5,
+            amount: amount / executionPrice,
+            entryPrice: executionPrice,
+            markPrice: executionPrice,
+            liquidationPrice: side === PositionSide.LONG ? executionPrice * 0.5 : executionPrice * 1.5,
             unrealizedPnL: 0,
             unrealizedPnLPercentage: 0,
             entryId,
             entryTime: Date.now(),
             isHedged: true,
             mainPositionId: mainPosition.entryId,
-            triggerReason: reason
+            triggerReason: reason,
+            correlationId: mainPosition.correlationId,
+            reopenCount: mainPosition.reopenCount
         };
         
         mainPosition.isHedged = true;
+        delete mainPosition.isUnshackled;
         mainPosition.hedgeRetries = (mainPosition.hedgeRetries || 0) + 1;
         this.positions.push(newPos);
 
@@ -386,20 +442,23 @@ export class MarketSimulator {
             entry_timestamp: newPos.entryTime,
             direction: side,
             cost_usdt: amount,
-            entry_price: price,
+            entry_price: executionPrice,
             main_entry_id: mainPosition.entryId,
+            correlationId: newPos.correlationId,
             timeframe: mainPosition.signalTf
         });
 
         // Add sub-event to main log
-        this.addTradeEvent(mainPosition, `对冲开启 (${side})`, price, newPos.amount, reason || '对冲策略触发');
+        this.addTradeEvent(mainPosition, `对冲开启 (${side})`, executionPrice, newPos.amount, reason || '对冲策略触发');
 
         this.addLog('WARNING', `🛡️ 对冲触发: 为 ${mainPosition.symbol} ${mainPosition.side} 开启反向对冲 ${side} (${reason || '未知原因'})`);
         this.emitUpdate(true);
     }
 
-    public closePosition(symbol: string, side: PositionSide, reason: string) {
-        const pos = this.positions.find(p => p.symbol === symbol && p.side === side);
+    public closePosition(symbol: string, side: PositionSide, reason: string, entryId?: string) {
+        const pos = entryId 
+            ? this.positions.find(p => p.entryId === entryId)
+            : this.positions.find(p => p.symbol === symbol && p.side === side);
         if (pos) {
             // If we are closing a hedge position, we must reset the main position's isHedged flag
             if (pos.isHedged && pos.mainPositionId) {
@@ -426,6 +485,8 @@ export class MarketSimulator {
                     this.positions = this.positions.filter(p => p !== hedge);
                 }
             }
+
+            // Note: Stop-loss reopen is now migrated to only trigger during "断臂求生盈利清仓" (closePair) as per user instructions.
 
             this.recordTradeLog(pos, reason);
             this.positions = this.positions.filter(p => p !== pos);
@@ -476,8 +537,80 @@ export class MarketSimulator {
             }
             this.positions = this.positions.filter(p => p.entryId !== mainId && p.entryId !== hedgeId);
             this.addLog('SUCCESS', `✅ 累计盈利清仓: ${reason}`);
+
+            // New Rule: Reopen original position when Strategy 4 ("断臂求生") exits with profit/winning liquidation.
+            const isAmputationProfitExit = reason.includes('断臂') || reason.toLowerCase().includes('amputation');
+            if (isAmputationProfitExit && this.settings.stopLoss.amputationReopenEnabled) {
+                // 复开必须是对冲仓盈利解套清仓的情况才复开，如果是原仓位盈利解套交给”只清对冲、主仓续航“来管理
+                const isHedgeProfitable = hedge && (hedge.unrealizedPnL || 0) > 0;
+                const isMainProfitable = (main.unrealizedPnL || 0) > 0;
+
+                if (isHedgeProfitable) {
+                    this.reopenPosition(main, `断臂求生对冲仓盈利解套自动复开`);
+                } else if (isMainProfitable) {
+                    this.addLog('INFO', `ℹ️ [断臂复开跳过] 原仓位盈利解套，已交给「只清对冲、主仓续航」管理，不执行原仓位完全复开`);
+                } else {
+                    // Fallback comparison
+                    const hedgePnL = hedge ? (hedge.unrealizedPnL || 0) : -999999;
+                    const mainPnL = main.unrealizedPnL || 0;
+                    if (hedgePnL > mainPnL) {
+                        this.reopenPosition(main, `断臂求生对冲仓盈利解套自动复开 (对冲表现优于原仓)`);
+                    } else {
+                        this.addLog('INFO', `ℹ️ [断臂复开跳过] 原仓表现优于对冲仓，不执行完全复开`);
+                    }
+                }
+            }
+
             this.emitUpdate(true);
         }
+    }
+
+    public reopenPosition(pos: Position, reason: string) {
+        const symbolKey = normalizeSymbol(pos.symbol);
+        const throttleKey = `${symbolKey}_${pos.side}`;
+        const now = Date.now();
+
+        // 1. Cooldown / Throttle check: Prevent multiple reopens in the same second (1000ms)
+        if (this.lastReopenTimes[throttleKey] && now - this.lastReopenTimes[throttleKey] < 1000) {
+            this.addLog('WARNING', `⚠️ [原仓位复开] 拦截: ${pos.symbol} ${pos.side} 复开频率过高 (1秒内禁止重复复开)`);
+            return;
+        }
+
+        // 2. Max Reopen Count check
+        const maxReopen = this.settings.stopLoss?.maxReopenCount ?? 3;
+        const nextReopenCount = (pos.reopenCount || 0) + 1;
+        if (nextReopenCount > maxReopen) {
+            this.addLog('WARNING', `⚠️ [原仓位复开] 拦截: ${pos.symbol} ${pos.side} 复开次数 (${nextReopenCount}) 超过最大限制 (${maxReopen})`);
+            return;
+        }
+
+        this.lastReopenTimes[throttleKey] = now;
+
+        // 新仓位的大小是采用原仓位被砍前的最完整大小
+        const originalFullAmountQty = pos.amount + (pos.amputatedAmount || 0);
+        // 为了在 openPosition 的 amount / price 计算中得到完美的 originalFullAmountQty，
+        // 我们传入 value = originalFullAmountQty * pos.markPrice
+        const reopenedValueUsdt = originalFullAmountQty * pos.markPrice;
+
+        const corrId = pos.correlationId || nextReopenCount;
+
+        this.openPosition(
+            pos.symbol, 
+            pos.side, 
+            reopenedValueUsdt, 
+            pos.markPrice, 
+            pos.signalTf || '1m', 
+            undefined, 
+            undefined, 
+            {
+                isReopened: true,
+                reopenCount: nextReopenCount,
+                correlationId: corrId,
+                parentEntryId: pos.entryId,
+            }
+        );
+        this.addLog('SUCCESS', `🔄 [原仓位复开] 已开启独立复开仓位: ${pos.symbol} ${pos.side} | 数量: ${originalFullAmountQty.toFixed(4)}币 | 原因: ${reason} | 复开次数: ${nextReopenCount}`);
+        this.emitUpdate(true);
     }
 
     public amputate(position: Position, ratio: number, reason: string) {
@@ -661,6 +794,9 @@ export class MarketSimulator {
             exit_price: p.markPrice,
             profit_percent: p.unrealizedPnLPercentage,
             main_entry_id: p.mainPositionId,
+            correlationId: p.correlationId,
+            reopenCount: p.reopenCount,
+            is_reopened: !!p.isReopened,
             timeframe: p.signalTf, // Store timeframe
             last_stop_loss_time: isStopLoss ? now : undefined,
             stop_loss_rule: isStopLoss ? reason : undefined
@@ -961,7 +1097,7 @@ export class MarketSimulator {
                             (position as any)._slTriggered = true;
                         }
                     } else {
-                        this.closePosition(symbol, side, reason);
+                        this.closePosition(symbol, side, reason, position.entryId);
                     }
                     actionTaken = true;
                 }
@@ -973,7 +1109,7 @@ export class MarketSimulator {
                     position,
                     this.settings,
                     (symbol, side, reason) => {
-                        this.closePosition(symbol, side, reason);
+                        this.closePosition(symbol, side, reason, position.entryId);
                         actionTaken = true;
                     }
                 );
@@ -985,7 +1121,7 @@ export class MarketSimulator {
                     position,
                     this.settings,
                     (symbol, side, reason) => {
-                        this.closePosition(symbol, side, reason);
+                        this.closePosition(symbol, side, reason, position.entryId);
                         actionTaken = true;
                     }
                 );
@@ -1061,6 +1197,10 @@ export class MarketSimulator {
                 (hedgeId, profit, reason) => {
                     this.closeHedgeOnly(hedgeId, profit, reason);
                     actionTaken = true;
+                },
+                (pos, reason) => {
+                    // Note: Reopen rule now triggers exclusively on "断臂求生盈利清仓" inside closePair.
+                    // This old callback is ignored to prevent reopening on amputation cuts.
                 },
                 (type, message) => {
                     this.addLog(type as any, message);
@@ -1338,4 +1478,33 @@ export class MarketSimulator {
           this.emitUpdate();
       }
   }
+
+    public verifyPositions(tradeLogs: TradeLog[]) {
+        this.positions.forEach(pos => {
+            this.verifyPosition(pos, tradeLogs);
+        });
+    }
+
+    public verifyPosition(pos: Position, tradeLogs: TradeLog[]) {
+        const log = tradeLogs.find(l => l.entry_id === pos.entryId);
+        if (log) {
+            console.log(`[Price Verification] Symbol: ${pos.symbol}, PosEntry: ${pos.entryPrice}, LogEntry: ${log.entry_price}, entryId: ${pos.entryId}, LogEntryId: ${log.entry_id}`);
+            if (Math.abs(log.entry_price - pos.entryPrice) > 0.000001) { // Use a small epsilon for float comparison
+                const oldPrice = pos.entryPrice;
+                
+                // Replace the position object with a new reference
+                const newPos = { ...pos, entryPrice: log.entry_price };
+                console.log(`[Price Verification] Updating ${pos.symbol} price to ${log.entry_price}`);
+                this.positions = this.positions.map(p => p.entryId === pos.entryId ? newPos : p);
+                console.log(`[Price Verification] New positions length: ${this.positions.length}, Found: ${this.positions.some(p => p.entryId === pos.entryId && p.entryPrice === log.entry_price)}`);
+                
+                this.addLog('SUCCESS', `价格手动/自动修正: ${pos.symbol} (${pos.side}) 开仓价格已从 ${oldPrice.toFixed(4)} 修正为 ${log.entry_price.toFixed(4)} (基于原始交易记录)`);
+                this.emitUpdate(true);
+            } else {
+                console.log(`[Price Verification] Prices match for ${pos.symbol}`);
+            }
+        } else {
+            console.warn(`[Price Verification] No trade log found for position entryId: ${pos.entryId}. Available log ids: ${tradeLogs.map(l => l.entry_id).slice(0, 5).join(', ')}...`);
+        }
+    }
 }

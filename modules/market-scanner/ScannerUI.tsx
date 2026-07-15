@@ -4,6 +4,7 @@ import { usePersistedState } from '../../hooks/usePersistedState';
 import { useScannerLogic } from './useScannerLogic';
 import { ScanConfig, ScannerItem } from '../../components/Scanner/scannerTypes';
 import List1_Selection from './components/List1_Selection';
+import { StrategyItem } from '../../types';
 
 import { BacktestMarketScannerModule } from '../backtester/mirrored/BacktestScannerUI';
 
@@ -19,6 +20,15 @@ interface Props {
     isSyncing?: boolean;
     // Backtest Controls
     backtestProps?: any;
+    // Strategy Props
+    strategies?: StrategyItem[];
+    selectedStrategyId?: string;
+    onSelectStrategy?: (id: string) => void;
+    onAddStrategy?: () => void;
+    onDeleteStrategy?: (id: string) => void;
+    onRenameStrategy?: (id: string, name: string) => void;
+    onExportStrategy?: (id: string) => void;
+    onImportStrategy?: (id: string, file: File) => void;
 }
 
 export const MarketScannerModule: React.FC<Props> = (props) => {
@@ -52,7 +62,15 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     isSyncing = false,
     mode,
     setMode,
-    backtestProps
+    backtestProps,
+    strategies = [],
+    selectedStrategyId = '',
+    onSelectStrategy = () => {},
+    onAddStrategy = () => {},
+    onDeleteStrategy = () => {},
+    onRenameStrategy = () => {},
+    onExportStrategy,
+    onImportStrategy
 }) => {
     // --- LOCAL UI STATE ---
     const [fixedModeView, setFixedModeView] = usePersistedState<'MONITOR' | 'SEARCH'>('SCANNER_FIXED_MODE_VIEW', 'MONITOR');
@@ -73,7 +91,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
         list1, isScanning, scanStatusText, marketStats, nextScanTime, setNextScanTime, refreshList1Candidates, cancelScan,
         addToBlacklist, clearBlacklist,
         majorTrendCandidates, isMajorScanning, majorProgress, runMajorTrendDiscovery
-    } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, mode);
+    } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, mode, selectedStrategyId);
 
     // --- EFFECT: Auto Transfer to Watchlist ---
     useEffect(() => {
@@ -225,6 +243,14 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             majorProgress={majorProgress}
             runMajorTrendDiscovery={runMajorTrendDiscovery}
             backtestProps={backtestProps}
+            strategies={strategies}
+            selectedStrategyId={selectedStrategyId}
+            onSelectStrategy={onSelectStrategy}
+            onAddStrategy={onAddStrategy}
+            onDeleteStrategy={onDeleteStrategy}
+            onRenameStrategy={onRenameStrategy}
+            onExportStrategy={onExportStrategy}
+            onImportStrategy={onImportStrategy}
         />
     );
 };

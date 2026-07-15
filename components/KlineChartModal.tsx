@@ -1547,7 +1547,14 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                >
                    <RefreshCw size={10} /> 刷新
                </button>
-               <button onClick={onClose} className="p-1.5 hover:bg-slate-700 rounded text-slate-400 hover:text-white"><X size={18} /></button>
+               <button 
+    onClick={() => (window as any).setManualSymbol(symbol)}
+    className="flex items-center gap-1 bg-amber-600 hover:bg-amber-500 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors mr-2"
+    title="币名转移到手动开仓"
+>
+    <ArrowRight size={10} /> 币名转移
+</button>
+<button onClick={() => { onClose(); }} className="p-1.5 hover:bg-slate-700 rounded text-slate-400 hover:text-white"><X size={18} /></button>
            </div>
         </div>
 

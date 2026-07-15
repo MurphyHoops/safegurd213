@@ -78,6 +78,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
         amputationRatio: 50,
         amputationVictoryBuffer: 10,
         amputationBreathingSpace: 1,
+        amputationReopenEnabled: false,
+        amputationHedgeOnlyExit: false,
         fuseEnabled: false,
         maxHedgeRetries: 3,
         fuseFailStopPercent: 30,

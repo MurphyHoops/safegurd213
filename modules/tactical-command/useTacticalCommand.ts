@@ -23,7 +23,8 @@ const DEFAULT_CONFIG: ActionConfig = {
     }
 };
 
-export const useTacticalCommand = () => {
-    const [config, setConfig] = usePersistedState<ActionConfig>('SCANNER_ACTION_CONFIG', DEFAULT_CONFIG);
+export const useTacticalCommand = (strategyId?: string) => {
+    const suffix = strategyId ? `_${strategyId}` : '';
+    const [config, setConfig] = usePersistedState<ActionConfig>(`SCANNER_ACTION_CONFIG${suffix}`, DEFAULT_CONFIG);
     return { config, setConfig };
 };

@@ -20,6 +20,7 @@ interface Props {
     onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
     onResetBalance: (amount: number) => void;
     onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number) => void;
+    onVerifyPosition: (position: Position) => void;
     onOpenLogs: () => void;
     onOpenTradeModal: () => void;
     isSimulating: boolean;
@@ -47,6 +48,7 @@ const Dashboard: React.FC<Props> = ({
     onClosePosition,
     onShowHistory,
     onOpenChart,
+    onVerifyPosition,
     settings,
     onOpenScanner,
     onRowLongPress,
@@ -82,6 +84,7 @@ const Dashboard: React.FC<Props> = ({
                 onShowHistory={onShowHistory}
                 onClosePosition={onClosePosition}
                 onOpenChart={onOpenChart}
+                onVerifyPosition={onVerifyPosition}
                 onOpenScanner={onOpenScanner}
                 onOpenTradeModal={onOpenTradeModal}
                 onBatchClose={onBatchClose}

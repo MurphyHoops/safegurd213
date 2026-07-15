@@ -16,6 +16,7 @@ interface Props {
     onRemoveSignal?: (uniqueId: string) => void;
     actionConfig?: ActionConfig | null;
     onLog?: (type: any, message: string) => void;
+    strategyId?: string;
 }
 
 const DEFAULT_CONFIG: List4Config = { 
@@ -47,10 +48,10 @@ const DEFAULT_CONFIG: List4Config = {
     }
 };
 
-export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData, executeTradeSafe, list3Config, realPrices, activePositions, onRemoveSignal, actionConfig, onLog }) => {
+export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData, executeTradeSafe, list3Config, realPrices, activePositions, onRemoveSignal, actionConfig, onLog, strategyId }) => {
     
     // PASS list3Config TO HOOK
-    const { config, setConfig, list4, removeSymbol, clearItems } = useMomentumAudit(candidates, DEFAULT_CONFIG, list3Config, realPrices, activePositions, onRemoveSignal);
+    const { config, setConfig, list4, removeSymbol, clearItems } = useMomentumAudit(candidates, DEFAULT_CONFIG, list3Config, realPrices, activePositions, onRemoveSignal, strategyId);
     
     // Track executed signals to prevent duplicate orders for the same signal event
     // Map stores signalId -> status ('SUCCESS' | lastFailureTime)

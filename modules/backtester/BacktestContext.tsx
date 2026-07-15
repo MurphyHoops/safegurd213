@@ -64,6 +64,11 @@ export const BacktestProvider: React.FC<{
         marginRatio: 999
     });
     const [positions, setPositions] = useState<Position[]>([]);
+    const positionsRef = React.useRef(positions);
+    React.useEffect(() => {
+        positionsRef.current = positions;
+    }, [positions]);
+
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [tradeLogs, setTradeLogs] = useState<TradeLog[]>([]);
     const [realPrices, setRealPrices] = useState<Record<string, number>>({});
@@ -134,7 +139,8 @@ export const BacktestProvider: React.FC<{
         
         // Reconcile Positions and Calculate totalPnL
         let totalPnL = 0;
-        const updatedPositions = positions.map(p => {
+        const currentPositions = positionsRef.current;
+        const updatedPositions = currentPositions.map(p => {
             let currentPrice = newPrices[p.symbol] || p.markPrice || p.entryPrice;
             if (!currentPrice) return p;
 
@@ -163,8 +169,13 @@ export const BacktestProvider: React.FC<{
             
             const maxPct = p.maxPnLPercent !== undefined ? Math.max(p.maxPnLPercent, upnlPct) : (upnlPct > 0 ? upnlPct : 0);
             
-            // Only return new object if something actually changed to avoid unnecessary re-renders
-            if (p.markPrice === currentPrice && p.unrealizedPnL === upnl && p.unrealizedPnLPercentage === upnlPct) {
+            // Only return new object if something actually changed to avoid unnecessary re-renders (using safe float threshold)
+            const priceDiff = Math.abs((p.markPrice || 0) - currentPrice);
+            const pnlDiff = Math.abs((p.unrealizedPnL || 0) - upnl);
+            const pctDiff = Math.abs((p.unrealizedPnLPercentage || 0) - upnlPct);
+            const maxPctDiff = Math.abs((p.maxPnLPercent || 0) - maxPct);
+
+            if (priceDiff < 1e-6 && pnlDiff < 1e-6 && pctDiff < 1e-6 && maxPctDiff < 1e-6) {
                 return p;
             }
 
@@ -177,7 +188,7 @@ export const BacktestProvider: React.FC<{
             };
         });
 
-        const hasChanged = updatedPositions.some((p, i) => p !== positions[i]);
+        const hasChanged = updatedPositions.some((p, i) => p !== currentPositions[i]);
         if (hasChanged) {
             setPositions(updatedPositions);
         }

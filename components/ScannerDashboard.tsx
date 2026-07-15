@@ -6,7 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { binanceRealtimeService } from "../services/realtime/BinanceRealtimeService";
-import { ScannerSettings, PositionSide, Position, KLine } from "../types";
+import { ScannerSettings, PositionSide, Position, KLine, StrategyItem } from "../types";
 import {
   X,
   Crosshair,
@@ -23,7 +23,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { audioService } from "../services/audioService";
-import { normalizeSymbol } from "../services/symbolUtils";
+import { normalizeSymbol, resolvePrice } from "../services/symbolUtils";
 import KlineChartModal from "./KlineChartModal";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { usePersistedState } from "../hooks/usePersistedState";
@@ -39,17 +39,20 @@ import { TacticalCommandModule } from "../modules/tactical-command";
 const MemoizedGrandCrossingModule = React.memo(GrandCrossingModule, (prev, next) => {
   return prev.networkStatus === next.networkStatus && 
          prev.candidates === next.candidates && 
-         prev.directMode === next.directMode;
+         prev.directMode === next.directMode &&
+         prev.strategyId === next.strategyId;
 });
 const MemoizedStructureAuditModule = React.memo(StructureAuditModule, (prev, next) => {
   return prev.candidates === next.candidates && 
          prev.activePositions === next.activePositions && 
-         prev.directMode === next.directMode;
+         prev.directMode === next.directMode &&
+         prev.strategyId === next.strategyId;
 });
 const MemoizedMomentumAuditModule = React.memo(MomentumAuditModule, (prev, next) => {
   return prev.candidates === next.candidates && 
          prev.activePositions === next.activePositions && 
-         prev.list3Config === next.list3Config;
+         prev.list3Config === next.list3Config &&
+         prev.strategyId === next.strategyId;
 });
 
 // --- MIRRORED MODULES ---
@@ -87,6 +90,7 @@ interface Props {
     signalTf?: string,
     signalCandle?: any,
     entryEmas?: any,
+    extraProps?: Partial<Position>,
   ) => void;
   onClosePosition: (symbol: string, side: PositionSide) => void;
   realPrices: Record<string, number>;
@@ -101,6 +105,30 @@ interface Props {
   onBacktestPositionsUpdate?: (positions: Position[]) => void;
   onBatchClose?: () => void;
 }
+
+const UnconfiguredColumn: React.FC<{
+  title: string;
+  description: string;
+}> = ({ title, description }) => {
+  return (
+    <div className="flex-1 min-w-[260px] border-r border-slate-800 bg-slate-900/30 flex flex-col h-full animate-in fade-in duration-300">
+      <div className="p-3 border-b border-slate-800 bg-slate-950/25">
+        <div className="font-bold text-slate-500 text-[10px] flex items-center gap-1.5 uppercase">
+          <Settings size={12} className="opacity-40" /> {title}
+        </div>
+      </div>
+      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-10 h-10 rounded-full bg-slate-800/20 border border-slate-800/40 flex items-center justify-center text-slate-500 mb-4 animate-pulse">
+          <Settings size={18} className="opacity-40" />
+        </div>
+        <div className="text-[10px] font-bold text-slate-400 mb-1.5 font-sans">【未载入运行参数】</div>
+        <div className="text-[10px] text-slate-500 max-w-[200px] leading-relaxed font-sans">
+          {description}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const ScannerDashboardInner: React.FC<
   Props & {
@@ -191,6 +219,144 @@ const ScannerDashboardInner: React.FC<
       }
     }
   }, [backtestPositions, onBacktestPositionsUpdate]);
+
+  // --- MULTI-STRATEGY CONCURRENT MONITORING STATE ---
+  const [strategies, setStrategies] = usePersistedState<StrategyItem[]>(
+    "SCANNER_STRATEGIES_LIST",
+    [
+      { id: "strat-1", name: "自动选币 1", active: true },
+      { id: "strat-2", name: "自动选币 2", active: true },
+      { id: "strat-3", name: "自动选币 3", active: false },
+    ]
+  );
+  const [selectedStrategyId, setSelectedStrategyId] = usePersistedState<string>(
+    "SCANNER_SELECTED_STRATEGY_ID",
+    "strat-1"
+  );
+
+  const handleSelectStrategy = useCallback((id: string) => {
+    setSelectedStrategyId(id);
+  }, [setSelectedStrategyId]);
+
+  const handleAddStrategy = useCallback(() => {
+    setStrategies((prev) => {
+      const nextNum = prev.length + 1;
+      const newId = `strat-${Date.now()}`;
+      return [...prev, { id: newId, name: `自动选币 ${nextNum}`, active: true, unconfigured: true }];
+    });
+  }, [setStrategies]);
+
+  const handleActivateStrategy = useCallback(() => {
+    setStrategies((prev) =>
+      prev.map((s) => (s.id === selectedStrategyId ? { ...s, unconfigured: false } : s))
+    );
+    if (onLog) onLog("SUCCESS", `[策略激活] 策略已成功激活并载入标准默认参数。`);
+  }, [selectedStrategyId, setStrategies, onLog]);
+
+  const handleDeleteStrategy = useCallback((id: string) => {
+    setStrategies((prev) => {
+      if (prev.length <= 1) return prev;
+      const filtered = prev.filter((s) => s.id !== id);
+      if (selectedStrategyId === id && filtered.length > 0) {
+        setSelectedStrategyId(filtered[0].id);
+      }
+      return filtered;
+    });
+  }, [selectedStrategyId, setSelectedStrategyId, setStrategies]);
+
+  const handleRenameStrategy = useCallback((id: string, name: string) => {
+    setStrategies((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, name } : s))
+    );
+  }, [setStrategies]);
+
+  const handleExportStrategy = useCallback((id: string) => {
+    const strat = strategies.find((s) => s.id === id);
+    const name = strat ? strat.name : id;
+    
+    const getStoredJSON = (key: string) => {
+      const raw = localStorage.getItem(key);
+      try {
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const config24H = getStoredJSON(`SCANNER_CONFIG_24H_${id}`);
+    const config8AM = getStoredJSON(`SCANNER_CONFIG_8AM_${id}`);
+    const list2Config = getStoredJSON(`SCANNER_LIST2_CONFIG_${id}`);
+    const list3Config = getStoredJSON(`SCANNER_LIST3_CONFIG_${id}`);
+    const list4Config = getStoredJSON(`SCANNER_LIST4_CONFIG_${id}`);
+    const list6Config = getStoredJSON(`SCANNER_ACTION_CONFIG_${id}`);
+
+    const exportData = {
+      version: "1.0",
+      strategyId: id,
+      strategyName: name,
+      configs: {
+        SCANNER_CONFIG_24H: config24H,
+        SCANNER_CONFIG_8AM: config8AM,
+        SCANNER_LIST2_CONFIG: list2Config,
+        SCANNER_LIST3_CONFIG: list3Config,
+        SCANNER_LIST4_CONFIG: list4Config,
+        SCANNER_ACTION_CONFIG: list6Config
+      }
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Strategy_${name.replace(/\s+/g, "_")}_Config.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    if (onLog) onLog("SUCCESS", `[策略导出] 导出策略 "${name}" 成功。`);
+  }, [strategies, onLog]);
+
+  const handleImportStrategy = useCallback((id: string, file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        const data = JSON.parse(text);
+        if (data && data.configs) {
+          const saveToStorage = (key: string, val: any) => {
+            if (val) localStorage.setItem(key, JSON.stringify(val));
+          };
+
+          saveToStorage(`SCANNER_CONFIG_24H_${id}`, data.configs.SCANNER_CONFIG_24H);
+          saveToStorage(`SCANNER_CONFIG_8AM_${id}`, data.configs.SCANNER_CONFIG_8AM);
+          saveToStorage(`SCANNER_LIST2_CONFIG_${id}`, data.configs.SCANNER_LIST2_CONFIG);
+          saveToStorage(`SCANNER_LIST3_CONFIG_${id}`, data.configs.SCANNER_LIST3_CONFIG);
+          saveToStorage(`SCANNER_LIST4_CONFIG_${id}`, data.configs.SCANNER_LIST4_CONFIG);
+          saveToStorage(`SCANNER_ACTION_CONFIG_${id}`, data.configs.SCANNER_ACTION_CONFIG);
+
+          // Mark strategy as configured when config is imported successfully
+          setStrategies((prev) =>
+            prev.map((s) => (s.id === id ? { ...s, unconfigured: false } : s))
+          );
+
+          setSelectedStrategyId("");
+          setTimeout(() => {
+            setSelectedStrategyId(id);
+            if (onLog) {
+              const strat = strategies.find((s) => s.id === id);
+              onLog("SUCCESS", `[策略导入] 导入策略到 "${strat ? strat.name : id}" 成功，系统配置已热重载。`);
+            }
+          }, 50);
+        } else {
+          alert("无效的策略配置文件：缺少 configs 属性");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("导入解析失败，请确保文件格式为 JSON 合规配置");
+      }
+    };
+    reader.readAsText(file);
+  }, [strategies, setSelectedStrategyId, onLog]);
 
   // --- GLOBAL SCANNER CONFIG ---
   const [activeMode, setActiveMode] = usePersistedState<"24H" | "8AM">(
@@ -285,7 +451,7 @@ const ScannerDashboardInner: React.FC<
   }, []); // Run once
 
   const [config24H, setConfig24H] = usePersistedState<ScanConfig>(
-    "SCANNER_CONFIG_24H",
+    `SCANNER_CONFIG_24H_${selectedStrategyId || 'strat-1'}`,
     {
       timeBasis: "24H",
       source: "BOTH",
@@ -303,10 +469,13 @@ const ScannerDashboardInner: React.FC<
         minCoinsPercent: 50,
         autoRecoverMinutes: 30,
       },
+      instantOpenEnabled: false,
+      instantReopenEnabled: false,
+      instantOpenDirection: "LONG",
     },
   );
   const [config8AM, setConfig8AM] = usePersistedState<ScanConfig>(
-    "SCANNER_CONFIG_8AM",
+    `SCANNER_CONFIG_8AM_${selectedStrategyId || 'strat-1'}`,
     {
       timeBasis: "8AM",
       source: "GAINERS",
@@ -324,6 +493,9 @@ const ScannerDashboardInner: React.FC<
         minCoinsPercent: 50,
         autoRecoverMinutes: 30,
       },
+      instantOpenEnabled: false,
+      instantReopenEnabled: false,
+      instantOpenDirection: "LONG",
     },
   );
 
@@ -663,8 +835,30 @@ const ScannerDashboardInner: React.FC<
     scannerMode === "BACKTEST" ? backtestPrices : livePrices; // Mirrored modules use BacktestContext for prices
   const currentPositions =
     scannerMode === "BACKTEST" ? backtestPositions : livePositions;
+
+  const isUnconfigured = useMemo(() => {
+    const activeStrat = strategies.find((s) => s.id === selectedStrategyId);
+    return activeStrat?.unconfigured === true;
+  }, [strategies, selectedStrategyId]);
+
+  const filteredPositions = useMemo(() => {
+    if (isUnconfigured) return [];
+    const activeStratId = selectedStrategyId || 'strat-1';
+    return currentPositions.filter((p) => {
+      const pId = p.strategyId || 'strat-1';
+      return pId === activeStratId;
+    });
+  }, [currentPositions, selectedStrategyId, isUnconfigured]);
+
   const currentBalance =
     scannerMode === "BACKTEST" ? backtestAccount.marginBalance : liveBalance;
+
+  // Clear transient lists immediately on strategy selection changes to prevent layout leaks
+  useEffect(() => {
+    setList1Candidates([]);
+    setList2Results([]);
+    setList3Results([]);
+  }, [selectedStrategyId]);
 
   // --- REFS FOR STABLE CALLBACKS ---
   const actionConfigRef = useRef<ActionConfig | null>(null);
@@ -674,6 +868,8 @@ const ScannerDashboardInner: React.FC<
   const liveBalanceRef = useRef<number>(0);
   const virtualTimeRef = useRef<number>(0);
   const currentPricesRef = useRef<Record<string, number>>({});
+  const scanConfigRef = useRef<ScanConfig | null>(null);
+  const list1CandidatesRef = useRef<ScannerItem[]>([]);
 
   // Render-phase Ref Synchronization: Synchronously assigns incoming props/state to mutable refs
   // during the render cycle itself. This bypasses React's asynchronous commit phase (useEffect)
@@ -686,6 +882,8 @@ const ScannerDashboardInner: React.FC<
   liveBalanceRef.current = liveBalance;
   virtualTimeRef.current = virtualTime;
   currentPricesRef.current = currentPrices;
+  scanConfigRef.current = scanConfig;
+  list1CandidatesRef.current = list1Candidates;
 
   const executeTradeSafe = useCallback(
     (
@@ -696,6 +894,7 @@ const ScannerDashboardInner: React.FC<
       signalTf?: string,
       signalCandle?: any,
       entryEmas?: any,
+      extraProps?: Partial<Position>,
     ) => {
       const cleanSymbol = normalizeSymbol(symbol);
 
@@ -787,7 +986,7 @@ const ScannerDashboardInner: React.FC<
         return false;
       }
 
-      const isAuto = reason.includes("Auto");
+      const isAuto = reason.includes("Auto") && !reason.includes("List1 Auto");
       if (isAuto && !config.autoExecute) {
         if (onLog)
           onLog(
@@ -797,6 +996,8 @@ const ScannerDashboardInner: React.FC<
         console.warn(`[Trade Reject] Auto-execute is OFF for ${cleanSymbol}`);
         return false;
       }
+      
+      console.log(`[Trade Attempt] ${cleanSymbol} @ ${price} (Reason: ${reason})`);
 
       const activePositions =
         scannerMode === "BACKTEST"
@@ -884,6 +1085,11 @@ const ScannerDashboardInner: React.FC<
         return false;
       }
 
+      const mergedExtraProps = {
+        strategyId: selectedStrategyId,
+        ...extraProps,
+      };
+
       if (scannerMode === "BACKTEST") {
         const qty = amount / price;
         const newPos: Position = {
@@ -900,6 +1106,7 @@ const ScannerDashboardInner: React.FC<
           entryId: Date.now().toString(),
           isBacktestRecord: true,
           backtestEntryTime: virtualTimeRef.current,
+          strategyId: selectedStrategyId,
         };
         setPositions((prev) => [...prev, newPos]);
         if (onLog)
@@ -917,6 +1124,7 @@ const ScannerDashboardInner: React.FC<
           signalTf,
           signalCandle,
           entryEmas,
+          mergedExtraProps,
         );
         audioService.speak("自动开仓执行");
         if (onLog)
@@ -927,8 +1135,71 @@ const ScannerDashboardInner: React.FC<
         return true;
       }
     },
-    [scannerMode, setPositions, onLog, onOpenPosition],
+    [scannerMode, setPositions, onLog, onOpenPosition, selectedStrategyId],
   );
+
+  // --- LIST 1 INSTANT OPEN AUTOMATION ---
+  const list1OpenedSymbolsRef = useRef<Set<string>>(new Set());
+  const list1LastTriggerTimeRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    const instantOpen = scanConfig?.instantOpenEnabled;
+    const instantOpenAfterClose = scanConfig?.instantReopenEnabled;
+    const openDirection = scanConfig?.instantOpenDirection || "LONG";
+
+    // 1. Clean up symbols that are no longer in list1Candidates to allow reopening if they drop out and come back
+    const currentList1Symbols = new Set(list1Candidates.map(c => normalizeSymbol(c.symbol)));
+    list1OpenedSymbolsRef.current.forEach(sym => {
+      if (!currentList1Symbols.has(sym)) {
+        list1OpenedSymbolsRef.current.delete(sym);
+        delete list1LastTriggerTimeRef.current[sym];
+      }
+    });
+
+    if (!instantOpen && !instantOpenAfterClose) {
+      return;
+    }
+
+    const now = Date.now();
+
+    list1Candidates.forEach(item => {
+      const symbol = normalizeSymbol(item.symbol);
+      const hasActivePosition = filteredPositions.some(p => normalizeSymbol(p.symbol) === symbol);
+
+      if (hasActivePosition) {
+        // If it currently has a position, mark it as opened so if instantOpen is true, we don't duplicate/re-open
+        list1OpenedSymbolsRef.current.add(symbol);
+        return;
+      }
+
+      // Prevent redundant triggers during state update latency with a 5-second cooldown
+      const lastTrigger = list1LastTriggerTimeRef.current[symbol] || 0;
+      if (now - lastTrigger < 5000) {
+        return;
+      }
+
+      // If it does not have an active position:
+      // Case A: instantOpenAfterClose is true -> always open if it is in list1
+      // Case B: instantOpen is true AND we haven't opened it yet during its stay in list1 -> open
+      const shouldOpen = instantOpenAfterClose || (instantOpen && !list1OpenedSymbolsRef.current.has(symbol));
+
+      if (shouldOpen) {
+        const price = resolvePrice(item.symbol, currentPrices, item.price);
+        if (price > 0) {
+          list1OpenedSymbolsRef.current.add(symbol);
+          list1LastTriggerTimeRef.current[symbol] = now; // Set cooldown immediately to block immediate race conditions
+          const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
+          console.log(`[List 1 Auto Open] Triggering trade for ${symbol} @ ${price} (${side})`);
+          executeTradeSafe(
+            symbol,
+            side,
+            price,
+            `[List1 Auto] ${instantOpenAfterClose ? 'ReopenAfterClose' : 'InstantOpen'}`
+          );
+        }
+      }
+    });
+  }, [list1Candidates, scanConfig, filteredPositions, currentPrices, executeTradeSafe]);
 
   const handleClosePositionInternal = useCallback(
     (symbol: string, side: PositionSide) => {
@@ -970,53 +1241,48 @@ const ScannerDashboardInner: React.FC<
       batchCloseAll();
       if (onLog) onLog("SUCCESS", "[回测] 全部清仓执行完毕");
     } else {
-      if (onBatchClose) {
-        onBatchClose();
-      } else {
-        currentPositions.forEach((p) =>
-          handleClosePositionInternal(p.symbol, p.side),
-        );
-      }
+      filteredPositions.forEach((p) =>
+        handleClosePositionInternal(p.symbol, p.side),
+      );
       if (onLog) onLog("SUCCESS", "战术执行: 全部清仓 (PANIC SELL)");
     }
   }, [
     scannerMode,
     batchCloseAll,
-    onBatchClose,
-    currentPositions,
+    filteredPositions,
     handleClosePositionInternal,
     onLog,
   ]);
 
   const handleSecureProfit = useCallback(() => {
-    const profitable = currentPositions.filter((p) => p.unrealizedPnL > 0);
+    const profitable = filteredPositions.filter((p) => p.unrealizedPnL > 0);
     profitable.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (profitable.length > 0 && onLog)
       onLog("INFO", `战术执行: 止盈落袋 (${profitable.length} 个仓位)`);
-  }, [currentPositions, handleClosePositionInternal, onLog]);
+  }, [filteredPositions, handleClosePositionInternal, onLog]);
 
   const handleCutLosses = useCallback(() => {
-    const losing = currentPositions.filter((p) => p.unrealizedPnL < 0);
+    const losing = filteredPositions.filter((p) => p.unrealizedPnL < 0);
     losing.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (losing.length > 0 && onLog)
       onLog("INFO", `战术执行: 一键止损 (${losing.length} 个仓位)`);
-  }, [currentPositions, handleClosePositionInternal, onLog]);
+  }, [filteredPositions, handleClosePositionInternal, onLog]);
 
   const handleCloseLongs = useCallback(() => {
-    const longs = currentPositions.filter((p) => p.side === PositionSide.LONG);
+    const longs = filteredPositions.filter((p) => p.side === PositionSide.LONG);
     longs.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (longs.length > 0 && onLog)
       onLog("INFO", `战术执行: 平多 (${longs.length} 个仓位)`);
-  }, [currentPositions, handleClosePositionInternal, onLog]);
+  }, [filteredPositions, handleClosePositionInternal, onLog]);
 
   const handleCloseShorts = useCallback(() => {
-    const shorts = currentPositions.filter(
+    const shorts = filteredPositions.filter(
       (p) => p.side === PositionSide.SHORT,
     );
     shorts.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (shorts.length > 0 && onLog)
       onLog("INFO", `战术执行: 平空 (${shorts.length} 个仓位)`);
-  }, [currentPositions, handleClosePositionInternal, onLog]);
+  }, [filteredPositions, handleClosePositionInternal, onLog]);
 
   const setScanConfig = useCallback(
     (update: React.SetStateAction<ScanConfig>) => {
@@ -1033,14 +1299,9 @@ const ScannerDashboardInner: React.FC<
     [scanConfig, activeMode, setActiveMode, setConfig24H, setConfig8AM],
   );
 
-  const scanConfigRef = useRef(scanConfig);
-  useEffect(() => {
-    scanConfigRef.current = scanConfig;
-  }, [scanConfig]);
-
   const safeSetChartData = useCallback((newData: any) => {
     // Merge with current list2Config to ensure chart analysis works in all modules
-    setChartData({ ...newData, list2Config: scanConfigRef.current.list2Config });
+    setChartData({ ...newData, list2Config: scanConfigRef.current?.list2Config });
   }, []);
 
   const memoizedBacktestProps = useMemo(
@@ -1198,9 +1459,31 @@ const ScannerDashboardInner: React.FC<
             </div>
           )}
 
+          {isUnconfigured && (
+            <div className="bg-indigo-950/85 border-b border-indigo-500/30 px-4 py-2.5 flex flex-col sm:flex-row items-start sm:items-center justify-between text-indigo-200 text-[11px] font-sans gap-3">
+              <div className="flex items-center gap-2">
+                <span className="flex h-2 w-2 relative shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                </span>
+                <span>
+                  💡 <b>这是一个全新创建的自动选币（策略）</b>。当前状态：<b>【未配置 / 参数默认为空】</b>。
+                  为保持干净环境，列表 1、2、3、4、5、6 已全部置空。请点击 <b>【导入策略】</b> 或右侧 <b>【激活并手动配置】</b> 载入基础运行参数。
+                </span>
+              </div>
+              <button
+                onClick={handleActivateStrategy}
+                className="bg-indigo-600 hover:bg-indigo-500 border border-indigo-400 text-white rounded px-3 py-1 text-xs font-bold transition-all cursor-pointer shadow-lg shadow-indigo-950/50 flex items-center gap-1 shrink-0"
+              >
+                ✨ 激活并手动配置
+              </button>
+            </div>
+          )}
+
           <div className="flex-1 flex overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
             <ErrorBoundary moduleName="1. 市场初筛">
               <MarketScannerModule
+                key={selectedStrategyId}
                 onCandidatesUpdate={handleList1Results}
                 setChartData={safeSetChartData}
                 directMode={directMode}
@@ -1211,11 +1494,24 @@ const ScannerDashboardInner: React.FC<
                 onStartBacktest={handleStartBacktest}
                 isSyncing={!!syncProgress}
                 backtestProps={memoizedBacktestProps}
+                strategies={strategies}
+                selectedStrategyId={selectedStrategyId}
+                onSelectStrategy={handleSelectStrategy}
+                onAddStrategy={handleAddStrategy}
+                onDeleteStrategy={handleDeleteStrategy}
+                onRenameStrategy={handleRenameStrategy}
+                onExportStrategy={handleExportStrategy}
+                onImportStrategy={handleImportStrategy}
               />
             </ErrorBoundary>
 
             <ErrorBoundary moduleName="2. 均线穿越">
-              {scannerMode === "BACKTEST" ? (
+              {isUnconfigured ? (
+                <UnconfiguredColumn
+                  title="2. 均线穿越 (CROSSOVER)"
+                  description="当前自动选币属于全新创建。金叉/死叉与压缩区间监控参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                />
+              ) : scannerMode === "BACKTEST" ? (
                 <BacktestGrandCrossingModule
                   candidates={list1Candidates}
                   onResultsUpdate={handleList2Results}
@@ -1230,6 +1526,7 @@ const ScannerDashboardInner: React.FC<
                 />
               ) : (
                 <MemoizedGrandCrossingModule
+                  key={selectedStrategyId}
                   networkStatus={networkStatus}
                   candidates={list1Candidates}
                   onResultsUpdate={handleList2Results}
@@ -1241,12 +1538,18 @@ const ScannerDashboardInner: React.FC<
                   onRemoveSignalReady={(fn) => {
                     list2RemoveSignalRef.current = fn;
                   }}
+                  strategyId={selectedStrategyId}
                 />
               )}
             </ErrorBoundary>
 
             <ErrorBoundary moduleName="3. 结构审计">
-              {scannerMode === "BACKTEST" ? (
+              {isUnconfigured ? (
+                <UnconfiguredColumn
+                  title="3. 结构审计 (STRUCTURE)"
+                  description="当前自动选币属于全新创建。二次支撑、阻力与趋势审计参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                />
+              ) : scannerMode === "BACKTEST" ? (
                 <BacktestStructureAuditModule
                   candidates={list2Results}
                   onResultsUpdate={handleList3Results}
@@ -1257,12 +1560,13 @@ const ScannerDashboardInner: React.FC<
                   realPrices={currentPrices}
                   setChartData={safeSetChartData}
                   executeTradeSafe={executeTradeSafe}
-                  activePositions={currentPositions}
+                  activePositions={filteredPositions}
                   directMode={directMode}
                   actionConfig={actionConfig}
                 />
               ) : (
                 <MemoizedStructureAuditModule
+                  key={selectedStrategyId}
                   candidates={list2Results}
                   onResultsUpdate={handleList3Results}
                   onConfigUpdate={setList3Config}
@@ -1272,61 +1576,86 @@ const ScannerDashboardInner: React.FC<
                   realPrices={currentPrices}
                   setChartData={safeSetChartData}
                   executeTradeSafe={executeTradeSafe}
-                  activePositions={currentPositions}
+                  activePositions={filteredPositions}
                   directMode={directMode}
                   actionConfig={actionConfig}
+                  strategyId={selectedStrategyId}
                 />
               )}
             </ErrorBoundary>
 
             <ErrorBoundary moduleName="4. 动能审计">
-              {scannerMode === "BACKTEST" ? (
+              {isUnconfigured ? (
+                <UnconfiguredColumn
+                  title="4. 动能审计 (MOMENTUM)"
+                  description="当前自动选币属于全新创建。突破突破监控、防追高熔断与动态方向锁等监控参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                />
+              ) : scannerMode === "BACKTEST" ? (
                 <BacktestMomentumAuditModule
                   candidates={list3Results}
                   setChartData={safeSetChartData}
                   executeTradeSafe={executeTradeSafe}
                   list3Config={list3Config}
                   realPrices={currentPrices}
-                  activePositions={currentPositions}
+                  activePositions={filteredPositions}
                   onRemoveSignal={handleRemoveSignal}
                   actionConfig={actionConfig}
                   onLog={onLog}
                 />
               ) : (
                 <MemoizedMomentumAuditModule
+                  key={selectedStrategyId}
                   candidates={list3Results}
                   setChartData={safeSetChartData}
                   executeTradeSafe={executeTradeSafe}
                   list3Config={list3Config}
                   realPrices={currentPrices}
-                  activePositions={currentPositions}
+                  activePositions={filteredPositions}
                   onRemoveSignal={handleRemoveSignal}
                   actionConfig={actionConfig}
                   onLog={onLog}
+                  strategyId={selectedStrategyId}
                 />
               )}
             </ErrorBoundary>
 
             <ErrorBoundary moduleName="5. 战场实况">
-              <LiveBattlefieldModule
-                positions={currentPositions}
-                realPrices={currentPrices}
-                setChartData={safeSetChartData}
-                onClosePosition={handleClosePositionInternal}
-                onStatsUpdate={handleLiveStatsUpdate}
-              />
+              {isUnconfigured ? (
+                <UnconfiguredColumn
+                  title="5. 战场实况 (BATTLEFIELD)"
+                  description="当前自动选币属于全新创建，没有任何持仓。策略激活并生成交易信号开仓后，持仓将在此显示。"
+                />
+              ) : (
+                <LiveBattlefieldModule
+                  key={selectedStrategyId}
+                  positions={filteredPositions}
+                  realPrices={currentPrices}
+                  setChartData={safeSetChartData}
+                  onClosePosition={handleClosePositionInternal}
+                  onStatsUpdate={handleLiveStatsUpdate}
+                />
+              )}
             </ErrorBoundary>
 
             <ErrorBoundary moduleName="6. 战术终端">
-              <TacticalCommandModule
-                currentStats={liveStats}
-                onConfigUpdate={setActionConfig}
-                onPanicSell={handlePanicSell}
-                onSecureProfit={handleSecureProfit}
-                onCutLosses={handleCutLosses}
-                onCloseLongs={handleCloseLongs}
-                onCloseShorts={handleCloseShorts}
-              />
+              {isUnconfigured ? (
+                <UnconfiguredColumn
+                  title="6. 战术终端 (COMMAND)"
+                  description="当前自动选币属于全新创建。单仓金额、杠杆、自动/变量开仓、防爆熔断器等终端参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                />
+              ) : (
+                <TacticalCommandModule
+                  key={selectedStrategyId}
+                  currentStats={liveStats}
+                  onConfigUpdate={setActionConfig}
+                  onPanicSell={handlePanicSell}
+                  onSecureProfit={handleSecureProfit}
+                  onCutLosses={handleCutLosses}
+                  onCloseLongs={handleCloseLongs}
+                  onCloseShorts={handleCloseShorts}
+                  strategyId={selectedStrategyId}
+                />
+              )}
             </ErrorBoundary>
           </div>
 

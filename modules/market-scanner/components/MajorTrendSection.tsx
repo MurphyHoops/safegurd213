@@ -25,7 +25,12 @@ const DEFAULT_CONFIG: MajorTrendConfig = {
     sidewaysDays: 7,
     sidewaysMaxPump: 10,
     sidewaysMaxDrop: 10,
-    autoTransfer: false
+    autoTransfer: false,
+    enableLong: true,
+    enableShort: true,
+    enableSideways: true,
+    maxExtremeDistanceLong: 5,
+    maxExtremeDistanceShort: 5
 };
 
 export const MajorTrendSection: React.FC<Props> = ({ 
@@ -105,28 +110,137 @@ export const MajorTrendSection: React.FC<Props> = ({
                     </div>
 
                     {/* Core Discovery Args */}
-                    <div className="bg-black/20 p-1.5 rounded border border-slate-800/50">
-                        <div className="text-[8px] font-bold text-slate-500 uppercase mb-1 flex justify-between">
-                            <span>Stage 1: 核心参数</span>
+                    <div className="bg-black/20 p-2 rounded border border-slate-800/50 space-y-2.5">
+                        {/* Header Row */}
+                        <div className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">核心参数</span>
+                            <div className="flex items-center gap-1.5 bg-black/40 border border-slate-800 px-2 py-0.5 rounded">
+                                <span className="text-[8.5px] text-slate-500 font-medium">回测周期</span>
+                                <SmartNumberInput 
+                                    value={activeConfig.lookbackDays} 
+                                    onChange={v => updateField('lookbackDays', v)}
+                                    className="w-10 bg-transparent font-mono text-[10px] text-right outline-none text-white font-bold"
+                                />
+                                <span className="text-[8.5px] text-slate-500">天</span>
+                            </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-1">
-                            <InputField label="回测周期" value={activeConfig.lookbackDays} onChange={v => updateField('lookbackDays', v)} />
-                            <InputField label="极值距离" value={activeConfig.maxExtremeDistance} onChange={v => updateField('maxExtremeDistance', v)} />
-                            <InputField label="历史跌幅" value={activeConfig.minHistoryDrop} onChange={v => updateField('minHistoryDrop', v)} color="text-rose-400" />
-                            <InputField label="历史涨幅" value={activeConfig.minHistoryPump} onChange={v => updateField('minHistoryPump', v)} color="text-emerald-400" />
+
+                        {/* Dual Column Layout (多 on Left, 空 on Right) */}
+                        <div className="grid grid-cols-2 gap-2.5 text-[9px]">
+                            {/* Column 1: 多 */}
+                            <div className="space-y-2 pr-1 border-r border-slate-800/50">
+                                <div className="flex items-center justify-between">
+                                    <span className={`font-bold uppercase flex items-center gap-1 ${activeConfig.enableLong !== false ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                        <span className={`w-1.5 h-1.5 rounded-full ${activeConfig.enableLong !== false ? 'bg-emerald-500' : 'bg-slate-700'}`} />
+                                        多 (开关)
+                                    </span>
+                                    <button 
+                                        onClick={() => updateField('enableLong', activeConfig.enableLong !== false ? false : true)}
+                                        className={`relative inline-flex h-3.5 w-6.5 items-center rounded-full transition-colors focus:outline-none ${activeConfig.enableLong !== false ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                                    >
+                                        <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${activeConfig.enableLong !== false ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                                    </button>
+                                </div>
+
+                                <div className={`space-y-1.5 transition-all duration-200 ${activeConfig.enableLong !== false ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">历史跌幅大于</div>
+                                        <div className="flex items-center justify-between">
+                                            <SmartNumberInput 
+                                                value={activeConfig.minHistoryDrop} 
+                                                onChange={v => updateField('minHistoryDrop', v)}
+                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-rose-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">%</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">最低点到当前价格涨幅低于</div>
+                                        <div className="flex items-center justify-between">
+                                            <SmartNumberInput 
+                                                value={activeConfig.maxExtremeDistanceLong !== undefined ? activeConfig.maxExtremeDistanceLong : activeConfig.maxExtremeDistance} 
+                                                onChange={v => {
+                                                    updateField('maxExtremeDistanceLong', v);
+                                                    updateField('maxExtremeDistance', v);
+                                                }}
+                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-emerald-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Column 2: 空 */}
+                            <div className="space-y-2 pl-1">
+                                <div className="flex items-center justify-between">
+                                    <span className={`font-bold uppercase flex items-center gap-1 ${activeConfig.enableShort !== false ? 'text-rose-400' : 'text-slate-500'}`}>
+                                        <span className={`w-1.5 h-1.5 rounded-full ${activeConfig.enableShort !== false ? 'bg-rose-500' : 'bg-slate-700'}`} />
+                                        空 (开关)
+                                    </span>
+                                    <button 
+                                        onClick={() => updateField('enableShort', activeConfig.enableShort !== false ? false : true)}
+                                        className={`relative inline-flex h-3.5 w-6.5 items-center rounded-full transition-colors focus:outline-none ${activeConfig.enableShort !== false ? 'bg-rose-600' : 'bg-slate-700'}`}
+                                    >
+                                        <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${activeConfig.enableShort !== false ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                                    </button>
+                                </div>
+
+                                <div className={`space-y-1.5 transition-all duration-200 ${activeConfig.enableShort !== false ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">历史涨幅大于</div>
+                                        <div className="flex items-center justify-between">
+                                            <SmartNumberInput 
+                                                value={activeConfig.minHistoryPump} 
+                                                onChange={v => updateField('minHistoryPump', v)}
+                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-emerald-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">%</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">最高点到当前价格跌幅低于</div>
+                                        <div className="flex items-center justify-between">
+                                            <SmartNumberInput 
+                                                value={activeConfig.maxExtremeDistanceShort !== undefined ? activeConfig.maxExtremeDistanceShort : activeConfig.maxExtremeDistance} 
+                                                onChange={v => {
+                                                    updateField('maxExtremeDistanceShort', v);
+                                                    updateField('maxExtremeDistance', v);
+                                                }}
+                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-rose-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
                     {/* Sideways Filter */}
                     <div className="bg-black/20 p-1.5 rounded border border-slate-800/50">
-                        <div className="text-[8px] font-bold text-slate-500 uppercase mb-1">Stage 1: 横盘蓄势 (相对Z天)</div>
-                        <div className="grid grid-cols-1 gap-1">
-                            <div className="grid grid-cols-3 gap-1">
-                                <InputField label="Z天前" value={activeConfig.sidewaysDays} onChange={v => updateField('sidewaysDays', v)} />
-                                <InputField label="涨<A%" value={activeConfig.sidewaysMaxPump} onChange={v => updateField('sidewaysMaxPump', v)} />
-                                <InputField label="跌<B%" value={activeConfig.sidewaysMaxDrop} onChange={v => updateField('sidewaysMaxDrop', v)} />
-                            </div>
+                        <div className="flex items-center justify-between mb-1">
+                            <div className="text-[8px] font-bold text-slate-500 uppercase">Stage 1: 横盘蓄势 (相对Z天)</div>
+                            <button 
+                                onClick={() => updateField('enableSideways', activeConfig.enableSideways !== false ? false : true)}
+                                className={`relative inline-flex h-3 w-5.5 items-center rounded-full transition-colors focus:outline-none ${activeConfig.enableSideways !== false ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                            >
+                                <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${activeConfig.enableSideways !== false ? 'translate-x-3' : 'translate-x-0.5'}`} />
+                            </button>
                         </div>
+                        {activeConfig.enableSideways !== false ? (
+                            <div className="grid grid-cols-1 gap-1">
+                                <div className="grid grid-cols-3 gap-1">
+                                    <InputField label="Z天前" value={activeConfig.sidewaysDays} onChange={v => updateField('sidewaysDays', v)} />
+                                    <InputField label="涨<A%" value={activeConfig.sidewaysMaxPump} onChange={v => updateField('sidewaysMaxPump', v)} />
+                                    <InputField label="跌<B%" value={activeConfig.sidewaysMaxDrop} onChange={v => updateField('sidewaysMaxDrop', v)} />
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="text-[8px] text-slate-500 italic py-1 text-center">横盘蓄势过滤已停用</div>
+                        )}
                     </div>
 
                     {/* Action Button */}

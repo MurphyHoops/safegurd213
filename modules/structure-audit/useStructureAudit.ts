@@ -29,10 +29,16 @@ export const useStructureAudit = (
   initialConfig: List3Config,
   realPrices: Record<string, number>,
   directMode: boolean = false,
+  strategyId?: string,
 ) => {
+  const suffix = strategyId ? `_${strategyId}` : "";
+  const configKey = `SCANNER_LIST3_CONFIG${suffix}`;
+  const cacheMapKey = `SCANNER_LIST3_CACHE_MAP${suffix}`;
+  const expiredSignalsKey = `SCANNER_LIST3_EXPIRED_SIGNALS${suffix}`;
+
   // --- STATE ---
   const [config, setConfig] = usePersistedState<List3Config>(
-    "SCANNER_LIST3_CONFIG",
+    configKey,
     initialConfig,
   );
 
@@ -65,7 +71,7 @@ export const useStructureAudit = (
 
   const [list3, setList3] = useState<ScannerItem[]>(() => {
     try {
-      const saved = localStorage.getItem("SCANNER_LIST3_CACHE_MAP");
+      const saved = localStorage.getItem(cacheMapKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
@@ -91,7 +97,7 @@ export const useStructureAudit = (
     new Map(
       (() => {
         try {
-          const saved = localStorage.getItem("SCANNER_LIST3_CACHE_MAP");
+          const saved = localStorage.getItem(cacheMapKey);
           if (saved) {
             const parsed = JSON.parse(saved);
             return Array.isArray(parsed)
@@ -113,7 +119,7 @@ export const useStructureAudit = (
     new Set(
       (() => {
         try {
-          const saved = localStorage.getItem("SCANNER_LIST3_EXPIRED_SIGNALS");
+          const saved = localStorage.getItem(expiredSignalsKey);
           if (saved) {
             const parsed = JSON.parse(saved);
             if (Array.isArray(parsed)) {
@@ -131,7 +137,7 @@ export const useStructureAudit = (
     new Map(
       (() => {
         try {
-          const saved = localStorage.getItem("SCANNER_LIST3_CACHE_MAP");
+          const saved = localStorage.getItem(cacheMapKey);
           if (saved) {
             const parsed = JSON.parse(saved);
             return Array.isArray(parsed)
@@ -411,13 +417,289 @@ export const useStructureAudit = (
     const cacheArray = Array.from(cacheRef.current.entries()).map(
       ([key, value]) => ({ key, value }),
     );
-    saveState("SCANNER_LIST3_CACHE_MAP", cacheArray, 200); // Cap list 3 cache
+    saveState(cacheMapKey, cacheArray, 200); // Cap list 3 cache
     saveState(
-      "SCANNER_LIST3_EXPIRED_SIGNALS",
+      expiredSignalsKey,
       Array.from(expiredSignalCacheRef.current),
       1000,
     ); // Cap expired
   }, []);
+
+  // --- PRIORITY DIRECT ANALYZER (No block, no batching, full parallel timeframe/item requests for zero latency) ---
+  const runPriorityAnalysisInternal = useCallback(
+    async (itemsToScan: ScannerItem[], triggerReason: string) => {
+      if (itemsToScan.length === 0) return;
+
+      console.log(`[List3 Priority] Starting ultra-fast priority analysis for ${itemsToScan.length} items. Reason: ${triggerReason}`);
+
+      try {
+        let hasChanges = false;
+
+        // Process all priority items concurrently for maximum speed
+        await Promise.all(
+          itemsToScan.map(async (item) => {
+            if (!item.symbol || item.symbol === "USDT" || item.symbol.trim() === "") return;
+            if (!item.groupedResults) return;
+
+            const neededTFs = new Set<string>();
+            item.groupedResults.forEach((r) => {
+              if (configRef.current.timeframes.includes(r.tf)) {
+                neededTFs.add(r.tf);
+                if (configRef.current.enableMultiResonance) {
+                  const ALL_TFS = [
+                    "1m",
+                    "3m",
+                    "5m",
+                    "15m",
+                    "30m",
+                    "1h",
+                    "2h",
+                    "4h",
+                    "8h",
+                    "1d",
+                  ];
+                  const idx = ALL_TFS.indexOf(r.tf);
+                  if (idx > 0) neededTFs.add(ALL_TFS[idx - 1]);
+                  if (idx < ALL_TFS.length - 1)
+                    neededTFs.add(ALL_TFS[idx + 1]);
+                }
+              }
+            });
+
+            if (neededTFs.size === 0) return;
+
+            const livePrice =
+              realPricesRef.current[normalizeSymbol(item.symbol)] ||
+              realPricesRef.current[item.symbol] ||
+              item.price;
+
+            // Fetch history extremes (for Anti-Chase)
+            const cachedItem = cacheRef.current.get(item.symbol);
+            let historyExtremes =
+              item.historyExtremes || cachedItem?.historyExtremes;
+
+            if (!historyExtremes) {
+              try {
+                const safeSymbol = item.symbol.endsWith("USDT")
+                  ? item.symbol
+                  : `${item.symbol}USDT`;
+                const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1h&limit=1000&_t=${Date.now()}`;
+                const url4h = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=4h&limit=540&_t=${Date.now()}`;
+                const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=1440&_t=${Date.now()}`;
+
+                const [res1h, res4h, res1m] = await Promise.all([
+                  fetchWithFallback(
+                    url1h,
+                    { cache: "no-store" },
+                    (d) => Array.isArray(d),
+                    directMode,
+                  ),
+                  fetchWithFallback(
+                    url4h,
+                    { cache: "no-store" },
+                    (d) => Array.isArray(d),
+                    directMode,
+                  ),
+                  fetchWithFallback(
+                    url1m,
+                    { cache: "no-store" },
+                    (d) => Array.isArray(d),
+                    directMode,
+                  ),
+                ]);
+
+                const raw1h = await res1h.json();
+                const raw4h = await res4h.json();
+                const raw1m = await res1m.json();
+
+                const h1h = raw1h.map((k: any) => parseFloat(k[2]));
+                const l1h = raw1h.map((k: any) => parseFloat(k[3]));
+                const h1m = raw1m.map((k: any) => parseFloat(k[2]));
+                const l1m = raw1m.map((k: any) => parseFloat(k[3]));
+
+                const oldest1hTime = raw1h.length > 0 ? raw1h[0][0] : Date.now();
+                const olderHighs: number[] = [];
+                const olderLows: number[] = [];
+
+                raw4h.forEach((k: any) => {
+                  if (k[0] < oldest1hTime) {
+                    const h = parseFloat(k[2]);
+                    const l = parseFloat(k[3]);
+                    for (let j = 0; j < 4; j++) {
+                      olderHighs.push(h);
+                      olderLows.push(l);
+                    }
+                  }
+                });
+
+                const combinedHighs = [...olderHighs, ...h1h].slice(-2200);
+                const combinedLows = [...olderLows, ...l1h].slice(-2200);
+
+                const calcExtreme = (
+                  arr: number[],
+                  candles: number,
+                  type: "MAX" | "MIN",
+                ) => {
+                  if (!arr || arr.length === 0) return 0;
+                  const slice = arr.slice(-candles);
+                  return type === "MAX"
+                    ? Math.max(...slice)
+                    : Math.min(...slice);
+                };
+
+                historyExtremes = {
+                  highs1h: combinedHighs,
+                  lows1h: combinedLows,
+                  highs1m: h1m,
+                  lows1m: l1m,
+                  scalars: {
+                    low_5m: calcExtreme(l1m, 5, "MIN"),
+                    high_5m: calcExtreme(h1m, 5, "MAX"),
+                    low_60m: calcExtreme(l1m, 60, "MIN"),
+                    high_60m: calcExtreme(h1m, 60, "MAX"),
+                    low_240m: calcExtreme(l1m, 240, "MIN"),
+                    high_240m: calcExtreme(h1m, 240, "MAX"),
+                    low_1440m: calcExtreme(l1m, 1440, "MIN"),
+                    high_1440m: calcExtreme(h1m, 1440, "MAX"),
+                    low_10080m: calcExtreme(combinedLows, 168, "MIN"),
+                    high_10080m: calcExtreme(combinedHighs, 168, "MAX"),
+                    low_43200m: calcExtreme(combinedLows, 720, "MIN"),
+                    high_43200m: calcExtreme(combinedHighs, 720, "MAX"),
+                  },
+                };
+              } catch (e) {
+                console.warn(
+                  `[List3 Priority] Failed to fetch extremes for ${item.symbol}`
+                );
+              }
+            }
+
+            const tfList = Array.from(neededTFs);
+            const synthesizable = tfList.filter(
+              (tf) => getTfMinutes(tf) <= 5
+            );
+            const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5);
+
+            let cache1m: KLine[] | null = null;
+
+            // A. Synthesizable (1m, 3m, 5m) - Process concurrently
+            if (synthesizable.length > 0) {
+              try {
+                const safeSymbol = item.symbol.endsWith("USDT")
+                  ? item.symbol
+                  : `${item.symbol}USDT`;
+                const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=1000&_t=${Date.now()}`;
+                const res1m = await fetchWithFallback(
+                  url1m,
+                  { cache: "no-store" },
+                  (d) => Array.isArray(d),
+                  directMode,
+                );
+                if (res1m.ok) {
+                  const raw1m = await res1m.json();
+                  cache1m = raw1m.map((k: any) => ({
+                    time: Number(k[0]),
+                    open: parseFloat(k[1]),
+                    high: parseFloat(k[2]),
+                    low: parseFloat(k[3]),
+                    close: parseFloat(k[4]),
+                    volume: parseFloat(k[5]),
+                  }));
+
+                  synthesizable.forEach((tf) => {
+                    lastCandleScanRef.current.set(
+                      `${item.symbol}-${tf}`,
+                      Date.now(),
+                    );
+                    const synthKlines = KLineSynthesizer.synthesize(
+                      cache1m!,
+                      getTfMinutes(tf),
+                    );
+                    processStructureForTf(
+                      item,
+                      tf,
+                      synthKlines,
+                      livePrice,
+                      historyExtremes,
+                    );
+                    hasChanges = true;
+                  });
+                }
+              } catch (e) {}
+            }
+
+            // B. Remotes (> 5m) - Fetch and analyze ALL remote timeframes in parallel!
+            if (remotes.length > 0) {
+              await Promise.all(
+                remotes.map(async (tf) => {
+                  lastCandleScanRef.current.set(
+                    `${item.symbol}-${tf}`,
+                    Date.now(),
+                  );
+                  try {
+                    const safeSymbol = item.symbol.endsWith("USDT")
+                      ? item.symbol
+                      : `${item.symbol}USDT`;
+                    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=500&_t=${Date.now()}`;
+                    const res = await fetchWithFallback(
+                      url,
+                      { cache: "no-store" },
+                      (d) => Array.isArray(d),
+                      directMode,
+                    );
+                    if (res.ok) {
+                      const raw = await res.json();
+                      const klines: KLine[] = raw.map((k: any) => ({
+                        time: Number(k[0]),
+                        open: parseFloat(k[1]),
+                        high: parseFloat(k[2]),
+                        low: parseFloat(k[3]),
+                        close: parseFloat(k[4]),
+                        volume: parseFloat(k[5]),
+                      }));
+                      processStructureForTf(
+                        item,
+                        tf,
+                        klines,
+                        livePrice,
+                        historyExtremes,
+                      );
+                      hasChanges = true;
+                    }
+                  } catch (e) {}
+                })
+              );
+            }
+
+            structureHashRef.current.set(item.symbol, getStructureHash(item));
+
+            // [MILLISECOND-LEVEL FAILURE CLEARANCE]
+            // If some rules are selected, and this coin has 0 latched results, immediately clear/remove it!
+            const cfg = configRef.current;
+            const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+            if (!areAllRulesOff) {
+              const cachedItem = cacheRef.current.get(item.symbol);
+              if (cachedItem && cachedItem.list3Results) {
+                const hasPassedAny = cachedItem.list3Results.some(r => r.latched);
+                if (!hasPassedAny) {
+                  console.log(`[List3 Priority] ❌ ${item.symbol} 未能通过过滤规则，立即清除!`);
+                  cacheRef.current.delete(item.symbol);
+                  hasChanges = true;
+                }
+              }
+            }
+          })
+        );
+
+        if (hasChanges) {
+          updateList3FromCache();
+        }
+      } catch (e) {
+        console.error("[List3 Priority] Priority scan error:", e);
+      }
+    },
+    [updateList3FromCache]
+  );
 
   // --- CORE LOGIC: Analysis ---
   const runAnalysisInternal = useCallback(
@@ -699,6 +981,21 @@ export const useStructureAudit = (
                 } catch (e) {}
               }
               structureHashRef.current.set(item.symbol, getStructureHash(item));
+
+              // [MILLISECOND-LEVEL FAILURE CLEARANCE]
+              const cfg = configRef.current;
+              const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+              if (!areAllRulesOff) {
+                const cachedItem = cacheRef.current.get(item.symbol);
+                if (cachedItem && cachedItem.list3Results) {
+                  const hasPassedAny = cachedItem.list3Results.some(r => r.latched);
+                  if (!hasPassedAny) {
+                    console.log(`[List3 Sweep] ❌ ${item.symbol} 周期性审计未通过，立即清除!`);
+                    cacheRef.current.delete(item.symbol);
+                    hasChanges = true;
+                  }
+                }
+              }
             }),
           );
 
@@ -718,7 +1015,7 @@ export const useStructureAudit = (
 
           // Only delay for scheduled bulk scans, not for new item incremental scans
           if (triggerReason.includes("审计")) {
-            await delay(150); // Increased delay
+            await delay(150); // Reverted delay
           }
         }
 
@@ -744,8 +1041,15 @@ export const useStructureAudit = (
 
   // --- TRIGGERS ---
   useEffect(() => {
-    // Sync Cache Removal
+    // Sync Cache Removal & Expired Signals Cleanup
     const validSymbols = new Set(candidates.map((c) => c.symbol));
+    const validUniqueIds = new Set<string>();
+    candidates.forEach((c) => {
+      c.groupedResults?.forEach((r) => {
+        validUniqueIds.add(`${c.symbol}-${r.tf}-${r.direction || 'LONG'}`);
+      });
+    });
+
     let cleaned = false;
     for (const key of cacheRef.current.keys()) {
       if (!validSymbols.has(key)) {
@@ -755,49 +1059,86 @@ export const useStructureAudit = (
       }
     }
 
+    // Clean up expiredSignalCacheRef for signals that are no longer in candidates
+    for (const uniqueId of expiredSignalCacheRef.current) {
+      if (!validUniqueIds.has(uniqueId)) {
+        expiredSignalCacheRef.current.delete(uniqueId);
+      }
+    }
+
+    const cfg = configRef.current;
+    const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+
     // Identify New/Changed Candidates
     const itemsToScan: ScannerItem[] = [];
+    let instantAdded = false;
+
     candidates.forEach((c) => {
+      if (!c.symbol) return;
       const currentHash = getStructureHash(c);
       const lastHash = structureHashRef.current.get(c.symbol);
       const cached = cacheRef.current.get(c.symbol);
 
       if (!cached) {
-        // If not in List 3 yet, it's a priority scan
-        itemsToScan.push(c);
+        // [MILLISECOND-LEVEL INSTANT TRANSITION]
+        // Synchronously add to cache with passing results so it enters List 3 immediately (0ms)
+        const results = c.groupedResults?.map((r) => ({
+          tf: r.tf,
+          direction: r.direction || 'LONG',
+          latched: true, // Default to true so it passes to List 3 & List 4 in 0ms!
+          structure: {
+            rsi: 50,
+            bbw: 0.1,
+            crossCount: 2,
+            locationPct: 10,
+            thrustValid: true,
+            isStrictTrend: true,
+            isColorValid: true,
+            lag: r.lag || 0,
+            signalTime: r.crossingTimes ? Math.max(...r.crossingTimes) : Date.now(),
+            signalPrice: c.price,
+            ema10: c.emaDetails?.ema10 || c.price,
+            ema20: c.emaDetails?.ema20 || c.price,
+            ema30: c.emaDetails?.ema30 || c.price,
+            ema40: c.emaDetails?.ema40 || c.price,
+            ema80: c.emaDetails?.ema80 || c.price,
+          }
+        })) || [];
+
+        // Only add results that are not expired/removed
+        const filteredResults = results.filter((r) => {
+          const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;
+          return !expiredSignalCacheRef.current.has(uniqueId);
+        });
+
+        if (filteredResults.length > 0) {
+          const immediateItem: ScannerItem = {
+            ...c,
+            list3Results: filteredResults,
+          };
+
+          cacheRef.current.set(c.symbol, immediateItem);
+          instantAdded = true;
+
+          if (!areAllRulesOff) {
+            itemsToScan.push(c);
+          }
+        }
       } else if (currentHash !== lastHash) {
-        // If the List 2 signal changed/aged, re-scan
-        itemsToScan.push(c);
+        if (!areAllRulesOff) {
+          itemsToScan.push(c);
+        }
       }
     });
 
-    if (itemsToScan.length > 0) {
-      runAnalysisInternal(itemsToScan, `增量分析 (${itemsToScan.length})`);
-    } else if (cleaned) {
+    if (instantAdded || cleaned) {
       updateList3FromCache();
     }
-  }, [candidates, runAnalysisInternal, updateList3FromCache]);
 
-  const lastItemsPulseRef = useRef<string>("");
-  useEffect(() => {
-    const pulse = candidates
-      .map((c) => `${c.symbol}-${c.groupedResults?.length}`)
-      .join("|");
-    if (pulse !== lastItemsPulseRef.current) {
-      lastItemsPulseRef.current = pulse;
-
-      // Fast-track new items or changed items
-      const newOrChanged = candidates.filter((c) => {
-        const cached = cacheRef.current.get(c.symbol);
-        if (!cached) return true;
-        return getStructureHash(c) !== structureHashRef.current.get(c.symbol);
-      });
-
-      if (newOrChanged.length > 0) {
-        runAnalysisInternal(newOrChanged, "List2 触发即时审计");
-      }
+    if (itemsToScan.length > 0 && !areAllRulesOff) {
+      runPriorityAnalysisInternal(itemsToScan, `增量分析 (${itemsToScan.length})`);
     }
-  }, [candidates, runAnalysisInternal]);
+  }, [candidates, runPriorityAnalysisInternal, updateList3FromCache]);
 
   useEffect(() => {
     const checkTimer = setInterval(() => {
@@ -852,6 +1193,23 @@ export const useStructureAudit = (
   // --- MANUAL ACTIONS ---
   const removeItem = useCallback(
     (symbol: string) => {
+      // Find the item and add all its signals to expired signals so they don't get re-added!
+      const cached = cacheRef.current.get(symbol);
+      if (cached && cached.list3Results) {
+        cached.list3Results.forEach((r) => {
+          const uniqueId = `${symbol}-${r.tf}-${r.direction}`;
+          expiredSignalCacheRef.current.add(uniqueId);
+        });
+      } else {
+        // Fallback: if not in cache, find in candidates and expire all its potential signals
+        const cand = candidatesRef.current.find((c) => c.symbol === symbol);
+        if (cand && cand.groupedResults) {
+          cand.groupedResults.forEach((r) => {
+            const uniqueId = `${symbol}-${r.tf}-${r.direction || 'LONG'}`;
+            expiredSignalCacheRef.current.add(uniqueId);
+          });
+        }
+      }
       cacheRef.current.delete(symbol);
       structureHashRef.current.delete(symbol);
       updateList3FromCache();
@@ -860,6 +1218,23 @@ export const useStructureAudit = (
   );
 
   const clearItems = useCallback(() => {
+    // Expire all signals currently in cache and candidates
+    cacheRef.current.forEach((item, symbol) => {
+      if (item.list3Results) {
+        item.list3Results.forEach((r) => {
+          const uniqueId = `${symbol}-${r.tf}-${r.direction}`;
+          expiredSignalCacheRef.current.add(uniqueId);
+        });
+      }
+    });
+    candidatesRef.current.forEach((c) => {
+      if (c.groupedResults) {
+        c.groupedResults.forEach((r) => {
+          const uniqueId = `${c.symbol}-${r.tf}-${r.direction || 'LONG'}`;
+          expiredSignalCacheRef.current.add(uniqueId);
+        });
+      }
+    });
     cacheRef.current.clear();
     structureHashRef.current.clear();
     updateList3FromCache();

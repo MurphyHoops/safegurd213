@@ -16,6 +16,7 @@ interface Props {
     activePositions: Position[];
     directMode?: boolean;
     actionConfig?: ActionConfig | null;
+    strategyId?: string;
 }
 
 const DEFAULT_CONFIG: List3Config = { 
@@ -39,9 +40,9 @@ const DEFAULT_CONFIG: List3Config = {
     autoSimOpen: false
 };
 
-export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, directMode = false, actionConfig }) => {
+export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, directMode = false, actionConfig, strategyId }) => {
     
-    const { config, setConfig, list3, isScanning, scanStatus, countdowns, removeSignal, removeItem, clearItems } = useStructureAudit(candidates, DEFAULT_CONFIG, realPrices, directMode);
+    const { config, setConfig, list3, isScanning, scanStatus, countdowns, removeSignal, removeItem, clearItems } = useStructureAudit(candidates, DEFAULT_CONFIG, realPrices, directMode, strategyId);
     
     // Expose removeSignal to parent
     useEffect(() => {

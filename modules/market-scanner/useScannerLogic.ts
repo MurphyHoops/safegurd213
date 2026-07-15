@@ -11,17 +11,23 @@ export const useScannerLogic = (
     customSymbolSet: Set<string>,
     fixedModeView: 'MONITOR' | 'SEARCH',
     directMode: boolean = false,
-    mode: 'LIVE' | 'BACKTEST' | 'SMART' = 'LIVE'
+    mode: 'LIVE' | 'BACKTEST' | 'SMART' = 'LIVE',
+    strategyId?: string
 ) => {
+    const suffix = strategyId ? `_${strategyId}` : '';
+    const list1CacheKey = `SCANNER_LIST1_CACHE${suffix}`;
+    const blacklistKey = `SCANNER_BLACKLIST${suffix}`;
+    const majorTrendCandidatesKey = `SCANNER_MAJOR_TREND_CANDIDATES${suffix}`;
+
     // --- ATOMIC STATE ---
     const [list1, setList1] = useState<ScannerItem[]>(() => {
         try {
-            const saved = localStorage.getItem('SCANNER_LIST1_CACHE');
+            const saved = localStorage.getItem(list1CacheKey);
             const parsed = saved ? JSON.parse(saved) : [];
             const initialList = Array.isArray(parsed) ? parsed : [];
             
             // Apply initial blacklist filtering
-            const savedBlacklist = localStorage.getItem('SCANNER_BLACKLIST');
+            const savedBlacklist = localStorage.getItem(blacklistKey);
             if (savedBlacklist) {
                 const bl = new Set(JSON.parse(savedBlacklist));
                 return initialList.filter(item => item && item.symbol && !bl.has(item.symbol));
@@ -34,7 +40,7 @@ export const useScannerLogic = (
 
     const [blacklist, setBlacklist] = useState<Set<string>>(() => {
         try {
-            const saved = localStorage.getItem('SCANNER_BLACKLIST');
+            const saved = localStorage.getItem(blacklistKey);
             if (saved) {
                 const parsed = JSON.parse(saved);
                 return new Set(Array.isArray(parsed) ? parsed : []);
@@ -48,20 +54,20 @@ export const useScannerLogic = (
     // Persist List 1
     useEffect(() => {
         try {
-            localStorage.setItem('SCANNER_LIST1_CACHE', JSON.stringify(list1));
+            localStorage.setItem(list1CacheKey, JSON.stringify(list1));
         } catch (e) {
             console.warn("Failed to persist List 1 cache");
         }
-    }, [list1]);
+    }, [list1, list1CacheKey]);
 
     // Persist Blacklist
     useEffect(() => {
         try {
-            localStorage.setItem('SCANNER_BLACKLIST', JSON.stringify(Array.from(blacklist)));
+            localStorage.setItem(blacklistKey, JSON.stringify(Array.from(blacklist)));
         } catch (e) {
             console.warn("Failed to persist Blacklist");
         }
-    }, [blacklist]);
+    }, [blacklist, blacklistKey]);
 
     const [isScanning, setIsScanning] = useState(false);
     const [scanStatusText, setScanStatusText] = useState('系统就绪');
@@ -70,12 +76,8 @@ export const useScannerLogic = (
     
     // --- REFS (For logic continuity) ---
     const scanSessionIdRef = useRef<number>(0);
-    const list1Ref = useRef<ScannerItem[]>([]);
-    
-    // Initialize list1Ref from the same initial state as list1
-    useEffect(() => {
-        list1Ref.current = list1;
-    }, []);
+    const list1Ref = useRef<ScannerItem[]>(list1);
+    list1Ref.current = list1;
 
     const rawDataRef = useRef<any[]>([]); // Store raw data for instant re-filtering
     const configRef = useRef(initialConfig);
@@ -90,7 +92,7 @@ export const useScannerLogic = (
     // --- MAJOR TREND DISCOVERY STATE ---
     const [majorTrendCandidates, setMajorTrendCandidates] = useState<Set<string>>(() => {
         try {
-            const saved = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
+            const saved = localStorage.getItem(majorTrendCandidatesKey);
             return new Set(saved ? JSON.parse(saved) : []);
         } catch (e) { return new Set(); }
     });
@@ -98,8 +100,8 @@ export const useScannerLogic = (
     const [majorProgress, setMajorProgress] = useState({ current: 0, total: 0 });
 
     useEffect(() => {
-        localStorage.setItem('SCANNER_MAJOR_TREND_CANDIDATES', JSON.stringify(Array.from(majorTrendCandidates)));
-    }, [majorTrendCandidates]);
+        localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(majorTrendCandidates)));
+    }, [majorTrendCandidates, majorTrendCandidatesKey]);
 
     // --- RATE LIMIT & BAN PROTECTION ---
     const bannedUntilRef = useRef<number>(0);
@@ -181,19 +183,9 @@ export const useScannerLogic = (
         modeRef.current = mode;
     }, [mode]);
 
-    // Initialize rawDataRef from cache on mount
+    // Initialize rawDataRef from cache on mount (DISABLED to prevent stale price usage)
     useEffect(() => {
-        try {
-            const savedRaw = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
-            if (savedRaw) {
-                const parsed = JSON.parse(savedRaw);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    rawDataRef.current = parsed;
-                }
-            }
-        } catch (e) {
-            console.warn("Failed to load raw data cache");
-        }
+        localStorage.removeItem('SCANNER_RAW_DATA_CACHE');
     }, []);
 
     useEffect(() => {
@@ -553,52 +545,51 @@ export const useScannerLogic = (
                 // Process Batch Chunk
                 await Promise.all(chunk.map(async (symbol) => {
                     try {
-                        const limit = cfg.filterTimeParam + 20; 
-                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${cfg.filterKLinePeriod}&limit=${limit}`;
+                        const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
+                        const limit = timeParam + 20; 
+                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${cfg.filterKLinePeriod || '1d'}&limit=${limit}`;
                         const res = await fetchWithFallback(url, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
                         const klines = await res.json();
                         
-                        if (!Array.isArray(klines) || klines.length < cfg.filterTimeParam * 0.5) return;
+                        if (!Array.isArray(klines) || klines.length < timeParam * 0.5) return;
 
                         const prices = klines.map((k: any) => parseFloat(k[4])); 
-                        const currentPrice = prices[prices.length - 1];
+                        const lookbackPrices = prices.slice(-timeParam);
+                        const currentPrice = lookbackPrices[lookbackPrices.length - 1];
                         
-                        const histPrices = prices.slice(0, prices.length - cfg.sidewaysDays);
+                        const enableLong = cfg.enableLong !== false;
+                        const enableShort = cfg.enableShort !== false;
+                        const enableSideways = cfg.enableSideways !== false;
+
+                        let histPrices = lookbackPrices;
+                        if (enableSideways) {
+                            histPrices = lookbackPrices.slice(0, Math.max(1, lookbackPrices.length - cfg.sidewaysDays));
+                        }
+
                         const maxPrice = Math.max(...histPrices);
                         const minPrice = Math.min(...histPrices);
 
                         const maxDrop = ((maxPrice - currentPrice) / maxPrice) * 100;
                         const maxPump = ((currentPrice - minPrice) / minPrice) * 100;
 
-                        let stage1Match = false;
-                        let isCopyingBottom = false;
-                        let isCopyingTop = false;
+                        const distLong = ((currentPrice - minPrice) / minPrice) * 100;
+                        const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
 
-                        if (maxDrop >= cfg.minHistoryDrop) {
-                            stage1Match = true;
-                            isCopyingBottom = true;
-                        } else if (maxPump >= cfg.minHistoryPump) {
-                            stage1Match = true;
-                            isCopyingTop = true;
-                        }
+                        const isLongMatch = enableLong && (maxDrop >= cfg.minHistoryDrop) && (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance));
+                        const isShortMatch = enableShort && (maxPump >= cfg.minHistoryPump) && (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance));
 
+                        const stage1Match = isLongMatch || isShortMatch;
                         if (!stage1Match) return;
 
-                        if (isCopyingBottom) {
-                            const dist = ((currentPrice - minPrice) / minPrice) * 100;
-                            if (dist > cfg.maxExtremeDistance) return;
-                        } else if (isCopyingTop) {
-                            const dist = ((maxPrice - currentPrice) / maxPrice) * 100;
-                            if (dist > cfg.maxExtremeDistance) return;
-                        }
-
-                    // ... after sideways accumulation check
-                        const sidewaysIndex = prices.length - 1 - cfg.sidewaysDays;
-                        if (sidewaysIndex >= 0) {
-                            const referencePrice = prices[sidewaysIndex];
-                            const changeFromRef = ((currentPrice - referencePrice) / referencePrice) * 100;
-                            if (changeFromRef > cfg.sidewaysMaxPump || changeFromRef < -cfg.sidewaysMaxDrop) {
-                                return;
+                        // Sideways accumulation check
+                        if (enableSideways) {
+                            const sidewaysIndex = prices.length - 1 - cfg.sidewaysDays;
+                            if (sidewaysIndex >= 0) {
+                                const referencePrice = prices[sidewaysIndex];
+                                const changeFromRef = ((currentPrice - referencePrice) / referencePrice) * 100;
+                                if (changeFromRef > cfg.sidewaysMaxPump || changeFromRef < -cfg.sidewaysMaxDrop) {
+                                    return;
+                                }
                             }
                         }
 

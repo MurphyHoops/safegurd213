@@ -292,6 +292,13 @@ export interface MajorTrendConfig {
     sidewaysMaxDrop: number; // 跌幅小于 B%
     autoTransfer?: boolean; // 自动移入监控列表
     
+    // New switches
+    enableLong?: boolean;   // "多"选项开关
+    enableShort?: boolean;  // "空"选项开关
+    enableSideways?: boolean; // "横盘蓄势"功能开关
+    maxExtremeDistanceLong?: number;  // 多单最低点到当前价格涨幅低于 (设定值)%
+    maxExtremeDistanceShort?: number; // 空单最高点到当前价格跌幅低于 (设定值)%
+
     // Advanced Filters
     filterTimeParam?: number; // e.g., 300
     filterKLinePeriod?: '1h' | '1d' | '1w' | '1M';
@@ -322,6 +329,9 @@ export interface ScanConfig {
         minCoinsPercent: number;
         autoRecoverMinutes: number;
     };
+    instantOpenEnabled?: boolean; // 立即开仓开关
+    instantReopenEnabled?: boolean; // 平仓后立即开仓开关
+    instantOpenDirection?: 'LONG' | 'SHORT'; // 开仓方向：'LONG' (多) 或 'SHORT' (空)
 }
 
 // Added currentAction to status

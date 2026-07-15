@@ -28,12 +28,20 @@ export const useMomentumAudit = (
     realPrices: Record<string, number>, // Live Price Feed
     activePositions: Position[] = [], // Active positions
     onRemoveSignal?: (uniqueId: string) => void, // Callback to remove from List 3
+    strategyId?: string,
     currentTime?: number // Virtual time for backtesting
 ) => {
-    const [config, setConfig] = usePersistedState<List4Config>('SCANNER_LIST4_CONFIG', initialConfig);
+    const suffix = strategyId ? `_${strategyId}` : '';
+    const configKey = `SCANNER_LIST4_CONFIG${suffix}`;
+    const resultsKey = `SCANNER_LIST4_RESULTS${suffix}`;
+    const advFilterBlockTsKey = `SCANNER_LIST4_ADV_FILTER_BLOCK_TS${suffix}`;
+    const fuseLatchKey = `SCANNER_LIST4_FUSE_LATCH${suffix}`;
+    const expiredSignalsKey = `SCANNER_LIST4_EXPIRED_SIGNALS${suffix}`;
+
+    const [config, setConfig] = usePersistedState<List4Config>(configKey, initialConfig);
     const [list4, setList4] = useState<ScannerItem[]>(() => {
         try {
-            const saved = localStorage.getItem('SCANNER_LIST4_RESULTS');
+            const saved = localStorage.getItem(resultsKey);
             if (saved) {
                 const parsed = JSON.parse(saved);
                 return Array.isArray(parsed) ? parsed : [];
@@ -59,7 +67,7 @@ export const useMomentumAudit = (
     const advancedFilterBlockedSignalCacheRef = useRef<Map<string, number>>(new Map(
         (() => {
             try {
-                const saved = localStorage.getItem('SCANNER_LIST4_ADV_FILTER_BLOCK_TS');
+                const saved = localStorage.getItem(advFilterBlockTsKey);
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     return Array.isArray(parsed) ? parsed.map((i: any) => [i.key, i.value]) : [];
@@ -71,7 +79,7 @@ export const useMomentumAudit = (
     const fuseAuditLatchRef = useRef<Map<string, { blocked: boolean, reason: string }>>(new Map(
         (() => {
             try {
-                const saved = localStorage.getItem('SCANNER_LIST4_FUSE_LATCH');
+                const saved = localStorage.getItem(fuseLatchKey);
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     return Array.isArray(parsed) ? parsed.map((i: any) => [i.key, i.value]) : [];
@@ -83,7 +91,7 @@ export const useMomentumAudit = (
     const expiredSignalCacheRef = useRef<Set<string>>(new Set(
         (() => {
             try {
-                const saved = localStorage.getItem('SCANNER_LIST4_EXPIRED_SIGNALS');
+                const saved = localStorage.getItem(expiredSignalsKey);
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     return Array.isArray(parsed) ? parsed : [];
@@ -99,7 +107,7 @@ export const useMomentumAudit = (
     useEffect(() => { 
         configRef.current = config; 
         fuseAuditLatchRef.current.clear();
-        localStorage.removeItem('SCANNER_LIST4_FUSE_LATCH');
+        localStorage.removeItem(fuseLatchKey);
     }, [config]);
     useEffect(() => { list3ConfigRef.current = list3Config; }, [list3Config]);
     useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
@@ -353,21 +361,22 @@ export const useMomentumAudit = (
         const persistenceKey = 'SCANNER_LIST4_PERSIST_TS';
         const lastPersist = Number(sessionStorage.getItem(persistenceKey) || 0);
         if (now - lastPersist > 10000) {
-            saveState('SCANNER_LIST4_RESULTS', finalItems, 100);
-            saveState('SCANNER_LIST4_FUSE_LATCH', Array.from(fuseAuditLatchRef.current.entries()).map(([key, value]) => ({ key, value })), 500);
-            saveState('SCANNER_LIST4_ADV_FILTER_BLOCK_TS', Array.from(advancedFilterBlockedSignalCacheRef.current.entries()).map(([key, value]) => ({ key, value })), 1000);
-            saveState('SCANNER_LIST4_EXPIRED_SIGNALS', Array.from(expiredSignalCacheRef.current), 1000);
+            saveState(resultsKey, finalItems, 100);
+            saveState(fuseLatchKey, Array.from(fuseAuditLatchRef.current.entries()).map(([key, value]) => ({ key, value })), 500);
+            saveState(advFilterBlockTsKey, Array.from(advancedFilterBlockedSignalCacheRef.current.entries()).map(([key, value]) => ({ key, value })), 1000);
+            saveState(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1000);
             sessionStorage.setItem(persistenceKey, now.toString());
         }
     });
-    // Debounce analysis to prevent rapid re-renders
-    const timerRef = useRef<any>(null);
-    const debouncedRunAnalysis = useRef(() => {
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => {
-            runMomentumAnalysis.current();
-        }, 100); // 100ms debounce
-    });
+    // Run analysis synchronously and immediately for millisecond-level execution speed
+    const runAnalysisSync = useCallback(() => {
+        runMomentumAnalysis.current();
+    }, []);
+
+    // CRITICAL LATENCY REFIX: Re-run analysis immediately when list 3 candidates list updates
+    useEffect(() => {
+        runAnalysisSync();
+    }, [candidates, runAnalysisSync]);
 
     const logToHistory = useCallback(async (item: ScannerItem, reason: string) => {
         if (!auth.currentUser) return;
@@ -416,14 +425,14 @@ export const useMomentumAudit = (
     useEffect(() => {
         // Subscribe to price updates
         const unsubscribe = priceRegistry.registerListener(() => {
-            debouncedRunAnalysis.current();
+            runAnalysisSync();
         });
 
         // Run analysis once after mount to initialize state
-        debouncedRunAnalysis.current();
+        runAnalysisSync();
 
         return () => unsubscribe();
-    }, []);
+    }, [runAnalysisSync]);
     // ^ Removed candidates, config, list3Config because runMomentumAnalysis relies on refs, 
     // and runMomentumAnalysis itself is memoized.
 

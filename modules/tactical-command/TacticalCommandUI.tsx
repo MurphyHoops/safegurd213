@@ -16,12 +16,13 @@ interface Props {
     onCloseShorts: () => void;
     // Export config so other modules can read "openAmount" etc.
     onConfigUpdate: (config: ActionConfig) => void;
+    strategyId?: string;
 }
 
 export const TacticalCommandModule: React.FC<Props> = ({ 
-    currentStats, onPanicSell, onSecureProfit, onCutLosses, onCloseLongs, onCloseShorts, onConfigUpdate 
+    currentStats, onPanicSell, onSecureProfit, onCutLosses, onCloseLongs, onCloseShorts, onConfigUpdate, strategyId 
 }) => {
-    const { config, setConfig } = useTacticalCommand();
+    const { config, setConfig } = useTacticalCommand(strategyId);
 
     // Sync config upwards safely to avoid infinite loops
     const prevConfigStrRef = React.useRef('');

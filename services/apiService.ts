@@ -524,7 +524,7 @@ const _fetchWithFallbackInner = async (
                 return response;
             } catch (e: any) {
                 lastError = e;
-                if (e.message && (e.message.includes('HTTP 404'))) {
+                if (e.message && (e.message.includes('HTTP 404') || e.message.includes('HTTP 400'))) {
                     console.warn(`[API] Early abort proxy loop due to ${e.message} for ${url}`);
                     throw e;
                 }

@@ -16,11 +16,17 @@ export function checkRescueRules(
     amputate: (position: Position, ratio: number, reason: string) => void,
     refill: (position: Position, reason: string) => void,
     closeHedgeOnly: (hedgeId: string, profit: number, reason: string) => void,
+    reopenPosition?: (position: Position, reason: string) => void,
     addLog?: (type: string, message: string) => void
 ): boolean {
+    // LOCKED: Modification to this file is restricted.
     // 仅针对【已对冲】的【主仓位】进行检查
     // Note: A main position might have isHedged=false but still have accumulated profit/loss
     // from previous hedges. We need to check strategy 3 even if there's no active hedge.
+    if (position.isUnshackled) {
+        return false;
+    }
+
     if (!position.mainPositionId) {
         const hedgePosition = allPositions.find(p => p.mainPositionId === position.entryId);
         
@@ -34,7 +40,7 @@ export function checkRescueRules(
             const hasHedgingHistory = totalAccumulatedLoss > 0 || hedgePosition !== undefined;
 
             if (hasHedgingHistory) {
-                const res = checkStrategy4_Amputation(position, hedgePosition, settings, amputate, refill, closePair, addLog);
+                const res = checkStrategy4_Amputation(position, hedgePosition, settings, amputate, refill, closePair, reopenPosition, addLog, closeHedgeOnly);
                 if (res) {
                     return true;
                 }
@@ -57,7 +63,7 @@ export function checkRescueRules(
         if (!hedgePosition) return false;
 
         // 策略 4: 断臂求生 (弃卒保车) - 当未启用断臂求生作为主控，仍作为下限兜底运行时触发
-        if (checkStrategy4_Amputation(position, hedgePosition, settings, amputate, refill, closePair, addLog)) {
+        if (checkStrategy4_Amputation(position, hedgePosition, settings, amputate, refill, closePair, reopenPosition, addLog, closeHedgeOnly)) {
             return true;
         }
     }

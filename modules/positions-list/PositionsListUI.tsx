@@ -26,6 +26,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     onBatchClose,
     onClearRecords,
     onUpdateCustomSettings,
+    onVerifyPosition,
     networkStatus,
     isOnline,
     manuallyClosedSymbols
@@ -160,65 +161,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                 </div>
                 
                 <div className="flex items-center gap-2">
-                    {/* 一键托管模式选择器 (Dual-Mode One-Click Hosting Selector) */}
-                    <div className="flex items-center bg-[#10141a]/90 border border-slate-800 rounded-lg p-0.5 gap-0.5 shadow-md shrink-0 mr-1">
-                        <span className="text-[9px] font-black text-slate-500 px-2 select-none uppercase tracking-wider font-sans">一键托管:</span>
-                        
-                        {/* 模式一：AI 智能平仓 */}
-                        <button
-                            onClick={() => {
-                                onUpdateCustomSettings?.('GLOBAL_MASTER_TOGGLE', { aiSmartMasterEnabled: true, profitMode: 'AI' });
-                                audioService.speak("已切换为AI智能平仓托管模式。系统根据ATR与多维动能，动态最大化锁定收益逃顶！", true);
-                            }}
-                            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
-                                (settings?.profit?.aiSmartMasterEnabled ?? true)
-                                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.15)] font-black'
-                                    : 'text-slate-450 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
-                            }`}
-                            title="AI自适应波段追踪平仓：实时监控波动率(ATR)、量比共振及偏离度，最大化牛市逃顶收益"
-                        >
-                            <Brain size={11} className={(settings?.profit?.aiSmartMasterEnabled ?? true) ? 'text-emerald-400 animate-pulse' : 'text-slate-500'} />
-                            <span>🧠 AI智能平仓</span>
-                        </button>
-
-                        {/* 模式二：常规阶梯平仓 */}
-                        <button
-                            onClick={() => {
-                                onUpdateCustomSettings?.('GLOBAL_MASTER_TOGGLE', { aiSmartMasterEnabled: false, profitMode: 'CONVENTIONAL' });
-                                audioService.speak("已切换为常规阶梯平仓托管模式。系统将严格按照您预设的固定参数、回调百分比及阶梯保底平仓！", true);
-                            }}
-                            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
-                                !(settings?.profit?.aiSmartMasterEnabled ?? true)
-                                    ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-[0_0_8px_rgba(245,158,11,0.15)] font-black'
-                                    : 'text-slate-450 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
-                            }`}
-                            title="常规/智能参数平仓：基于固定止盈、跟踪回调比率和阶梯回撤，提供严苛稳健的参数化止盈"
-                        >
-                            <Settings size={11} className={!(settings?.profit?.aiSmartMasterEnabled ?? true) ? 'text-amber-400' : 'text-slate-500'} />
-                            <span>⚙️ 常规阶梯平仓</span>
-                        </button>
-                    </div>
-
-                    {/* 托管参数一键全局配置 (Global Preset Config Gear) */}
-                    <button 
-                        onClick={() => {
-                            setSettingsTargetPosition({
-                                symbol: 'GLOBAL_DEFAULT',
-                                side: PositionSide.LONG,
-                                amount: 1,
-                                entryPrice: 100,
-                                entryTime: Date.now(),
-                                unrealizedPnL: 0,
-                                unrealizedPnLPercentage: 0,
-                                customProfitSettings: settings?.profit
-                            } as any);
-                        }}
-                        className="flex items-center gap-1.5 text-[10px] bg-slate-800 border border-slate-700 px-2.5 py-1 rounded-md text-slate-300 hover:text-emerald-400 font-bold transition-all mr-1 hover:border-emerald-500/40 hover:scale-105 cursor-pointer shadow-sm"
-                        title="点击配置 全局AI智能参数 (波动乘数、偏离度等) 与 全局常规参数 (止盈阈值、阶梯保底锁等)"
-                    >
-                        <Settings size={11} className="text-slate-400" />
-                        <span>托管参数配置</span>
-                    </button>
+                    {/* 其它控制按钮 */}
 
                     <button 
                         onClick={onOpenTradeModal} 
@@ -323,7 +266,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                         (p.cumulativeHedgeLoss || 0) > 0 || 
                         (p.cumulativeHedgeProfit || 0) > 0 || 
                         (p.cumulativeAmputationLoss || 0) > 0;
-                    const isHedgedMode = p.isHedged || !!p.mainPositionId || hasHedgingHistory;
+                    const isHedgedMode = (p.isHedged || !!p.mainPositionId || hasHedgingHistory) && !p.isUnshackled;
                     const isModule1Active = settings.profit?.enabled || settings.profit?.stopLoss?.enabled;
                     
                     let totalDebt = 0;
@@ -404,6 +347,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                             onShowHistory={onShowHistory}
                             onClosePosition={onClosePosition}
                             onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
+                            onVerifyPosition={onVerifyPosition}
                             aiSmartMasterEnabled={settings?.profit?.aiSmartMasterEnabled}
                             globalProfitSettings={settings?.profit}
                             isManuallyClosed={manuallyClosedSymbols.has(p.symbol)}

@@ -65,8 +65,12 @@ export const List1Item: React.FC<Props> = ({
                     };
                     setKlines(data);
                 }
-            } catch (err) {
-                console.error("Failed to fetch klines for " + item.symbol, err);
+            } catch (err: any) {
+                if (err.message && (err.message.includes('400') || err.message.includes('404'))) {
+                    console.warn("Skipping klines for invalid/unavailable symbol: " + item.symbol);
+                } else {
+                    console.error("Failed to fetch klines for " + item.symbol, err);
+                }
             } finally {
                 if (active) {
                     setLoadingKlines(false);

@@ -98,7 +98,7 @@ export function checkGlobalRules(
                 const drawdown = maxPnl - currentPnl;
                 if (drawdown >= activeTier.callback) {
                     closeAll(
-                        `全局阶梯常规回调平仓: 最高总盈率 ${maxPnl.toFixed(2)}%, 达到阶梯阈值 ${activeTier.threshold}%, 失效值 ${activeTier.expiry}%, 回调 ${activeTier.callback}%, 实际总盈率锁定在 ${currentPnl.toFixed(2)}%`
+                        `[调试] 全局阶梯常规回调平仓: 最高总盈率 ${maxPnl.toFixed(2)}%, 当前总盈率 ${currentPnl.toFixed(2)}%, 回调 ${drawdown.toFixed(2)}% >= 阶梯回调阈值 ${activeTier.callback}%. (阶梯: 阈值 ${activeTier.threshold}%, 失效值 ${activeTier.expiry}%)`
                     );
                     return true;
                 }

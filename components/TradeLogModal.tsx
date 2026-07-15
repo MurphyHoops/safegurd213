@@ -1279,6 +1279,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                                     onClick={() => onOpenChart?.(log.symbol, log.entry_price, log.entry_timestamp, log.timeframe)}
                                                 >
                                                     {log.symbol}
+                                                    <span className="text-[10px] text-slate-400 ml-1">
+                                                        ({log.main_entry_id ? (log.reopenCount ? `对冲仓位(编号${log.reopenCount})` : "对冲仓位") : ((log.is_reopened || log.correlationId) ? `复开仓位(编号${log.reopenCount || 1})` : "原仓位")})
+                                                    </span>
                                                 </span>
                                                 <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><History size={12} /></button>
                                             </div>

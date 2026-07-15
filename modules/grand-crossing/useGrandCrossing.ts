@@ -38,10 +38,17 @@ export const useGrandCrossing = (
     type: "INFO" | "SUCCESS" | "WARNING" | "DANGER",
     message: string,
   ) => void,
+  strategyId?: string,
 ) => {
+  const suffix = strategyId ? `_${strategyId}` : "";
+  const configKey = `SCANNER_LIST2_CONFIG${suffix}`;
+  const cacheMapKey = `SCANNER_LIST2_CACHE_MAP${suffix}`;
+  const capturedSignalsKey = `SCANNER_LIST2_CAPTURED_SIGNALS${suffix}`;
+  const expiredSignalsKey = `SCANNER_LIST2_EXPIRED_SIGNALS${suffix}`;
+
   // --- ATOMIC STATE ---
   const [config, setConfig] = usePersistedState<List2Config>(
-    "SCANNER_LIST2_CONFIG",
+    configKey,
     initialConfig,
   );
   // Ensure timeframes is sanitized & never empty
@@ -73,7 +80,7 @@ export const useGrandCrossing = (
 
   const [list2, setList2] = useState<ScannerItem[]>(() => {
     try {
-      const saved = localStorage.getItem("SCANNER_LIST2_CACHE_MAP");
+      const saved = localStorage.getItem(cacheMapKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
@@ -131,7 +138,7 @@ export const useGrandCrossing = (
     new Map(
       (() => {
         try {
-          const saved = localStorage.getItem("SCANNER_LIST2_CACHE_MAP");
+          const saved = localStorage.getItem(cacheMapKey);
           if (saved) {
             const parsed = JSON.parse(saved);
             if (Array.isArray(parsed)) {
@@ -165,7 +172,7 @@ export const useGrandCrossing = (
     new Set(
       (() => {
         try {
-          const saved = localStorage.getItem("SCANNER_LIST2_CAPTURED_SIGNALS");
+          const saved = localStorage.getItem(capturedSignalsKey);
           if (saved) {
             const parsed = JSON.parse(saved);
             if (Array.isArray(parsed)) {
@@ -183,7 +190,7 @@ export const useGrandCrossing = (
     new Set(
       (() => {
         try {
-          const saved = localStorage.getItem("SCANNER_LIST2_EXPIRED_SIGNALS");
+          const saved = localStorage.getItem(expiredSignalsKey);
           if (saved) {
             const parsed = JSON.parse(saved);
             if (Array.isArray(parsed)) {
@@ -398,14 +405,14 @@ export const useGrandCrossing = (
       const cacheArray = Array.from(cacheRef.current.entries()).map(
         ([key, value]) => ({ key, value }),
       );
-      saveState("SCANNER_LIST2_CACHE_MAP", cacheArray, 300); // Cap list 2 cache
+      saveState(cacheMapKey, cacheArray, 300); // Cap list 2 cache
       saveState(
-        "SCANNER_LIST2_CAPTURED_SIGNALS",
+        capturedSignalsKey,
         Array.from(capturedSignalsRef.current),
         500,
       ); // Cap signals
       saveState(
-        "SCANNER_LIST2_EXPIRED_SIGNALS",
+        expiredSignalsKey,
         Array.from(expiredList2SignalCacheRef.current),
         1000,
       ); // Cap expired

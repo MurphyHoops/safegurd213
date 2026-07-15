@@ -1,6 +1,6 @@
 import React from 'react';
 import { Position, PositionSide } from '../../../types';
-import { Shield, Target, Zap, History, BarChart2, Settings, Brain } from 'lucide-react';
+import { Shield, Target, Zap, History, BarChart2, Settings, Brain, RefreshCw } from 'lucide-react';
 import { formatPrice } from '../../../services/symbolUtils';
 import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
 import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
@@ -37,6 +37,7 @@ interface Props {
     onOpenChart: (symbol: string, price: number, time: number) => void;
     onShowHistory: (symbol: string) => void;
     onClosePosition: (symbol: string, side: PositionSide) => void;
+    onVerifyPosition: (position: Position) => void;
     onOpenSettings?: (position: Position) => void;
     aiSmartMasterEnabled?: boolean;
     globalProfitSettings?: any;
@@ -47,7 +48,7 @@ interface Props {
 // @LOCKED: PositionItem logic
 export const PositionItem: React.FC<Props> = ({
     p, idx, livePrice, currentPnl, currentPnlPct, showHedgeStats, totalDebt, isHedgedMode, isModule1Active, hasAmmo,
-    onOpenChart, onShowHistory, onClosePosition, onOpenSettings, aiSmartMasterEnabled = true, globalProfitSettings, isManuallyClosed, hasCustomSettings
+    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, aiSmartMasterEnabled = true, globalProfitSettings, isManuallyClosed, hasCustomSettings
 }) => {
     const isHedgedActive = p.isHedged || !!p.mainPositionId;
 
@@ -89,6 +90,12 @@ export const PositionItem: React.FC<Props> = ({
                     <span className={`text-[9px] px-1.5 rounded-sm font-bold ${p.side === PositionSide.LONG ? 'text-emerald-500 bg-emerald-500/10' : 'text-red-500 bg-red-500/10'}`}>
                         {p.side === PositionSide.LONG ? '多' : '空'}
                     </span>
+                    {p.isReopened && (
+                        <div className="flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border bg-blue-900/20 text-blue-400 border-blue-500/30" title="原仓位复开">
+                            <Shield size={8} />
+                            <span>复开仓位 (编号{p.reopenCount || 1})</span>
+                        </div>
+                    )}
                 </div>
                 <div className="flex items-center gap-1 shrink-0 hidden sm:flex">
                     {p.isBacktestRecord && (
@@ -101,7 +108,7 @@ export const PositionItem: React.FC<Props> = ({
                         <>
                             <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${p.mainPositionId ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' : 'bg-indigo-900/30 text-indigo-300 border-indigo-500/30'}`} title="模块4已接管">
                                 <Shield size={8} fill="currentColor"/>
-                                <span>{p.mainPositionId ? '对冲仓位' : '原仓位'}</span>
+                                <span>{p.mainPositionId ? (p.reopenCount ? `对冲仓位 (编号${p.reopenCount})` : '对冲仓位') : '原仓位'}</span>
                             </div>
                             {p.mainPositionId && p.triggerReason && (
                                 <div className="flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border bg-slate-800/50 text-slate-400 border-slate-700/50 max-w-[120px]" title={p.triggerReason}>
@@ -219,6 +226,13 @@ export const PositionItem: React.FC<Props> = ({
                     <span className="text-[9px] font-mono text-blue-100">{formatPrice(p.entryPrice * (p.side === PositionSide.LONG ? 0.99 : 1.01))}</span>
                 </div>
                 <div className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity z-10 relative">
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onVerifyPosition(p); }} 
+                        className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-emerald-400 transition-colors" 
+                        title="核对/刷新开仓价格"
+                    >
+                        <RefreshCw size={12}/>
+                    </button>
                     {isHedgedActive ? (
                         <div 
                             className="px-1.5 py-1 rounded-md bg-[#13171e] text-slate-500 border border-slate-800/80 flex items-center gap-1 cursor-not-allowed select-none" 

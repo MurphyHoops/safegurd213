@@ -15,6 +15,7 @@ export interface PositionsListProps {
     onBatchClose: () => void;
     onClearRecords: () => void;
     onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
+    onVerifyPosition: (position: Position) => void;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;
     manuallyClosedSymbols: Set<string>;

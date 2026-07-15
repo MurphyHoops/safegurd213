@@ -17,6 +17,7 @@ interface Props {
     directMode?: boolean;
     onLog?: (type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => void;
     onRemoveSignalReady?: (fn: (uniqueId: string) => void) => void;
+    strategyId?: string;
 }
 
 const DEFAULT_CONFIG: List2Config = {
@@ -37,7 +38,7 @@ const DEFAULT_CONFIG: List2Config = {
 };
 
 export const GrandCrossingModule: React.FC<Props> = ({ 
-    networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady
+    networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady, strategyId
 }) => {
     
     // --- FILTER CANDIDATES TO COMPLY WITH USER WATCHLIST INTENT ---
@@ -60,7 +61,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
     // --- LOGIC HOOK ---
     const { 
         config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, lastScanTime, removeItem, clearItems, removeSignal
-    } = useGrandCrossing(effectiveCandidates, initialConfig || DEFAULT_CONFIG, directMode, onLog);
+    } = useGrandCrossing(effectiveCandidates, initialConfig || DEFAULT_CONFIG, directMode, onLog, strategyId);
 
     // Expose removeSignal to parent
     useEffect(() => {

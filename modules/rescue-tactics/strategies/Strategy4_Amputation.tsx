@@ -45,6 +45,30 @@ const Strategy4_Amputation: React.FC<Props> = ({ settings, onChange, toggleFeatu
                             <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-sky-400 font-bold" value={Number.isNaN(settings.amputationBreathingSpace) ? '' : settings.amputationBreathingSpace} onChange={(e) => onChange('amputationBreathingSpace', parseFloat(e.target.value))} />
                         </div>
                     </div>
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-800 mt-2">
+                        <span className="text-[10px] text-purple-300 font-semibold">启用原仓位完全复开 (止损时毫秒级重开)</span>
+                        <div 
+                            onClick={() => toggleFeature('amputationReopenEnabled')} 
+                            className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.amputationReopenEnabled ? 'bg-purple-600' : 'bg-slate-700'}`}
+                        >
+                            <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.amputationReopenEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                        </div>
+                    </div>
+                    {settings.amputationReopenEnabled && (
+                        <div className="mt-2">
+                            <label className="text-[10px] text-slate-500 block mb-1">最大复开次数</label>
+                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white font-bold" value={settings.maxReopenCount ?? ''} onChange={(e) => onChange('maxReopenCount', parseInt(e.target.value))} />
+                        </div>
+                    )}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-800 mt-2">
+                        <span className="text-[10px] text-purple-300 font-semibold">只清对冲、主仓续航 (解套时仅平对冲，保留主仓)</span>
+                        <div 
+                            onClick={() => toggleFeature('amputationHedgeOnlyExit')} 
+                            className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.amputationHedgeOnlyExit ? 'bg-purple-600' : 'bg-slate-700'}`}
+                        >
+                            <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.amputationHedgeOnlyExit ? 'translate-x-4' : 'translate-x-0'}`}/>
+                        </div>
+                    </div>
                     <div className="text-[9px] text-slate-500 bg-slate-800/50 p-1.5 rounded leading-relaxed border border-slate-700/30">
                         <strong>弃卒保车：</strong> 当一方盈利达到触发标准时，砍掉亏损方一半仓位。若亏损方回本(亏损为0)，则补回之前砍掉的仓位。最终利用盈利覆盖所有砍仓亏损和历史止损后，双向清仓。
                     </div>

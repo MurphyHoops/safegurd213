@@ -232,7 +232,6 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                                 onOpenScanner={() => {}}
                                 onToggleSim={() => {}}
                                 isSimulating={true}
-                                realPrices={realPrices}
                                 previewData={[]}
                                 systemStats={{ balance: account.totalBalance, positionCount: positions.length, tradeCount: tradeLogs.length, logCount: logs.length }}
                                 onViewSource={() => {}}
@@ -262,6 +261,7 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                                     onResetBalance={() => {}}
                                     onClearRecords={() => {}}
                                     onOpenChart={() => {}}
+                                    onVerifyPosition={() => {}}
                                     onOpenLogs={() => {}}
                                     onOpenTradeModal={() => {}}
                                     isSimulating={true}

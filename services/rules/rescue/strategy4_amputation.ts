@@ -7,8 +7,11 @@ export function checkStrategy4_Amputation(
     amputate: (position: Position, ratio: number, reason: string) => void,
     refill: (position: Position, reason: string) => void,
     closePair: (mainId: string, hedgeId: string, reason: string) => void,
-    addLog?: (type: string, message: string) => void
+    reopenPosition?: (position: Position, reason: string) => void,
+    addLog?: (type: string, message: string) => void,
+    closeHedgeOnly?: (hedgeId: string, profit: number, reason: string) => void
 ): boolean {
+    // LOCKED: Modification to this file is restricted.
     const slSettings = settings.stopLoss;
     if (!slSettings || !slSettings.amputationEnabled) return false;
 
@@ -82,10 +85,29 @@ export function checkStrategy4_Amputation(
         if (hasPulledBack) {
             const exitReason = `3. 断臂呼吸解套: 盈利率自最高点(${peakPnLPercent.toFixed(2)}%)回调达到设定的回撤空间${breathingSpace}% (当前: ${winningPnLPercent.toFixed(2)}% | 盈利 ${winningPnL.toFixed(2)}U >= 设定安全垫 ${targetProfit.toFixed(2)}U)`;
             
-            if (hedgePosition) {
-                closePair(mainPosition.entryId, hedgePosition.entryId, exitReason);
+            if (slSettings.amputationHedgeOnlyExit && hedgePosition && closeHedgeOnly) {
+                // 只清对冲，主仓保留续航
+                const onlyHedgeReason = exitReason + " [只清对冲、主仓续航]";
+                closeHedgeOnly(hedgePosition.entryId, hedgePosition.unrealizedPnL, onlyHedgeReason);
+                
+                // 重置主仓的断臂求生和对冲跟踪状态，让其作为普通仓位运行，并且可以重新对冲
+                mainPosition.amputationTriggered = false;
+                delete mainPosition.maxPnLAfterAmputationTrigger;
+                delete mainPosition.maxPnLPercentAfterAmputationTrigger;
+                mainPosition.amputatedAmount = 0;
+                delete (mainPosition as any)._slTriggered;
+                mainPosition.isUnshackled = true; // 标记为主仓已解套，让其恢复到标准止盈止损的平仓方式
+                
+                if (addLog) {
+                    addLog('SUCCESS', `🛡️ [主仓续航启动] 已单独平掉对冲仓位并重置断臂状态。原主仓 ${mainPosition.symbol} ${mainPosition.side} 保持运行，解除对冲，并恢复正常止盈止损！`);
+                }
             } else {
-                closePair(mainPosition.entryId, '', exitReason);
+                // 原有逻辑：双向清仓
+                if (hedgePosition) {
+                    closePair(mainPosition.entryId, hedgePosition.entryId, exitReason);
+                } else {
+                    closePair(mainPosition.entryId, '', exitReason);
+                }
             }
             return true;
         }

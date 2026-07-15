@@ -71,6 +71,10 @@ export interface Position {
     };
     customProfitSettings?: ProfitSettings;
     isUnshackled?: boolean;
+    isReopened?: boolean;
+    reopenCount?: number;
+    correlationId?: number; // Added: Correlation ID for hedge pairing
+    parentEntryId?: string;
 }
 
 export interface LogEntry {
@@ -107,6 +111,9 @@ export interface TradeLog {
     current_amount?: number; // Added to track position amount after partial close/refill
     main_entry_id?: string; // Links a hedge to its main position
     parent_entry_id?: string; // Links a partial close/refill to its original position
+    correlationId?: number; // Added: Correlation ID for hedge pairing
+    reopenCount?: number; // Added: Reopen count
+    is_reopened?: boolean; // Added: is reopened position
     timeframe?: string; // Added timeframe field
     last_stop_loss_time?: number; // Added last stop loss time
     stop_loss_rule?: string; // Added stop loss rule
@@ -267,6 +274,9 @@ export interface StopLossSettings {
     amputationRatio: number;
     amputationVictoryBuffer: number;
     amputationBreathingSpace: number;
+    amputationReopenEnabled: boolean;
+    maxReopenCount?: number; // Added: Max re-open count
+    amputationHedgeOnlyExit?: boolean; // 新增：只清对冲、主仓续航
     fuseEnabled: boolean;
     maxHedgeRetries: number;
     fuseFailStopPercent: number;
@@ -298,6 +308,13 @@ export interface ScannerSettings {
 
 export interface TrendHunterSettings {
     enabled: boolean;
+}
+
+export interface StrategyItem {
+    id: string;
+    name: string;
+    active: boolean;
+    unconfigured?: boolean;
 }
 
 export interface AppSettings {

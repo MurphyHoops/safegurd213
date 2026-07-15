@@ -25,15 +25,18 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
     
     let foundPrice: number | undefined;
 
-    // 1. Try exact match
+    // 1. Try exact match from realPrices FIRST (it's real-time!)
     if (realPrices[symbol] !== undefined) foundPrice = realPrices[symbol];
     else if (realPrices[upper] !== undefined) foundPrice = realPrices[upper];
     else if (realPrices[normalized] !== undefined) foundPrice = realPrices[normalized];
+
+    // 2. Fallback to fallbackPrice if still nothing
+    if (foundPrice === undefined && fallbackPrice && fallbackPrice > 0) foundPrice = fallbackPrice;
     
     const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
     const isMajorCoin = noScaleSymbols.includes(normalized);
 
-    // 2. Try variations
+    // 3. Try variations from realPrices
     if (foundPrice === undefined) {
         const withUsdt = upper.endsWith('USDT') ? upper : upper + 'USDT';
         if (realPrices[withUsdt] !== undefined) foundPrice = realPrices[withUsdt];
@@ -54,10 +57,10 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
         }
     }
 
-    // 3. Fallback to provided price if still nothing
+    // 4. Fallback to provided price if still nothing
     if (foundPrice === undefined) return fallbackPrice || 0;
 
-    // 4. Critical: Auto-scale magnitude to match fallbackPrice (entry price)
+    // 5. Critical: Auto-scale magnitude to match fallbackPrice (entry price)
     // This fixes cases where symbol is "PEPE" but account uses "1000PEPE" scale or vice versa
     if (fallbackPrice && fallbackPrice > 0 && foundPrice > 0) {
         const ratio = foundPrice / fallbackPrice;
@@ -70,16 +73,24 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
                 const corrected = ratio > 500 ? foundPrice / 1000 : foundPrice * 1000;
                 const correctedRatio = corrected / fallbackPrice;
                 if (correctedRatio > 0.8 && correctedRatio < 1.2) {
+                    console.log(`[Price Resolve] Corrected ${symbol}: ${foundPrice} -> ${corrected} (Ratio: ${ratio.toFixed(2)})`);
                     return corrected;
                 }
             }
             return foundPrice;
         }
 
-        if (ratio > 500) return foundPrice / 1000; // Found price is 1000x too big
-        if (ratio < 0.002) return foundPrice * 1000; // Found price is 1000x too small
+        if (ratio > 500) {
+            console.log(`[Price Resolve] Scaling down ${symbol}: ${foundPrice} -> ${foundPrice / 1000}`);
+            return foundPrice / 1000; // Found price is 1000x too big
+        }
+        if (ratio < 0.002) {
+            console.log(`[Price Resolve] Scaling up ${symbol}: ${foundPrice} -> ${foundPrice * 1000}`);
+            return foundPrice * 1000; // Found price is 1000x too small
+        }
     }
 
+    console.log(`[Price Resolve] ${symbol}: Returning foundPrice ${foundPrice} (Fallback: ${fallbackPrice})`);
     return foundPrice;
 };
 
