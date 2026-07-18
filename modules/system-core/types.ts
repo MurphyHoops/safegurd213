@@ -9,4 +9,5 @@ export interface SystemCoreProps {
     onFactoryReset: () => void;
     onExportSettings: (name: string) => void;
     onImportSettings: (e: React.ChangeEvent<HTMLInputElement>) => void;
+    onUpdateBinanceRealBalance?: (balance: number) => void;
 }

@@ -31,25 +31,31 @@ const DashboardHeader: React.FC<Props> = ({
 
     // Calculate Real-time PnL & Margin
     const totalPnL = useMemo(() => {
+        if (!Array.isArray(positions)) return 0;
         return positions.reduce((sum, p) => {
-            const livePrice = realPrices[p.symbol] || p.markPrice;
-            const diff = p.side === PositionSide.LONG ? livePrice - p.entryPrice : p.entryPrice - livePrice;
-            return sum + (diff * p.amount);
+            const livePrice = realPrices[p.symbol] || p.markPrice || 0;
+            const diff = p.side === PositionSide.LONG ? livePrice - (p.entryPrice || 0) : (p.entryPrice || 0) - livePrice;
+            return sum + (diff * (p.amount || 0));
         }, 0);
     }, [positions, realPrices]);
     
-    const walletBalance = account.marginBalance; 
+    const walletBalance = typeof account?.marginBalance === 'number' ? account.marginBalance : 0; 
     const equity = walletBalance + totalPnL;   
     const totalPnLPercentage = walletBalance > 0 ? (totalPnL / walletBalance) * 100 : 0;
-    const totalDebt = positions.reduce((s,p)=>s+(p.cumulativeHedgeLoss||0), 0);
+    const totalDebt = Array.isArray(positions) ? positions.reduce((s,p)=>s+(p.cumulativeHedgeLoss||0), 0) : 0;
 
     // 标准币安合约可用保证金算法：(钱包余额 + 浮动盈亏) - (总持仓 / 杠杆倍数)
     const CONTRACT_LEVERAGE = 20;
-    const totalPositionValue = positions.reduce((sum, p) => (p.amount * p.entryPrice), 0);
+    const totalPositionValue = Array.isArray(positions) ? positions.reduce((sum, p) => ((p.amount || 0) * (p.entryPrice || 0)), 0) : 0;
     const availableMarginWithLeverage = Math.max(0, (walletBalance + totalPnL) - (totalPositionValue / CONTRACT_LEVERAGE));
 
     // 账户健康度算法：可用保证金 / 钱包余额
     const calculatedMarginRatio = walletBalance > 0 ? (availableMarginWithLeverage / walletBalance * 100) : 0;
+
+    const safeToFixed = (val: any, decimals: number = 0) => {
+        const num = parseFloat(val);
+        return (isNaN(num) || !isFinite(num)) ? (0).toFixed(decimals) : num.toFixed(decimals);
+    };
 
     const handleBatchCloseWithConfirm = () => {
         if (!confirmClear) {
@@ -78,11 +84,20 @@ const DashboardHeader: React.FC<Props> = ({
             <div className="md:col-span-4 bg-[#0b0e11] rounded border border-slate-800 p-2 shadow-inner">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                     <div className="flex flex-col justify-center pl-3">
-                        <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">可用保证金 / 钱包余额</span>
+                        {typeof account?.binanceRealBalance === 'number' && !isNaN(account.binanceRealBalance) ? (
+                            <div className="flex items-center gap-1 mb-0.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-tight">
+                                    币安实盘: {safeToFixed(account.binanceRealBalance, 2)} U
+                                </span>
+                            </div>
+                        ) : (
+                            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">可用保证金 / 钱包余额</span>
+                        )}
                         <div className="flex items-baseline gap-1">
-                            <span className="text-xl font-mono text-slate-100 font-bold">{availableMarginWithLeverage.toFixed(0)}</span>
+                            <span className="text-xl font-mono text-slate-100 font-bold">{safeToFixed(availableMarginWithLeverage, 0)}</span>
                             <span className="text-slate-700 mx-1">/</span>
-                            <span className="text-lg font-mono text-slate-400">{walletBalance.toFixed(0)}</span>
+                            <span className="text-lg font-mono text-slate-400">{safeToFixed(walletBalance, 0)}</span>
                             <span className="text-[10px] text-slate-600 ml-1">U</span>
                         </div>
                     </div>
@@ -90,26 +105,26 @@ const DashboardHeader: React.FC<Props> = ({
                         <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">账户健康度 / 浮动盈亏</span>
                         <div className="flex items-baseline gap-1">
                             <span className={`text-lg font-mono font-bold ${calculatedMarginRatio >= 50 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                {calculatedMarginRatio.toFixed(1)}%
+                                {safeToFixed(calculatedMarginRatio, 1)}%
                             </span>
                             <span className="text-slate-700 mx-1">/</span>
                             <div className={`flex items-baseline gap-1 text-sm font-mono ${totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                <span>{totalPnL >= 0 ? '+' : ''}{totalPnL.toFixed(0)}</span>
-                                <span className="text-[9px] opacity-70">({totalPnLPercentage.toFixed(1)}%)</span>
+                                <span>{totalPnL >= 0 ? '+' : ''}{safeToFixed(totalPnL, 0)}</span>
+                                <span className="text-[9px] opacity-70">({safeToFixed(totalPnLPercentage, 1)}%)</span>
                             </div>
                         </div>
                     </div>
                     <div className="flex flex-col justify-center pl-3 border-l border-slate-800/50">
                         <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">活动仓位 / 币种数</span>
                         <div className="flex items-baseline gap-2">
-                            <span className="text-lg font-mono text-white font-bold">{positions.length}</span>
+                            <span className="text-lg font-mono text-white font-bold">{positions?.length || 0}</span>
                             <span className="text-[10px] text-slate-600 font-bold tracking-widest uppercase">POSITIONS</span>
                         </div>
                     </div>
                     <div className="flex flex-col justify-center pl-3 border-l border-slate-800/50">
                         <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">债务总额 (Hedge Debt)</span>
                         <div className="flex items-baseline gap-1">
-                            <span className="text-lg font-mono text-red-500 font-bold">-{totalDebt.toFixed(0)}</span>
+                            <span className="text-lg font-mono text-red-500 font-bold">-{safeToFixed(totalDebt, 0)}</span>
                             <span className="text-[10px] text-slate-600 ml-1 uppercase">USDT</span>
                         </div>
                     </div>

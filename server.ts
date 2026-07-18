@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
 import cors from "cors";
+import crypto from "crypto";
 
 // Maintain a registry of browser clients subscribing to active prices
 const priceSubscribers = new Set<WebSocket>();
@@ -234,6 +235,89 @@ async function startServer() {
             return urlStr;
         }
     };
+
+    app.post("/api/binance/validate-and-balance", async (req, res) => {
+        const { apiKey, apiSecret } = req.body;
+        if (!apiKey || !apiSecret) {
+            return res.status(400).json({ success: false, error: "请提供完整的 API Key 和 Secret Key" });
+        }
+
+        try {
+            const timestamp = Date.now();
+            const queryString = `timestamp=${timestamp}&recvWindow=5000`;
+            const signature = crypto
+                .createHmac("sha256", apiSecret)
+                .update(queryString)
+                .digest("hex");
+
+            const baseUrls = [
+                "https://fapi.binance.com",
+                "https://fapi.binance.me",
+                "https://fapi.binance.info"
+            ];
+
+            let lastError = null;
+            let success = false;
+            let resultData: any = null;
+
+            for (const baseUrl of baseUrls) {
+                const url = `${baseUrl}/fapi/v2/account?${queryString}&signature=${signature}`;
+                try {
+                    console.log(`[Binance API Validation] Trying node: ${baseUrl}`);
+                    const response = await fetch(url, {
+                        method: "GET",
+                        headers: {
+                            "X-MBX-APIKEY": apiKey,
+                            "Content-Type": "application/json"
+                        }
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        success = true;
+                        resultData = data;
+                        break; // Stop trying other URLs if successful
+                    } else {
+                        const errText = await response.text();
+                        let errMsg = errText;
+                        try {
+                            const errJson = JSON.parse(errText);
+                            errMsg = errJson.msg || errText;
+                        } catch (e) {}
+                        lastError = `节点 ${baseUrl} 报错 (状态码 ${response.status}): ${errMsg}`;
+                    }
+                } catch (err: any) {
+                    lastError = `连接节点 ${baseUrl} 发生错误: ${err.message || err}`;
+                }
+            }
+
+            if (success && resultData) {
+                const usdtAsset = resultData.assets?.find((a: any) => a.asset === "USDT");
+                const marginBalance = usdtAsset ? parseFloat(usdtAsset.marginBalance) : 0;
+                const walletBalance = usdtAsset ? parseFloat(usdtAsset.walletBalance) : 0;
+                const availableBalance = usdtAsset ? parseFloat(usdtAsset.availableBalance) : 0;
+
+                return res.json({
+                    success: true,
+                    marginBalance,
+                    walletBalance,
+                    availableBalance,
+                    message: "API 校验连接成功！"
+                });
+            }
+
+            return res.status(502).json({
+                success: false,
+                error: `API 校验连接失败。${lastError || "无法连接至任何币安 API 节点。"}`
+            });
+
+        } catch (e: any) {
+            return res.status(500).json({
+                success: false,
+                error: `系统在准备签名或发送请求时遇到未知错误: ${e.message || e}`
+            });
+        }
+    });
 
     app.get("/api/proxy", async (req, res) => {
       let targetUrl = req.query.url as string;
@@ -507,5 +591,14 @@ async function startServer() {
     console.log(`🚀 Trading Engine Server running on http://localhost:${PORT}`);
   });
 }
+
+// High-level Node.js safety locks to prevent uncaught promise rejections or exceptions from terminating the server process
+process.on('uncaughtException', (err) => {
+    console.error('🔥 CRITICAL ERROR: Uncaught Exception caught by savior guard:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🔥 CRITICAL ERROR: Unhandled Promise Rejection at:', promise, 'reason:', reason);
+});
 
 startServer();

@@ -28,7 +28,9 @@ export const FilterSection: React.FC<Props> = ({
                     onClick={() => setScanConfig(p => ({
                         ...p, 
                         timeBasis: '8AM',
-                        majorTrend: p.majorTrend ? { ...p.majorTrend, enabled: false } : p.majorTrend
+                        majorTrend: p.majorTrend 
+                            ? { ...p.majorTrend, enabled: false } 
+                            : { enabled: false, updateIntervalHours: 4, requestPerMinute: 20, lookbackDays: 300, minHistoryDrop: 50, minHistoryPump: 100, maxExtremeDistance: 5, sidewaysDays: 7, sidewaysMaxPump: 10, sidewaysMaxDrop: 10, autoTransfer: false, enableLong: true, enableShort: true, enableSideways: true, maxExtremeDistanceLong: 5, maxExtremeDistanceShort: 5 }
                     }))} 
                     className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-all ${scanConfig.timeBasis === '8AM' ? 'bg-slate-800 text-blue-400 border-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]' : 'bg-[#1e2329] text-slate-500 border-slate-700 hover:border-slate-600'}`}
                 >
@@ -38,7 +40,9 @@ export const FilterSection: React.FC<Props> = ({
                     onClick={() => setScanConfig(p => ({
                         ...p, 
                         timeBasis: '24H',
-                        majorTrend: p.majorTrend ? { ...p.majorTrend, enabled: true } : p.majorTrend
+                        majorTrend: p.majorTrend 
+                            ? { ...p.majorTrend, enabled: true } 
+                            : { enabled: true, updateIntervalHours: 4, requestPerMinute: 20, lookbackDays: 300, minHistoryDrop: 50, minHistoryPump: 100, maxExtremeDistance: 5, sidewaysDays: 7, sidewaysMaxPump: 10, sidewaysMaxDrop: 10, autoTransfer: false, enableLong: true, enableShort: true, enableSideways: true, maxExtremeDistanceLong: 5, maxExtremeDistanceShort: 5 }
                     }))} 
                     className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-all ${scanConfig.timeBasis === '24H' ? 'bg-slate-800 text-indigo-400 border-indigo-500/50 shadow-[0_0_10px_rgba(99,102,241,0.3)]' : 'bg-[#1e2329] text-slate-500 border-slate-700 hover:border-slate-600'}`}
                 >

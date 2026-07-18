@@ -90,14 +90,46 @@ export const List1Item: React.FC<Props> = ({
     const closes = periodKlines.map((k: any) => parseFloat(k[4]));
 
     const currentPrice = item.price;
-    const maxPeriodHigh = highs.length > 0 ? Math.max(...highs) : currentPrice;
-    const minPeriodLow = lows.length > 0 ? Math.min(...lows) : currentPrice;
 
-    const maxDeclinePct = maxPeriodHigh > 0 ? ((minPeriodLow - maxPeriodHigh) / maxPeriodHigh) * 100 : 0;
-    const highToCurrentDeclinePct = maxPeriodHigh > 0 ? ((currentPrice - maxPeriodHigh) / maxPeriodHigh) * 100 : 0;
-    const maxIncreasePct = minPeriodLow > 0 ? ((maxPeriodHigh - minPeriodLow) / minPeriodLow) * 100 : 0;
-    const lowToCurrentIncreasePct = minPeriodLow > 0 ? ((currentPrice - minPeriodLow) / minPeriodLow) * 100 : 0;
+    const enableSideways = scanConfig.majorTrend?.enabled && scanConfig.majorTrend?.enableSideways !== false;
+    const sidewaysDays = scanConfig.majorTrend?.sidewaysDays ?? 7;
 
+    let histHighs = highs;
+    let histLows = lows;
+    if (enableSideways && highs.length > sidewaysDays) {
+        const endIdx = Math.max(1, highs.length - sidewaysDays);
+        histHighs = highs.slice(0, endIdx);
+        histLows = lows.slice(0, endIdx);
+    }
+
+    const maxPeriodHigh = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
+    const minPeriodLow = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
+
+    const safeNum = (v: number) => (isNaN(v) || !isFinite(v)) ? 0 : v;
+    const maxDeclinePct = safeNum(maxPeriodHigh > 0 ? ((minPeriodLow - maxPeriodHigh) / maxPeriodHigh) * 100 : 0);
+    const highToCurrentDeclinePct = safeNum(maxPeriodHigh > 0 ? ((currentPrice - maxPeriodHigh) / maxPeriodHigh) * 100 : 0);
+    const maxIncreasePct = safeNum(minPeriodLow > 0 ? ((maxPeriodHigh - minPeriodLow) / minPeriodLow) * 100 : 0);
+    const lowToCurrentIncreasePct = safeNum(minPeriodLow > 0 ? ((currentPrice - minPeriodLow) / minPeriodLow) * 100 : 0);
+
+    // Live filtering: hide items that don't match active Major Trend criteria
+    if (scanConfig.majorTrend?.enabled) {
+        if (!loadingKlines && klines.length > 0) {
+            const cfg = scanConfig.majorTrend;
+            const enableLong = cfg.enableLong !== false;
+            const enableShort = cfg.enableShort !== false;
+            const dropFromMaxToMin = Math.abs(maxDeclinePct);
+            const pumpFromMinToMax = Math.abs(maxIncreasePct);
+            const distLong = Math.abs(lowToCurrentIncreasePct);
+            const distShort = Math.abs(highToCurrentDeclinePct);
+
+            const isLongMatch = enableLong && (dropFromMaxToMin >= (cfg.minHistoryDrop ?? 50)) && (distLong <= (cfg.maxExtremeDistanceLong ?? cfg.maxExtremeDistance ?? 5));
+            const isShortMatch = enableShort && (pumpFromMinToMax >= (cfg.minHistoryPump ?? 100)) && (distShort <= (cfg.maxExtremeDistanceShort ?? cfg.maxExtremeDistance ?? 5));
+
+            if (!isLongMatch && !isShortMatch) {
+                return null;
+            }
+        }
+    }
 
     return (
         <div 
@@ -200,37 +232,129 @@ export const List1Item: React.FC<Props> = ({
                     )}
                 </div>
                 
-                {/* 跌幅统计 */}
-                <div className="grid grid-cols-2 gap-1 bg-red-950/10 p-1 rounded border border-red-900/10">
-                    <div className="flex flex-col">
-                        <span className="text-slate-450 text-[9px] scale-95 origin-left">期间最大跌幅:</span>
-                        <span className="text-red-400 font-bold font-mono text-xs">
-                            {loadingKlines && klines.length === 0 ? '加载中...' : `${maxDeclinePct.toFixed(2)}%`}
-                        </span>
-                    </div>
-                    <div className="flex flex-col">
-                        <span className="text-slate-450 text-[9px] scale-95 origin-left">最高点➔当前跌幅:</span>
-                        <span className="text-rose-400 font-bold font-mono text-xs">
-                            {loadingKlines && klines.length === 0 ? '加载中...' : `${highToCurrentDeclinePct.toFixed(2)}%`}
-                        </span>
-                    </div>
-                </div>
+                {scanConfig.majorTrend?.enabled ? (() => {
+                    const cfg = scanConfig.majorTrend;
+                    const enableLong = cfg.enableLong !== false;
+                    const enableShort = cfg.enableShort !== false;
+                    const dropFromMaxToMin = Math.abs(maxDeclinePct);
+                    const pumpFromMinToMax = Math.abs(maxIncreasePct);
+                    const distLong = Math.abs(lowToCurrentIncreasePct);
+                    const distShort = Math.abs(highToCurrentDeclinePct);
 
-                {/* 涨幅统计 */}
-                <div className="grid grid-cols-2 gap-1 bg-emerald-950/10 p-1 rounded border border-emerald-900/10">
-                    <div className="flex flex-col">
-                        <span className="text-slate-450 text-[9px] scale-95 origin-left">期间最大涨幅:</span>
-                        <span className="text-emerald-400 font-bold font-mono text-xs">
-                            {loadingKlines && klines.length === 0 ? '加载中...' : `+${maxIncreasePct.toFixed(2)}%`}
-                        </span>
-                    </div>
-                    <div className="flex flex-col">
-                        <span className="text-slate-450 text-[9px] scale-95 origin-left">最低点➔当前涨幅:</span>
-                        <span className="text-green-400 font-bold font-mono text-xs">
-                            {loadingKlines && klines.length === 0 ? '加载中...' : `+${lowToCurrentIncreasePct.toFixed(2)}%`}
-                        </span>
-                    </div>
-                </div>
+                    const isLongMatch = enableLong && (dropFromMaxToMin >= (cfg.minHistoryDrop ?? 50)) && (distLong <= (cfg.maxExtremeDistanceLong ?? cfg.maxExtremeDistance ?? 5));
+                    const isShortMatch = enableShort && (pumpFromMinToMax >= (cfg.minHistoryPump ?? 100)) && (distShort <= (cfg.maxExtremeDistanceShort ?? cfg.maxExtremeDistance ?? 5));
+
+                    if (isLongMatch || isShortMatch) {
+                        return (
+                            <>
+                                {isLongMatch && (
+                                    <div className="grid grid-cols-2 gap-1 bg-emerald-950/10 p-1 rounded border border-emerald-900/10">
+                                        <div className="flex flex-col">
+                                            <span className="text-slate-450 text-[9px] scale-95 origin-left text-rose-400">期间最大跌幅:</span>
+                                            <span className="text-red-400 font-bold font-mono text-xs">
+                                                {loadingKlines && klines.length === 0 ? '加载中...' : `${maxDeclinePct.toFixed(2)}%`}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="text-slate-450 text-[9px] scale-95 origin-left text-emerald-400">最低点➔当前涨幅:</span>
+                                            <span className="text-green-400 font-bold font-mono text-xs">
+                                                {loadingKlines && klines.length === 0 ? '加载中...' : `+${lowToCurrentIncreasePct.toFixed(2)}%`}
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+                                {isShortMatch && (
+                                    <div className="grid grid-cols-2 gap-1 bg-red-950/10 p-1 rounded border border-red-900/10">
+                                        <div className="flex flex-col">
+                                            <span className="text-slate-450 text-[9px] scale-95 origin-left text-emerald-400">期间最大涨幅:</span>
+                                            <span className="text-emerald-400 font-bold font-mono text-xs">
+                                                {loadingKlines && klines.length === 0 ? '加载中...' : `+${maxIncreasePct.toFixed(2)}%`}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="text-slate-450 text-[9px] scale-95 origin-left text-rose-400">最高点➔当前跌幅:</span>
+                                            <span className="text-rose-400 font-bold font-mono text-xs">
+                                                {loadingKlines && klines.length === 0 ? '加载中...' : `${highToCurrentDeclinePct.toFixed(2)}%`}
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+                            </>
+                        );
+                    }
+
+                    // Fallback to directional toggle if not fully calculated yet or neither matches due to custom symbols
+                    const showLongLayout = enableLong && (!enableShort || changeVal <= 0);
+                    if (showLongLayout) {
+                        return (
+                            <div className="grid grid-cols-2 gap-1 bg-emerald-950/10 p-1 rounded border border-emerald-900/10">
+                                <div className="flex flex-col">
+                                    <span className="text-slate-450 text-[9px] scale-95 origin-left text-rose-400">期间最大跌幅:</span>
+                                    <span className="text-red-400 font-bold font-mono text-xs">
+                                        {loadingKlines && klines.length === 0 ? '加载中...' : `${maxDeclinePct.toFixed(2)}%`}
+                                    </span>
+                                </div>
+                                <div className="flex flex-col">
+                                    <span className="text-slate-450 text-[9px] scale-95 origin-left text-emerald-400">最低点➔当前涨幅:</span>
+                                    <span className="text-green-400 font-bold font-mono text-xs">
+                                        {loadingKlines && klines.length === 0 ? '加载中...' : `+${lowToCurrentIncreasePct.toFixed(2)}%`}
+                                    </span>
+                                </div>
+                            </div>
+                        );
+                    } else {
+                        return (
+                            <div className="grid grid-cols-2 gap-1 bg-red-950/10 p-1 rounded border border-red-900/10">
+                                <div className="flex flex-col">
+                                    <span className="text-slate-450 text-[9px] scale-95 origin-left text-emerald-400">期间最大涨幅:</span>
+                                    <span className="text-emerald-400 font-bold font-mono text-xs">
+                                        {loadingKlines && klines.length === 0 ? '加载中...' : `+${maxIncreasePct.toFixed(2)}%`}
+                                    </span>
+                                </div>
+                                <div className="flex flex-col">
+                                    <span className="text-slate-450 text-[9px] scale-95 origin-left text-rose-400">最高点➔当前跌幅:</span>
+                                    <span className="text-rose-400 font-bold font-mono text-xs">
+                                        {loadingKlines && klines.length === 0 ? '加载中...' : `${highToCurrentDeclinePct.toFixed(2)}%`}
+                                    </span>
+                                </div>
+                            </div>
+                        );
+                    }
+                })() : (
+                    <>
+                        {/* 跌幅统计 */}
+                        <div className="grid grid-cols-2 gap-1 bg-red-950/10 p-1 rounded border border-red-900/10">
+                            <div className="flex flex-col">
+                                <span className="text-slate-450 text-[9px] scale-95 origin-left">期间最大跌幅:</span>
+                                <span className="text-red-400 font-bold font-mono text-xs">
+                                    {loadingKlines && klines.length === 0 ? '加载中...' : `${maxDeclinePct.toFixed(2)}%`}
+                                </span>
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-slate-450 text-[9px] scale-95 origin-left">最高点➔当前跌幅:</span>
+                                <span className="text-rose-400 font-bold font-mono text-xs">
+                                    {loadingKlines && klines.length === 0 ? '加载中...' : `${highToCurrentDeclinePct.toFixed(2)}%`}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* 涨幅统计 */}
+                        <div className="grid grid-cols-2 gap-1 bg-emerald-950/10 p-1 rounded border border-emerald-900/10">
+                            <div className="flex flex-col">
+                                <span className="text-slate-450 text-[9px] scale-95 origin-left">期间最大涨幅:</span>
+                                <span className="text-emerald-400 font-bold font-mono text-xs">
+                                    {loadingKlines && klines.length === 0 ? '加载中...' : `+${maxIncreasePct.toFixed(2)}%`}
+                                </span>
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-slate-450 text-[9px] scale-95 origin-left">最低点➔当前涨幅:</span>
+                                <span className="text-green-400 font-bold font-mono text-xs">
+                                    {loadingKlines && klines.length === 0 ? '加载中...' : `+${lowToCurrentIncreasePct.toFixed(2)}%`}
+                                </span>
+                            </div>
+                        </div>
+                    </>
+                )}
             </div>
 
 

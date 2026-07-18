@@ -18,6 +18,7 @@ export interface AccountData {
     totalBalance: number;
     maintenanceMargin: number;
     marginRatio: number;
+    binanceRealBalance?: number;
 }
 
 export interface Position {
@@ -31,6 +32,7 @@ export interface Position {
     unrealizedPnLPercentage: number;
     entryId: string;
     entryTime: number;
+    initialAmount?: number;
     amputationTriggered?: boolean;
     maxPnLAfterAmputationTrigger?: number;
     maxPnLPercentAfterAmputationTrigger?: number;
@@ -292,6 +294,7 @@ export interface SystemSettings {
     binanceApiSecret?: string;
     directMode?: boolean;
     realTrading?: boolean;
+    symbolBlacklist?: string[];
 }
 
 export interface ScannerSettings {

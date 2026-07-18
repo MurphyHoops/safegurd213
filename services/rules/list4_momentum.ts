@@ -58,14 +58,14 @@ export function analyzeList4Momentum(
                 if (extreme < (midPoint - epsilon)) {
                     momentumStatus = 'INVALID';
                     invalidReason = `结构破坏: 回撤(${extreme.toFixed(4)}) 跌破防守线(${midPoint.toFixed(4)})`;
-                } else if (currentPrice >= (entryTrigger - epsilon)) {
+                } else if (currentPrice >= entryTrigger) {
                     momentumStatus = 'TRIGGERED';
                 }
             } else {
                 if (extreme > (midPoint + epsilon)) {
                     momentumStatus = 'INVALID';
                     invalidReason = `结构破坏: 反弹(${extreme.toFixed(4)}) 突破防守线(${midPoint.toFixed(4)})`;
-                } else if (currentPrice <= (entryTrigger - epsilon)) {
+                } else if (currentPrice <= entryTrigger) {
                     momentumStatus = 'TRIGGERED';
                 }
             }

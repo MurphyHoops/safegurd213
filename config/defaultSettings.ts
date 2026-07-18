@@ -86,7 +86,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
     },
     martingale: { enabled: false },
-    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false },
+    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: [] },
     scanner: {
         minVolume: 1, 
         maxVolume: 0,

@@ -1,4 +1,4 @@
-import { Position, AppSettings } from '../../../types';
+import { Position, AppSettings, PositionSide } from '../../../types';
 
 export function checkStrategy4_Amputation(
     mainPosition: Position,
@@ -85,7 +85,7 @@ export function checkStrategy4_Amputation(
         if (hasPulledBack) {
             const exitReason = `3. 断臂呼吸解套: 盈利率自最高点(${peakPnLPercent.toFixed(2)}%)回调达到设定的回撤空间${breathingSpace}% (当前: ${winningPnLPercent.toFixed(2)}% | 盈利 ${winningPnL.toFixed(2)}U >= 设定安全垫 ${targetProfit.toFixed(2)}U)`;
             
-            if (slSettings.amputationHedgeOnlyExit && hedgePosition && closeHedgeOnly) {
+            if (slSettings.amputationHedgeOnlyExit && !slSettings.amputationReopenEnabled && hedgePosition && closeHedgeOnly) {
                 // 只清对冲，主仓保留续航
                 const onlyHedgeReason = exitReason + " [只清对冲、主仓续航]";
                 closeHedgeOnly(hedgePosition.entryId, hedgePosition.unrealizedPnL, onlyHedgeReason);
@@ -131,16 +131,26 @@ export function checkStrategy4_Amputation(
         return false; // 继续持有，等待下一跳检查呼吸空间
     }
 
-    // 3. 补回仓位 (亏损方回本即补回)
-    // A. 主仓曾经被砍过，现在回本了 (亏损 >= 0)
-    if (mainPosition.amputatedAmount && mainPosition.amputatedAmount > 0 && mainPosition.unrealizedPnL >= 0) {
-        refill(mainPosition, `3. 断臂求生: 主仓回本，补回之前砍掉的仓位`);
+    // 3. 补回仓位 (亏损方当价格又回到开仓时的价格时补回)
+    // A. 主仓曾经被砍过，当价格又回到开仓时的价格时 (多单：最新价 >= 开仓价，空单：最新价 <= 开仓价)
+    const isMainPriceBackToEntry = mainPosition.side === PositionSide.LONG
+        ? mainPosition.markPrice >= mainPosition.entryPrice
+        : mainPosition.markPrice <= mainPosition.entryPrice;
+
+    if (mainPosition.amputatedAmount && mainPosition.amputatedAmount > 0 && isMainPriceBackToEntry) {
+        refill(mainPosition, `3. 断臂求生: 主仓价格回到开仓价，补回之前砍掉的仓位`);
         return false;
     }
 
-    // B. 对冲单曾经被砍过，现在回本了 (亏损 >= 0)
-    if (hedgePosition && hedgePosition.amputatedAmount && hedgePosition.amputatedAmount > 0 && hedgePosition.unrealizedPnL >= 0) {
-        refill(hedgePosition, `3. 断臂求生: 对冲单回本，补回之前砍掉的仓位`);
+    // B. 对冲单曾经被砍过，当价格又回到开仓时的价格时 (多单：最新价 >= 开仓价，空单：最新价 <= 开仓价)
+    const isHedgePriceBackToEntry = hedgePosition
+        ? (hedgePosition.side === PositionSide.LONG
+            ? hedgePosition.markPrice >= hedgePosition.entryPrice
+            : hedgePosition.markPrice <= hedgePosition.entryPrice)
+        : false;
+
+    if (hedgePosition && hedgePosition.amputatedAmount && hedgePosition.amputatedAmount > 0 && isHedgePriceBackToEntry) {
+        refill(hedgePosition, `3. 断臂求生: 对冲单价格回到开仓价，补回之前砍掉的仓位`);
         return false;
     }
 

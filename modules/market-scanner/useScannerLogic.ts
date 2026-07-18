@@ -554,29 +554,40 @@ export const useScannerLogic = (
                         if (!Array.isArray(klines) || klines.length < timeParam * 0.5) return;
 
                         const prices = klines.map((k: any) => parseFloat(k[4])); 
-                        const lookbackPrices = prices.slice(-timeParam);
-                        const currentPrice = lookbackPrices[lookbackPrices.length - 1];
+                        const periodKlines = klines.slice(-timeParam);
+                        const highs = periodKlines.map((k: any) => parseFloat(k[2]));
+                        const lows = periodKlines.map((k: any) => parseFloat(k[3]));
+                        const closes = periodKlines.map((k: any) => parseFloat(k[4]));
+
+                        const currentPrice = closes[closes.length - 1];
                         
                         const enableLong = cfg.enableLong !== false;
                         const enableShort = cfg.enableShort !== false;
                         const enableSideways = cfg.enableSideways !== false;
 
-                        let histPrices = lookbackPrices;
-                        if (enableSideways) {
-                            histPrices = lookbackPrices.slice(0, Math.max(1, lookbackPrices.length - cfg.sidewaysDays));
+                        let histHighs = highs;
+                        let histLows = lows;
+                        if (enableSideways && highs.length > cfg.sidewaysDays) {
+                            const endIdx = Math.max(1, highs.length - cfg.sidewaysDays);
+                            histHighs = highs.slice(0, endIdx);
+                            histLows = lows.slice(0, endIdx);
                         }
 
-                        const maxPrice = Math.max(...histPrices);
-                        const minPrice = Math.min(...histPrices);
+                        const maxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
+                        const minPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
 
-                        const maxDrop = ((maxPrice - currentPrice) / maxPrice) * 100;
-                        const maxPump = ((currentPrice - minPrice) / minPrice) * 100;
+                        // Max drop from highest point to lowest point
+                        const dropFromMaxToMin = ((maxPrice - minPrice) / maxPrice) * 100;
+                        // Max pump from lowest point to highest point
+                        const pumpFromMinToMax = ((maxPrice - minPrice) / minPrice) * 100;
 
+                        // Gain from lowest point to current price (for Long)
                         const distLong = ((currentPrice - minPrice) / minPrice) * 100;
+                        // Drop from highest point to current price (for Short)
                         const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
 
-                        const isLongMatch = enableLong && (maxDrop >= cfg.minHistoryDrop) && (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance));
-                        const isShortMatch = enableShort && (maxPump >= cfg.minHistoryPump) && (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance));
+                        const isLongMatch = enableLong && (dropFromMaxToMin >= cfg.minHistoryDrop) && (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance));
+                        const isShortMatch = enableShort && (pumpFromMinToMax >= cfg.minHistoryPump) && (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance));
 
                         const stage1Match = isLongMatch || isShortMatch;
                         if (!stage1Match) return;

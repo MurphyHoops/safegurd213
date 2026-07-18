@@ -38,9 +38,10 @@ interface Props {
     onOpenManual: () => void; 
     onRestoreSettings: (settings: AppSettings) => void;
     onOpenSaviorLab: (tab: 'DNA' | 'BACKTEST') => void;
+    onUpdateBinanceRealBalance?: (balance: number) => void;
 }
 
-const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onFactoryReset, onOpenScanner, onToggleSim, isSimulating, onViewSource, onOpenManual, onRestoreSettings, onOpenSaviorLab }) => {
+const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onFactoryReset, onOpenScanner, onToggleSim, isSimulating, onViewSource, onOpenManual, onRestoreSettings, onOpenSaviorLab, onUpdateBinanceRealBalance }) => {
     
     const [expandedModule, setExpandedModule] = useState<number | null>(6); // Default to User Guide
     const [showStrategy43Info, setShowStrategy43Info] = useState(false);
@@ -284,6 +285,7 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
                     onFactoryReset={onFactoryReset}
                     onExportSettings={handleExportSettings}
                     onImportSettings={handleFileImport}
+                    onUpdateBinanceRealBalance={onUpdateBinanceRealBalance}
                 />
             )}
 

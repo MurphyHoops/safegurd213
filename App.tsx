@@ -212,6 +212,18 @@ const AppContent: React.FC = () => {
     const [isInitializing, setIsInitializing] = useState(true);
     const [bootError, setBootError] = useState<string | null>(null);
 
+    // --- MAIN MOUNTED FLAG & PANIC SELF-HEALING ---
+    useEffect(() => {
+        if (!isInitializing) {
+            (window as any).__MAIN_APP_MOUNTED__ = true;
+            console.log("🛡️ [System Guard] Main app successfully initialized and mounted. Clearing any false-alarm panic UI.");
+            const panic = document.getElementById('panic-ui');
+            if (panic) {
+                panic.remove();
+            }
+        }
+    }, [isInitializing]);
+
     // --- EMERGENCY TIMEOUT (8秒硬跳过) ---
     useEffect(() => {
         const timer = setTimeout(() => {
@@ -964,6 +976,14 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     onRestoreSettings={(s) => setSettings(prev => deepMerge(prev, s))}
                     onBatchOpen={handleBatchOpen}
                     onOpenSaviorLab={openSaviorLab}
+                    onUpdateBinanceRealBalance={(balance) => {
+                        setAccount(prev => ({
+                            ...prev,
+                            binanceRealBalance: balance,
+                            marginBalance: balance,
+                            totalBalance: balance
+                        }));
+                    }}
                 />
             </div>
 

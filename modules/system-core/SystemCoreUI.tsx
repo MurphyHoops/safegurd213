@@ -6,7 +6,7 @@ import { SubscriptionPanel } from './components/SubscriptionPanel';
 import { NetworkSettingsPanel } from './components/NetworkSettingsPanel';
 import { ApiConfigPanel } from './components/ApiConfigPanel';
 
-export const SystemCoreModule: React.FC<SystemCoreProps> = ({ settings, onChange, onOpenManual, onViewSource, onFactoryReset, onExportSettings, onImportSettings }) => {
+export const SystemCoreModule: React.FC<SystemCoreProps> = ({ settings, onChange, onOpenManual, onViewSource, onFactoryReset, onExportSettings, onImportSettings, onUpdateBinanceRealBalance }) => {
     const [backupName, setBackupName] = React.useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -14,7 +14,7 @@ export const SystemCoreModule: React.FC<SystemCoreProps> = ({ settings, onChange
         <div className="p-4 bg-slate-800/30 space-y-5 border-b border-slate-800">
              <SubscriptionPanel />
              <NetworkSettingsPanel settings={settings} onChange={onChange} />
-             <ApiConfigPanel settings={settings} onChange={onChange} />
+             <ApiConfigPanel settings={settings} onChange={onChange} onUpdateBinanceRealBalance={onUpdateBinanceRealBalance} />
 
              {/* Hidden File Input for Restore */}
              <input 

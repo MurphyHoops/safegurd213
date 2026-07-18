@@ -99,7 +99,10 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   render() {
     if (this.state.hasError) {
-      const isCritical = !this.props.moduleName || this.props.moduleName === 'Root Shield';
+      const isCritical = !this.props.moduleName || 
+                         this.props.moduleName === 'Root Shield' || 
+                         this.props.moduleName.toLowerCase().includes('root') || 
+                         this.props.moduleName.toLowerCase().includes('system');
       
       // If it's a module error, show a small placeholder instead of full screen
       if (!isCritical) {

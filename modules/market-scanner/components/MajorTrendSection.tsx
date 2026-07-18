@@ -125,21 +125,45 @@ export const MajorTrendSection: React.FC<Props> = ({
                             </div>
                         </div>
 
+                        {/* Direction Switches in Traditional Horizontal Way */}
+                        <div className="flex items-center justify-between bg-slate-950/40 px-2 py-1.5 rounded border border-slate-800/40">
+                            <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-tight">方向开关</span>
+                            <div className="flex items-center gap-4">
+                                {/* Long Switch */}
+                                <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => updateField('enableLong', activeConfig.enableLong !== false ? false : true)}>
+                                    <button 
+                                        className={`relative inline-flex h-3.5 w-7 items-center rounded-full transition-colors focus:outline-none ${activeConfig.enableLong !== false ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                                    >
+                                        <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${activeConfig.enableLong !== false ? 'translate-x-4' : 'translate-x-1'}`} />
+                                    </button>
+                                    <span className={`text-[9px] font-bold ${activeConfig.enableLong !== false ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                        多 (Long)
+                                    </span>
+                                </div>
+
+                                {/* Short Switch */}
+                                <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => updateField('enableShort', activeConfig.enableShort !== false ? false : true)}>
+                                    <button 
+                                        className={`relative inline-flex h-3.5 w-7 items-center rounded-full transition-colors focus:outline-none ${activeConfig.enableShort !== false ? 'bg-rose-600' : 'bg-slate-700'}`}
+                                    >
+                                        <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${activeConfig.enableShort !== false ? 'translate-x-4' : 'translate-x-1'}`} />
+                                    </button>
+                                    <span className={`text-[9px] font-bold ${activeConfig.enableShort !== false ? 'text-rose-400' : 'text-slate-500'}`}>
+                                        空 (Short)
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
                         {/* Dual Column Layout (多 on Left, 空 on Right) */}
                         <div className="grid grid-cols-2 gap-2.5 text-[9px]">
                             {/* Column 1: 多 */}
                             <div className="space-y-2 pr-1 border-r border-slate-800/50">
-                                <div className="flex items-center justify-between">
+                                <div className="flex items-center justify-between pb-0.5 border-b border-slate-800/30">
                                     <span className={`font-bold uppercase flex items-center gap-1 ${activeConfig.enableLong !== false ? 'text-emerald-400' : 'text-slate-500'}`}>
                                         <span className={`w-1.5 h-1.5 rounded-full ${activeConfig.enableLong !== false ? 'bg-emerald-500' : 'bg-slate-700'}`} />
-                                        多 (开关)
+                                        多头参数
                                     </span>
-                                    <button 
-                                        onClick={() => updateField('enableLong', activeConfig.enableLong !== false ? false : true)}
-                                        className={`relative inline-flex h-3.5 w-6.5 items-center rounded-full transition-colors focus:outline-none ${activeConfig.enableLong !== false ? 'bg-emerald-600' : 'bg-slate-700'}`}
-                                    >
-                                        <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${activeConfig.enableLong !== false ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                                    </button>
                                 </div>
 
                                 <div className={`space-y-1.5 transition-all duration-200 ${activeConfig.enableLong !== false ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
@@ -161,8 +185,11 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             <SmartNumberInput 
                                                 value={activeConfig.maxExtremeDistanceLong !== undefined ? activeConfig.maxExtremeDistanceLong : activeConfig.maxExtremeDistance} 
                                                 onChange={v => {
-                                                    updateField('maxExtremeDistanceLong', v);
-                                                    updateField('maxExtremeDistance', v);
+                                                    setConfig({
+                                                        ...activeConfig,
+                                                        maxExtremeDistanceLong: v,
+                                                        maxExtremeDistance: v
+                                                    });
                                                 }}
                                                 className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-emerald-400 font-bold"
                                             />
@@ -174,17 +201,11 @@ export const MajorTrendSection: React.FC<Props> = ({
 
                             {/* Column 2: 空 */}
                             <div className="space-y-2 pl-1">
-                                <div className="flex items-center justify-between">
+                                <div className="flex items-center justify-between pb-0.5 border-b border-slate-800/30">
                                     <span className={`font-bold uppercase flex items-center gap-1 ${activeConfig.enableShort !== false ? 'text-rose-400' : 'text-slate-500'}`}>
                                         <span className={`w-1.5 h-1.5 rounded-full ${activeConfig.enableShort !== false ? 'bg-rose-500' : 'bg-slate-700'}`} />
-                                        空 (开关)
+                                        空头参数
                                     </span>
-                                    <button 
-                                        onClick={() => updateField('enableShort', activeConfig.enableShort !== false ? false : true)}
-                                        className={`relative inline-flex h-3.5 w-6.5 items-center rounded-full transition-colors focus:outline-none ${activeConfig.enableShort !== false ? 'bg-rose-600' : 'bg-slate-700'}`}
-                                    >
-                                        <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform ${activeConfig.enableShort !== false ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                                    </button>
                                 </div>
 
                                 <div className={`space-y-1.5 transition-all duration-200 ${activeConfig.enableShort !== false ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
@@ -206,8 +227,11 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             <SmartNumberInput 
                                                 value={activeConfig.maxExtremeDistanceShort !== undefined ? activeConfig.maxExtremeDistanceShort : activeConfig.maxExtremeDistance} 
                                                 onChange={v => {
-                                                    updateField('maxExtremeDistanceShort', v);
-                                                    updateField('maxExtremeDistance', v);
+                                                    setConfig({
+                                                        ...activeConfig,
+                                                        maxExtremeDistanceShort: v,
+                                                        maxExtremeDistance: v
+                                                    });
                                                 }}
                                                 className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-rose-400 font-bold"
                                             />

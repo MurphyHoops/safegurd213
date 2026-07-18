@@ -63,7 +63,8 @@ export function checkStrategy2_HedgeProfit(
         
         if (netProfit >= expectedExtraProfit - 0.01) { // 容忍浮点数误差
             // 检查 Rule B: 原仓位(主仓)盈利解套，对冲单存在且亏损
-            if (mainPnL > 0 && hedgePosition && hedgePnL < 0) {
+            // 只有当“启用原仓位完全复开”功能关闭时，才使用“只清对冲”的 Rule B，否则直接进入 Rule A/常规平仓以触发完整复开
+            if (mainPnL > 0 && hedgePosition && hedgePnL < 0 && !settings.stopLoss.autoOpenAfterHedgeProfit) {
                 const reasonMsg = `4.2 [Rule B] 原仓位盈利解套: 原仓位盈利达到解套点且对冲仓位亏损。只清理对冲单，标记主仓位已解套。`;
                 closeHedgeOnly(hedgePosition.entryId, hedgePnL, reasonMsg);
                 

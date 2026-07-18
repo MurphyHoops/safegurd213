@@ -472,6 +472,24 @@ const ScannerDashboardInner: React.FC<
       instantOpenEnabled: false,
       instantReopenEnabled: false,
       instantOpenDirection: "LONG",
+      majorTrend: {
+        enabled: true,
+        updateIntervalHours: 4,
+        requestPerMinute: 20,
+        lookbackDays: 300,
+        minHistoryDrop: 50,
+        minHistoryPump: 100,
+        maxExtremeDistance: 5,
+        sidewaysDays: 7,
+        sidewaysMaxPump: 10,
+        sidewaysMaxDrop: 10,
+        autoTransfer: false,
+        enableLong: true,
+        enableShort: true,
+        enableSideways: true,
+        maxExtremeDistanceLong: 5,
+        maxExtremeDistanceShort: 5
+      }
     },
   );
   const [config8AM, setConfig8AM] = usePersistedState<ScanConfig>(
@@ -496,6 +514,24 @@ const ScannerDashboardInner: React.FC<
       instantOpenEnabled: false,
       instantReopenEnabled: false,
       instantOpenDirection: "LONG",
+      majorTrend: {
+        enabled: false,
+        updateIntervalHours: 4,
+        requestPerMinute: 20,
+        lookbackDays: 300,
+        minHistoryDrop: 50,
+        minHistoryPump: 100,
+        maxExtremeDistance: 5,
+        sidewaysDays: 7,
+        sidewaysMaxPump: 10,
+        sidewaysMaxDrop: 10,
+        autoTransfer: false,
+        enableLong: true,
+        enableShort: true,
+        enableSideways: true,
+        maxExtremeDistanceLong: 5,
+        maxExtremeDistanceShort: 5
+      }
     },
   );
 
@@ -1286,17 +1322,33 @@ const ScannerDashboardInner: React.FC<
 
   const setScanConfig = useCallback(
     (update: React.SetStateAction<ScanConfig>) => {
-      // NOTE: Do not read scanConfig from closure here if possible to prevent reference cycles. 
-      // But we have to for the function form. The caller should be careful not to put this in dependency arrays unconditionally.
-      const next =
-        typeof update === "function" ? (update as any)(scanConfig) : update;
-      if (next.timeBasis !== activeMode) {
-        setTimeout(() => setActiveMode(next.timeBasis as any), 0);
+      if (typeof update === "function") {
+        if (activeMode === "24H") {
+          setConfig24H((prev) => {
+            const next = (update as any)(prev);
+            if (next.timeBasis !== activeMode) {
+              setTimeout(() => setActiveMode(next.timeBasis as any), 0);
+            }
+            return next;
+          });
+        } else {
+          setConfig8AM((prev) => {
+            const next = (update as any)(prev);
+            if (next.timeBasis !== activeMode) {
+              setTimeout(() => setActiveMode(next.timeBasis as any), 0);
+            }
+            return next;
+          });
+        }
       } else {
-        activeMode === "24H" ? setConfig24H(next) : setConfig8AM(next);
+        if (update.timeBasis !== activeMode) {
+          setTimeout(() => setActiveMode(update.timeBasis as any), 0);
+        } else {
+          activeMode === "24H" ? setConfig24H(update) : setConfig8AM(update);
+        }
       }
     },
-    [scanConfig, activeMode, setActiveMode, setConfig24H, setConfig8AM],
+    [activeMode, setActiveMode, setConfig24H, setConfig8AM],
   );
 
   const safeSetChartData = useCallback((newData: any) => {

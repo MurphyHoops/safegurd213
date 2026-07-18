@@ -266,12 +266,18 @@ export class MarketSimulator {
     }
 
     public openPosition(symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any, extraProps?: Partial<Position>) {
+        this.addLog('INFO', `[调试] 进入 openPosition: ${symbol} ${side} amount: ${amount} price: ${price}`);
         if (!this.isNetworkHealthy) {
             this.addLog('WARNING', `网络异常拦截: 拒绝开仓 ${symbol} ${side}`);
             return;
         }
 
         const upperSymbol = normalizeSymbol(symbol);
+        
+        if (this.settings.system.symbolBlacklist?.includes(upperSymbol)) {
+            this.addLog('WARNING', `⚠️ 黑名单拦截: 拒绝开仓 ${upperSymbol}`);
+            return;
+        }
 
         // Robust real-time execution price check:
         // Use the actual current real-time market price if available to prevent opening at stale discovery prices.
@@ -334,10 +340,14 @@ export class MarketSimulator {
             ema80: executionPrice * (1 + trendFactor * 0.4)
         };
 
+        const finalAmount = extraProps?.amount !== undefined ? extraProps.amount : (amount / executionPrice);
+        const finalCostUsdt = extraProps?.amount !== undefined ? (extraProps.amount * executionPrice) : amount;
+
         const newPos: Position = {
             symbol: upperSymbol,
             side,
-            amount: amount / executionPrice,
+            amount: finalAmount,
+            initialAmount: extraProps?.initialAmount !== undefined ? extraProps.initialAmount : finalAmount,
             entryPrice: executionPrice,
             markPrice: executionPrice,
             liquidationPrice: side === PositionSide.LONG ? executionPrice * 0.5 : executionPrice * 1.5,
@@ -360,10 +370,11 @@ export class MarketSimulator {
             is_hedge: false,
             entry_timestamp: newPos.entryTime,
             direction: side,
-            cost_usdt: amount,
+            cost_usdt: finalCostUsdt,
             entry_price: executionPrice,
             correlationId: newPos.correlationId,
             is_reopened: newPos.isReopened,
+            reopenCount: newPos.reopenCount,
             timeframe: signalTf,
             events: [{
                 timestamp: newPos.entryTime,
@@ -465,15 +476,9 @@ export class MarketSimulator {
                 const main = this.positions.find(p => p.entryId === pos.mainPositionId);
                 if (main) {
                     main.isHedged = false;
-                    const profit = pos.unrealizedPnL;
-                    if (profit >= 0) {
-                        main.cumulativeHedgeProfit = (main.cumulativeHedgeProfit || 0) + profit;
-                    } else {
-                        main.cumulativeHedgeLoss = (main.cumulativeHedgeLoss || 0) + Math.abs(profit);
-                    }
                 }
             }
-            
+
             // If we are closing a main position that has a hedge, we should probably close the hedge too
             // Or at least mark the hedge as no longer hedging this main position.
             // For safety, let's just close the hedge as well to prevent orphaned hedges.
@@ -486,16 +491,12 @@ export class MarketSimulator {
                 }
             }
 
-            // Note: Stop-loss reopen is now migrated to only trigger during "断臂求生盈利清仓" (closePair) as per user instructions.
-
+            // Record trade log and filter out the closed position
             this.recordTradeLog(pos, reason);
-            this.positions = this.positions.filter(p => p !== pos);
-            
-            // Add cooldown (60s) for manually closed or rule-closed positions to prevent immediate re-entry
-            this.cooldowns[`${symbol}_${side}`] = Date.now() + 60000;
+            this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
+            this.cooldowns[`${pos.symbol}_${pos.side}`] = Date.now() + 60000;
             this.saveCooldowns();
-
-            this.addLog('INFO', `Closed ${side} on ${symbol}: ${reason}`);
+            this.addLog('INFO', `Closed Position on ${pos.symbol}: ${reason}`);
             this.emitUpdate(true);
         }
     }
@@ -503,6 +504,7 @@ export class MarketSimulator {
     public closePair(mainId: string, hedgeId: string, reason: string) {
         const main = this.positions.find(p => p.entryId === mainId);
         const hedge = hedgeId ? this.positions.find(p => p.entryId === hedgeId) : undefined;
+        const isAmputationProfitExit = reason.includes('断臂') || reason.toLowerCase().includes('amputation');
         
         if (main) {
             // Rule A: Check if autoOpenAfterHedgeProfit is enabled, and there was an active hedge
@@ -528,36 +530,52 @@ export class MarketSimulator {
                     mainEntryId: main.entryId
                 });
                 this.savePendingAutoOpens();
-                this.addLog('INFO', `📝 [Rule A] 记录对冲止盈后开仓计划: ${main.symbol} ${main.side} (数量: ${main.amount.toFixed(4)})，极值价格: ${extremePrice.toFixed(4)}，回调比例: ${pullbackPercent}%`);
+                this.addLog('INFO', `[对冲解套自动开仓已挂载] ${main.symbol} 将在极值价格 ${extremePrice.toFixed(4)} 回撤 ${pullbackPercent}% 后自动复开`);
             }
 
-            this.recordTradeLog(main, reason);
-            if (hedge) {
-                this.recordTradeLog(hedge, reason);
-            }
-            this.positions = this.positions.filter(p => p.entryId !== mainId && p.entryId !== hedgeId);
-            this.addLog('SUCCESS', `✅ 累计盈利清仓: ${reason}`);
+            // Record initial profitability states BEFORE closing positions
+            const isHedgeProfitable = hedge ? (hedge.unrealizedPnL || 0) > 0 : false;
+            const isMainProfitable = (main.unrealizedPnL || 0) > 0;
 
-            // New Rule: Reopen original position when Strategy 4 ("断臂求生") exits with profit/winning liquidation.
-            const isAmputationProfitExit = reason.includes('断臂') || reason.toLowerCase().includes('amputation');
+            // Close positions: Clean up positions
+            if (isAmputationProfitExit) {
+                // Clear ALL positions for this symbol if Amputation
+                const positionsToClose = this.positions.filter(p => p.symbol === main.symbol);
+                for (const p of positionsToClose) {
+                    this.recordTradeLog(p, reason + ' (断臂全清)');
+                }
+                this.positions = this.positions.filter(p => p.symbol !== main.symbol);
+                this.addLog('INFO', `[断臂全清] 已清除所有 ${main.symbol} 相关仓位: ${reason}`);
+                this.cooldowns[`${main.symbol}_${main.side}`] = Date.now() + 60000;
+                this.saveCooldowns();
+            } else {
+                // Close positions: Clean up both main and hedge positions cleanly from state
+                if (hedge) {
+                    this.recordTradeLog(hedge, reason);
+                    this.positions = this.positions.filter(p => p.entryId !== hedge.entryId);
+                    this.cooldowns[`${hedge.symbol}_${hedge.side}`] = Date.now() + 60000;
+                    this.addLog('INFO', `Closed Hedge ${hedge.side} on ${hedge.symbol}: ${reason}`);
+                }
+                
+                this.recordTradeLog(main, reason);
+                this.positions = this.positions.filter(p => p.entryId !== main.entryId);
+                this.cooldowns[`${main.symbol}_${main.side}`] = Date.now() + 60000;
+                this.saveCooldowns();
+                this.addLog('INFO', `Closed Main ${main.side} on ${main.symbol}: ${reason}`);
+            }
+            this.addLog('INFO', `[调试] 当前剩余仓位数量: ${this.positions.length}`);
+
+            // Evaluate Reopen Rule for Strategy 4 ("断臂求生")
+            this.addLog('INFO', `[调试] reason: ${reason}, isAmputationProfitExit: ${isAmputationProfitExit}`);
             if (isAmputationProfitExit && this.settings.stopLoss.amputationReopenEnabled) {
-                // 复开必须是对冲仓盈利解套清仓的情况才复开，如果是原仓位盈利解套交给”只清对冲、主仓续航“来管理
-                const isHedgeProfitable = hedge && (hedge.unrealizedPnL || 0) > 0;
-                const isMainProfitable = (main.unrealizedPnL || 0) > 0;
-
                 if (isHedgeProfitable) {
+                    // 满足条件：对冲仓盈利解套，清除对冲仓位和原仓位干净后，再开一个原仓位初始开仓数量和方向的仓位
+                    this.addLog('INFO', `🔄 [断臂完全复开触发] 对冲仓位盈利解套且账户仓位已全部清空。执行原仓位初始开仓数量和方向的完全复开。`);
                     this.reopenPosition(main, `断臂求生对冲仓盈利解套自动复开`);
                 } else if (isMainProfitable) {
                     this.addLog('INFO', `ℹ️ [断臂复开跳过] 原仓位盈利解套，已交给「只清对冲、主仓续航」管理，不执行原仓位完全复开`);
                 } else {
-                    // Fallback comparison
-                    const hedgePnL = hedge ? (hedge.unrealizedPnL || 0) : -999999;
-                    const mainPnL = main.unrealizedPnL || 0;
-                    if (hedgePnL > mainPnL) {
-                        this.reopenPosition(main, `断臂求生对冲仓盈利解套自动复开 (对冲表现优于原仓)`);
-                    } else {
-                        this.addLog('INFO', `ℹ️ [断臂复开跳过] 原仓表现优于对冲仓，不执行完全复开`);
-                    }
+                    this.addLog('INFO', `ℹ️ [断臂复开跳过] 未满足对冲仓位盈利解套的前提条件，不执行原仓位完全复开`);
                 }
             }
 
@@ -566,6 +584,7 @@ export class MarketSimulator {
     }
 
     public reopenPosition(pos: Position, reason: string) {
+        this.addLog('INFO', `[调试] 进入 reopenPosition: ${pos.symbol} ${pos.side} reason: ${reason}`);
         const symbolKey = normalizeSymbol(pos.symbol);
         const throttleKey = `${symbolKey}_${pos.side}`;
         const now = Date.now();
@@ -586,18 +605,21 @@ export class MarketSimulator {
 
         this.lastReopenTimes[throttleKey] = now;
 
-        // 新仓位的大小是采用原仓位被砍前的最完整大小
-        const originalFullAmountQty = pos.amount + (pos.amputatedAmount || 0);
-        // 为了在 openPosition 的 amount / price 计算中得到完美的 originalFullAmountQty，
-        // 我们传入 value = originalFullAmountQty * pos.markPrice
-        const reopenedValueUsdt = originalFullAmountQty * pos.markPrice;
+        // 根据 Option A（选项 A）：
+        // 初始的 USDT 本金金额（如 100 U）保持完全一致，币数根据当前最新价格重新计算。
+        // 原仓位第一次开仓的币数 * 原仓位第一次开仓的价格 = 初始的 USDT 本金金额
+        const originalInitialQty = pos.initialAmount !== undefined ? pos.initialAmount : (pos.amount + (pos.amputatedAmount || 0));
+        const originalEntryPrice = pos.entryPrice || pos.markPrice;
+        const initialUsdtCost = originalInitialQty * originalEntryPrice;
 
         const corrId = pos.correlationId || nextReopenCount;
 
+        // 调用 openPosition，不传入额外的 amount 和 initialAmount 覆盖属性，
+        // 这样 openPosition 会基于 initialUsdtCost 自动根据当前最新执行价格（executionPrice）计算出全新的币数并将其作为 amount 与 initialAmount 存入新仓位。
         this.openPosition(
             pos.symbol, 
             pos.side, 
-            reopenedValueUsdt, 
+            initialUsdtCost, 
             pos.markPrice, 
             pos.signalTf || '1m', 
             undefined, 
@@ -606,10 +628,10 @@ export class MarketSimulator {
                 isReopened: true,
                 reopenCount: nextReopenCount,
                 correlationId: corrId,
-                parentEntryId: pos.entryId,
+                parentEntryId: pos.entryId
             }
         );
-        this.addLog('SUCCESS', `🔄 [原仓位复开] 已开启独立复开仓位: ${pos.symbol} ${pos.side} | 数量: ${originalFullAmountQty.toFixed(4)}币 | 原因: ${reason} | 复开次数: ${nextReopenCount}`);
+        this.addLog('SUCCESS', `🔄 [原仓位复开] 已开启独立复开仓位: ${pos.symbol} ${pos.side} | 原始USDT本金: ${initialUsdtCost.toFixed(2)}U | 原因: ${reason} | 复开次数: ${nextReopenCount}`);
         this.emitUpdate(true);
     }
 
