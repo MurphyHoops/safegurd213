@@ -104,6 +104,7 @@ interface Props {
   logs?: any[];
   onBacktestPositionsUpdate?: (positions: Position[]) => void;
   onBatchClose?: () => void;
+  isRealTrading?: boolean;
 }
 
 const UnconfiguredColumn: React.FC<{
@@ -150,6 +151,7 @@ const ScannerDashboardInner: React.FC<
   logs = [],
   setBacktestKlines,
   onBacktestPositionsUpdate,
+  isRealTrading = false,
 }) => {
   const {
     virtualTime,
@@ -879,12 +881,15 @@ const ScannerDashboardInner: React.FC<
 
   const filteredPositions = useMemo(() => {
     if (isUnconfigured) return [];
+    if (isRealTrading && scannerMode !== "BACKTEST") {
+      return currentPositions;
+    }
     const activeStratId = selectedStrategyId || 'strat-1';
     return currentPositions.filter((p) => {
       const pId = p.strategyId || 'strat-1';
       return pId === activeStratId;
     });
-  }, [currentPositions, selectedStrategyId, isUnconfigured]);
+  }, [currentPositions, selectedStrategyId, isUnconfigured, isRealTrading, scannerMode]);
 
   const currentBalance =
     scannerMode === "BACKTEST" ? backtestAccount.marginBalance : liveBalance;
@@ -1463,6 +1468,12 @@ const ScannerDashboardInner: React.FC<
                     ? "智能选币终端 (SMART SELECTION)"
                     : "全域扫描终端 (SCANNER)"}
               </h2>
+              {scannerMode !== "BACKTEST" && isRealTrading && (
+                <div className="flex items-center gap-1.5 bg-emerald-950/50 border border-emerald-500/35 rounded px-2.5 py-1 animate-pulse shrink-0">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]" />
+                  <span className="text-xs text-emerald-400 font-bold tracking-wider font-sans">当前正在实盘交易</span>
+                </div>
+              )}
               {scannerMode !== "BACKTEST" && networkStatus && (
                 <NetworkWidget networkStatus={networkStatus} />
               )}
@@ -1508,6 +1519,25 @@ const ScannerDashboardInner: React.FC<
               >
                 🔊 测试防爆鸣声音
               </button>
+            </div>
+          )}
+
+          {isRealTrading && scannerMode !== 'BACKTEST' && (
+            <div className="bg-emerald-950/80 border-b border-emerald-500/30 px-4 py-2.5 flex items-center justify-between text-emerald-200 text-[11px] font-sans">
+              <div className="flex items-center gap-2">
+                <span className="flex h-2.5 w-2.5 relative shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]"></span>
+                </span>
+                <span>
+                  🔥 <b>系统当前正处于【实盘交易模式】！</b> 所有全域扫描、自动选币以及审核流水线均已成功绑定并监听您的 Binance 真实 API。
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[9px] px-2 py-0.5 rounded font-mono font-bold uppercase animate-pulse">
+                  API_ACTIVE_LIVE
+                </span>
+              </div>
             </div>
           )}
 

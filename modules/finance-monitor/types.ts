@@ -1,5 +1,5 @@
 
-import { AccountData, Position } from '../../types';
+import { AccountData, Position, AppSettings } from '../../types';
 
 export interface FinanceMonitorProps {
     account: AccountData;
@@ -12,4 +12,5 @@ export interface FinanceMonitorProps {
     onResetBalance?: (amount: number) => void;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;
+    settings: AppSettings;
 }

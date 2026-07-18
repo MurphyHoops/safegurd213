@@ -7,7 +7,8 @@ import { useFinanceMonitorLogic } from './useFinanceMonitorLogic';
 
 export const FinanceMonitorModule: React.FC<FinanceMonitorProps> = ({ 
     account, positions, realPrices, isSimulating, 
-    onToggleSimulation, onBatchClose, onOpenTradeModal, onResetBalance, networkStatus, isOnline 
+    onToggleSimulation, onBatchClose, onOpenTradeModal, onResetBalance, networkStatus, isOnline,
+    settings
 }) => {
     const {
         totalPnL,
@@ -35,6 +36,7 @@ export const FinanceMonitorModule: React.FC<FinanceMonitorProps> = ({
                     shortValue={shortValue}
                     totalHedgeSLAmount={totalHedgeSLAmount}
                     onResetBalance={onResetBalance}
+                    settings={settings}
                 />
             </div>
             <div className="md:col-span-2 h-full">
@@ -44,6 +46,7 @@ export const FinanceMonitorModule: React.FC<FinanceMonitorProps> = ({
                     realPricesCount={Object.keys(realPrices).length}
                     isSimulating={isSimulating}
                     onToggleSimulation={onToggleSimulation}
+                    settings={settings}
                 />
             </div>
         </div>

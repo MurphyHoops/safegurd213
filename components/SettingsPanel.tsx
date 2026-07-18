@@ -38,7 +38,7 @@ interface Props {
     onOpenManual: () => void; 
     onRestoreSettings: (settings: AppSettings) => void;
     onOpenSaviorLab: (tab: 'DNA' | 'BACKTEST') => void;
-    onUpdateBinanceRealBalance?: (balance: number) => void;
+    onUpdateBinanceRealBalance?: (balance: number, realPositions?: any[]) => void;
 }
 
 const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onFactoryReset, onOpenScanner, onToggleSim, isSimulating, onViewSource, onOpenManual, onRestoreSettings, onOpenSaviorLab, onUpdateBinanceRealBalance }) => {

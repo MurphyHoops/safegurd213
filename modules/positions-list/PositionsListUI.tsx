@@ -147,16 +147,28 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
             </div>
 
             <div className="sticky top-0 z-10 bg-[#0b0e11]/95 backdrop-blur-md border-b border-slate-800 px-4 py-2 flex justify-between items-center shrink-0">
-                <div className="flex items-center gap-4">
-                    <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-                        {activeTab === 'BACKTEST' ? '仿真持仓' : '当前持仓'} ({sortedPositions.length})
-                    </div>
-                    <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
-                        <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${activeTab === 'LIVE' ? 'animate-pulse' : ''}`}></span>多: {longCount}</span>
-                        <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className={`w-1.5 h-1.5 rounded-full bg-red-500 ${activeTab === 'LIVE' ? 'animate-pulse' : ''}`}></span>空: {shortCount}</span>
-                        <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                             对冲: {hedgePairsCount} <span className="text-indigo-400 uppercase ml-1 opacity-60">{strategiesDisplay}</span>
-                        </span>
+                <div className="flex flex-col gap-1.5">
+                    {/* 实盘交易 (Live Trading) 绿灯高亮指示器 */}
+                    {settings?.system?.realTrading && activeTab !== 'BACKTEST' && (
+                        <div className="flex items-center gap-1.5 bg-emerald-950/40 border border-emerald-500/30 rounded px-2 py-0.5 w-fit">
+                            <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                            <span className="text-[10px] text-emerald-400 font-bold font-sans uppercase tracking-wider">实盘交易 (Live Trading)</span>
+                        </div>
+                    )}
+                    <div className="flex items-center gap-4">
+                        <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                            {activeTab === 'BACKTEST' ? '仿真持仓' : '当前持仓'} ({sortedPositions.length})
+                        </div>
+                        <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
+                            <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${activeTab === 'LIVE' ? 'animate-pulse' : ''}`}></span>多: {longCount}</span>
+                            <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800"><span className={`w-1.5 h-1.5 rounded-full bg-red-500 ${activeTab === 'LIVE' ? 'animate-pulse' : ''}`}></span>空: {shortCount}</span>
+                            <span className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                 对冲: {hedgePairsCount} <span className="text-indigo-400 uppercase ml-1 opacity-60">{strategiesDisplay}</span>
+                            </span>
+                        </div>
                     </div>
                 </div>
                 

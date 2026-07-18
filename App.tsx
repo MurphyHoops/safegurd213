@@ -131,6 +131,7 @@ const AppContent: React.FC = () => {
     const simulatorBootTimeRef = useRef<number>(Date.now());
     const [networkStatus, setNetworkStatus] = useState<'healthy' | 'delayed' | 'disconnected'>('disconnected');
     const [backtestPositions, setBacktestPositions] = useState<Position[]>([]);
+    const [binanceRealPositions, setBinanceRealPositions] = useState<Position[]>([]);
     
     const handleBacktestPositionsUpdate = useCallback((newPos: Position[]) => {
         setBacktestPositions(prev => {
@@ -143,8 +144,11 @@ const AppContent: React.FC = () => {
     
     // Stabilize positions array to prevent infinite loops in effects
     const combinedPositions = React.useMemo(() => {
+        if (settings.system.realTrading) {
+            return positions;
+        }
         return [...positions, ...backtestPositions];
-    }, [positions, backtestPositions]);
+    }, [settings.system.realTrading, positions, backtestPositions]);
 
     const logsPendingRef = useRef<LogEntry[]>([]);
     const lastLogUpdateRef = useRef<number>(0);
@@ -193,6 +197,14 @@ const AppContent: React.FC = () => {
     }, [updateLogsFromBuffer]);
 
     const [isSimulating, setIsSimulating] = usePersistedState('SAVIOR_IS_SIMULATING', false);
+    
+    // --- SAFEGUARD: FORCE DISABLE SIMULATION IN REAL TRADING MODE ---
+    useEffect(() => {
+        if (settings.system.realTrading && isSimulating) {
+            setIsSimulating(false);
+            handleLog('WARNING', '⚠️ 当前已启用实盘交易模式！为了确保您的真实资金与交易绝对安全，系统已自动停用并锁定本地模拟仿真引擎。');
+        }
+    }, [settings.system.realTrading, isSimulating, setIsSimulating, handleLog]);
     const [showLogs, setShowLogs] = useState(true);
     const [showTradeLogModal, setShowTradeLogModal] = useState(false);
     const [tradeLogSearchSymbol, setTradeLogSearchSymbol] = useState<string>('');
@@ -239,45 +251,103 @@ const AppContent: React.FC = () => {
     // --- WEBSOCKET CONNECTION & AUTO-RECOVERY ---
     useEffect(() => {
         // @ts-ignore
-        window.openPositionManual = (symbol: string, side: PositionSide, qty: number) => {
-            if (simulatorRef.current) {
-                const cleanSymbol = normalizeSymbol(symbol);
-                let livePrice = simulatorRef.current.realPrices[cleanSymbol];
-                const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
-                const isMajorCoin = noScaleSymbols.includes(cleanSymbol);
-                if (!livePrice) {
-                    if (!isMajorCoin) {
-                        if (cleanSymbol.startsWith('1000')) {
-                            const base = cleanSymbol.replace(/^1000/, '');
-                            if (simulatorRef.current.realPrices[base]) {
-                                livePrice = simulatorRef.current.realPrices[base] * 1000;
-                            }
-                        } else {
-                            const scaled = '1000' + cleanSymbol;
-                            if (simulatorRef.current.realPrices[scaled]) {
-                                livePrice = simulatorRef.current.realPrices[scaled] / 1000;
+        window.openPositionManual = async (symbol: string, side: PositionSide, qty: number) => {
+            const cleanSymbol = normalizeSymbol(symbol);
+            const isReal = settingsRef.current.system.realTrading;
+
+            if (isReal) {
+                const apiKey = settingsRef.current.system.binanceApiKey;
+                const apiSecret = settingsRef.current.system.binanceApiSecret;
+                if (!apiKey || !apiSecret) {
+                    alert("错误: 实盘交易已开启，但未配置币安 API Key 或 Secret Key！");
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("DANGER", "手动开仓失败: 未配置实盘 API 密钥");
+                    }
+                    return;
+                }
+
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("INFO", `[实盘开仓] 正在向币安发送手动市价开仓请求: ${cleanSymbol} ${side} | 预估数量: ${qty.toFixed(4)}`);
+                }
+
+                try {
+                    const response = await fetch("/api/binance/order", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            apiKey,
+                            apiSecret,
+                            symbol: cleanSymbol,
+                            side: side,
+                            action: "OPEN",
+                            quantity: qty
+                        })
+                    });
+
+                    const resData = await response.json();
+                    if (response.ok && resData.success) {
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 手动开仓成功: ${cleanSymbol} ${side} | ID: ${resData.orderId}`);
+                        }
+                        audioService.speak("实盘开仓执行成功");
+
+                        // Sync real-time positions instantly after order placement to show it immediately
+                        if (typeof (window as any).triggerApiSync === "function") {
+                            (window as any).triggerApiSync();
+                        }
+                    } else {
+                        const errMsg = resData.error || "未知交易所错误";
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 手动开仓失败: ${errMsg}`);
+                        }
+                        alert(`币安实盘开仓失败:\n${errMsg}`);
+                        audioService.speak("实盘开仓失败");
+                    }
+                } catch (e: any) {
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 手动开仓网络异常: ${e.message || e}`);
+                    }
+                    alert(`币安实盘开仓网络异常:\n${e.message || e}`);
+                }
+            } else {
+                if (simulatorRef.current) {
+                    let livePrice = simulatorRef.current.realPrices[cleanSymbol];
+                    const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
+                    const isMajorCoin = noScaleSymbols.includes(cleanSymbol);
+                    if (!livePrice) {
+                        if (!isMajorCoin) {
+                            if (cleanSymbol.startsWith('1000')) {
+                                const base = cleanSymbol.replace(/^1000/, '');
+                                if (simulatorRef.current.realPrices[base]) {
+                                    livePrice = simulatorRef.current.realPrices[base] * 1000;
+                                }
+                            } else {
+                                const scaled = '1000' + cleanSymbol;
+                                if (simulatorRef.current.realPrices[scaled]) {
+                                    livePrice = simulatorRef.current.realPrices[scaled] / 1000;
+                                }
                             }
                         }
                     }
-                }
-                const finalPrice = livePrice && livePrice > 0 ? livePrice : 1;
-                const costUsdt = qty * finalPrice;
-                
-                const rawStrategyId = localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID");
-                let activeStrategyId = "strat-1";
-                if (rawStrategyId) {
-                    try {
-                        activeStrategyId = JSON.parse(rawStrategyId);
-                    } catch (e) {
-                        activeStrategyId = rawStrategyId;
+                    const finalPrice = livePrice && livePrice > 0 ? livePrice : 1;
+                    const costUsdt = qty * finalPrice;
+                    
+                    const rawStrategyId = localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID");
+                    let activeStrategyId = "strat-1";
+                    if (rawStrategyId) {
+                        try {
+                            activeStrategyId = JSON.parse(rawStrategyId);
+                        } catch (e) {
+                            activeStrategyId = rawStrategyId;
+                        }
                     }
-                }
 
-                simulatorRef.current.openPosition(cleanSymbol, side, costUsdt, finalPrice, '1m', undefined, undefined, { 
-                    isReopened: false,
-                    strategyId: activeStrategyId 
-                });
-                setPositions([...simulatorRef.current.getPositions()]);
+                    simulatorRef.current.openPosition(cleanSymbol, side, costUsdt, finalPrice, '1m', undefined, undefined, { 
+                        isReopened: false,
+                        strategyId: activeStrategyId 
+                    });
+                    setPositions([...simulatorRef.current.getPositions()]);
+                }
             }
         };
 
@@ -636,6 +706,24 @@ const AppContent: React.FC = () => {
             // PERFORMANCE: Guard state updates by checking for material changes
             // This prevents "depth exceeded" issues if updates are rapid
             setAccount(prev => {
+                if (settingsRef.current.system.realTrading) {
+                    const realPositions = activePositionsRef.current;
+                    const totalUnrealizedPnL = realPositions.reduce((sum, p) => sum + (p.unrealizedPnL || 0), 0);
+                    const realBalance = prev.binanceRealBalance || prev.marginBalance || 0;
+                    const totalBalance = realBalance + totalUnrealizedPnL;
+                    const maintMargin = realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0);
+                    const marginRatio = realBalance > 0 ? (maintMargin / realBalance * 100) : 0;
+                    
+                    return {
+                        ...prev,
+                        totalBalance,
+                        unrealizedPnL: totalUnrealizedPnL,
+                        marginBalance: realBalance,
+                        binanceRealBalance: realBalance,
+                        maintenanceMargin: maintMargin,
+                        marginRatio: marginRatio
+                    };
+                }
                 if (Math.abs(prev.marginBalance - newAccount.marginBalance) < 0.01 && 
                     prev.marginRatio === newAccount.marginRatio &&
                     prev.totalBalance === newAccount.totalBalance) {
@@ -742,6 +830,94 @@ const AppContent: React.FC = () => {
         }
     }, [settings]);
 
+    // --- GLOBAL BINANCE BACKGROUND SYNC ---
+    // Polls Binance Futures balance and positions every 8 seconds when realTrading is active.
+    // This runs globally in the background so sync never stops when panels are closed!
+    useEffect(() => {
+        const apiKey = settings.system.binanceApiKey;
+        const apiSecret = settings.system.binanceApiSecret;
+        const isReal = settings.system.realTrading;
+
+        if (!isReal || !apiKey || !apiSecret) {
+            return;
+        }
+
+        const fetchRealState = async (silent = true) => {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+                
+                const response = await fetch("/api/binance/validate-and-balance", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ apiKey, apiSecret }),
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeout);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && data.success) {
+                        const balance = data.marginBalance;
+                        const realPositions = data.activePositions || [];
+                        
+                        if (simulatorRef.current) {
+                            simulatorRef.current.updateRealBalance(balance);
+                        }
+                        
+                        setAccount(prev => ({
+                            ...prev,
+                            binanceRealBalance: balance,
+                            marginBalance: balance,
+                            totalBalance: balance,
+                            maintenanceMargin: realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0),
+                            marginRatio: realPositions.length > 0 ? (realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0) / balance * 100) : 0
+                        }));
+                        
+                        setBinanceRealPositions(realPositions);
+                        
+                        if (simulatorRef.current) {
+                            simulatorRef.current.setPositions(realPositions);
+                        }
+                    } else {
+                        console.error("[Binance Background Sync] API Error:", data);
+                        if (data && data.code === -2015) {
+                             handleLog('DANGER', '⚠️ 币安 API 密钥无效或权限不足！请检查是否已正确开启“期货交易 (Enable Futures)”权限，并检查 IP 限制。');
+                        }
+                    }
+                } else {
+                    const errorText = await response.text();
+                    console.error("[Binance Background Sync] Request Failed:", response.status, errorText);
+                }
+            } catch (err) {
+                console.error("[Binance Background Sync] Error:", err);
+            }
+        };
+
+        // Expose a global function to trigger sync instantly
+        (window as any).triggerApiSync = () => {
+            console.log("[Binance Sync] Manual trigger received, syncing state instantly...");
+            fetchRealState(true);
+        };
+
+        // Initial sync
+        const timer = setTimeout(() => {
+            fetchRealState(true);
+        }, 1000);
+
+        // Periodic sync every 8 seconds
+        const interval = setInterval(() => {
+            fetchRealState(true);
+        }, 8000);
+
+        return () => {
+            clearTimeout(timer);
+            clearInterval(interval);
+            delete (window as any).triggerApiSync;
+        };
+    }, [settings.system.realTrading, settings.system.binanceApiKey, settings.system.binanceApiSecret]);
+
     const handleSettingsChange = (section: keyof AppSettings, key: string, value: any) => {
         setSettings(prev => ({
             ...prev,
@@ -752,15 +928,70 @@ const AppContent: React.FC = () => {
         }));
     };
 
-    const handleOpenPosition = useCallback((symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any, extraProps?: Partial<Position>) => {
+    const handleOpenPosition = useCallback(async (symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any, extraProps?: Partial<Position>) => {
         const cleanSymbol = normalizeSymbol(symbol);
-        simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas, extraProps);
+        const isReal = settingsRef.current.system.realTrading;
+
+        if (isReal) {
+            const apiKey = settingsRef.current.system.binanceApiKey;
+            const apiSecret = settingsRef.current.system.binanceApiSecret;
+            if (!apiKey || !apiSecret) {
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("DANGER", `自动开仓拦截: 账户处于实盘交易模式，但未配置 API 密钥`);
+                }
+                return;
+            }
+
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("INFO", `[实盘自动开仓] 策略/信号触发开仓: ${cleanSymbol} ${side} | 金额: ${amount} U`);
+            }
+
+            try {
+                const response = await fetch("/api/binance/order", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        apiKey,
+                        apiSecret,
+                        symbol: cleanSymbol,
+                        side: side,
+                        action: "OPEN",
+                        amountUsdt: amount
+                    })
+                });
+
+                const resData = await response.json();
+                if (response.ok && resData.success) {
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动开仓成功: ${cleanSymbol} ${side} | 数量: ${resData.qty} | ID: ${resData.orderId}`);
+                    }
+                    audioService.speak("实盘自动开仓成功");
+
+                    // Sync real-time positions instantly after order placement to show it immediately
+                    if (typeof (window as any).triggerApiSync === "function") {
+                        (window as any).triggerApiSync();
+                    }
+                } else {
+                    const errMsg = resData.error || "未知交易所错误";
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动开仓失败: ${errMsg}`);
+                    }
+                    audioService.speak("自动开仓失败");
+                }
+            } catch (e: any) {
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动开仓发生网络异常: ${e.message || e}`);
+                }
+            }
+        } else {
+            simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas, extraProps);
+        }
     }, []);
 
     // @LOCKED: Manually closed state logic
 const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(new Set());
 
-    const handleClosePosition = useCallback((symbol: string, side: PositionSide) => {
+    const handleClosePosition = useCallback(async (symbol: string, side: PositionSide) => {
         const cleanSymbol = normalizeSymbol(symbol);
         setManuallyClosedSymbols(prev => new Set(prev).add(cleanSymbol));
         setTimeout(() => setManuallyClosedSymbols(prev => {
@@ -768,8 +999,73 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             next.delete(cleanSymbol);
             return next;
         }), 3000);
-        simulatorRef.current?.closePosition(cleanSymbol, side, 'MANUAL');
-    }, []);
+
+        const isReal = settingsRef.current.system.realTrading;
+        if (isReal) {
+            const apiKey = settingsRef.current.system.binanceApiKey;
+            const apiSecret = settingsRef.current.system.binanceApiSecret;
+            if (!apiKey || !apiSecret) {
+                alert("错误: 实盘交易已开启，但未配置币安 API Key 或 Secret Key！");
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("DANGER", "手动平仓失败: 未配置实盘 API 密钥");
+                }
+                return;
+            }
+
+            // Get position to close to find exact quantity from latest synced state
+            const posToClose = binanceRealPositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side === side);
+            if (!posToClose) {
+                alert("错误: 未在当前实盘持仓中找到该仓位！");
+                return;
+            }
+
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("INFO", `[实盘平仓] 正在向币安发送市价平仓请求: ${cleanSymbol} ${side} | 数量: ${posToClose.amount}`);
+            }
+
+            try {
+                const response = await fetch("/api/binance/order", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        apiKey,
+                        apiSecret,
+                        symbol: cleanSymbol,
+                        side: side,
+                        action: "CLOSE",
+                        quantity: posToClose.amount
+                    })
+                });
+
+                const resData = await response.json();
+                if (response.ok && resData.success) {
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 平仓成功: ${cleanSymbol} ${side} | ID: ${resData.orderId}`);
+                    }
+                    audioService.speak("实盘平仓执行成功");
+
+                    // Sync real-time positions instantly after order placement to show it immediately
+                    if (typeof (window as any).triggerApiSync === "function") {
+                        (window as any).triggerApiSync();
+                    }
+                } else {
+                    const errMsg = resData.error || "未知交易所错误";
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓失败: ${errMsg}`);
+                    }
+                    alert(`币安实盘平仓失败:\n${errMsg}`);
+                    audioService.speak("实盘平仓失败");
+                }
+            } catch (e: any) {
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络异常: ${e.message || e}`);
+                }
+                alert(`币安实盘平仓网络异常:\n${e.message || e}`);
+            }
+        } else {
+            simulatorRef.current?.closePosition(cleanSymbol, side, 'MANUAL');
+        }
+    }, [binanceRealPositions]);
 
     const handleUpdateCustomSettings = useCallback((symbol: string, customSettings?: any) => {
         if (symbol === 'GLOBAL_MASTER_TOGGLE' || symbol === 'GLOBAL_CUSTODY_MODE') {
@@ -976,13 +1272,21 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     onRestoreSettings={(s) => setSettings(prev => deepMerge(prev, s))}
                     onBatchOpen={handleBatchOpen}
                     onOpenSaviorLab={openSaviorLab}
-                    onUpdateBinanceRealBalance={(balance) => {
+                    onUpdateBinanceRealBalance={(balance, realPositions) => {
+                        if (simulatorRef.current) {
+                            simulatorRef.current.updateRealBalance(balance);
+                        }
                         setAccount(prev => ({
                             ...prev,
                             binanceRealBalance: balance,
                             marginBalance: balance,
-                            totalBalance: balance
+                            totalBalance: balance,
+                            maintenanceMargin: realPositions ? realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0) : 0,
+                            marginRatio: realPositions && realPositions.length > 0 ? (realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0) / balance * 100) : 0
                         }));
+                        if (realPositions) {
+                            setBinanceRealPositions(realPositions);
+                        }
                     }}
                 />
             </div>
@@ -1068,12 +1372,13 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         if (simulatorRef.current) localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(simulatorRef.current.getPositions()));
                     }}
                     realPrices={realPrices}
-                    activePositions={positions}
+                    activePositions={combinedPositions}
                     balance={account.marginBalance}
                     directMode={settings.system.directMode}
                     onLog={handleLog}
                     logs={logs}
                     onBacktestPositionsUpdate={handleBacktestPositionsUpdate}
+                    isRealTrading={settings.system.realTrading}
                 />
             </ErrorBoundary>
             

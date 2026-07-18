@@ -885,7 +885,7 @@ export class MarketSimulator {
         this.addLog('INFO', `Applied strategy recommendation for ${rec.symbol}`);
     }
 
-    private addLog(type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) {
+    public addLog(type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) {
         let finalMessage = message;
         if (this.settings?.system?.realTrading) {
             const hasKeys = !!(this.settings.system.binanceApiKey && this.settings.system.binanceApiSecret);
@@ -1505,6 +1505,11 @@ export class MarketSimulator {
         this.positions.forEach(pos => {
             this.verifyPosition(pos, tradeLogs);
         });
+    }
+
+    public updateRealBalance(balance: number) {
+        this.account.marginBalance = balance;
+        this.account.binanceRealBalance = balance;
     }
 
     public verifyPosition(pos: Position, tradeLogs: TradeLog[]) {

@@ -35,6 +35,14 @@ const List5_Live: React.FC<List5Props> = ({
 }) => {
     const [filterSide, setFilterSide] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
     const [filterPnL, setFilterPnL] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
+    const [serverIp, setServerIp] = useState<string>("Loading...");
+
+    useEffect(() => {
+        fetch("/api/network/ip")
+            .then(res => res.json())
+            .then(data => setServerIp(data.ip))
+            .catch(() => setServerIp("Failed"));
+    }, []);
 
     // Manual Trading panel states
     const [manualSymbol, setManualSymbol] = useState('');
@@ -158,7 +166,19 @@ const List5_Live: React.FC<List5Props> = ({
     return (
         <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 ${COLUMN_WIDTH_CLASS}`}>
             <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-2 shrink-0">
-                <div className="font-bold text-emerald-400 text-sm flex items-center gap-2"><Activity size={14}/> 5. 战场实况 (LIVE)</div>
+                <div className="font-bold text-emerald-400 text-sm flex items-center gap-2">
+                    <Activity size={14}/> 5. 战场实况 (LIVE)
+                    <button 
+                        onClick={() => {
+                            navigator.clipboard.writeText(serverIp);
+                            alert(`已复制 IP: ${serverIp}`);
+                        }}
+                        className="ml-auto text-[10px] text-slate-500 hover:text-white bg-slate-800 px-1.5 py-0.5 rounded transition-colors"
+                        title="点击复制当前连接IP"
+                    >
+                        IP: {serverIp}
+                    </button>
+                </div>
                 <div className="bg-slate-800/50 p-2 rounded border border-slate-700 flex justify-between items-center text-[10px]">
                     <span className="text-slate-500">总持仓: <span className="text-white font-bold">{moduleStats.symbolCount}</span></span>
                     <span className="text-slate-500">浮盈: <span className={`font-bold ${moduleStats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{moduleStats.totalPnl.toFixed(1)}</span></span>

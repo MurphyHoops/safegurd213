@@ -5,7 +5,7 @@ import { audioService } from '../../../services/audioService';
 interface Props {
     settings: any;
     onChange: (key: string, value: any) => void;
-    onUpdateBinanceRealBalance?: (balance: number) => void;
+    onUpdateBinanceRealBalance?: (balance: number, realPositions?: any[]) => void;
 }
 
 export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBinanceRealBalance }) => {
@@ -58,12 +58,12 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
                     });
                     audioService.speak('API 校验成功！');
                 } else {
-                    console.log(`🛡️ [System API Sync] Successfully synced Binance Balance in background: ${data.marginBalance} USDT`);
+                    console.log(`🛡️ [System API Sync] Successfully synced Binance Balance in background: ${data.marginBalance} USDT, active positions: ${data.activePositions?.length || 0}`);
                 }
 
-                // Trigger callback to display it above the account display bar's balance
+                // Trigger callback to display it above the account display bar's balance and positions list
                 if (onUpdateBinanceRealBalance && typeof data.marginBalance === 'number') {
-                    onUpdateBinanceRealBalance(data.marginBalance);
+                    onUpdateBinanceRealBalance(data.marginBalance, data.activePositions || []);
                 }
             } else {
                 if (!silent) {
@@ -90,17 +90,6 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
             }
         }
     };
-
-    // --- AUTO BALANCE SYNC ON MOUNT OR TOGGLE ---
-    useEffect(() => {
-        if (settings.realTrading && settings.binanceApiKey && settings.binanceApiSecret) {
-            // Wait 500ms to allow system state to stabilize, then trigger background sync
-            const timer = setTimeout(() => {
-                handleValidate(true);
-            }, 500);
-            return () => clearTimeout(timer);
-        }
-    }, [settings.realTrading, settings.binanceApiKey, settings.binanceApiSecret]);
 
     return (
         <div>

@@ -95,6 +95,17 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
+  app.get("/api/network/ip", async (req, res) => {
+      try {
+          const response = await fetch("https://api.ipify.org?format=json");
+          const data = await response.json();
+          res.json({ ip: data.ip });
+      } catch (error) {
+          console.error("Failed to fetch external IP:", error);
+          res.status(500).json({ error: "Failed to fetch IP" });
+      }
+  });
+
   // Create HTTP server
   const server = http.createServer(app);
 
@@ -236,6 +247,236 @@ async function startServer() {
         }
     };
 
+    let cachedExchangeInfo: any = null;
+    let lastExchangeInfoFetch = 0;
+
+    async function getExchangeInfo() {
+        const now = Date.now();
+        if (cachedExchangeInfo && (now - lastExchangeInfoFetch < 12 * 60 * 60 * 1000)) {
+            return cachedExchangeInfo;
+        }
+        try {
+            console.log("🔄 Fetching Binance Futures exchangeInfo...");
+            const response = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo");
+            if (response.ok) {
+                const data = await response.json();
+                cachedExchangeInfo = data;
+                lastExchangeInfoFetch = now;
+                return data;
+            }
+        } catch (e) {
+            console.error("Failed to fetch exchangeInfo:", e);
+        }
+        return cachedExchangeInfo;
+    }
+
+    function formatBinanceSymbol(symbol: string): string {
+        const clean = symbol.toUpperCase().trim();
+        if (clean.endsWith("USDT")) {
+            return clean;
+        }
+        return clean + "USDT";
+    }
+
+    app.post("/api/binance/order", async (req, res) => {
+        const { apiKey, apiSecret, symbol, side, action, quantity, amountUsdt } = req.body;
+        if (!apiKey || !apiSecret || !symbol || !side || !action) {
+            return res.status(400).json({ success: false, error: "缺少必要参数 (apiKey, apiSecret, symbol, side, action)" });
+        }
+
+        const formattedSymbol = formatBinanceSymbol(symbol);
+
+        try {
+            // 1. Get current ticker price to calculate quantity or validate notional value
+            console.log(`[Binance Order] Fetching price for ${formattedSymbol} to calculate qty/validate notional...`);
+            const priceResponse = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${formattedSymbol}`);
+            let currentPrice = 0;
+            if (priceResponse.ok) {
+                const priceData = await priceResponse.json();
+                currentPrice = parseFloat(priceData.price);
+            } else {
+                return res.status(502).json({ success: false, error: `获取 ${formattedSymbol} 当前价格失败。` });
+            }
+
+            let finalQty = quantity;
+            if (!finalQty && amountUsdt && currentPrice > 0) {
+                finalQty = amountUsdt / currentPrice;
+                console.log(`[Binance Order] Calculated qty for ${formattedSymbol}: ${finalQty} (${amountUsdt} USDT @ ${currentPrice})`);
+            }
+
+            if (!finalQty || isNaN(finalQty) || finalQty <= 0) {
+                return res.status(400).json({ success: false, error: "无法确定合法的交易数量 (quantity 必须大于0)" });
+            }
+
+            // 2. Adjust quantity according to exchangeInfo LOT_SIZE stepSize and precision
+            const exchangeInfo = await getExchangeInfo();
+            if (exchangeInfo && exchangeInfo.symbols) {
+                const symInfo = exchangeInfo.symbols.find((s: any) => s.symbol === formattedSymbol);
+                if (symInfo) {
+                    const lotFilter = symInfo.filters?.find((f: any) => f.filterType === "LOT_SIZE");
+                    if (lotFilter) {
+                        const stepSize = parseFloat(lotFilter.stepSize || "0.0001");
+                        const qtyPrecision = parseInt(symInfo.quantityPrecision || "4");
+                        
+                        // Round down to stepSize
+                        let roundedQty = Math.floor(finalQty / stepSize) * stepSize;
+                        
+                        // Fix floating point errors
+                        finalQty = parseFloat(roundedQty.toFixed(qtyPrecision));
+                        
+                        // Ensure it is not less than minQty
+                        const minQty = parseFloat(lotFilter.minQty || "0.0001");
+                        if (finalQty < minQty) {
+                            return res.status(400).json({ 
+                                success: false, 
+                                error: `交易数量 ${finalQty} 低于该币种的最小下单量限制 (${minQty})。请增加开仓金额。` 
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 3. Check Dual Position Side mode (Hedge Mode vs One-way Mode)
+            let isHedgeMode = false;
+            const timestamp = Date.now();
+            const dualQueryString = `timestamp=${timestamp}&recvWindow=5000`;
+            const dualSignature = crypto
+                .createHmac("sha256", apiSecret)
+                .update(dualQueryString)
+                .digest("hex");
+
+            const dualResponse = await fetch(`https://fapi.binance.com/fapi/v1/positionSide/dual?${dualQueryString}&signature=${dualSignature}`, {
+                headers: { "X-MBX-APIKEY": apiKey }
+            });
+
+            if (dualResponse.ok) {
+                const dualData = await dualResponse.json();
+                isHedgeMode = dualData.dualSidePosition === true;
+                console.log(`[Binance Order] Position mode detected: ${isHedgeMode ? "Hedge Mode (双向持仓)" : "One-way Mode (单向持仓)"}`);
+            } else {
+                console.warn("[Binance Order] Failed to fetch position mode, defaulting to One-way Mode");
+            }
+
+            // 4. Check notional value limit (>= 5 USDT)
+            if (currentPrice > 0) {
+                const notionalValue = finalQty * currentPrice;
+                if (notionalValue < 5.0) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: `订单名义价值 (Notional Value) 为 ${notionalValue.toFixed(2)} USDT，低于币安最小限制 (5 USDT)。请增加开仓金额或数量。` 
+                    });
+                }
+            }
+
+            // 5. Map Action & Side to Binance Futures parameters
+            // Side in request: "LONG" or "SHORT"
+            // Action in request: "OPEN" or "CLOSE"
+            let binanceSide: "BUY" | "SELL";
+            let binancePositionSide: "LONG" | "SHORT" | undefined = undefined;
+
+            if (isHedgeMode) {
+                binancePositionSide = side === "LONG" ? "LONG" : "SHORT";
+                if (action === "OPEN") {
+                    binanceSide = side === "LONG" ? "BUY" : "SELL";
+                } else { // CLOSE
+                    binanceSide = side === "LONG" ? "SELL" : "BUY";
+                }
+            } else {
+                // One-way mode
+                if (action === "OPEN") {
+                    binanceSide = side === "LONG" ? "BUY" : "SELL";
+                } else { // CLOSE
+                    binanceSide = side === "LONG" ? "SELL" : "BUY";
+                }
+            }
+
+            // 5. Construct order parameters
+            const orderParams: any = {
+                symbol: formattedSymbol,
+                side: binanceSide,
+                type: "MARKET",
+                quantity: finalQty.toString(),
+                timestamp: Date.now().toString(),
+                recvWindow: "5000"
+            };
+
+            if (binancePositionSide) {
+                orderParams.positionSide = binancePositionSide;
+            }
+
+            // Convert parameters to sorted query string for signature
+            const orderQueryString = Object.keys(orderParams)
+                .sort()
+                .map(key => `${key}=${encodeURIComponent(orderParams[key])}`)
+                .join("&");
+
+            const orderSignature = crypto
+                .createHmac("sha256", apiSecret)
+                .update(orderQueryString)
+                .digest("hex");
+
+            const finalOrderUrl = `https://fapi.binance.com/fapi/v1/order?${orderQueryString}&signature=${orderSignature}`;
+
+            console.log(`[Binance Order] Executing real MARKET order on Binance: ${formattedSymbol} | Side: ${binanceSide} | positionSide: ${binancePositionSide || 'N/A'} | Qty: ${finalQty}`);
+
+            const orderResponse = await fetch(finalOrderUrl, {
+                method: "POST",
+                headers: {
+                    "X-MBX-APIKEY": apiKey,
+                    "Content-Type": "application/json"
+                }
+            });
+
+            const orderText = await orderResponse.text();
+            let orderData;
+            try {
+                orderData = JSON.parse(orderText);
+            } catch (e) {
+                console.error(`[Binance Order] Failed to parse response as JSON. Raw response: ${orderText}`);
+                return res.status(502).json({
+                    success: false,
+                    error: `币安交易所返回了非 JSON 格式的响应: ${orderResponse.status} - ${orderText.substring(0, 100)}`
+                });
+            }
+
+            if (orderResponse.ok) {
+                console.log(`[Binance Order] Success! Order ID: ${orderData.orderId}`);
+                return res.json({
+                    success: true,
+                    orderId: orderData.orderId,
+                    clientOrderId: orderData.clientOrderId,
+                    symbol: formattedSymbol,
+                    side: binanceSide,
+                    positionSide: binancePositionSide,
+                    qty: finalQty,
+                    message: `成功在币安下单: ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${finalQty} 手！`
+                });
+            } else {
+                const errorCode = orderData.code;
+                const errorMsg = orderData.msg || orderText;
+                
+                let userFriendlyError = `币安交易所请求失败: ${errorMsg}`;
+                if (errorCode === -2015) {
+                    userFriendlyError = "币安 API 密钥无效或权限不足！请检查：1. 是否已在币安开启“期货交易 (Enable Futures)”权限；2. API Key 是否正确；3. 是否设置了 IP 限制。";
+                }
+                
+                console.error(`[Binance Order] Failed: ${JSON.stringify(orderData)}`);
+                return res.status(orderResponse.status).json({
+                    success: false,
+                    error: userFriendlyError,
+                    code: errorCode
+                });
+            }
+
+        } catch (e: any) {
+            console.error("[Binance Order] Unexpected error:", e);
+            return res.status(500).json({
+                success: false,
+                error: `下单执行异常: ${e.message || e}`
+            });
+        }
+    });
+
     app.post("/api/binance/validate-and-balance", async (req, res) => {
         const { apiKey, apiSecret } = req.body;
         if (!apiKey || !apiSecret) {
@@ -263,14 +504,20 @@ async function startServer() {
             for (const baseUrl of baseUrls) {
                 const url = `${baseUrl}/fapi/v2/account?${queryString}&signature=${signature}`;
                 try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout per node
+                    
                     console.log(`[Binance API Validation] Trying node: ${baseUrl}`);
                     const response = await fetch(url, {
                         method: "GET",
                         headers: {
                             "X-MBX-APIKEY": apiKey,
                             "Content-Type": "application/json"
-                        }
+                        },
+                        signal: controller.signal
                     });
+                    
+                    clearTimeout(timeout);
 
                     if (response.ok) {
                         const data = await response.json();
@@ -297,11 +544,40 @@ async function startServer() {
                 const walletBalance = usdtAsset ? parseFloat(usdtAsset.walletBalance) : 0;
                 const availableBalance = usdtAsset ? parseFloat(usdtAsset.availableBalance) : 0;
 
+                // Extract active positions where positionAmt is non-zero
+                const activePositions = (resultData.positions || [])
+                    .filter((p: any) => p && parseFloat(p.positionAmt || "0") !== 0)
+                    .map((p: any) => {
+                        const amount = parseFloat(p.positionAmt);
+                        const side = amount > 0 ? "LONG" : "SHORT";
+                        const entryPrice = parseFloat(p.entryPrice || "0");
+                        const unrealizedPnL = parseFloat(p.unrealizedProfit || "0");
+                        const liquidationPrice = parseFloat(p.liquidationPrice || "0");
+                        const leverage = parseFloat(p.leverage || "20");
+                        const maintMargin = parseFloat(p.maintMargin || "0");
+                        
+                        return {
+                            symbol: p.symbol,
+                            side: side,
+                            amount: Math.abs(amount),
+                            entryPrice: entryPrice,
+                            markPrice: entryPrice, // Fallback, updated via realPrices
+                            liquidationPrice: liquidationPrice,
+                            unrealizedPnL: unrealizedPnL,
+                            unrealizedPnLPercentage: entryPrice > 0 ? (unrealizedPnL / (Math.abs(amount) * entryPrice)) * 100 : 0,
+                            entryId: `real_${p.symbol}_${side}`,
+                            entryTime: Date.now(),
+                            leverage: leverage,
+                            maintMargin: maintMargin
+                        };
+                    });
+
                 return res.json({
                     success: true,
                     marginBalance,
                     walletBalance,
                     availableBalance,
+                    activePositions,
                     message: "API 校验连接成功！"
                 });
             }

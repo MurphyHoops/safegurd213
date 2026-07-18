@@ -72,6 +72,7 @@ const Dashboard: React.FC<Props> = ({
                 onResetBalance={onResetBalance}
                 networkStatus={networkStatus}
                 isOnline={isOnline}
+                settings={settings}
             />
 
             {/* MODULE B: POSITIONS LIST (Active Trades) */}

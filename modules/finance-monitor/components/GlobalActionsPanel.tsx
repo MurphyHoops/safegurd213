@@ -3,18 +3,22 @@ import { Play, Pause, RotateCw, WifiOff, Activity, AlertTriangle, Zap, RefreshCw
 import { binanceWs } from '../../../services/binanceWs';
 import { audioService } from '../../../services/audioService';
 
+import { AppSettings } from '../../../types';
+
 interface Props {
     networkStatus: 'healthy' | 'delayed' | 'disconnected' | 'unknown';
     isOnline: boolean;
     realPricesCount: number;
     isSimulating: boolean;
     onToggleSimulation: () => void;
+    settings?: AppSettings;
 }
 
 export const GlobalActionsPanel: React.FC<Props> = ({
-    networkStatus, isOnline, realPricesCount, isSimulating, onToggleSimulation
+    networkStatus, isOnline, realPricesCount, isSimulating, onToggleSimulation, settings
 }) => {
     const isNetworkError = !isOnline || networkStatus === 'disconnected';
+    const isRealTrading = settings?.system?.realTrading;
 
     return (
         <div className={`bg-[#0b0e11] p-1.5 rounded border flex flex-col justify-between gap-1.5 h-full transition-colors ${
@@ -23,10 +27,13 @@ export const GlobalActionsPanel: React.FC<Props> = ({
             <div className="flex items-center justify-between px-1">
                 <div className="flex items-center gap-2">
                     <span className="text-[9px] text-slate-500 font-black uppercase tracking-widest">
-                        {isNetworkError ? '网络故障警告' : '核心控制台'}
+                        {isRealTrading ? '实盘核心状态' : isNetworkError ? '网络故障警告' : '核心控制台'}
                     </span>
                     {isNetworkError && (
                         <span className="bg-red-500 text-[8px] px-1 rounded text-white animate-pulse font-mono">CODE: NET_ERR</span>
+                    )}
+                    {isRealTrading && (
+                        <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[8px] px-1 rounded font-mono animate-pulse">LIVE TRADING</span>
                     )}
                 </div>
                 
@@ -34,6 +41,7 @@ export const GlobalActionsPanel: React.FC<Props> = ({
                     <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${
                         !isOnline || networkStatus === 'disconnected' ? 'bg-red-900/30 border-red-500/50' :
                         networkStatus === 'delayed' ? 'bg-amber-900/30 border-amber-500/50' :
+                        isRealTrading ? 'bg-emerald-950/40 border-emerald-500/30' :
                         'bg-slate-900 border-slate-800'
                     }`}>
                         <div className={`w-1.5 h-1.5 rounded-full ${
@@ -42,13 +50,35 @@ export const GlobalActionsPanel: React.FC<Props> = ({
                             'bg-emerald-500'
                         }`} />
                         <span className="text-[8px] font-black font-mono text-slate-300">
-                            {!isOnline ? 'OFFLINE' : networkStatus.toUpperCase()}
+                            {isRealTrading ? 'LIVE_SECURE' : !isOnline ? 'OFFLINE' : networkStatus.toUpperCase()}
                         </span>
                     </div>
                 </div>
             </div>
 
-            {isNetworkError ? (
+            {isRealTrading ? (
+                <div className="flex-1 flex gap-2 items-center min-h-0 overflow-hidden bg-emerald-950/10 border border-emerald-500/25 rounded px-2 py-1">
+                    <div className="flex-1 flex flex-col justify-center min-w-0">
+                         <div className="flex items-center gap-1 text-amber-400">
+                            <AlertTriangle size={11} className="shrink-0 animate-bounce" />
+                            <span className="text-[9px] font-black leading-tight uppercase truncate">
+                                实盘已连接：禁用模拟测试
+                            </span>
+                        </div>
+                        <p className="text-[8px] text-slate-400 leading-tight mt-0.5 font-sans">
+                            ⚠️ 实盘模式已运行！实盘交易时不能进行任何模拟测试，模拟引擎强制锁定中。
+                        </p>
+                    </div>
+                    <button 
+                        disabled
+                        className="w-14 shrink-0 rounded text-[9px] font-black flex flex-col items-center justify-center gap-1 bg-emerald-950/50 text-emerald-500/50 border border-emerald-500/20 cursor-not-allowed py-1"
+                        title="实盘交易进行中，不能进行模拟测试"
+                    >
+                        <Pause size={12} className="opacity-60" />
+                        <span>锁定</span>
+                    </button>
+                </div>
+            ) : isNetworkError ? (
                 <div className="flex-1 flex gap-2 items-center min-h-0 overflow-hidden">
                     <div className="flex-1 flex flex-col justify-center min-w-0">
                          <div className="flex items-center gap-1.5 text-red-400">
