@@ -77,6 +77,15 @@ export const useBacktestGrandCrossing = (
             if (config.strictFiltering) {
               const ratio = r.bodyRatio ?? 0; // Use strict default of 0
               if (ratio < (config.minBodyRatio || 0)) return false;
+
+              // Check validation flags if defined
+              if (r.bodyValid !== undefined && !r.bodyValid) return false;
+              if (r.ampValid !== undefined && !r.ampValid) return false;
+              if (r.volValid !== undefined && !r.volValid) return false;
+
+              // Check amplitude bounds
+              const squeezeVal = r.squeezeVal ?? 0;
+              if (squeezeVal < (config.squeezeThreshold || 0) || squeezeVal > (config.maxAmplitude || 50)) return false;
             }
             return !expiredList2SignalCacheRef.current.has(
               `${item.symbol}-${r.tf}-${r.direction}`,
@@ -175,7 +184,18 @@ export const useBacktestGrandCrossing = (
                   if (config.strictFiltering) {
                     finalMerged = cleanMerged.filter((r) => {
                       const ratio = r.bodyRatio ?? 0;
-                      return ratio >= (config.minBodyRatio || 0);
+                      if (ratio < (config.minBodyRatio || 0)) return false;
+
+                      // Check validation flags if defined
+                      if (r.bodyValid !== undefined && !r.bodyValid) return false;
+                      if (r.ampValid !== undefined && !r.ampValid) return false;
+                      if (r.volValid !== undefined && !r.volValid) return false;
+
+                      // Check amplitude bounds
+                      const squeezeVal = r.squeezeVal ?? 0;
+                      if (squeezeVal < (config.squeezeThreshold || 0) || squeezeVal > (config.maxAmplitude || 50)) return false;
+
+                      return true;
                     });
                   }
 

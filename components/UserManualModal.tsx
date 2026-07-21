@@ -16,6 +16,7 @@ const UserManualModal: React.FC<Props> = ({ onClose }) => {
     { id: 'RESCUE', label: '3. 盈利解套 (进阶)', icon: Target },
     { id: 'MARTIN', label: '4. 智能马丁', icon: Repeat },
     { id: 'FAQ', label: '5. 常见问题', icon: HelpCircle },
+    { id: 'CHANGELOG', label: '6. 修改记录日志', icon: GitMerge },
   ];
 
   return (
@@ -367,6 +368,123 @@ const UserManualModal: React.FC<Props> = ({ onClose }) => {
                       A: <b>不会。</b> 本系统是运行在浏览器端的。您必须保持网页开启。建议点击顶部的 <b>“屏幕常亮”</b> 和 <b>“后台保活”</b> 按钮，防止手机锁屏导致系统休眠。
                     </p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 6: CHANGELOG */}
+            {activeTab === 'CHANGELOG' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+                <div className="border-b border-slate-800 pb-4">
+                  <h3 className="text-xl font-bold text-white mb-2 bg-gradient-to-r from-emerald-400 to-indigo-500 bg-clip-text text-transparent">
+                    系统优化与修改记录日志 (System Optimization & Modification Log)
+                  </h3>
+                  <p className="text-sm text-slate-400 font-mono">
+                    Tracking upgrades, safety reinforcements, and bug fixes
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  {/* Item 0 - Grand Crossing Strict Filtering Upgrade */}
+                  <div className="bg-slate-900/60 p-4 rounded border border-slate-800 relative">
+                    <span className="absolute top-3 right-3 text-[10px] font-mono text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">UPGRADED & LOCKED</span>
+                    <h4 className="text-white font-bold text-sm mb-2 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                      列表2“黄金交叉”严格过滤条件重构升级 (Strict Filtering Refactor)
+                    </h4>
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      <b>修改细节：</b>
+                    </p>
+                    <ul className="list-disc list-inside text-xs text-slate-400 space-y-1 bg-slate-950/60 p-3 rounded font-mono">
+                      <li><b>信号底层改进：</b>在 <code>list2_crossing.ts</code> 中，修改了原先合并结果中 <code>ampValid</code> 和 <code>volValid</code> 始终被硬编码为 <code>true</code> 的设计，改为精准传递每一根 K 线的真实振幅、放量、实体合规状态。</li>
+                      <li><b>实盘&回测双端实时过滤：</b>重构了实盘 UI (<code>useGrandCrossing.ts</code>) 与模拟回测 (<code>useBacktestGrandCrossing.ts</code>) 的数据流，在“严格过滤条件”生效时，除了实体比例 (Body Ratio)，还将对振幅区间 (<code>[squeezeThreshold, maxAmplitude]</code>)、放量状态进行即时交叉重过滤，使用户配置任何变动都能在毫秒内清洗不合规信号。</li>
+                      <li><b>二次核验严格锁死：</b>将 45s 定时进行的基础穿透核验 (Double-Verification) 算法升级为“严格模式”。如果核验期间任何币种在实时 K 线上出现振幅、放量或实体比例不符，将被直接判定不合格，进入缓冲计数，并在稳定不达标后剔除出表，从而 100% 确保信号的绝对精确和稳定。</li>
+                    </ul>
+                  </div>
+
+                  {/* Item 1 */}
+                  <div className="bg-slate-900/60 p-4 rounded border border-slate-800 relative">
+                    <span className="absolute top-3 right-3 text-[10px] font-mono text-indigo-400 bg-indigo-900/30 px-2 py-0.5 rounded">NEW</span>
+                    <h4 className="text-white font-bold text-sm mb-2 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+                      持仓列表连接状态 — 十进制公网 IP 展示与快捷复制
+                    </h4>
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      <b>修改细节：</b>
+                    </p>
+                    <ul className="list-disc list-inside text-xs text-slate-400 space-y-1 bg-slate-950/60 p-3 rounded font-mono">
+                      <li>后端 <code>server.ts</code> 新增 <code>/api/network/ip</code> 路由，通过请求公网服务获取程序当前运行主机的十进制真实公网 IP (如 <code className="text-indigo-300">104.198.x.x</code>)。</li>
+                      <li>在“5. 战场实况 (LIVE)”持仓板块右上角，网络情况旁边，设计了专门的 IP 状态指示。</li>
+                      <li>支持点击快速将该真实 IP 复制到剪贴板，并提示已成功复制，方便用户校验与授权币安 API IP 白名单。</li>
+                    </ul>
+                  </div>
+
+                  {/* Item 2 */}
+                  <div className="bg-slate-900/60 p-4 rounded border border-slate-800 relative">
+                    <span className="absolute top-3 right-3 text-[10px] font-mono text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">STABLE</span>
+                    <h4 className="text-white font-bold text-sm mb-2 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                      币安下单名义价值限额预警 — 杜绝 -4164 报错
+                    </h4>
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      <b>修改细节：</b>
+                    </p>
+                    <ul className="list-disc list-inside text-xs text-slate-400 space-y-1 bg-slate-950/60 p-3 rounded font-mono">
+                      <li>针对币安强制要求的“单笔合约订单名义价值 (Notional Value) 不得低于 5 USDT”的限制进行主动拦截。</li>
+                      <li>在下单流程前置加入实价拉取逻辑，计算当前的 <code>数量 (Qty) × 当前最新价格</code>。</li>
+                      <li>若计算出的名义价值低于 5.0 USDT，则前端提示并阻止下单，要求用户增加数量或金额，杜绝了底层返回的 <code className="text-yellow-300">-4164</code> 的不友好报错。</li>
+                    </ul>
+                  </div>
+
+                  {/* Item 3 */}
+                  <div className="bg-slate-900/60 p-4 rounded border border-slate-800 relative">
+                    <span className="absolute top-3 right-3 text-[10px] font-mono text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded">FIXED</span>
+                    <h4 className="text-white font-bold text-sm mb-2 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                      双端 HTML 非 JSON 报错拦截与降级 (解决 Unexpected token &lt; 报错)
+                    </h4>
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      <b>修改细节：</b>
+                    </p>
+                    <ul className="list-disc list-inside text-xs text-slate-400 space-y-1 bg-slate-950/60 p-3 rounded font-mono">
+                      <li><b>后端保护：</b>在接口层增加了强类型的原生响应文本捕获机制 (<code>response.text()</code>) 与安全 JSON 解析器。</li>
+                      <li><b>前端同步保护：</b>在 <code>App.tsx</code> 的 <code>fetchRealState</code> 后台同步轮询中增加了对 HTML 网页（如 502 Bad Gateway 网页）的预警与自动丢弃。</li>
+                      <li>彻底解决了网络抖动、服务器重启或反向代理网关挂起时抛出 <code>Unexpected token '&lt;', "&lt;!doctype "... is not valid JSON</code> 导致前端控制台报错的问题。</li>
+                    </ul>
+                  </div>
+
+                  {/* Item 4 */}
+                  <div className="bg-slate-900/60 p-4 rounded border border-slate-800 relative">
+                    <span className="absolute top-3 right-3 text-[10px] font-mono text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded">OPTIMIZED</span>
+                    <h4 className="text-white font-bold text-sm mb-2 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                      币安实盘 API 权限智能断诊 (API-key / IP Restrictions)
+                    </h4>
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      <b>修改细节：</b>
+                    </p>
+                    <ul className="list-disc list-inside text-xs text-slate-400 space-y-1 bg-slate-950/60 p-3 rounded font-mono">
+                      <li>针对常见的币安接口报错 <code className="text-red-300">-2015</code> (API-key、IP 或权限不足) 进行了全链条提示优化。</li>
+                      <li>同步拦截同步接口和下单接口，自动判定错误类型，及时提供三大排查步骤：1. 是否开启了合约交易权限、2. 密钥格式检查、3. IP 限制解除。</li>
+                    </ul>
+                  </div>
+
+                  {/* Item 5 */}
+                  <div className="bg-slate-900/60 p-4 rounded border border-slate-800 relative">
+                    <span className="absolute top-3 right-3 text-[10px] font-mono text-indigo-400 bg-indigo-900/30 px-2 py-0.5 rounded">ENGINE</span>
+                    <h4 className="text-white font-bold text-sm mb-2 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+                      毫秒级实盘推送 Web-Worker 引擎机制锁
+                    </h4>
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      <b>修改细节：</b>
+                    </p>
+                    <ul className="list-disc list-inside text-xs text-slate-400 space-y-1 bg-slate-950/60 p-3 rounded font-mono">
+                      <li>在 <code>binanceWs.ts</code> 中缩短保活看门狗 (Watchdog) 延迟阀值从 12s 降低到更敏感的 6s，一旦断流立即自动启动无感瞬时重连。</li>
+                      <li>配合 <code>AGENTS.md</code> 的 "Real-time Price Push & Position Sync Engine" 代码锁，永久冻结底层的高性能 DOM-bypass UI 更新机制。</li>
+                    </ul>
+                  </div>
+
                 </div>
               </div>
             )}

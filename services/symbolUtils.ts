@@ -13,6 +13,17 @@ export const normalizeSymbol = (s: string): string => {
         .replace(/[^A-Z0-9]/g, '');
 };
 
+export const isMemeScaledCoin = (symbol: string): boolean => {
+    if (!symbol) return false;
+    const clean = symbol.toUpperCase().replace(/^1000/, '').replace(/USDT$/, '').trim();
+    const scaleMemeSymbols = ['PEPE', 'SHIB', 'BONK', 'FLOKI', 'LUNC', 'SATS', 'RATS', 'XEC', 'BABYDOGE', 'CATI'];
+    return scaleMemeSymbols.includes(clean);
+};
+
+export const isMajorCoin = (symbol: string): boolean => {
+    return !isMemeScaledCoin(symbol);
+};
+
 /**
  * Robust price resolver that handles various symbol formats (with/without USDT, with/without 1000).
  * Handles the 1000x scaling factor for meme coins like LUNC, PEPE, SHIB, FLOKI.
@@ -33,8 +44,7 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
     // 2. Fallback to fallbackPrice if still nothing
     if (foundPrice === undefined && fallbackPrice && fallbackPrice > 0) foundPrice = fallbackPrice;
     
-    const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
-    const isMajorCoin = noScaleSymbols.includes(normalized);
+    const isMajorCoinVal = isMajorCoin(normalized);
 
     // 3. Try variations from realPrices
     if (foundPrice === undefined) {
@@ -44,7 +54,7 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
 
     if (foundPrice === undefined) {
         // Only try 1000x variants for non-major coins
-        const checkSymbols = isMajorCoin ? [normalized + 'USDT'] : [
+        const checkSymbols = isMajorCoinVal ? [normalized + 'USDT'] : [
             '1000' + normalized + 'USDT',
             '1000' + normalized,
             normalized + 'USDT'
@@ -66,7 +76,7 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
         const ratio = foundPrice / fallbackPrice;
         
         // If it's a major coin, we are very careful
-        if (isMajorCoin) {
+        if (isMajorCoinVal) {
             // ONLY scale if it's a blatant mistake (ratio ~1000 or ~0.001)
             // AND scaling it makes it match the fallback almost perfectly.
             if (ratio > 500 || ratio < 0.002) {
@@ -81,12 +91,22 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
         }
 
         if (ratio > 500) {
-            console.log(`[Price Resolve] Scaling down ${symbol}: ${foundPrice} -> ${foundPrice / 1000}`);
-            return foundPrice / 1000; // Found price is 1000x too big
+            const corrected = foundPrice / 1000;
+            const correctedRatio = corrected / fallbackPrice;
+            if (correctedRatio > 0.8 && correctedRatio < 1.2) {
+                console.log(`[Price Resolve] Scaling down ${symbol}: ${foundPrice} -> ${corrected}`);
+                return corrected;
+            }
+            return foundPrice;
         }
         if (ratio < 0.002) {
-            console.log(`[Price Resolve] Scaling up ${symbol}: ${foundPrice} -> ${foundPrice * 1000}`);
-            return foundPrice * 1000; // Found price is 1000x too small
+            const corrected = foundPrice * 1000;
+            const correctedRatio = corrected / fallbackPrice;
+            if (correctedRatio > 0.8 && correctedRatio < 1.2) {
+                console.log(`[Price Resolve] Scaling up ${symbol}: ${foundPrice} -> ${corrected}`);
+                return corrected;
+            }
+            return foundPrice;
         }
     }
 

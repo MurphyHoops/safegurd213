@@ -265,10 +265,21 @@ export const useGrandCrossing = (
         }
 
         // --- RE-FILTERING LOGIC (Reactive to Config Changes) ---
-        // If strict filtering is ON, and signal doesn't meet the ratio, remove it
+        // If strict filtering is ON, strictly verify all 3 conditions: body ratio, amplitude range, and volume/valid flags
         if (cfg.strictFiltering) {
           const ratio = r.bodyRatio ?? 0; // Set default to 0 to be strictly compliant and filter out malformed/legacy signals
           if (ratio < (cfg.minBodyRatio || 0)) return false;
+
+          // 1. Check body ratio flag if defined
+          if (r.bodyValid !== undefined && !r.bodyValid) return false;
+
+          // 2. Check ampValid and volValid if defined
+          if (r.ampValid !== undefined && !r.ampValid) return false;
+          if (r.volValid !== undefined && !r.volValid) return false;
+
+          // 3. Check amplitude bounds
+          const squeezeVal = r.squeezeVal ?? 0;
+          if (squeezeVal < (cfg.squeezeThreshold || 0) || squeezeVal > (cfg.maxAmplitude || 50)) return false;
         }
 
         // 压缩信号过滤
@@ -590,16 +601,35 @@ export const useGrandCrossing = (
               if (match) {
                 const currentMinBody = configRef.current.minBodyRatio || 0;
                 actualBodyRatio = match.bodyRatio ?? 0;
-                if (actualBodyRatio >= currentMinBody) {
+                
+                let isStrictValid = true;
+                if (configRef.current.strictFiltering) {
+                  if (actualBodyRatio < currentMinBody) isStrictValid = false;
+                  if (match.ampValid !== undefined && !match.ampValid) isStrictValid = false;
+                  if (match.volValid !== undefined && !match.volValid) isStrictValid = false;
+                  if (match.bodyValid !== undefined && !match.bodyValid) isStrictValid = false;
+                  const squeezeVal = match.squeezeVal ?? 0;
+                  if (squeezeVal < (configRef.current.squeezeThreshold || 0) || squeezeVal > (configRef.current.maxAmplitude || 50)) {
+                    isStrictValid = false;
+                  }
+                } else {
+                  if (actualBodyRatio < currentMinBody) isStrictValid = false;
+                }
+
+                if (isStrictValid) {
                   isValid = true;
                   matchDetails = {
                     bodyRatio: actualBodyRatio,
                     lag: match.lag,
                     isAligned: match.isAligned,
                     isSqueeze: match.isSqueeze,
+                    ampValid: match.ampValid,
+                    volValid: match.volValid,
+                    bodyValid: match.bodyValid,
+                    squeezeVal: match.squeezeVal ?? 0,
                   };
                 } else {
-                  console.log(`[Double Verify] ${item.symbol} ${tf} ${r.direction} failed body ratio check (Got ${actualBodyRatio.toFixed(1)}%, Min: ${currentMinBody}%). Entering buffer...`);
+                  console.log(`[Double Verify] ${item.symbol} ${tf} ${r.direction} failed strict check (Body: ${actualBodyRatio.toFixed(1)}% vs Min ${currentMinBody}%). Entering buffer...`);
                 }
               } else {
                 console.log(`[Double Verify] ${item.symbol} ${tf} ${r.direction} signal no longer active in active window. Entering buffer...`);

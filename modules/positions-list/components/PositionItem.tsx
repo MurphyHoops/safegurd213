@@ -57,9 +57,7 @@ export const PositionItem: React.FC<Props> = ({
     const currentProfitMode = profitSettings?.profitMode;
     const oEnabledMap = profitSettings?.oEnabledMap || {};
     const isAiMode = currentProfitMode === 'AI' || oEnabledMap['AI'] === true;
-    const isAiEnabled = p.customProfitSettings
-        ? (p.customProfitSettings.profitMode === 'AI' || p.customProfitSettings.oEnabledMap?.['AI'] === true)
-        : ((aiSmartMasterEnabled ?? true) || isAiMode);
+    const isAiEnabled = (aiSmartMasterEnabled ?? true) && isAiMode;
 
     const aiSettings = profitSettings?.ai || {
         activationProfitPercent: 3.5,
@@ -79,7 +77,7 @@ export const PositionItem: React.FC<Props> = ({
     return (
         <div 
             onClick={() => onOpenChart(p.symbol, p.entryPrice, p.entryTime)}
-            className={`flex items-center px-4 py-2 border-b border-slate-800/40 hover:bg-[#1e2329]/50 transition-colors group relative overflow-hidden shrink-0 cursor-pointer ${p.isHedged ? 'bg-indigo-900/5' : ''} ${isManuallyClosed ? 'bg-amber-900/20' : ''} ${hasCustomSettings ? 'bg-red-950/20 border-l-4 border-l-red-500/80 shadow-[inset_1px_0_0_rgba(239,68,68,0.2)]' : ''}`}
+            className={`flex items-center px-4 py-2 border-b border-slate-800/40 hover:bg-[#1e2329]/50 transition-colors group relative overflow-hidden shrink-0 cursor-pointer ${p.isHedged ? 'bg-indigo-900/5' : ''} ${isManuallyClosed ? 'bg-amber-900/20' : ''} ${hasCustomSettings ? (currentProfitMode === 'AI' ? 'bg-emerald-950/10 border-l-4 border-l-emerald-500/80 shadow-[inset_1px_0_0_rgba(16,185,129,0.2)]' : 'bg-red-950/20 border-l-4 border-l-red-500/80 shadow-[inset_1px_0_0_rgba(239,68,68,0.2)]') : ''}`}
         >
             <div className={`absolute left-0 top-1 bottom-1 w-0.5 rounded-r ${currentPnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
             
@@ -254,19 +252,33 @@ export const PositionItem: React.FC<Props> = ({
                                 }
                                 if (p.customProfitSettings.profitMode === 'AI') {
                                     return {
-                                        text: isAiActivated ? '🤖 AI智能逃顶中' : '🤖 AI智能 (单币)',
+                                        text: isAiActivated ? '🤖 AI智能逃顶中' : '🧠 AI智能逃顶 (单币)',
                                         classes: isAiActivated 
-                                            ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/35 shadow-[0_0_10px_rgba(16,185,129,0.2)] animate-pulse'
-                                            : 'bg-emerald-500/5 text-emerald-400 hover:bg-emerald-500/15 border border-emerald-500/20',
+                                            ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/35 border border-emerald-500/40 shadow-[0_0_10px_rgba(16,185,129,0.2)] animate-pulse'
+                                            : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30',
                                         title: `单币AI智能自适应托管中 (最高浮盈: ${maxPnl.toFixed(2)}% / 启动阈值: ${actThreshold}%)(点击修改)`,
                                         iconColor: 'text-emerald-400'
                                     };
+                                } else if (p.customProfitSettings.profitMode === 'ATR') {
+                                    return {
+                                        text: '📈 ATR趋势平仓 (单币)',
+                                        classes: 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/30',
+                                        title: `单币ATR趋势平仓自适应托管中 (点击修改)`,
+                                        iconColor: 'text-red-400'
+                                    };
+                                } else if (p.customProfitSettings.profitMode === 'SMART') {
+                                    return {
+                                        text: '🔒 智能阶梯保底 (单币)',
+                                        classes: 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/30',
+                                        title: `单币智能阶梯保底自适应托管中 (点击修改)`,
+                                        iconColor: 'text-red-400'
+                                    };
                                 } else {
                                     return {
-                                        text: '⚙️ 常规智能 (单币)',
-                                        classes: 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/30',
-                                        title: `单币常规智能托管中 (固定参数模式)(点击修改)`,
-                                        iconColor: 'text-amber-400'
+                                        text: '⚙️ 常规止盈回调 (单币)',
+                                        classes: 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/30',
+                                        title: `单币常规止盈回调自适应托管中 (点击修改)`,
+                                        iconColor: 'text-red-400'
                                     };
                                 }
                             } else {

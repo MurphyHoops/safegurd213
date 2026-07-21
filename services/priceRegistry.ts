@@ -33,6 +33,10 @@ class PriceRegistry {
         this.listeners.add(callback);
         return () => this.listeners.delete(callback);
     }
+
+    public getAllPrices(): Record<string, number> {
+        return { ...this.prices };
+    }
     
     public updatePrices(newPrices: Record<string, number>) {
         let hasChanges = false;

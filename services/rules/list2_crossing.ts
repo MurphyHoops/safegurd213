@@ -87,8 +87,28 @@ export function analyzeList2Crossing(
         return (offset >= 0 && offset < arr.length) ? arr[offset] : null;
     };
 
-    const longSignals: { lag: number, direction: 'LONG', amp: number, time: number, bodyRatio: number, isAligned: boolean }[] = [];
-    const shortSignals: { lag: number, direction: 'SHORT', amp: number, time: number, bodyRatio: number, isAligned: boolean }[] = [];
+    const longSignals: { 
+        lag: number; 
+        direction: 'LONG'; 
+        amp: number; 
+        time: number; 
+        bodyRatio: number; 
+        isAligned: boolean;
+        ampValid: boolean;
+        volValid: boolean;
+        bodyValid: boolean;
+    }[] = [];
+    const shortSignals: { 
+        lag: number; 
+        direction: 'SHORT'; 
+        amp: number; 
+        time: number; 
+        bodyRatio: number; 
+        isAligned: boolean;
+        ampValid: boolean;
+        volValid: boolean;
+        bodyValid: boolean;
+    }[] = [];
 
     // 3. Loop through Lag Window (Scanning backwards from current candle)
     for (let lag = 0; lag <= effectiveScanRange; lag++) {
@@ -261,9 +281,29 @@ export function analyzeList2Crossing(
 
                 if (isValid) {
                     if (isLong) {
-                        longSignals.push({ lag, direction: 'LONG', amp, time: kTime, bodyRatio: finalBodyRatio, isAligned: isAlignedLong });
+                        longSignals.push({ 
+                            lag, 
+                            direction: 'LONG', 
+                            amp, 
+                            time: kTime, 
+                            bodyRatio: finalBodyRatio, 
+                            isAligned: isAlignedLong,
+                            ampValid,
+                            volValid,
+                            bodyValid
+                        });
                     } else if (isShort) {
-                        shortSignals.push({ lag, direction: 'SHORT', amp, time: kTime, bodyRatio: finalBodyRatio, isAligned: isAlignedShort });
+                        shortSignals.push({ 
+                            lag, 
+                            direction: 'SHORT', 
+                            amp, 
+                            time: kTime, 
+                            bodyRatio: finalBodyRatio, 
+                            isAligned: isAlignedShort,
+                            ampValid,
+                            volValid,
+                            bodyValid
+                        });
                     }
                 }
             }
@@ -351,8 +391,9 @@ export function analyzeList2Crossing(
                 crossingLags: reportLags,
                 crossingTimes: reportTimes,
                 bodyRatio: targetMember.bodyRatio,
-                ampValid: true,
-                volValid: true,
+                ampValid: targetMember.ampValid,
+                volValid: targetMember.volValid,
+                bodyValid: targetMember.bodyValid,
                 isAligned: targetMember.isAligned
             });
         }
@@ -398,8 +439,9 @@ export function analyzeList2Crossing(
                 crossingLags: reportLags,
                 crossingTimes: reportTimes,
                 bodyRatio: targetMember.bodyRatio,
-                ampValid: true,
-                volValid: true,
+                ampValid: targetMember.ampValid,
+                volValid: targetMember.volValid,
+                bodyValid: targetMember.bodyValid,
                 isAligned: targetMember.isAligned
             });
         }

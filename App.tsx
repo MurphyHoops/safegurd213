@@ -22,7 +22,7 @@ import { BackgroundTimer } from './services/backgroundTask';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { usePersistedState } from './hooks/usePersistedState';
 import { binanceWs } from './services/binanceWs';
-import { normalizeSymbol, resolvePrice } from './services/symbolUtils';
+import { normalizeSymbol, resolvePrice, isMajorCoin } from './services/symbolUtils';
 import KlineChartModal from './components/KlineChartModal';
 import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock, AlertTriangle, Trash2 } from 'lucide-react'; 
 
@@ -253,6 +253,14 @@ const AppContent: React.FC = () => {
         // @ts-ignore
         window.openPositionManual = async (symbol: string, side: PositionSide, qty: number) => {
             const cleanSymbol = normalizeSymbol(symbol);
+            const blacklist = settingsRef.current.system.symbolBlacklist || [];
+            if (blacklist.includes(cleanSymbol)) {
+                alert(`⚠️ 币种拦截: ${cleanSymbol} 处于黑名单中，拒绝手动开仓！`);
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("WARNING", `⚠️ 手动开仓被拦截: ${cleanSymbol} 处于黑名单中`);
+                }
+                return;
+            }
             const isReal = settingsRef.current.system.realTrading;
 
             if (isReal) {
@@ -295,6 +303,28 @@ const AppContent: React.FC = () => {
                         if (typeof (window as any).triggerApiSync === "function") {
                             (window as any).triggerApiSync();
                         }
+
+                        // Add manual log to simulator
+                        if (simulatorRef.current) {
+                            simulatorRef.current.tradeLogs.unshift({
+                                symbol: cleanSymbol,
+                                entry_id: resData.orderId || `MANUAL_${Date.now()}`,
+                                status: 'OPEN',
+                                is_hedge: false,
+                                entry_timestamp: Date.now(),
+                                direction: side,
+                                cost_usdt: qty * (resData.price || 0),
+                                entry_price: resData.price || 0,
+                                events: [{
+                                    timestamp: Date.now(),
+                                    action: '主仓开仓',
+                                    price: resData.price || 0,
+                                    amount: qty,
+                                    reason: '手动实盘开仓'
+                                }]
+                            });
+                            simulatorRef.current.emitUpdate(true);
+                        }
                     } else {
                         const errMsg = resData.error || "未知交易所错误";
                         if (simulatorRef.current) {
@@ -312,10 +342,9 @@ const AppContent: React.FC = () => {
             } else {
                 if (simulatorRef.current) {
                     let livePrice = simulatorRef.current.realPrices[cleanSymbol];
-                    const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
-                    const isMajorCoin = noScaleSymbols.includes(cleanSymbol);
+                    const isMajorCoinVal = isMajorCoin(cleanSymbol);
                     if (!livePrice) {
-                        if (!isMajorCoin) {
+                        if (!isMajorCoinVal) {
                             if (cleanSymbol.startsWith('1000')) {
                                 const base = cleanSymbol.replace(/^1000/, '');
                                 if (simulatorRef.current.realPrices[base]) {
@@ -733,10 +762,14 @@ const AppContent: React.FC = () => {
             });
 
             setPositions(prev => {
-                const sanitized = newPositions.map(p => ({
-                    ...p,
-                    symbol: normalizeSymbol(p.symbol)
-                }));
+                const sanitized = newPositions.map(p => {
+                    const existing = prev.find(ep => ep.entryId === p.entryId);
+                    return {
+                        ...p,
+                        symbol: normalizeSymbol(p.symbol),
+                        customProfitSettings: p.customProfitSettings || existing?.customProfitSettings
+                    };
+                });
                 
                 // GUARDIAN: Prevent the simulator from accidentally wiping positions during a race OR stale data state
                 // Only allow wiping if the user specifically cleared it (e.g. via batchClose)
@@ -857,7 +890,12 @@ const AppContent: React.FC = () => {
                 clearTimeout(timeout);
                 
                 if (response.ok) {
-                    const data = await response.json();
+                    const text = await response.text();
+                    if (text.trim().startsWith('<') || text.toLowerCase().includes('doctype html')) {
+                        console.warn("[Binance Background Sync] Received HTML error page instead of JSON. Server might be restarting or unresponsive.");
+                        return;
+                    }
+                    const data = JSON.parse(text);
                     if (data && data.success) {
                         const balance = data.marginBalance;
                         const realPositions = data.activePositions || [];
@@ -930,6 +968,13 @@ const AppContent: React.FC = () => {
 
     const handleOpenPosition = useCallback(async (symbol: string, side: PositionSide, amount: number, price: number, signalTf?: string, signalCandle?: any, entryEmas?: any, extraProps?: Partial<Position>) => {
         const cleanSymbol = normalizeSymbol(symbol);
+        const blacklist = settingsRef.current.system.symbolBlacklist || [];
+        if (blacklist.includes(cleanSymbol)) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `⚠️ 黑名单拦截: 拒绝开仓 ${cleanSymbol}`);
+            }
+            return;
+        }
         const isReal = settingsRef.current.system.realTrading;
 
         if (isReal) {
@@ -1100,13 +1145,13 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
 
         const cleanSymbol = normalizeSymbol(symbol);
         setPositions(prev => {
-            const next = prev.map(p => p.symbol === cleanSymbol ? { ...p, customProfitSettings: customSettings } : p);
+            const next = prev.map(p => normalizeSymbol(p.symbol) === cleanSymbol ? { ...p, customProfitSettings: customSettings } : p);
             localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(next));
             return next;
         });
         if (simulatorRef.current) {
             const simPositions = simulatorRef.current.getPositions();
-            const updated = simPositions.map(p => p.symbol === cleanSymbol ? { ...p, customProfitSettings: customSettings } : p);
+            const updated = simPositions.map(p => normalizeSymbol(p.symbol) === cleanSymbol ? { ...p, customProfitSettings: customSettings } : p);
             simulatorRef.current.setPositions(updated);
             localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(updated));
         }

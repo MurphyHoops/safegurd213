@@ -5,6 +5,7 @@ import { Download, Upload, Code, AlertTriangle } from 'lucide-react';
 import { SubscriptionPanel } from './components/SubscriptionPanel';
 import { NetworkSettingsPanel } from './components/NetworkSettingsPanel';
 import { ApiConfigPanel } from './components/ApiConfigPanel';
+import { SymbolBlacklistPanel } from './components/SymbolBlacklistPanel';
 
 export const SystemCoreModule: React.FC<SystemCoreProps> = ({ settings, onChange, onOpenManual, onViewSource, onFactoryReset, onExportSettings, onImportSettings, onUpdateBinanceRealBalance }) => {
     const [backupName, setBackupName] = React.useState('');
@@ -15,6 +16,7 @@ export const SystemCoreModule: React.FC<SystemCoreProps> = ({ settings, onChange
              <SubscriptionPanel />
              <NetworkSettingsPanel settings={settings} onChange={onChange} />
              <ApiConfigPanel settings={settings} onChange={onChange} onUpdateBinanceRealBalance={onUpdateBinanceRealBalance} />
+             <SymbolBlacklistPanel settings={settings} onChange={onChange} />
 
              {/* Hidden File Input for Restore */}
              <input 

@@ -8,14 +8,14 @@ import { fetchWithFallback } from './apiService';
 import { getLatestEMA, calculateRSI, calculateATR } from './indicators';
 import { db, auth } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
-import { normalizeSymbol } from './symbolUtils';
+import { normalizeSymbol, isMajorCoin } from './symbolUtils';
 
 export class MarketSimulator {
     private account: AccountData;
     private positions: Position[];
     private settings: AppSettings;
     private updateCallback: (account: AccountData, positions: Position[], logs: LogEntry[], hedgeRecord: any, tradeLogs: TradeLog[], systemEvents: SystemEvent[], notification: any, rec: any) => void;
-    private tradeLogs: TradeLog[];
+    public tradeLogs: TradeLog[];
     private systemEvents: SystemEvent[];
     private logs: LogEntry[];
     public realPrices: Record<string, number> = {};
@@ -284,11 +284,10 @@ export class MarketSimulator {
         let executionPrice = price;
         let wsPrice = this.realPrices[upperSymbol];
         
-        const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
-        const isMajorCoin = noScaleSymbols.includes(upperSymbol);
+        const isMajorCoinVal = isMajorCoin(upperSymbol);
 
         if (!wsPrice) {
-            if (!isMajorCoin) {
+            if (!isMajorCoinVal) {
                 if (upperSymbol.startsWith('1000')) {
                     const base = upperSymbol.replace(/^1000/, '');
                     if (this.realPrices[base]) wsPrice = this.realPrices[base] * 1000;
@@ -361,6 +360,7 @@ export class MarketSimulator {
             ...extraProps
         };
         this.positions.push(newPos);
+        this.symbolsWithFreshPrice.add(upperSymbol);
         
         // Record Initial Log with events array initialized
         this.tradeLogs.unshift({
@@ -401,11 +401,10 @@ export class MarketSimulator {
         let executionPrice = price;
         let wsPrice = this.realPrices[upperSymbol];
         
-        const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
-        const isMajorCoin = noScaleSymbols.includes(upperSymbol);
+        const isMajorCoinVal = isMajorCoin(upperSymbol);
 
         if (!wsPrice) {
-            if (!isMajorCoin) {
+            if (!isMajorCoinVal) {
                 if (upperSymbol.startsWith('1000')) {
                     const base = upperSymbol.replace(/^1000/, '');
                     if (this.realPrices[base]) wsPrice = this.realPrices[base] * 1000;
@@ -443,6 +442,7 @@ export class MarketSimulator {
         delete mainPosition.isUnshackled;
         mainPosition.hedgeRetries = (mainPosition.hedgeRetries || 0) + 1;
         this.positions.push(newPos);
+        this.symbolsWithFreshPrice.add(upperSymbol);
 
         // Record Open Log for Hedge
         this.tradeLogs.unshift({
@@ -1357,12 +1357,11 @@ export class MarketSimulator {
           const normalizedSymbol = normalizeSymbol(p.symbol);
           let wsPrice = this.realPrices[normalizedSymbol];
           
-          const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
-          const isMajorCoin = noScaleSymbols.includes(normalizedSymbol);
+          const isMajorCoinVal = isMajorCoin(normalizedSymbol);
 
           if (!wsPrice) {
               // Only try 1000x fallback for non-major coins to prevent accidental magnitude errors for things like XMR/BTC
-              if (!isMajorCoin) {
+              if (!isMajorCoinVal) {
                   if (normalizedSymbol.startsWith('1000')) {
                      const base = normalizedSymbol.replace(/^1000/, '');
                      if (this.realPrices[base]) wsPrice = this.realPrices[base] * 1000;
@@ -1381,7 +1380,7 @@ export class MarketSimulator {
               const isInsane = ratio > 500 || ratio < 0.002;
               
               if (isInsane) {
-                  if (!isMajorCoin) {
+                  if (!isMajorCoinVal) {
                       if (ratio > 500) wsPrice = wsPrice / 1000;
                       else if (ratio < 0.002) wsPrice = wsPrice * 1000;
                   } else {

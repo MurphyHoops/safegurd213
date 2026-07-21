@@ -1285,7 +1285,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
                                                 </span>
                                                 <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><History size={12} /></button>
                                             </div>
-                                            <div className="text-[10px] text-slate-500 font-mono font-normal">{log.entry_id.slice(-6)}</div>
+                                            <div className="text-[10px] text-slate-500 font-mono font-normal">{String(log.entry_id || '').slice(-6)}</div>
                                         </td>
                                         <td className="px-4 py-3">
                                             {log.timeframe ? (

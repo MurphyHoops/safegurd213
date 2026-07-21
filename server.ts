@@ -520,7 +520,11 @@ async function startServer() {
                     clearTimeout(timeout);
 
                     if (response.ok) {
-                        const data = await response.json();
+                        const responseText = await response.text();
+                        if (responseText.trim().startsWith('<') || responseText.toLowerCase().includes('doctype html')) {
+                            throw new Error("Received HTML error page instead of JSON");
+                        }
+                        const data = JSON.parse(responseText);
                         success = true;
                         resultData = data;
                         break; // Stop trying other URLs if successful

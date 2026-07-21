@@ -314,14 +314,18 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                             ].map((m) => {
                                                 const isActive = (localSettings.profitMode || 'CONVENTIONAL') === m.id;
                                                 const isOEnabled = localSettings.oEnabledMap?.[m.id] || false;
+                                                const activeClass = m.id === 'AI' 
+                                                    ? 'bg-emerald-950/25 border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.15)]' 
+                                                    : 'bg-red-950/20 border-red-500/45 shadow-[0_0_8px_rgba(239,68,68,0.15)]';
+                                                const textClass = m.id === 'AI' ? 'text-emerald-400' : 'text-red-400';
                                                 return (
-                                                    <div key={m.id} className={`flex items-center rounded overflow-hidden border transition-all ${isActive ? 'bg-emerald-950/20 border-emerald-500/40' : 'bg-[#161a22] border-slate-800/80 hover:border-slate-700/60'}`}>
+                                                    <div key={m.id} className={`flex items-center rounded overflow-hidden border transition-all ${isActive ? activeClass : 'bg-[#161a22] border-slate-800/80 hover:border-slate-700/60'}`}>
                                                         <button
                                                             type="button"
                                                             onClick={() => setLocalSettings(prev => ({ ...prev, profitMode: m.id as any }))}
                                                             className="flex-1 text-left px-2 py-1.5 cursor-pointer min-h-[44px]"
                                                         >
-                                                            <div className={`font-bold text-[10px] ${isActive ? 'text-emerald-400 font-black' : 'text-slate-300'}`}>{m.label}</div>
+                                                            <div className={`font-bold text-[10px] ${isActive ? `${textClass} font-black` : 'text-slate-300'}`}>{m.label}</div>
                                                             <div className="text-[8px] text-slate-500 scale-[0.95] origin-left leading-normal mt-0.5">{m.desc}</div>
                                                         </button>
                                                         <button
@@ -334,14 +338,20 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                                                     return { ...prev, oEnabledMap };
                                                                 });
                                                             }}
-                                                            className="w-7 h-full min-h-[44px] flex items-center justify-center border-l border-slate-800/60 hover:bg-slate-800/30 cursor-pointer shrink-0"
+                                                            className="w-11 h-full min-h-[44px] flex items-center justify-center border-l border-slate-800/60 hover:bg-slate-800/30 cursor-pointer shrink-0"
                                                             title="并联开关 (选中后该模式将作为后台规则同步运行)"
                                                         >
-                                                            <div className={`w-2 h-2 rounded-full transition-all ${
+                                                            <div className={`w-8 h-4.5 rounded-full p-[2px] transition-all duration-200 border flex items-center ${
                                                                 isOEnabled 
-                                                                ? 'bg-orange-550 shadow-[0_0_8px_rgba(249,115,22,1)] scale-110' 
-                                                                : 'border border-slate-600 bg-transparent opacity-30'
-                                                            }`} />
+                                                                ? 'bg-orange-500/20 border-orange-500/60 shadow-[0_0_8px_rgba(249,115,22,0.15)]' 
+                                                                : 'bg-slate-900 border-slate-700'
+                                                            }`}>
+                                                                <div className={`w-3 h-3 rounded-full transition-all duration-200 ${
+                                                                    isOEnabled 
+                                                                    ? 'translate-x-4 bg-orange-400 shadow-[0_0_6px_rgba(249,115,22,0.8)]' 
+                                                                    : 'translate-x-0 bg-slate-500'
+                                                                }`} />
+                                                            </div>
                                                         </button>
                                                     </div>
                                                 );
@@ -363,13 +373,13 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                                 const isActive = (localSettings.profitMode || 'CONVENTIONAL') === m.id;
                                                 const isOEnabled = localSettings.oEnabledMap?.[m.id] || false;
                                                 return (
-                                                    <div key={m.id} className={`flex items-center rounded overflow-hidden border transition-all ${isActive ? 'bg-amber-950/20 border-amber-500/40' : 'bg-[#161a22] border-slate-800/80 hover:border-slate-700/60'}`}>
+                                                    <div key={m.id} className={`flex items-center rounded overflow-hidden border transition-all ${isActive ? 'bg-red-950/20 border-red-500/45 shadow-[0_0_8px_rgba(239,68,68,0.15)]' : 'bg-[#161a22] border-slate-800/80 hover:border-slate-700/60'}`}>
                                                         <button
                                                             type="button"
                                                             onClick={() => setLocalSettings(prev => ({ ...prev, profitMode: m.id as any }))}
                                                             className="flex-1 text-left px-2 py-1.5 cursor-pointer min-h-[44px]"
                                                         >
-                                                            <div className={`font-bold text-[10px] ${isActive ? 'text-amber-400 font-black' : 'text-slate-300'}`}>{m.label}</div>
+                                                            <div className={`font-bold text-[10px] ${isActive ? 'text-red-400 font-black' : 'text-slate-300'}`}>{m.label}</div>
                                                             <div className="text-[8px] text-slate-500 scale-[0.95] origin-left leading-normal mt-0.5">{m.desc}</div>
                                                         </button>
                                                         <button
@@ -382,14 +392,20 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                                                     return { ...prev, oEnabledMap };
                                                                 });
                                                             }}
-                                                            className="w-7 h-full min-h-[44px] flex items-center justify-center border-l border-slate-800/60 hover:bg-slate-800/30 cursor-pointer shrink-0"
+                                                            className="w-11 h-full min-h-[44px] flex items-center justify-center border-l border-slate-800/60 hover:bg-slate-800/30 cursor-pointer shrink-0"
                                                             title="并联开关 (选中后该模式将作为后台规则同步运行)"
                                                         >
-                                                            <div className={`w-2 h-2 rounded-full transition-all ${
+                                                            <div className={`w-8 h-4.5 rounded-full p-[2px] transition-all duration-200 border flex items-center ${
                                                                 isOEnabled 
-                                                                ? 'bg-orange-550 shadow-[0_0_8px_rgba(249,115,22,1)] scale-110' 
-                                                                : 'border border-slate-600 bg-transparent opacity-30'
-                                                            }`} />
+                                                                ? 'bg-orange-550/20 border-orange-550/60 shadow-[0_0_8px_rgba(249,115,22,0.15)]' 
+                                                                : 'bg-slate-900 border-slate-700'
+                                                            }`}>
+                                                                <div className={`w-3 h-3 rounded-full transition-all duration-200 ${
+                                                                    isOEnabled 
+                                                                    ? 'translate-x-4 bg-orange-400 shadow-[0_0_6px_rgba(249,115,22,0.8)]' 
+                                                                    : 'translate-x-0 bg-slate-500'
+                                                                }`} />
+                                                            </div>
                                                         </button>
                                                     </div>
                                                 );

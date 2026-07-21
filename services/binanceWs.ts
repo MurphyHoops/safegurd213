@@ -102,7 +102,9 @@ function connect() {
             scheduleReconnect();
         };
 
-        ws.onerror = () => {
+        ws.onerror = (err) => {
+            isConnected = false;
+            postMessage({ type: 'status', isConnected: false, lastMessageTime });
             if (ws) {
                 try { ws.close(); } catch(e){}
             }
@@ -125,7 +127,8 @@ function scheduleReconnect() {
 function startWatchdog() {
     watchdogTimer = setInterval(() => {
         const now = Date.now();
-        if (now - lastMessageTime > 12000) {
+        // Lowered from 12000 to 6000 for faster detection & millisecond responsiveness
+        if (now - lastMessageTime > 6000) {
             if (ws) {
                 ws.onclose = null;
                 ws.onerror = null;

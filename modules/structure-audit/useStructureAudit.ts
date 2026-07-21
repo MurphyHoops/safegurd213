@@ -12,6 +12,7 @@ import { KLineSynthesizer } from "../../services/klineSynthesizer";
 import { KLine } from "../../types";
 import { saveState } from "../../utils/persistence";
 import { normalizeSymbol } from "../../services/symbolUtils";
+import { priceRegistry } from "../../services/priceRegistry";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -256,6 +257,7 @@ export const useStructureAudit = (
           tf: result3.tf!,
           direction: result3.direction! as any,
           structure: result3.structure!,
+          lastCandleTime: klines.length > 0 ? klines[klines.length - 1].time : undefined,
         };
 
         const s = entry.structure;
@@ -293,7 +295,10 @@ export const useStructureAudit = (
           (r) => r.tf === entry.tf && r.direction === entry.direction,
         );
         if (idx >= 0) {
-          entry.latched = cached.list3Results[idx].latched || passes;
+          const prevEntry = cached.list3Results[idx];
+          const isNewCandle = prevEntry.lastCandleTime !== undefined && entry.lastCandleTime !== undefined && prevEntry.lastCandleTime < entry.lastCandleTime;
+          const wasLatched = isNewCandle ? false : (prevEntry.latched || false);
+          entry.latched = wasLatched || passes;
           cached.list3Results[idx] = entry;
         } else {
           entry.latched = passes;
@@ -468,7 +473,10 @@ export const useStructureAudit = (
 
             if (neededTFs.size === 0) return;
 
+            const registryPrices = priceRegistry.getAllPrices();
             const livePrice =
+              registryPrices[normalizeSymbol(item.symbol)] ||
+              registryPrices[item.symbol] ||
               realPricesRef.current[normalizeSymbol(item.symbol)] ||
               realPricesRef.current[item.symbol] ||
               item.price;
@@ -775,7 +783,10 @@ export const useStructureAudit = (
 
               if (neededTFs.size === 0) return;
 
+              const registryPrices = priceRegistry.getAllPrices();
               const livePrice =
+                registryPrices[normalizeSymbol(item.symbol)] ||
+                registryPrices[item.symbol] ||
                 realPricesRef.current[normalizeSymbol(item.symbol)] ||
                 realPricesRef.current[item.symbol] ||
                 item.price;
@@ -1081,11 +1092,11 @@ export const useStructureAudit = (
 
       if (!cached) {
         // [MILLISECOND-LEVEL INSTANT TRANSITION]
-        // Synchronously add to cache with passing results so it enters List 3 immediately (0ms)
+        // Synchronously add to cache. If rules are active, start unlatched (false) to prevent flickering.
         const results = c.groupedResults?.map((r) => ({
           tf: r.tf,
           direction: r.direction || 'LONG',
-          latched: true, // Default to true so it passes to List 3 & List 4 in 0ms!
+          latched: areAllRulesOff, // Only default to true if all rules are off, avoiding flickering
           structure: {
             rsi: 50,
             bbw: 0.1,

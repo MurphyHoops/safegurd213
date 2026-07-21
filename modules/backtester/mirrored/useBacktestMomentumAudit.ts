@@ -1,4 +1,10 @@
 
+/**
+ * @file useBacktestMomentumAudit.ts
+ * @description List 4 Backtest Simulation Filter & Breakout Audit Logic
+ * @status STRICTLY LOCKED - DO NOT MODIFY WITHOUT EXPLICIT AUTHORIZATION
+ */
+
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { List3Config, List4Config, ScannerItem, ActionConfig } from '../../../components/Scanner/scannerTypes';
@@ -133,6 +139,13 @@ export const useBacktestMomentumAudit = (
                 }
             } else {
                 tradedSignalCacheRef.current.delete(uniqueId);
+            }
+
+            // Check "Fuse Blocked" (fuseBlocked) - IMMEDIATELY CLEAR ON FAILURE (USER DIRECTIVE)
+            if (item.fuseBlocked) {
+                expiredSignalCacheRef.current.add(uniqueId);
+                shouldKeep = false;
+                callbacksRef.current.onRemoveSignal?.(uniqueId);
             }
 
             if (expiredSignalCacheRef.current.has(uniqueId)) {

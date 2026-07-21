@@ -13,6 +13,7 @@ export interface List2GroupedResult {
     bodyRatio?: number; 
     volValid?: boolean;
     ampValid?: boolean;
+    bodyValid?: boolean;
     isAligned?: boolean;
     failedVerifyCount?: number;
 }
@@ -21,6 +22,7 @@ export interface List3SignalResult {
     tf: string;
     direction: 'LONG' | 'SHORT';
     latched?: boolean; // Added to keep signal alive until List 2 drops
+    lastCandleTime?: number; // Track last candle time to reset intra-candle latching on new candle
     structure: {
         rsi: number;
         bbw: number;

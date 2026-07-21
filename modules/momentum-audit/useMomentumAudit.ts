@@ -1,4 +1,10 @@
 
+/**
+ * @file useMomentumAudit.ts
+ * @description List 4 Real-time Filter & Breakout Audit Logic
+ * @status STRICTLY LOCKED - DO NOT MODIFY WITHOUT EXPLICIT AUTHORIZATION
+ */
+
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { priceRegistry } from '../../services/priceRegistry';
 import { usePersistedState } from '../../hooks/usePersistedState';
@@ -122,7 +128,9 @@ export const useMomentumAudit = (
     // --- CORE LOGIC: Analysis ---
     // Using refs for core logic to ensure stability and avoid re-renders
     const runMomentumAnalysis = useRef(() => {
-        const currentPrices = realPricesRef.current;
+        const isLive = currentTimeRef.current === undefined;
+        const livePrices = isLive ? priceRegistry.getAllPrices() : {};
+        const currentPrices = isLive && Object.keys(livePrices).length > 0 ? livePrices : realPricesRef.current;
         const currentCandidates = candidatesRef.current;
         const currentConfig = configRef.current;
         const l3Config = list3ConfigRef.current;
@@ -258,43 +266,20 @@ export const useMomentumAudit = (
                 triggeredSignalCacheRef.current.delete(uniqueId);
             }
 
-            // Check "Fuse Blocked" (fuseBlocked)
+            // Check "Fuse Blocked" (fuseBlocked) - IMMEDIATELY CLEAR ON FAILURE (USER DIRECTIVE)
             if (item.fuseBlocked) {
-                const isAdvancedFilter = item.fuseReason?.startsWith('高级过滤');
+                expiredSignalCacheRef.current.add(uniqueId);
+                shouldKeep = false;
+                item.removalReason = `过滤未通过 (立即清除): ${item.fuseReason}`;
                 
-                if (isAdvancedFilter) {
-                    if (!advancedFilterBlockedSignalCacheRef.current.has(uniqueId)) {
-                        advancedFilterBlockedSignalCacheRef.current.set(uniqueId, now);
-                    }
-                    if (currentConfig.autoClearAdvancedFilterMinutes && currentConfig.autoClearAdvancedFilterMinutes > 0) {
-                        const fuseTime = advancedFilterBlockedSignalCacheRef.current.get(uniqueId) || now;
-                        const elapsedMs = now - fuseTime;
-                        const maxMs = currentConfig.autoClearAdvancedFilterMinutes * 60 * 1000;
-                        if (elapsedMs >= maxMs) {
-                            expiredSignalCacheRef.current.add(uniqueId);
-                            shouldKeep = false;
-                            item.removalReason = `高级过滤触发: ${item.fuseReason} (设定: ${currentConfig.autoClearAdvancedFilterMinutes}分钟, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
-                            onRemoveSignalRef.current?.(uniqueId);
-                        }
-                    }
-                } else {
-                    if (!fuseBlockedSignalCacheRef.current.has(uniqueId)) {
-                        fuseBlockedSignalCacheRef.current.set(uniqueId, now);
-                    }
-                    
-                    if (currentConfig.removeFuseMinutes && currentConfig.removeFuseMinutes > 0) {
-                        const fuseTime = fuseBlockedSignalCacheRef.current.get(uniqueId) || now;
-                        const elapsedMs = now - fuseTime;
-                        const maxMs = currentConfig.removeFuseMinutes * 60 * 1000;
-                        
-                        if (elapsedMs >= maxMs) {
-                            expiredSignalCacheRef.current.add(uniqueId);
-                            shouldKeep = false;
-                            item.removalReason = `防追高熔断超时: ${item.fuseReason} (设定: ${currentConfig.removeFuseMinutes}分钟, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
-                            onRemoveSignalRef.current?.(uniqueId);
-                        }
-                    }
-                }
+                // Clear from latch to be safe
+                fuseAuditLatchRef.current.delete(uniqueId);
+                
+                // Remove from upstream List 3 structure audit and cache
+                onRemoveSignalRef.current?.(uniqueId);
+                
+                // Background log to history
+                logToHistory(item, `过滤清除: ${item.fuseReason}`);
             } else {
                 fuseBlockedSignalCacheRef.current.delete(uniqueId);
                 advancedFilterBlockedSignalCacheRef.current.delete(uniqueId);

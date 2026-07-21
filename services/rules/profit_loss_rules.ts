@@ -46,11 +46,12 @@ export function checkIndividualPositionRules(
 
     // --- 优先检查：如果启用了全局/单币AI智能平仓，且该币种最高利润达到了AI启动阈值，强制走AI智能逃顶逻辑 ---
     const isAiMasterEnabled = settings?.profit?.aiSmartMasterEnabled ?? true;
+    const isAiActive = profitSettings.profitMode === 'AI' || (profitSettings.oEnabledMap && profitSettings.oEnabledMap['AI'] === true);
     const aiSettings = profitSettings.ai || { activationProfitPercent: 3.5, fallbackProfitPercent: 1.0, aiSmartModeEnabled: true };
     const actThreshold = getAiActivationThreshold(aiSettings);
     const maxPnl = position.maxPnLPercent || 0;
 
-    if (isAiMasterEnabled && maxPnl >= actThreshold) {
+    if (isAiMasterEnabled && isAiActive && maxPnl >= actThreshold) {
         if (checkAiProfit(position, profitSettings, closePosition, true)) {
             return true;
         }

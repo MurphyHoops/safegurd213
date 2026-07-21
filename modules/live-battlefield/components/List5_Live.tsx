@@ -3,7 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Position, PositionSide } from '../../../types';
 import { Activity, ArrowUp, ArrowDown, Filter, Layers, TrendingUp, TrendingDown, CheckCircle2, AlertCircle, RefreshCw, Plus } from 'lucide-react';
 import { COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
-import { normalizeSymbol, resolvePrice } from '../../../services/symbolUtils';
+import { normalizeSymbol, resolvePrice, isMajorCoin } from '../../../services/symbolUtils';
 import { LivePositionRow } from './PositionRow';
 import { fetchWithFallback } from '../../../services/apiService';
 
@@ -81,8 +81,7 @@ const List5_Live: React.FC<List5Props> = ({
             candidates.push(clean + 'USDT');
         }
         
-        const noScaleSymbols = ['XMR', 'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'TRX', 'DOT', 'LTC', 'BCH', 'ETC', 'LINK'];
-        const isMajor = noScaleSymbols.includes(clean);
+        const isMajor = isMajorCoin(clean);
         if (!isMajor && !clean.startsWith('1000')) {
             candidates.push('1000' + clean + 'USDT');
             candidates.push('1000' + clean);

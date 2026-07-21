@@ -50,3 +50,14 @@ Do NOT modify this logic or settings unless explicitly instructed to fix a criti
 - `/components/Scanner/scannerTypes.ts` (Specifically the `MajorTrendConfig` switches definition) - **STRICTLY LOCKED**
 Do NOT modify this logic or settings unless explicitly instructed to fix a critical regression.
 
+## Real-time Price Push & Position Sync Engine - Code Lock
+**CRITICAL**: The core real-time high-performance price push, Web-Worker-based WebSocket subscription, and DOM-bypass UI updates are now strictly locked to ensure 100% safety, security, and millisecond-level synchronization with the Binance exchange.
+- `/services/binanceWs.ts` - **STRICTLY LOCKED**
+- `/services/priceRegistry.ts` - **STRICTLY LOCKED**
+- `/components/RealtimePriceSpan.tsx` - **LOCKED**
+- `/components/RealtimePnlSpan.tsx` - **LOCKED**
+- `/modules/live-battlefield/components/PositionRow.tsx` - **LOCKED**
+- `/modules/positions-list/components/PositionItem.tsx` - **LOCKED**
+Do NOT modify this logic, subscriptions, or rendering pipelines unless explicitly instructed to fix a critical regression.
+
+
