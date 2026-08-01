@@ -29,6 +29,7 @@ interface Props {
     onRenameStrategy?: (id: string, name: string) => void;
     onExportStrategy?: (id: string) => void;
     onImportStrategy?: (id: string, file: File) => void;
+    isBackground?: boolean;
 }
 
 export const MarketScannerModule: React.FC<Props> = (props) => {
@@ -70,7 +71,8 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     onDeleteStrategy = () => {},
     onRenameStrategy = () => {},
     onExportStrategy,
-    onImportStrategy
+    onImportStrategy,
+    isBackground = false
 }) => {
     // --- LOCAL UI STATE ---
     const [fixedModeView, setFixedModeView] = usePersistedState<'MONITOR' | 'SEARCH'>('SCANNER_FIXED_MODE_VIEW', 'MONITOR');
@@ -146,7 +148,10 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             return;
         }
 
-        const intervalMs = scanInterval * 60 * 1000;
+        const activeStratId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+        const isBg = selectedStrategyId && activeStratId ? selectedStrategyId !== activeStratId : false;
+        const scale = isBg ? 15 : 1;
+        const intervalMs = scanInterval * 60 * 1000 * scale;
         
         const tick = () => {
             if (!isScanningRef.current) {
@@ -166,7 +171,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
         });
         
         return () => clearInterval(timer);
-    }, [scanInterval, scanConfig, refreshList1Candidates, isPaused]);
+    }, [scanInterval, scanConfig, refreshList1Candidates, isPaused, selectedStrategyId, isBackground]);
 
     // --- HANDLERS ---
     const handleToggleSymbol = (symbol: string) => { 
@@ -218,6 +223,10 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             setScanConfig(p => ({ ...p, customSymbols: Array.from(newSet).join(', ') }));
         }
     };
+
+    if (isBackground) {
+        return null;
+    }
 
     return (
         <List1_Selection 

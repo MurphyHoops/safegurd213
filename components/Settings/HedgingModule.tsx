@@ -137,7 +137,56 @@ const HedgingModule: React.FC<Props> = ({ settings, onChange }) => {
                              </div>
                          )}
                      </div>
-                     
+
+                     {/* Row 4: 300-day Extreme Price Target Hedge (New) */}
+                     <div className="mt-2 bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                         <div className="flex items-center justify-between mb-2">
+                             <span className={`text-[10px] font-bold flex items-center gap-1 ${settings.extremeHedgeEnabled ? 'text-indigo-400' : 'text-slate-500'}`}>
+                                 <Activity size={10} /> 300天极值比例对冲
+                             </span>
+                             <div 
+                                onClick={() => onChange('extremeHedgeEnabled', !settings.extremeHedgeEnabled)} 
+                                className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.extremeHedgeEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                             >
+                                 <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.extremeHedgeEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                             </div>
+                         </div>
+                         
+                         {settings.extremeHedgeEnabled && (
+                             <div className="flex flex-col gap-2 animate-in fade-in">
+                                 <div className="flex items-center gap-2">
+                                     <div className="flex-1">
+                                         <label className="text-[9px] text-slate-500 block mb-1">对冲比例 ( ? ) %</label>
+                                         <div className="relative">
+                                             <input 
+                                                 type="number" 
+                                                 className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-indigo-400 font-bold text-center font-mono" 
+                                                 value={settings.extremeHedgeTriggerRatio ?? 50} 
+                                                 onChange={(e) => onChange('extremeHedgeTriggerRatio', parseFloat(e.target.value))} 
+                                             />
+                                             <span className="absolute right-6 top-1 text-[9px] text-slate-500">%</span>
+                                         </div>
+                                     </div>
+                                     <div className="flex-1">
+                                         <label className="text-[9px] text-slate-500 block mb-1">极值周期天数</label>
+                                         <div className="relative">
+                                             <input 
+                                                 type="number" 
+                                                 className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-white text-center font-mono" 
+                                                 value={settings.extremeHedgeDays ?? 300} 
+                                                 onChange={(e) => onChange('extremeHedgeDays', parseInt(e.target.value))} 
+                                             />
+                                             <span className="absolute right-3 top-1 text-[9px] text-slate-500">天</span>
+                                         </div>
+                                     </div>
+                                 </div>
+                                 <div className="text-[9px] text-slate-500 leading-tight">
+                                     规则：开仓后自动提取 <strong>{settings.extremeHedgeDays ?? 300}天</strong> 最低/最高价，当亏损额达到极值间距的 <strong>{settings.extremeHedgeTriggerRatio ?? 50}%</strong> 时，对冲启动。
+                                 </div>
+                             </div>
+                         )}
+                     </div>
+
                      {/* Safe Clear Logic */}
                      <div className="mt-3 border-t border-slate-700/50 pt-3">
                          <div className="flex items-center justify-between mb-2">

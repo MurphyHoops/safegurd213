@@ -14,6 +14,7 @@ import { UserGuideModule } from '../modules/user-guide';
 import { BacktesterModule } from '../modules/backtester/BacktesterModule';
 import { SystemMonitorModule } from '../modules/system-monitor/SystemMonitorUI';
 import { Terminal } from 'lucide-react';
+import { ErrorBoundary } from './ErrorBoundary';
 
 import ModuleHeader from './Settings/ModuleHeader';
 import { GlobalProcessGuard } from './Settings/GlobalProcessGuard';
@@ -304,7 +305,9 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
             {/* MODULE 8: SYSTEM MONITOR (LOGS & CACHE) */}
             <ModuleHeader id={8} icon={Terminal} title="日志监控" subtitle="System Logs & Monitor" active={expandedModule === 8} colorClass="bg-slate-800 text-emerald-400" onClick={toggleModule} />
             {expandedModule === 8 && (
-                <SystemMonitorModule />
+                <ErrorBoundary moduleName="日志监控 (System Monitor)">
+                    <SystemMonitorModule />
+                </ErrorBoundary>
             )}
         </div>
     );

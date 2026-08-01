@@ -21,9 +21,10 @@ interface Props {
     activeFilterTf: string | null;
     setChartData: (data: any) => void;
     onRemove: () => void;
+    idx?: number;
 }
 
-export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setChartData, onRemove }) => {
+export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setChartData, onRemove, idx }) => {
     const defaultTf = activeFilterTf || item.groupedResults?.[0]?.tf || '15m';
     const isLong = item.direction === 'LONG';
 
@@ -46,7 +47,12 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
     return (
         <div onClick={handleItemClick} className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${isLong ? 'border-emerald-500/20 hover:border-emerald-500/40' : 'border-red-500/20 hover:border-red-500/40'}`}>
             <div className="flex justify-between font-bold text-slate-300 mb-1 border-b border-slate-700/50 pb-1">
-                <span>{item.symbol.replace('USDT', '')}</span>
+                <span className="flex items-center gap-1">
+                    {idx !== undefined && (
+                        <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
+                    )}
+                    <span>{item.symbol.replace('USDT', '')}</span>
+                </span>
                 <div className="flex items-center gap-2">
                     <span className="text-slate-500">{item.price.toFixed(8)}</span>
                 </div>

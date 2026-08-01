@@ -340,6 +340,7 @@ const List3_Structure: React.FC<Props> = ({
             setChartData={setChartData}
             executeTradeSafe={executeTradeSafe}
             onRemove={() => onRemoveItem(item.symbol)}
+            idx={idx}
           />
         ))}
       </div>

@@ -31,8 +31,11 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     // Auto History Logger for List 2 (Grand Crossing)
     useAutoHistoryLogger('LIST2', filteredList2 || []);
 
-    // View Mode State: ALL | LONG | SHORT
-    const [viewMode, setViewMode] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
+    // View Mode State: ALL | LONG | SHORT (synced with config, fallback to 'ALL')
+    const viewMode = config?.viewMode || 'ALL';
+    const setViewMode = (mode: 'ALL' | 'LONG' | 'SHORT') => {
+        setConfig(prev => ({ ...prev, viewMode: mode }));
+    };
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
 
@@ -115,7 +118,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                 {showVisualizer && (
                     <ScannerVisualizerModal 
                         title="2. 绝对防御"
-                        items={filteredList2.map(i => ({ symbol: i.symbol, timeframe: i.tf }))}
+                        items={displayList.map(i => ({ symbol: i.symbol, timeframe: i.tf }))}
                         defaultTf={activeFilterTf || '15m'}
                         list2Config={config}
                         onClose={() => setShowVisualizer(false)}
@@ -156,6 +159,32 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         <TrendingDown size={10} /> 空 ({shorts.length})
                     </button>
                 </div>
+
+                {/* Sync Filter Switch */}
+                <div className="flex items-center justify-between px-3 pb-2 pt-1 text-[10px] text-slate-400 border-t border-slate-800/40">
+                    <span className="flex items-center gap-1">
+                        <AlertCircle size={10} className="text-slate-500" />
+                        <span>多空过滤同步至列表3</span>
+                    </span>
+                    <button
+                        onClick={() => {
+                            setConfig(prev => ({
+                                ...prev,
+                                syncDirectionFilterToList3: !prev.syncDirectionFilterToList3
+                            }));
+                        }}
+                        className={`relative inline-flex h-4 w-8 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                            config?.syncDirectionFilterToList3 ? 'bg-indigo-500' : 'bg-slate-700'
+                        }`}
+                        title="开启后，若当前选择只看“多”或“空”，下级列表3及后续流程将只接收该方向的信号；若选择“全部”或关闭此开关，则同时读取多空"
+                    >
+                        <span
+                            className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                config?.syncDirectionFilterToList3 ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                        />
+                    </button>
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar bg-slate-950/20">
@@ -167,6 +196,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         activeFilterTf={activeFilterTf}
                         setChartData={setChartData}
                         onRemove={() => onRemoveItem(item.symbol)}
+                        idx={idx}
                     />
                 ))}
                 {displayList.length === 0 && (

@@ -7,8 +7,9 @@ export const useLiveBattlefield = (
     positions: Position[],
     realPrices: Record<string, number>
 ) => {
-    // Default to DESC (Highest Profit First)
-    const [sortMode, setSortMode] = useState<'DESC' | 'ASC'>('DESC');
+    // Default to PNL_PERCENT and DESC (Highest Profit First)
+    const [sortType, setSortType] = useState<'PNL_PERCENT' | 'AMOUNT' | 'PNL_AMOUNT'>('PNL_PERCENT');
+    const [sortOrder, setSortOrder] = useState<'DESC' | 'ASC'>('DESC');
 
     const sortedPositions = useMemo(() => {
         // Helper: Calculate live PnL dynamically for sorting
@@ -24,20 +25,53 @@ export const useLiveBattlefield = (
             return (diff / p.entryPrice) * 100;
         };
 
+        const getLivePnLAmount = (p: Position) => {
+            const currentPrice = resolvePrice(p.symbol, realPrices, p.markPrice || p.entryPrice);
+            if (!currentPrice || !p.entryPrice) return 0;
+            
+            const diff = p.side === PositionSide.LONG 
+                ? currentPrice - p.entryPrice 
+                : p.entryPrice - currentPrice;
+            
+            return diff * p.amount;
+        };
+
         // Group positions by symbol to find hedged pairs and calculate group PnL
-        const symbolStats: Record<string, { isHedged: boolean, maxPnlPercent: number }> = {};
+        const symbolStats: Record<string, { 
+            isHedged: boolean, 
+            maxPnlPercent: number,
+            maxAmount: number,
+            maxPnlAmount: number
+        }> = {};
         
         positions.forEach(p => {
             const cleanSym = normalizeSymbol(p.symbol);
             if (!symbolStats[cleanSym]) {
-                symbolStats[cleanSym] = { isHedged: false, maxPnlPercent: -Infinity };
+                symbolStats[cleanSym] = { 
+                    isHedged: false, 
+                    maxPnlPercent: -Infinity,
+                    maxAmount: -Infinity,
+                    maxPnlAmount: -Infinity
+                };
             }
             if (p.isHedged) {
                 symbolStats[cleanSym].isHedged = true;
             }
+            
             const pnlPct = getLivePnLPercent(p);
             if (pnlPct > symbolStats[cleanSym].maxPnlPercent) {
                 symbolStats[cleanSym].maxPnlPercent = pnlPct;
+            }
+
+            const pnlAmt = getLivePnLAmount(p);
+            if (pnlAmt > symbolStats[cleanSym].maxPnlAmount) {
+                symbolStats[cleanSym].maxPnlAmount = pnlAmt;
+            }
+
+            const currentPrice = resolvePrice(p.symbol, realPrices, p.markPrice || p.entryPrice);
+            const posVal = p.amount * (currentPrice || p.entryPrice || 1);
+            if (posVal > symbolStats[cleanSym].maxAmount) {
+                symbolStats[cleanSym].maxAmount = posVal;
             }
         });
 
@@ -52,21 +86,52 @@ export const useLiveBattlefield = (
             if (statsA.isHedged && !statsB.isHedged) return -1;
             if (!statsA.isHedged && statsB.isHedged) return 1;
 
-            // 2. If they are different symbols, sort by the symbol's max PnL percent
+            // 2. Sort by selected sort type
             if (cleanSymA !== cleanSymB) {
-                if (sortMode === 'DESC') {
-                    return statsB.maxPnlPercent - statsA.maxPnlPercent;
+                let valA = 0;
+                let valB = 0;
+                
+                if (sortType === 'PNL_PERCENT') {
+                    valA = statsA.maxPnlPercent;
+                    valB = statsB.maxPnlPercent;
+                } else if (sortType === 'AMOUNT') {
+                    valA = statsA.maxAmount;
+                    valB = statsB.maxAmount;
+                } else if (sortType === 'PNL_AMOUNT') {
+                    valA = statsA.maxPnlAmount;
+                    valB = statsB.maxPnlAmount;
+                }
+
+                if (sortOrder === 'DESC') {
+                    return valB - valA;
                 } else {
-                    return statsA.maxPnlPercent - statsB.maxPnlPercent;
+                    return valA - valB;
                 }
             }
 
-            // 3. If same symbol (e.g. main and hedge), sort by PnL percent
-            const pnlA = getLivePnLPercent(a);
-            const pnlB = getLivePnLPercent(b);
-            return pnlB - pnlA; // Within the same symbol, highest PnL first
+            // 3. Same symbol (e.g. main and hedge), sort by dynamic value
+            let subValA = 0;
+            let subValB = 0;
+            if (sortType === 'PNL_PERCENT') {
+                subValA = getLivePnLPercent(a);
+                subValB = getLivePnLPercent(b);
+            } else if (sortType === 'AMOUNT') {
+                const priceA = resolvePrice(a.symbol, realPrices, a.markPrice || a.entryPrice);
+                const priceB = resolvePrice(b.symbol, realPrices, b.markPrice || b.entryPrice);
+                subValA = a.amount * (priceA || a.entryPrice || 1);
+                subValB = b.amount * (priceB || b.entryPrice || 1);
+            } else if (sortType === 'PNL_AMOUNT') {
+                subValA = getLivePnLAmount(a);
+                subValB = getLivePnLAmount(b);
+            }
+
+            if (sortOrder === 'DESC') {
+                return subValB - subValA;
+            } else {
+                return subValA - subValB;
+            }
         });
-    }, [positions, realPrices, sortMode]); // Added realPrices to dependencies
+    }, [positions, realPrices, sortType, sortOrder]); // Added realPrices to dependencies
 
     const stats = useMemo(() => {
         // Recalculate stats based on live prices for accuracy
@@ -103,8 +168,10 @@ export const useLiveBattlefield = (
     }, [positions, realPrices]);
 
     return {
-        sortMode,
-        setSortMode,
+        sortType,
+        setSortType,
+        sortOrder,
+        setSortOrder,
         sortedPositions,
         stats
     };

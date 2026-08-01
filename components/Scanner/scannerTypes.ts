@@ -173,6 +173,8 @@ export interface List2Config {
     requireCrossing: boolean;
     requireAlignment: boolean;
     strictFiltering: boolean;
+    viewMode?: 'ALL' | 'LONG' | 'SHORT';
+    syncDirectionFilterToList3?: boolean;
 }
 
 export interface List3Config {
@@ -299,7 +301,13 @@ export interface MajorTrendConfig {
     enableShort?: boolean;  // "空"选项开关
     enableSideways?: boolean; // "横盘蓄势"功能开关
     maxExtremeDistanceLong?: number;  // 多单最低点到当前价格涨幅低于 (设定值)%
+    minExtremeDistanceLong?: number;  // 多单最低点到当前价格涨幅高于 (设定值)%
     maxExtremeDistanceShort?: number; // 空单最高点到当前价格跌幅低于 (设定值)%
+    minExtremeDistanceShort?: number; // 空单最高点到当前价格跌幅高于 (设定值)%
+    extremeDaysMinLong?: number;      // 多单最低点到当前天数大于等于 (设定值) 天
+    extremeDaysMaxLong?: number;      // 多单最低点到当前天数小于等于 (设定值) 天
+    extremeDaysMinShort?: number;     // 空单最高点到当前天数大于等于 (设定值) 天
+    extremeDaysMaxShort?: number;     // 空单最高点到当前天数小于等于 (设定值) 天
 
     // Advanced Filters
     filterTimeParam?: number; // e.g., 300

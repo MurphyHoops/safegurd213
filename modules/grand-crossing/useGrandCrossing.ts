@@ -16,6 +16,7 @@ import { fetchWithFallback } from "../../services/apiService";
 import { KLineSynthesizer } from "../../services/klineSynthesizer";
 import { KLine } from "../../types";
 import { saveState } from "../../utils/persistence";
+import { audioService } from "../../services/audioService";
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
@@ -282,9 +283,29 @@ export const useGrandCrossing = (
           if (squeezeVal < (cfg.squeezeThreshold || 0) || squeezeVal > (cfg.maxAmplitude || 50)) return false;
         }
 
-        // 压缩信号过滤
-        if (cfg.requireCrossing && r.isSqueeze) return false;
-        if (cfg.requireAlignment && !r.isAligned) return false;
+        // 压缩信号过滤 / 触发器过滤
+        let satisfiesTrigger = false;
+        if (cfg.requireCrossing && cfg.requireAlignment) {
+          // 同时选中时，信号必须满足穿越（非 squeeze）或者发散（isAligned 为 true）
+          if (!r.isSqueeze || r.isAligned) {
+            satisfiesTrigger = true;
+          }
+        } else if (cfg.requireCrossing) {
+          // 仅要求 K线穿越：必须是非 squeeze 信号
+          if (!r.isSqueeze) {
+            satisfiesTrigger = true;
+          }
+        } else if (cfg.requireAlignment) {
+          // 仅要求 EMA均线发散：必须是已发散状态
+          if (r.isAligned) {
+            satisfiesTrigger = true;
+          }
+        } else {
+          // 均未勾选时：经典压缩常规模式，直接放行
+          satisfiesTrigger = true;
+        }
+
+        if (!satisfiesTrigger) return false;
 
         // 2. 实时交叉判定
         const hasRecentCrossing =
@@ -515,7 +536,17 @@ export const useGrandCrossing = (
   // --- DOUBLE VERIFICATION (二次验证机制) ---
   useEffect(() => {
     let active = true;
+    let verifyCounter = 0;
     const doubleVerifyTimer = setInterval(async () => {
+      const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+      const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+      if (isBg) {
+        verifyCounter++;
+        if (verifyCounter % 4 !== 0) {
+          return; // Skip 3 out of 4 runs in background (making it effectively 180s instead of 45s)
+        }
+      }
+
       const activeItems = Array.from(cacheRef.current.values());
       if (activeItems.length === 0) return;
 
@@ -764,6 +795,15 @@ export const useGrandCrossing = (
     const item = candidateItem || existingItem;
     if (!item) return;
 
+    // Optimize: 10-second fetch cache throttle per symbol-timeframe to prevent redundant requests
+    const now = Date.now();
+    const fetchKey = isSynthesized ? `${symbol}-1m` : `${symbol}-${tf}`;
+    const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
+    if (now - lastFetch < 10000) {
+      return; // Skipped redundant fetch, already up-to-date
+    }
+    symbolTfLastFetchRef.current.set(fetchKey, now);
+
     const retention = configRef.current.newModeRetention ?? 9;
 
     try {
@@ -840,6 +880,14 @@ export const useGrandCrossing = (
                 console.log(
                   `[List2 Captured] ${symbol} ${stf} at ${new Date(signalTime).toLocaleTimeString()}`,
                 );
+                try {
+                  const cleanSym = symbol.replace('USDT', '');
+                  const patternName = res.isAligned ? '发散' : '穿越';
+                  const speechText = `${cleanSym}出现${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
+                  audioService.speak(speechText, true);
+                } catch (speechErr) {
+                  console.warn("Speech synthesis error inside List 2", speechErr);
+                }
               }
             });
           } else {
@@ -908,7 +956,17 @@ export const useGrandCrossing = (
               }
             });
 
-            capturedSignalsRef.current.add(id);
+            if (!capturedSignalsRef.current.has(id)) {
+              capturedSignalsRef.current.add(id);
+              try {
+                const cleanSym = symbol.replace('USDT', '');
+                const patternName = res.isAligned ? '发散' : '穿越';
+                const speechText = `${cleanSym}出现${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
+                audioService.speak(speechText, true);
+              } catch (speechErr) {
+                console.warn("Speech synthesis error inside List 2", speechErr);
+              }
+            }
           });
         } else {
           // 如果没有发现新信号，检查旧信号是否到期
@@ -1011,17 +1069,36 @@ export const useGrandCrossing = (
         if (isSelected && sortedCandidatesRef.current.length > 0) {
           const idxKey = isBase ? "1m" : tf;
           let idx = indicesRef.current[idxKey] || 0;
-          if (idx >= sortedCandidatesRef.current.length) idx = 0;
+          const totalCandidates = sortedCandidatesRef.current.length;
+          
+          let foundIdx = -1;
+          for (let i = 0; i < totalCandidates; i++) {
+            const checkIdx = (idx + i) % totalCandidates;
+            const checkSymbol = sortedCandidatesRef.current[checkIdx].symbol;
+            const fetchKey = isBase ? `${checkSymbol}-1m` : `${checkSymbol}-${tf}`;
+            const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
+            if (Date.now() - lastFetch >= 10000) {
+              foundIdx = checkIdx;
+              break;
+            }
+          }
 
-          const symbol = sortedCandidatesRef.current[idx].symbol;
-          await processSymbol(symbol, tf, isBase);
-
-          indicesRef.current[idxKey] = idx + 1;
+          if (foundIdx !== -1) {
+            const symbol = sortedCandidatesRef.current[foundIdx].symbol;
+            await processSymbol(symbol, tf, isBase);
+            indicesRef.current[idxKey] = (foundIdx + 1) % totalCandidates;
+          } else {
+            // All symbols have been fetched in the last 10 seconds. Just move index forward slightly to keep moving
+            indicesRef.current[idxKey] = (idx + 1) % totalCandidates;
+          }
         }
 
         // 只有当 worker 标记还在时才继续
         if (workersRef.current[tf]) {
-          setTimeout(run, interval);
+          const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+          const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+          const finalInterval = isBg ? interval * 50 : interval;
+          setTimeout(run, finalInterval);
         }
       };
 
@@ -1053,14 +1130,22 @@ export const useGrandCrossing = (
 
   // 状态轮询更新 UI
   useEffect(() => {
+    const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+    const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+    const intervalMs = isBg ? 15000 : 3000;
+
     const timer = setInterval(() => {
       scheduleUpdate();
-    }, 3000);
+    }, intervalMs);
     return () => clearInterval(timer);
-  }, [scheduleUpdate]);
+  }, [scheduleUpdate, strategyId]);
 
   // --- HEARTBEAT & COUNTDOWNS ---
   useEffect(() => {
+    const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+    const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+    if (isBg) return;
+
     const timer = setInterval(() => {
       const now = Date.now();
       const newCountdowns: Record<string, string> = {};
@@ -1090,7 +1175,7 @@ export const useGrandCrossing = (
     }, 1000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [strategyId]);
 
   return {
     config,

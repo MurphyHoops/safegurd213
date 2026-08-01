@@ -2,8 +2,31 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Terminal, Trash2, Settings, Activity, Clock, ShieldAlert, Cpu } from 'lucide-react';
 import { useMonitorStore } from '../../services/monitor/monitorService';
 
+const safeFormatTime = (timestamp: any) => {
+    if (!timestamp) return '00:00:00';
+    try {
+        const d = new Date(timestamp);
+        if (isNaN(d.getTime())) return '00:00:00';
+        return d.toLocaleTimeString([], { hour12: false, second: '2-digit' }).split(' ')[0];
+    } catch (_) {
+        return '00:00:00';
+    }
+};
+
+const safeFormatFullTime = (timestamp: any) => {
+    if (!timestamp) return '00:00:00';
+    try {
+        const d = new Date(timestamp);
+        if (isNaN(d.getTime())) return '00:00:00';
+        return d.toLocaleTimeString([], { hour12: false });
+    } catch (_) {
+        return '00:00:00';
+    }
+};
+
 export const SystemMonitorModule: React.FC = () => {
-    const logs = useMonitorStore(s => s.logs);
+    const rawLogs = useMonitorStore(s => s.logs);
+    const logs = Array.isArray(rawLogs) ? rawLogs : [];
     const clearLogs = useMonitorStore(s => s.clearLogs);
     const maxLogs = useMonitorStore(s => s.maxLogs);
     const setMaxLogs = useMonitorStore(s => s.setMaxLogs);
@@ -117,10 +140,13 @@ export const SystemMonitorModule: React.FC = () => {
         // 6. Check for specifically heavy keys (potential white screen cause)
         const keys = Object.keys(localStorage);
         for (const key of keys) {
-            if (localStorage.getItem(key)!.length > 1000000) { // > 1MB
-                issues.push(`发现巨大的缓存项 (${key}), 可能阻塞主线程`);
-                status = status === 'OK' ? 'WARN' : status;
-            }
+            try {
+                const val = localStorage.getItem(key);
+                if (val && val.length > 1000000) { // > 1MB
+                    issues.push(`发现巨大的缓存项 (${key}), 可能阻塞主线程`);
+                    status = status === 'OK' ? 'WARN' : status;
+                }
+            } catch (_) {}
         }
 
         // 7. Check for critical modules status
@@ -347,7 +373,7 @@ export const SystemMonitorModule: React.FC = () => {
                                 </button>
                             </div>
                             <span className="text-[8px] text-slate-500 text-center">
-                                ⏱️ 自动修复：每 {autoRepairInterval} 小时执行 (上次修复: {new Date(lastRepair).toLocaleTimeString([], { hour12: false })})
+                                ⏱️ 自动修复：每 {autoRepairInterval} 小时执行 (上次修复: {safeFormatFullTime(lastRepair)})
                             </span>
                         </div>
                         <button 
@@ -373,7 +399,7 @@ export const SystemMonitorModule: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-1">
                     <Clock size={8} className="text-amber-500"/>
-                    清理于: <span className="text-amber-400">{new Date(lastCleanup).toLocaleTimeString([], { hour12: false })}</span>
+                    清理于: <span className="text-amber-400">{safeFormatFullTime(lastCleanup)}</span>
                 </div>
                 {memory && (
                     <div className={`flex items-center gap-1 ${memory.pct > 70 ? 'text-red-400' : 'text-slate-500'}`}>
@@ -397,7 +423,7 @@ export const SystemMonitorModule: React.FC = () => {
                         <div key={log.id} className="group border-b border-slate-800/30 pb-0.5 last:border-0 hover:bg-slate-800/30 px-1 rounded transition-colors">
                             <div className="flex items-start gap-1.5">
                                 <span className="text-[8px] text-slate-600 mt-0.5 shrink-0">
-                                    {new Date(log.timestamp).toLocaleTimeString([], { hour12: false, second: '2-digit' }).split(' ')[0]}
+                                    {safeFormatTime(log.timestamp)}
                                 </span>
                                 <span className={`font-bold shrink-0 ${getLevelColor(log.level)} text-[8px]`}>
                                     [{log.level}]

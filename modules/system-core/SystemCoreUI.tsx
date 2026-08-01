@@ -6,6 +6,7 @@ import { SubscriptionPanel } from './components/SubscriptionPanel';
 import { NetworkSettingsPanel } from './components/NetworkSettingsPanel';
 import { ApiConfigPanel } from './components/ApiConfigPanel';
 import { SymbolBlacklistPanel } from './components/SymbolBlacklistPanel';
+import { VoiceBroadcastPanel } from './components/VoiceBroadcastPanel';
 
 export const SystemCoreModule: React.FC<SystemCoreProps> = ({ settings, onChange, onOpenManual, onViewSource, onFactoryReset, onExportSettings, onImportSettings, onUpdateBinanceRealBalance }) => {
     const [backupName, setBackupName] = React.useState('');
@@ -15,6 +16,7 @@ export const SystemCoreModule: React.FC<SystemCoreProps> = ({ settings, onChange
         <div className="p-4 bg-slate-800/30 space-y-5 border-b border-slate-800">
              <SubscriptionPanel />
              <NetworkSettingsPanel settings={settings} onChange={onChange} />
+             <VoiceBroadcastPanel settings={settings} onChange={onChange} />
              <ApiConfigPanel settings={settings} onChange={onChange} onUpdateBinanceRealBalance={onUpdateBinanceRealBalance} />
              <SymbolBlacklistPanel settings={settings} onChange={onChange} />
 

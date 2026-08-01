@@ -9,6 +9,7 @@ import { getLatestEMA, calculateRSI, calculateATR } from './indicators';
 import { db, auth } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { normalizeSymbol, isMajorCoin } from './symbolUtils';
+import { audioService } from './audioService';
 
 export class MarketSimulator {
     private account: AccountData;
@@ -22,6 +23,11 @@ export class MarketSimulator {
     private symbolsWithFreshPrice: Set<string> = new Set();
     private bootTime: number = Date.now();
     private WARMUP_PERIOD = 15000; // 15s lock after boot to prevent stale data spikes
+    
+    // Real trading automated execution callbacks
+    public onRealHedge?: (position: Position, side: PositionSide, amountUsdt: number, reason: string) => Promise<void>;
+    public onRealClose?: (position: Position, reason: string, customAmount?: number) => Promise<void>;
+    public onRealOpen?: (position: Position, quantity: number, reason: string) => Promise<void>;
     
     private lastHeartbeatTime: number = 0;
     private lastEmaCheckTime: number = 0;
@@ -38,6 +44,7 @@ export class MarketSimulator {
     private maxGlobalPnlPercent: number = 0;
     private pendingAutoOpens: Array<{ symbol: string; side: PositionSide; amount: number; extremePrice: number; pullbackPercent: number; mainEntryId: string }> = [];
     private lastReopenTimes: Record<string, number> = {};
+    private initialSyncCompleted: boolean = false;
 
     constructor(
         account: AccountData,
@@ -177,7 +184,134 @@ export class MarketSimulator {
     }
 
     public setPositions(newPositions: Position[]) {
-        this.positions = newPositions;
+        const oldPositions = [...this.positions];
+        const updatedPositions: Position[] = [];
+
+        const isReal = this.settings.system?.realTrading;
+        const isFirstSync = isReal && !this.initialSyncCompleted;
+
+        // 1. Process and match new/existing positions
+        for (const newPos of newPositions) {
+            const oldPos = oldPositions.find(p => p.symbol === newPos.symbol && p.side === newPos.side);
+            
+            if (oldPos) {
+                // Preserve original entry ID, time, and custom local attributes
+                const mergedPos: Position = {
+                    ...newPos,
+                    entryId: oldPos.entryId || newPos.entryId,
+                    entryTime: oldPos.entryTime || newPos.entryTime,
+                    signalTf: oldPos.signalTf || newPos.signalTf,
+                    signalCandle: oldPos.signalCandle || newPos.signalCandle,
+                    entryEmas: oldPos.entryEmas || newPos.entryEmas,
+                    isHedged: oldPos.isHedged,
+                    mainPositionId: oldPos.mainPositionId,
+                    isReopened: oldPos.isReopened,
+                    reopenCount: oldPos.reopenCount,
+                    correlationId: oldPos.correlationId,
+                    hedgeRetries: oldPos.hedgeRetries,
+                    cumulativeHedgeLoss: oldPos.cumulativeHedgeLoss,
+                    cumulativeHedgeProfit: oldPos.cumulativeHedgeProfit,
+                    customProfitSettings: oldPos.customProfitSettings || newPos.customProfitSettings
+                };
+                updatedPositions.push(mergedPos);
+
+                // Ensure an OPEN log exists for this still active position
+                const hasOpenLog = this.tradeLogs.some(l => l.entry_id === mergedPos.entryId && l.status === 'OPEN');
+                if (!hasOpenLog) {
+                    this.tradeLogs.unshift({
+                        symbol: mergedPos.symbol,
+                        entry_id: mergedPos.entryId,
+                        status: 'OPEN',
+                        is_hedge: !!mergedPos.mainPositionId,
+                        entry_timestamp: mergedPos.entryTime,
+                        direction: mergedPos.side,
+                        cost_usdt: mergedPos.amount * mergedPos.entryPrice,
+                        entry_price: mergedPos.entryPrice,
+                        correlationId: mergedPos.correlationId,
+                        is_reopened: mergedPos.isReopened,
+                        reopenCount: mergedPos.reopenCount,
+                        timeframe: mergedPos.signalTf || '5m',
+                        events: [{
+                            timestamp: mergedPos.entryTime,
+                            action: '开仓',
+                            price: mergedPos.entryPrice,
+                            amount: mergedPos.amount,
+                            reason: '实盘发现/触发开仓'
+                        }]
+                    });
+                }
+            } else {
+                // Brand new position discovered
+                const entryId = newPos.entryId || `real_${newPos.symbol}_${newPos.side}`;
+                const entryTime = newPos.entryTime || Date.now();
+                const processedPos: Position = {
+                    ...newPos,
+                    entryId,
+                    entryTime,
+                    signalTf: newPos.signalTf || '5m' // Default TF if not provided
+                };
+                updatedPositions.push(processedPos);
+
+                // Add corresponding OPEN log
+                const hasOpenLog = this.tradeLogs.some(l => l.entry_id === entryId && l.status === 'OPEN');
+                if (!hasOpenLog) {
+                    this.tradeLogs.unshift({
+                        symbol: processedPos.symbol,
+                        entry_id: entryId,
+                        status: 'OPEN',
+                        is_hedge: !!processedPos.mainPositionId,
+                        entry_timestamp: entryTime,
+                        direction: processedPos.side,
+                        cost_usdt: processedPos.amount * processedPos.entryPrice,
+                        entry_price: processedPos.entryPrice,
+                        correlationId: processedPos.correlationId,
+                        is_reopened: processedPos.isReopened,
+                        reopenCount: processedPos.reopenCount,
+                        timeframe: processedPos.signalTf,
+                        events: [{
+                            timestamp: entryTime,
+                            action: '开仓',
+                            price: processedPos.entryPrice,
+                            amount: processedPos.amount,
+                            reason: '实盘发现/触发开仓'
+                        }]
+                    });
+                }
+            }
+        }
+
+        // 2. Detect closed positions
+        for (const oldPos of oldPositions) {
+            const existsInNew = newPositions.some(p => p.symbol === oldPos.symbol && p.side === oldPos.side);
+            if (!existsInNew) {
+                // If in real trading, only sync-close positions that are actually real (starts with 'real_')
+                const isRealPos = oldPos.entryId?.startsWith('real_');
+                if (isReal && !isRealPos) {
+                    // Ignore simulation positions during real-trading sync
+                    console.log(`[MarketSimulator] Ignoring simulated position ${oldPos.symbol} during real-trading position sync.`);
+                    continue;
+                }
+
+                // If this is the initial sync after program restart, do NOT log close to prevent ghost closing records from stale local cache on boot.
+                if (isFirstSync) {
+                    console.log(`[MarketSimulator] Initial sync: omitting close log for ${oldPos.symbol} as it was not found in active real positions`);
+                    continue;
+                }
+
+                // Position has been closed! Check if we already logged it as CLOSED
+                const alreadyClosed = this.tradeLogs.some(l => l.entry_id === oldPos.entryId && l.status === 'CLOSED');
+                if (!alreadyClosed) {
+                    this.recordRealTradeLog(oldPos, '同步平仓 / 止盈止损已执行');
+                }
+            }
+        }
+
+        if (isReal && !this.initialSyncCompleted) {
+            this.initialSyncCompleted = true;
+            console.log("[MarketSimulator] Real-trading initial sync completed successfully. Ghost log defense activated.");
+        }
+
+        this.positions = updatedPositions;
         this.emitUpdate(true);
     }
 
@@ -228,8 +362,17 @@ export class MarketSimulator {
 
     public updateSettings(settings: AppSettings) {
         const oldRealTrading = this.settings.system?.realTrading;
+        let oldRawRatio = this.settings.hedging?.extremeHedgeTriggerRatio;
+        if (typeof oldRawRatio !== 'number' || isNaN(oldRawRatio)) oldRawRatio = 50;
+        const oldRatio = oldRawRatio;
+        
         this.settings = this.deepMerge(this.settings, settings);
+        
         const newRealTrading = this.settings.system?.realTrading;
+        let newRawRatio = this.settings.hedging?.extremeHedgeTriggerRatio;
+        if (typeof newRawRatio !== 'number' || isNaN(newRawRatio)) newRawRatio = 50;
+        const newRatio = newRawRatio;
+        
         if (oldRealTrading !== newRealTrading) {
             if (newRealTrading) {
                 const hasKeys = !!(this.settings.system.binanceApiKey && this.settings.system.binanceApiSecret);
@@ -242,6 +385,32 @@ export class MarketSimulator {
                 this.addLog('INFO', '⚪ 已切回标准模拟交易模式。');
             }
         }
+        
+        if (oldRatio !== newRatio) {
+            // Recalculate trigger prices for all positions that already have periodExtremePrice
+            for (const pos of this.positions) {
+                if (pos.periodExtremePrice !== undefined && !pos.mainPositionId) {
+                    const entry = pos.entryPrice;
+                    const ratio = newRatio / 100;
+                    if (pos.side === PositionSide.LONG) {
+                        const distPercent = ((entry - pos.periodExtremePrice) / entry) * 100;
+                        const triggerLossPercent = distPercent * ratio;
+                        pos.extremeHedgeTriggerPrice = entry * (1 - triggerLossPercent / 100);
+                    } else {
+                        const distPercent = ((pos.periodExtremePrice - entry) / entry) * 100;
+                        const triggerLossPercent = distPercent * ratio;
+                        pos.extremeHedgeTriggerPrice = entry * (1 + triggerLossPercent / 100);
+                    }
+                }
+            }
+            this.emitUpdate(true);
+        }
+    }
+
+    public swapModeState(isReal: boolean, newAccount: AccountData, newPositions: Position[], newTradeLogs: TradeLog[]) {
+        this.account = { ...newAccount };
+        this.positions = [ ...newPositions ];
+        this.tradeLogs = [ ...newTradeLogs ];
     }
 
     private addTradeEvent(pos: Position, action: string, price: number, amount: number, reason: string, pnl?: number) {
@@ -307,9 +476,9 @@ export class MarketSimulator {
             return;
         }
 
-        // Check cooldown to prevent "popping back" after clear
+        // Check cooldown to prevent "popping back" after clear (Bypass completely for manual opens!)
         const cooldownKey = `${upperSymbol}_${side}`;
-        if (this.cooldowns[cooldownKey] && Date.now() < this.cooldowns[cooldownKey] && !extraProps?.isReopened) {
+        if (!extraProps?.isManual && this.cooldowns[cooldownKey] && Date.now() < this.cooldowns[cooldownKey] && !extraProps?.isReopened) {
             if (Date.now() - this.lastEmitTime < 10000) { 
                 return;
             }
@@ -419,6 +588,15 @@ export class MarketSimulator {
             executionPrice = wsPrice;
         }
 
+        if (this.settings?.system?.realTrading && this.onRealHedge) {
+            this.onRealHedge(mainPosition, side, amount, reason || '自动防爆对冲');
+            // Mark the main position as hedged locally so we don't trigger again while waiting for API sync
+            mainPosition.isHedged = true;
+            mainPosition.hedgeRetries = (mainPosition.hedgeRetries || 0) + 1;
+            this.emitUpdate(true);
+            return;
+        }
+
         const entryId = 'HEDGE_' + Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
         const newPos: Position = {
             symbol: mainPosition.symbol,
@@ -462,7 +640,15 @@ export class MarketSimulator {
         // Add sub-event to main log
         this.addTradeEvent(mainPosition, `对冲开启 (${side})`, executionPrice, newPos.amount, reason || '对冲策略触发');
 
-        this.addLog('WARNING', `🛡️ 对冲触发: 为 ${mainPosition.symbol} ${mainPosition.side} 开启反向对冲 ${side} (${reason || '未知原因'})`);
+        // Voice announcement for simulated hedge
+        const cleanSym = mainPosition.symbol.replace('USDT', '');
+        const sideName = mainPosition.side === 'LONG' ? '多' : '空';
+        const isSecondary = reason && (reason.includes('二次') || reason.includes('Secondary') || reason.includes('2'));
+        const speechText = `${cleanSym}${sideName}方向${isSecondary ? '二次' : ''}对冲已开启`;
+        audioService.speak(speechText, true);
+
+        // Do not display in system logs as per user request, but log to console for development
+        console.log(`[Hedge] 🛡️ 对冲触发: 为 ${mainPosition.symbol} ${mainPosition.side} 开启反向对冲 ${side} (${reason || '未知原因'})`);
         this.emitUpdate(true);
     }
 
@@ -471,6 +657,14 @@ export class MarketSimulator {
             ? this.positions.find(p => p.entryId === entryId)
             : this.positions.find(p => p.symbol === symbol && p.side === side);
         if (pos) {
+            if (this.settings?.system?.realTrading && this.onRealClose) {
+                this.onRealClose(pos, reason);
+                // Filter out immediately locally to avoid double-triggering before sync
+                this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
+                this.emitUpdate(true);
+                return;
+            }
+
             // If we are closing a hedge position, we must reset the main position's isHedged flag
             if (pos.isHedged && pos.mainPositionId) {
                 const main = this.positions.find(p => p.entryId === pos.mainPositionId);
@@ -494,6 +688,16 @@ export class MarketSimulator {
             // Record trade log and filter out the closed position
             this.recordTradeLog(pos, reason);
             this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
+
+            // Voice announcement for simulated close
+            const cleanSym = pos.symbol.replace('USDT', '');
+            if (pos.isHedged && pos.mainPositionId) {
+                audioService.speak(`${cleanSym}对冲单已平仓`, true);
+            } else {
+                const sideName = pos.side === 'LONG' ? '多' : '空';
+                audioService.speak(`${cleanSym}${sideName}方向已平仓`, true);
+            }
+
             this.cooldowns[`${pos.symbol}_${pos.side}`] = Date.now() + 60000;
             this.saveCooldowns();
             this.addLog('INFO', `Closed Position on ${pos.symbol}: ${reason}`);
@@ -563,6 +767,15 @@ export class MarketSimulator {
                 this.saveCooldowns();
                 this.addLog('INFO', `Closed Main ${main.side} on ${main.symbol}: ${reason}`);
             }
+
+            // Voice announcement for simulated closePair
+            const cleanSym = main.symbol.replace('USDT', '');
+            if (isAmputationProfitExit) {
+                audioService.speak(`${cleanSym}断臂求生对冲平仓成功`, true);
+            } else {
+                audioService.speak(`${cleanSym}对冲盈利解套平仓成功`, true);
+            }
+
             this.addLog('INFO', `[调试] 当前剩余仓位数量: ${this.positions.length}`);
 
             // Evaluate Reopen Rule for Strategy 4 ("断臂求生")
@@ -632,11 +845,25 @@ export class MarketSimulator {
             }
         );
         this.addLog('SUCCESS', `🔄 [原仓位复开] 已开启独立复开仓位: ${pos.symbol} ${pos.side} | 原始USDT本金: ${initialUsdtCost.toFixed(2)}U | 原因: ${reason} | 复开次数: ${nextReopenCount}`);
+        
+        // Voice announcement for simulated reopen
+        const cleanSym = pos.symbol.replace('USDT', '');
+        audioService.speak(`${cleanSym}对冲仓盈利解套，主仓位已自动复开`, true);
+
         this.emitUpdate(true);
     }
 
     public amputate(position: Position, ratio: number, reason: string) {
         const cutAmount = position.amount * (ratio / 100);
+        
+        if (this.settings?.system?.realTrading && this.onRealClose) {
+            this.onRealClose(position, reason, cutAmount);
+            // Adjust local position size to avoid double-cutting before sync
+            position.amount -= cutAmount;
+            position.amputatedAmount = (position.amputatedAmount || 0) + cutAmount;
+            this.emitUpdate(true);
+            return;
+        }
         
         // 记录砍仓的实际盈亏
         const realizedPnL = position.unrealizedPnL * (ratio / 100);
@@ -701,6 +928,14 @@ export class MarketSimulator {
         
         const refillAmount = position.amputatedAmount;
         
+        if (this.settings?.system?.realTrading && this.onRealOpen) {
+            this.onRealOpen(position, refillAmount, reason);
+            // Clean amputatedAmount locally so we don't double refill before sync
+            position.amputatedAmount = 0;
+            this.emitUpdate(true);
+            return;
+        }
+        
         // Calculate new average entry price
         const currentTotalValue = position.amount * position.entryPrice;
         const refillValue = refillAmount * position.markPrice;
@@ -744,6 +979,17 @@ export class MarketSimulator {
         const hedge = this.positions.find(p => p.entryId === hedgeId);
         if (hedge && hedge.mainPositionId) {
             const main = this.positions.find(p => p.entryId === hedge.mainPositionId);
+            
+            if (this.settings?.system?.realTrading && this.onRealClose) {
+                this.onRealClose(hedge, reason);
+                if (main) {
+                    main.isHedged = false;
+                }
+                this.positions = this.positions.filter(p => p.entryId !== hedgeId);
+                this.emitUpdate(true);
+                return;
+            }
+
             if (main) {
                 if (profit >= 0) {
                     main.cumulativeHedgeProfit = (main.cumulativeHedgeProfit || 0) + profit;
@@ -869,6 +1115,53 @@ export class MarketSimulator {
                 console.error('Failed to record Trade DNA:', err);
             });
         }
+    }
+
+    public recordRealTradeLog(p: Position, reason: string) {
+        const now = Date.now();
+        const isStopLoss = reason.includes('止损') || p.unrealizedPnL < 0;
+
+        const wasEverHedged = p.isHedged || (p.hedgeRetries || 0) > 0 || !!p.mainPositionId || (p.cumulativeHedgeLoss || 0) > 0 || (p.cumulativeHedgeProfit || 0) > 0;
+
+        // Record a separate CLOSE log
+        this.tradeLogs.unshift({
+            symbol: p.symbol,
+            entry_id: p.entryId || (`real_${p.symbol}_${p.side}`),
+            status: 'CLOSED',
+            profit_usdt: p.unrealizedPnL,
+            exit_reason: reason,
+            is_hedge: wasEverHedged,
+            entry_timestamp: p.entryTime || now,
+            exit_timestamp: now,
+            direction: p.side,
+            cost_usdt: p.amount * p.entryPrice,
+            entry_price: p.entryPrice,
+            exit_price: p.markPrice || p.entryPrice,
+            profit_percent: p.unrealizedPnLPercentage || 0,
+            main_entry_id: p.mainPositionId,
+            correlationId: p.correlationId,
+            reopenCount: p.reopenCount,
+            is_reopened: !!p.isReopened,
+            timeframe: p.signalTf, // Store timeframe
+            last_stop_loss_time: isStopLoss ? now : undefined,
+            stop_loss_rule: isStopLoss ? reason : undefined
+        });
+
+        // Add final exit event to the same log entry (as a sub-event)
+        const targetLog = this.tradeLogs.find(l => l.entry_id === (p.entryId || `real_${p.symbol}_${p.side}`) && l.status === 'CLOSED');
+        if (targetLog) {
+            if (!targetLog.events) targetLog.events = [];
+            targetLog.events.push({
+                timestamp: now,
+                action: '最终平仓',
+                price: p.markPrice || p.entryPrice,
+                amount: p.amount,
+                reason,
+                pnl: p.unrealizedPnL
+            });
+        }
+
+        this.emitUpdate(true);
     }
 
     public clearTradeLogs() {
@@ -1043,6 +1336,64 @@ export class MarketSimulator {
         }
     }
 
+    private async fetchExtreme300Price(pos: Position) {
+        if (!pos.symbol || pos.symbol === 'USDT' || pos.symbol.trim() === '') return;
+        if (pos.periodExtremePrice !== undefined || pos.mainPositionId) return;
+        if ((pos as any)._fetchingExtremePrice) return;
+        
+        (pos as any)._fetchingExtremePrice = true;
+        
+        try {
+            const safeSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
+            const days = this.settings.hedging?.extremeHedgeDays ?? 300;
+            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${days}`;
+            const res = await fetchWithFallback(url, {}, undefined, this.settings.system?.directMode);
+            const data = await res.json();
+            
+            if (Array.isArray(data) && data.length > 0) {
+                let lowest = Infinity;
+                let highest = -Infinity;
+                for (const d of data) {
+                    const low = parseFloat(d[3]);
+                    const high = parseFloat(d[2]);
+                    if (!isNaN(low) && low < lowest) lowest = low;
+                    if (!isNaN(high) && high > highest) highest = high;
+                }
+                
+                if (lowest !== Infinity && highest !== -Infinity) {
+                    pos.periodExtremePrice = pos.side === PositionSide.LONG ? lowest : highest;
+                    
+                    const entry = pos.entryPrice;
+                    let rawRatio = this.settings.hedging?.extremeHedgeTriggerRatio;
+                    if (typeof rawRatio !== 'number' || isNaN(rawRatio)) rawRatio = 50;
+                    const ratio = rawRatio / 100;
+                    
+                    if (pos.side === PositionSide.LONG) {
+                        const distPercent = ((entry - lowest) / entry) * 100;
+                        const triggerLossPercent = distPercent * ratio;
+                        pos.extremeHedgeTriggerPrice = entry * (1 - triggerLossPercent / 100);
+                        this.addLog('SUCCESS', `📈 [300天历史最低] 成功载入 ${pos.symbol}: 最低价 ${lowest.toFixed(4)} | 距开仓亏损: ${distPercent.toFixed(2)}% | 设定比例: ${(ratio * 100).toFixed(0)}% | 对冲启动价: ${pos.extremeHedgeTriggerPrice.toFixed(4)}`);
+                    } else {
+                        const distPercent = ((highest - entry) / entry) * 100;
+                        const triggerLossPercent = distPercent * ratio;
+                        pos.extremeHedgeTriggerPrice = entry * (1 + triggerLossPercent / 100);
+                        this.addLog('SUCCESS', `📈 [300天历史最高] 成功载入 ${pos.symbol}: 最高价 ${highest.toFixed(4)} | 距开仓亏损: ${distPercent.toFixed(2)}% | 设定比例: ${(ratio * 100).toFixed(0)}% | 对冲启动价: ${pos.extremeHedgeTriggerPrice.toFixed(4)}`);
+                    }
+                    this.emitUpdate(true);
+                } else {
+                     this.addLog('WARNING', `⚠️ [300天极值] 获取 ${pos.symbol} 极值数据为空，无法启动极值对冲。`);
+                }
+            } else {
+                 this.addLog('WARNING', `⚠️ [300天极值] 获取 ${pos.symbol} 极值失败，API返回异常或被限流。`);
+            }
+        } catch (error) {
+            this.addLog('DANGER', `❌ [300天极值] 请求 ${pos.symbol} 极值接口发生异常: ${error}`);
+            delete (pos as any)._fetchingExtremePrice;
+        } finally {
+            delete (pos as any)._fetchingExtremePrice;
+        }
+    }
+
     private runStrategyAnalysis() {
         // Placeholder
     }
@@ -1170,7 +1521,7 @@ export class MarketSimulator {
             );
 
             // Debug Logging for Failed Triggers
-            if (!triggered && this.settings.hedging.enabled && this.settings.hedging.triggerLossEnabled) {
+            if (!triggered && this.settings.hedging.enabled && this.settings.hedging.triggerLossEnabled !== false) {
                 const pnlPercent = position.unrealizedPnLPercentage;
                 const threshold = -Math.abs(this.settings.hedging.triggerLossPercent);
                 
@@ -1183,10 +1534,100 @@ export class MarketSimulator {
                     else if (this.settings.stopLoss.fuseEnabled && (position.hedgeRetries || 0) >= this.settings.stopLoss.maxHedgeRetries) reason = "Fuse Tripped";
                     
                     // Only log periodically to avoid spam
-                    if (Math.random() < 0.01) {
+                    if (!(position as any)._hasLoggedHedgeSkip) { (position as any)._hasLoggedHedgeSkip = true;
                          this.addLog('WARNING', `⚠️ 对冲未触发: ${position.symbol} 亏损 ${pnlPercent.toFixed(2)}% | 原因: ${reason}`);
                     }
                 }
+            }
+        }
+
+        // 3.5 二次检测启动防爆对冲 (Backup Secondary Detection & Forced Hedging)
+        // If a position should be hedged but somehow wasn't, or primary check was bypassed/blocked,
+        // this fallback loop executes immediately to guarantee the position is hedged.
+        for (let i = this.positions.length - 1; i >= 0; i--) {
+            const position = this.positions[i];
+            const symbolKey = normalizeSymbol(position.symbol);
+
+            // Skip if not ready, or already hedged, or is a hedge position itself
+            if (!this.symbolsWithFreshPrice.has(symbolKey) || position.isHedged || position.mainPositionId) {
+                continue;
+            }
+
+            const hedgeSettings = this.settings.hedging;
+            if (!hedgeSettings.enabled) {
+                continue;
+            }
+
+            // Fuse Check (Secondary bypass if needed, but respect user maxHedgeRetries settings)
+            const slSettings = this.settings.stopLoss;
+            if (slSettings.fuseEnabled && (position.hedgeRetries || 0) >= slSettings.maxHedgeRetries) {
+                continue;
+            }
+
+            let secondaryTriggered = false;
+            let secondaryReason = "";
+            const pnlPercent = position.unrealizedPnLPercentage;
+
+            // A. Check Loss Condition (亏损值触发二次检测 - Bypasses historical extreme to guarantee anti-explosion)
+            if (hedgeSettings.triggerLossEnabled !== false && pnlPercent <= -Math.abs(hedgeSettings.triggerLossPercent) + 0.001) {
+                secondaryTriggered = true;
+                secondaryReason = `[二次防爆检测] 亏损达到 ${hedgeSettings.triggerLossPercent}% 强制触发`;
+            }
+
+            // B. Check 300-Day Extreme (300天极值比例对冲二次检测)
+            if (!secondaryTriggered && hedgeSettings.extremeHedgeEnabled && position.extremeHedgeTriggerPrice !== undefined) {
+                if (position.side === PositionSide.LONG) {
+                    if (position.markPrice <= position.extremeHedgeTriggerPrice) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 价格跌破300天极值对冲启动价 ${position.extremeHedgeTriggerPrice.toFixed(4)} 强制触发`;
+                    }
+                } else {
+                    if (position.markPrice >= position.extremeHedgeTriggerPrice) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 价格突破300天极值对冲启动价 ${position.extremeHedgeTriggerPrice.toFixed(4)} 强制触发`;
+                    }
+                }
+            }
+
+            // C. Trend Firewall (趋势防火墙二次检测)
+            if (!secondaryTriggered && hedgeSettings.trendHedgeEnabled && position.entryEmas) {
+                let firewallPrice = 0;
+                const period = hedgeSettings.trendHedgeEmaPeriod || 80;
+                switch (period) {
+                    case 10: firewallPrice = position.entryEmas.ema10; break;
+                    case 20: firewallPrice = position.entryEmas.ema20; break;
+                    case 40: firewallPrice = position.entryEmas.ema40; break;
+                    case 80: firewallPrice = position.entryEmas.ema80; break;
+                    default: firewallPrice = position.entryEmas.ema80;
+                }
+                if (position.side === PositionSide.LONG) {
+                    if (position.markPrice <= firewallPrice) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 价格跌破 EMA${period} 防火墙 强制触发`;
+                    }
+                } else {
+                    if (position.markPrice >= firewallPrice) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 价格突破 EMA${period} 防火墙 强制触发`;
+                    }
+                }
+            }
+
+            if (secondaryTriggered) {
+                const hedgeSide = position.side === PositionSide.LONG ? PositionSide.SHORT : PositionSide.LONG;
+                let activeHedgeRatio = hedgeSettings.hedgeRatio;
+                if (slSettings.hedgeProfitClear) {
+                    activeHedgeRatio = slSettings.hedgeOpenRatio;
+                } else if (slSettings.callbackProfitClear) {
+                    activeHedgeRatio = slSettings.callbackHedgeRatio;
+                }
+
+                const positionValue = position.amount * position.markPrice;
+                const hedgeAmount = positionValue * (activeHedgeRatio / 100);
+
+                console.log(`[Backup Hedge Trigger] ⚡ ${position.symbol} triggers backup secondary hedge: ${secondaryReason}`);
+                this.openHedgePosition(position, hedgeSide, hedgeAmount, position.markPrice, secondaryReason);
+                actionTaken = true;
             }
         }
 
@@ -1344,6 +1785,15 @@ export class MarketSimulator {
           this.updateIndicators();
       }
 
+      // --- 0.3 FETCH EXTREME 300 DAYS PRICES ---
+      if (this.settings.hedging?.extremeHedgeEnabled) {
+          for (const pos of this.positions) {
+              if (pos.periodExtremePrice === undefined && !pos.mainPositionId && pos.symbol && pos.symbol !== 'USDT') {
+                  this.fetchExtreme300Price(pos);
+              }
+          }
+      }
+
       // --- STRATEGY ADVISOR LOOP ---
       if (this.settings.stopLoss.advisor?.enabled && (now - this.lastAdvisorTime > 15000)) {
           this.lastAdvisorTime = now;
@@ -1487,6 +1937,8 @@ export class MarketSimulator {
 
       // 2. Check Strategies
       // Always check strategies if there are active positions (to ensure Hedge Guardian works)
+      // We run strategy checks in both simulated and real-trading modes. In real trading mode,
+      // the triggered strategies will execute real orders on Binance via the registered callbacks.
       if (enableStrategies || this.positions.length > 0) {
           if (this.checkStrategies()) {
               stateChanged = true;

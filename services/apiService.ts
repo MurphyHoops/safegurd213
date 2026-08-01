@@ -137,6 +137,7 @@ interface CacheEntry {
 }
 
 const clientSideCache = new Map<string, CacheEntry>();
+const inflightRequests = new Map<string, Promise<any>>();
 
 const normalizeUrlForCache = (urlStr: string): string => {
     try {
@@ -269,27 +270,51 @@ export const fetchWithFallback = async (
         });
     }
 
-    // Call inner implementation
-    const response = await _fetchWithFallbackInner(url, options, validator, directMode);
-
-    // Cache successful responses
-    if (response.ok) {
+    // CLIENT INFLIGHT DEDUPLICATION (Thundering Herd Protection)
+    let inflight = inflightRequests.get(cacheKey);
+    if (inflight) {
         try {
-            const clone = response.clone();
-            const text = await clone.text();
-            const parsed = JSON.parse(text);
-            const ttl = getCacheTTL(url);
-            clientSideCache.set(cacheKey, {
-                data: parsed,
-                timestamp: Date.now(),
-                ttl
+            const data = await inflight;
+            return new Response(JSON.stringify(data), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json', 'X-Cache': 'DEDUPLICATED' }
             });
-        } catch (e) {
-            // ignore
+        } catch (err) {
+            // Fallback: If inflight request failed, we attempt to fetch ourselves
         }
     }
 
-    return response;
+    // Wrap the inner fetch and response cloning/parsing in a promise
+    const fetchPromise = (async () => {
+        const response = await _fetchWithFallbackInner(url, options, validator, directMode);
+        if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}`);
+        }
+        const text = await response.text();
+        const parsed = JSON.parse(text);
+        
+        // Cache successful responses
+        const ttl = getCacheTTL(url);
+        clientSideCache.set(cacheKey, {
+            data: parsed,
+            timestamp: Date.now(),
+            ttl
+        });
+        
+        return parsed;
+    })();
+
+    inflightRequests.set(cacheKey, fetchPromise);
+
+    try {
+        const data = await fetchPromise;
+        return new Response(JSON.stringify(data), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } finally {
+        inflightRequests.delete(cacheKey);
+    }
 };
 
 const _fetchWithFallbackInner = async (
@@ -526,6 +551,9 @@ const _fetchWithFallbackInner = async (
                 lastError = e;
                 if (e.message && (e.message.includes('HTTP 404') || e.message.includes('HTTP 400'))) {
                     console.warn(`[API] Early abort proxy loop due to ${e.message} for ${url}`);
+                    if (url.includes('/klines')) {
+                        break;
+                    }
                     throw e;
                 }
             }

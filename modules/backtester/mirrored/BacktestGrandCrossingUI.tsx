@@ -32,6 +32,8 @@ const DEFAULT_CONFIG: List2Config = {
   requireCrossing: true,
   requireAlignment: false,
   strictFiltering: false,
+  viewMode: 'ALL',
+  syncDirectionFilterToList3: false
 };
 
 export const BacktestGrandCrossingModule: React.FC<Props> = ({
@@ -73,12 +75,21 @@ export const BacktestGrandCrossingModule: React.FC<Props> = ({
 
   const lastResultsStrRef = useRef<string>("");
   useEffect(() => {
-    const resultsStr = JSON.stringify(list2);
+    let outputList = list2 || [];
+    if (config?.syncDirectionFilterToList3) {
+      const dir = config.viewMode || 'ALL';
+      if (dir === 'LONG') {
+        outputList = list2.filter(item => item && item.direction === 'LONG');
+      } else if (dir === 'SHORT') {
+        outputList = list2.filter(item => item && item.direction === 'SHORT');
+      }
+    }
+    const resultsStr = JSON.stringify(outputList);
     if (resultsStr !== lastResultsStrRef.current) {
       lastResultsStrRef.current = resultsStr;
-      onResultsUpdate(list2);
+      onResultsUpdate(outputList);
     }
-  }, [list2, onResultsUpdate]);
+  }, [list2, config?.syncDirectionFilterToList3, config?.viewMode, onResultsUpdate]);
 
   useEffect(() => {
     if (onRemoveSignalReady && removeSignal) {

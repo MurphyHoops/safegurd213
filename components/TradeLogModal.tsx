@@ -29,7 +29,23 @@ const FilterChip = ({ type, label, icon: Icon, colorClass, activeFilter, handleF
     </button>
 );
 
-const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, onClose, initialSearch = '', onClearHistory, onOpenChart }) => {
+const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: rawPositions, systemEvents, onClose, initialSearch = '', onClearHistory, onOpenChart }) => {
+  const tradeLogs = useMemo(() => {
+      if (!Array.isArray(rawTradeLogs)) return [];
+      return rawTradeLogs.map((l, index) => ({
+          ...l,
+          entry_id: l.entry_id ? String(l.entry_id) : `manual_fallback_${l.symbol || 'coin'}_${index}_${l.exit_timestamp || l.entry_timestamp || Date.now()}`
+      }));
+  }, [rawTradeLogs]);
+
+  const positions = useMemo(() => {
+      if (!Array.isArray(rawPositions)) return [];
+      return rawPositions.map((p, index) => ({
+          ...p,
+          entryId: p.entryId ? String(p.entryId) : `pos_fallback_${p.symbol || 'coin'}_${index}_${p.entryTime || Date.now()}`
+      }));
+  }, [rawPositions]);
+
   const [selectedLog, setSelectedLog] = useState<TradeLog | null>(null); 
   const [selectedRecoveryId, setSelectedRecoveryId] = useState<string | null>(null);
   const [selectedDebtId, setSelectedDebtId] = useState<string | null>(null);
@@ -472,8 +488,8 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs, positions, systemEvents, on
       
       // 1. Base Filter (Search Text & Time Range)
       let filtered = tradeLogs.filter(log => {
-          const matchesTerm = log.symbol.toLowerCase().includes(term) ||
-              log.entry_id.toLowerCase().includes(term);
+          const matchesTerm = (log.symbol || '').toLowerCase().includes(term) ||
+              String(log.entry_id || '').toLowerCase().includes(term);
           
           if (!matchesTerm) return false;
           

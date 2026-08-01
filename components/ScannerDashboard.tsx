@@ -40,19 +40,22 @@ const MemoizedGrandCrossingModule = React.memo(GrandCrossingModule, (prev, next)
   return prev.networkStatus === next.networkStatus && 
          prev.candidates === next.candidates && 
          prev.directMode === next.directMode &&
-         prev.strategyId === next.strategyId;
+         prev.strategyId === next.strategyId &&
+         prev.isBackground === next.isBackground;
 });
 const MemoizedStructureAuditModule = React.memo(StructureAuditModule, (prev, next) => {
   return prev.candidates === next.candidates && 
          prev.activePositions === next.activePositions && 
          prev.directMode === next.directMode &&
-         prev.strategyId === next.strategyId;
+         prev.strategyId === next.strategyId &&
+         prev.isBackground === next.isBackground;
 });
 const MemoizedMomentumAuditModule = React.memo(MomentumAuditModule, (prev, next) => {
   return prev.candidates === next.candidates && 
          prev.activePositions === next.activePositions && 
          prev.list3Config === next.list3Config &&
-         prev.strategyId === next.strategyId;
+         prev.strategyId === next.strategyId &&
+         prev.isBackground === next.isBackground;
 });
 
 // --- MIRRORED MODULES ---
@@ -490,7 +493,13 @@ const ScannerDashboardInner: React.FC<
         enableShort: true,
         enableSideways: true,
         maxExtremeDistanceLong: 5,
-        maxExtremeDistanceShort: 5
+        maxExtremeDistanceShort: 5,
+        minExtremeDistanceLong: 0,
+        minExtremeDistanceShort: 0,
+        extremeDaysMinLong: 0,
+        extremeDaysMaxLong: 300,
+        extremeDaysMinShort: 0,
+        extremeDaysMaxShort: 300
       }
     },
   );
@@ -532,7 +541,13 @@ const ScannerDashboardInner: React.FC<
         enableShort: true,
         enableSideways: true,
         maxExtremeDistanceLong: 5,
-        maxExtremeDistanceShort: 5
+        maxExtremeDistanceShort: 5,
+        minExtremeDistanceLong: 0,
+        minExtremeDistanceShort: 0,
+        extremeDaysMinLong: 0,
+        extremeDaysMaxLong: 300,
+        extremeDaysMinShort: 0,
+        extremeDaysMaxShort: 300
       }
     },
   );
@@ -1508,16 +1523,16 @@ const ScannerDashboardInner: React.FC<
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
                 </span>
-                <span>警告：服务器行情链接断开！为防止白屏/高频重连死机，全域扫描已自动挂起。等待网络恢复后功能将自动重启恢复。</span>
+                <span>提示：服务器行情网络延迟，正在进行自动后台重连与数据校验，请保持页面开启。</span>
               </div>
               <button 
                 onClick={() => {
-                  audioService.speak("警告：网络链接断开，全域扫描已自动挂起", true);
+                  audioService.speak("提示：系统检测到行情延迟，正在尝试后台自动重连", true);
                   audioService.playAlert();
                 }}
                 className="bg-red-900 border border-red-500/30 text-white rounded px-2.5 py-0.5 text-[10px] font-bold hover:bg-red-800 hover:border-red-400 transition-all cursor-pointer flex items-center gap-1 shrink-0"
               >
-                🔊 测试防爆鸣声音
+                🔊 测试提示语音
               </button>
             </div>
           )}
@@ -1562,7 +1577,7 @@ const ScannerDashboardInner: React.FC<
             </div>
           )}
 
-          <div className="flex-1 flex overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
+          <div className="flex-1 flex gap-1 overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
             <ErrorBoundary moduleName="1. 市场初筛">
               <MarketScannerModule
                 key={selectedStrategyId}
@@ -1710,7 +1725,7 @@ const ScannerDashboardInner: React.FC<
               ) : (
                 <LiveBattlefieldModule
                   key={selectedStrategyId}
-                  positions={filteredPositions}
+                  positions={currentPositions}
                   realPrices={currentPrices}
                   setChartData={safeSetChartData}
                   onClosePosition={handleClosePositionInternal}
@@ -1809,6 +1824,359 @@ const ScannerDashboardInner: React.FC<
           appearedTime={chartData.appearedTime}
           disappearedTime={chartData.disappearedTime}
           onClose={() => setChartData(null)}
+          lookbackDays={chartData.lookbackDays}
+          sidewaysDays={chartData.sidewaysDays}
+        />
+      )}
+
+      {/* Background Multi-Strategy Runners */}
+      {strategies.map((strat) => {
+        if (strat.id === selectedStrategyId) return null; // Already rendered visibly in UI
+        if (!strat.active) return null; // Only run if enabled/active
+        if (strat.unconfigured) return null; // Don't run if unconfigured
+        return (
+          <BackgroundStrategyRunner
+            key={strat.id}
+            strategyId={strat.id}
+            networkStatus={networkStatus}
+            currentPrices={currentPrices}
+            currentPositions={currentPositions}
+            executeTradeSafe={executeTradeSafe}
+            onLog={onLog}
+            mode={scannerMode}
+            directMode={directMode}
+            activeMode={activeMode}
+            settings={settings}
+          />
+        );
+      })}
+    </div>
+  );
+};
+
+interface BackgroundStrategyRunnerProps {
+  strategyId: string;
+  networkStatus: any;
+  currentPrices: Record<string, number>;
+  currentPositions: Position[];
+  executeTradeSafe: any;
+  onLog: any;
+  mode: 'LIVE' | 'BACKTEST' | 'SMART';
+  directMode: boolean;
+  activeMode: "24H" | "8AM";
+  settings: any;
+}
+
+const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
+  strategyId,
+  networkStatus,
+  currentPrices,
+  currentPositions,
+  executeTradeSafe,
+  onLog,
+  mode,
+  directMode,
+  activeMode,
+  settings
+}) => {
+  const [config24H, setConfig24H] = usePersistedState<ScanConfig>(
+    `SCANNER_CONFIG_24H_${strategyId}`,
+    {
+      timeBasis: "24H",
+      source: "BOTH",
+      minVolume: 1,
+      maxVolume: 0,
+      minChange: 1,
+      customSymbols: "",
+      useCustomOnly: false,
+      batchSize: 40,
+      limit: 520,
+      breakerConfig: {
+        enabled: false,
+        triggerMinutes: 15,
+        minDropPercent: 3,
+        minCoinsPercent: 50,
+        autoRecoverMinutes: 30,
+      },
+      instantOpenEnabled: false,
+      instantReopenEnabled: false,
+      instantOpenDirection: "LONG",
+      majorTrend: {
+        enabled: true,
+        updateIntervalHours: 4,
+        requestPerMinute: 20,
+        lookbackDays: 300,
+        minHistoryDrop: 50,
+        minHistoryPump: 100,
+        maxExtremeDistance: 5,
+        sidewaysDays: 7,
+        sidewaysMaxPump: 10,
+        sidewaysMaxDrop: 10,
+        autoTransfer: false,
+        enableLong: true,
+        enableShort: true,
+        enableSideways: true,
+        maxExtremeDistanceLong: 5,
+        maxExtremeDistanceShort: 5,
+        minExtremeDistanceLong: 0,
+        minExtremeDistanceShort: 0,
+        extremeDaysMinLong: 0,
+        extremeDaysMaxLong: 300,
+        extremeDaysMinShort: 0,
+        extremeDaysMaxShort: 300
+      }
+    }
+  );
+
+  const [config8AM, setConfig8AM] = usePersistedState<ScanConfig>(
+    `SCANNER_CONFIG_8AM_${strategyId}`,
+    {
+      timeBasis: "8AM",
+      source: "GAINERS",
+      minVolume: 1,
+      maxVolume: 0,
+      minChange: 1,
+      customSymbols: "",
+      useCustomOnly: false,
+      batchSize: 40,
+      limit: 520,
+      breakerConfig: {
+        enabled: false,
+        triggerMinutes: 15,
+        minDropPercent: 3,
+        minCoinsPercent: 50,
+        autoRecoverMinutes: 30,
+      },
+      instantOpenEnabled: false,
+      instantReopenEnabled: false,
+      instantOpenDirection: "LONG",
+      majorTrend: {
+        enabled: false,
+        updateIntervalHours: 4,
+        requestPerMinute: 20,
+        lookbackDays: 300,
+        minHistoryDrop: 50,
+        minHistoryPump: 100,
+        maxExtremeDistance: 5,
+        sidewaysDays: 7,
+        sidewaysMaxPump: 10,
+        sidewaysMaxDrop: 10,
+        autoTransfer: false,
+        enableLong: true,
+        enableShort: true,
+        enableSideways: true,
+        maxExtremeDistanceLong: 5,
+        maxExtremeDistanceShort: 5,
+        minExtremeDistanceLong: 0,
+        minExtremeDistanceShort: 0,
+        extremeDaysMinLong: 0,
+        extremeDaysMaxLong: 300,
+        extremeDaysMinShort: 0,
+        extremeDaysMaxShort: 300
+      }
+    }
+  );
+
+  const scanConfig = useMemo(
+    () => (activeMode === "24H" ? config24H : config8AM),
+    [activeMode, config24H, config8AM],
+  );
+
+  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>([]);
+  const [list2Results, setList2Results] = useState<ScannerItem[]>([]);
+  const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
+  const [list3Config, setList3Config] = useState<List3Config | null>(null);
+  const [actionConfig, setActionConfig] = useState<ActionConfig | null>(null);
+
+  // Load action config
+  useEffect(() => {
+    const raw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${strategyId}`);
+    if (raw) {
+      try {
+        setActionConfig(JSON.parse(raw));
+      } catch (e) {}
+    }
+  }, [strategyId]);
+
+  const handleList1Results = useCallback((results: ScannerItem[]) => {
+    setList1Candidates(prev => {
+      if (JSON.stringify(prev) === JSON.stringify(results)) return prev;
+      return results;
+    });
+  }, []);
+
+  const handleList2Results = useCallback((results: ScannerItem[]) => {
+    setList2Results(prev => {
+      if (JSON.stringify(prev) === JSON.stringify(results)) return prev;
+      return results;
+    });
+  }, []);
+
+  const handleList3Results = useCallback((results: ScannerItem[]) => {
+    setList3Results(prev => {
+      if (JSON.stringify(prev) === JSON.stringify(results)) return prev;
+      return results;
+    });
+  }, []);
+
+  const bgRemoveSignalRef = useRef<((id: string) => void) | undefined>(undefined);
+  const bgList2RemoveSignalRef = useRef<((id: string) => void) | undefined>(undefined);
+
+  const handleBgRemoveSignal = (id: string) => {
+    bgRemoveSignalRef.current?.(id);
+    bgList2RemoveSignalRef.current?.(id);
+  };
+
+  // Wrapped executeTradeSafe to automatically bind this strategyId
+  const wrappedExecuteTradeSafe = useCallback(
+    (
+      symbol: string,
+      side: PositionSide,
+      price: number,
+      reason: string,
+      signalTf?: string,
+      signalCandle?: any,
+      entryEmas?: any,
+      extraProps?: Partial<Position>,
+    ) => {
+      return executeTradeSafe(
+        symbol,
+        side,
+        price,
+        reason,
+        signalTf,
+        signalCandle,
+        entryEmas,
+        { strategyId, ...extraProps }
+      );
+    },
+    [executeTradeSafe, strategyId]
+  );
+
+  // We filter positions only for this strategyId so that structure / momentum audits run correctly!
+  const filteredPositions = useMemo(() => {
+    return currentPositions.filter(p => (p.strategyId || 'strat-1') === strategyId);
+  }, [currentPositions, strategyId]);
+
+  const isBacktest = mode === "BACKTEST";
+
+  return (
+    <div style={{ display: 'none' }} className="hidden pointer-events-none w-0 h-0 opacity-0 select-none overflow-hidden">
+      {/* 1. Market Scanner */}
+      <MarketScannerModule
+        key={`${strategyId}-scanner`}
+        onCandidatesUpdate={handleList1Results}
+        setChartData={() => {}}
+        directMode={directMode}
+        scanConfig={scanConfig}
+        setScanConfig={setConfig24H}
+        mode={mode}
+        setMode={() => {}}
+        onStartBacktest={() => {}}
+        isSyncing={false}
+        selectedStrategyId={strategyId}
+        isBackground={true}
+      />
+
+      {/* 2. Crossover */}
+      {isBacktest ? (
+        <BacktestGrandCrossingModule
+          key={`${strategyId}-crossover-bt`}
+          candidates={list1Candidates}
+          onResultsUpdate={handleList2Results}
+          scanConfig={scanConfig}
+          setScanConfig={setConfig24H}
+          setChartData={() => {}}
+          directMode={directMode}
+          onLog={onLog}
+          onRemoveSignalReady={(fn) => {
+            bgList2RemoveSignalRef.current = fn;
+          }}
+        />
+      ) : (
+        <MemoizedGrandCrossingModule
+          key={`${strategyId}-crossover`}
+          networkStatus={networkStatus}
+          candidates={list1Candidates}
+          onResultsUpdate={handleList2Results}
+          scanConfig={scanConfig}
+          setScanConfig={setConfig24H}
+          setChartData={() => {}}
+          directMode={directMode}
+          onLog={onLog}
+          onRemoveSignalReady={(fn) => {
+            bgList2RemoveSignalRef.current = fn;
+          }}
+          strategyId={strategyId}
+          isBackground={true}
+        />
+      )}
+
+      {/* 3. Structure Audit */}
+      {isBacktest ? (
+        <BacktestStructureAuditModule
+          key={`${strategyId}-structure-bt`}
+          candidates={list2Results}
+          onResultsUpdate={handleList3Results}
+          onConfigUpdate={setList3Config}
+          onRemoveSignalReady={(fn) => {
+            bgRemoveSignalRef.current = fn;
+          }}
+          realPrices={currentPrices}
+          setChartData={() => {}}
+          executeTradeSafe={wrappedExecuteTradeSafe}
+          activePositions={filteredPositions}
+          directMode={directMode}
+          actionConfig={actionConfig}
+        />
+      ) : (
+        <MemoizedStructureAuditModule
+          key={`${strategyId}-structure`}
+          candidates={list2Results}
+          onResultsUpdate={handleList3Results}
+          onConfigUpdate={setList3Config}
+          onRemoveSignalReady={(fn) => {
+            bgRemoveSignalRef.current = fn;
+          }}
+          realPrices={currentPrices}
+          setChartData={() => {}}
+          executeTradeSafe={wrappedExecuteTradeSafe}
+          activePositions={filteredPositions}
+          directMode={directMode}
+          actionConfig={actionConfig}
+          strategyId={strategyId}
+          isBackground={true}
+        />
+      )}
+
+      {/* 4. Momentum Audit */}
+      {isBacktest ? (
+        <BacktestMomentumAuditModule
+          key={`${strategyId}-momentum-bt`}
+          candidates={list3Results}
+          setChartData={() => {}}
+          executeTradeSafe={wrappedExecuteTradeSafe}
+          list3Config={list3Config}
+          realPrices={currentPrices}
+          activePositions={filteredPositions}
+          onRemoveSignal={handleBgRemoveSignal}
+          actionConfig={actionConfig}
+          onLog={onLog}
+        />
+      ) : (
+        <MemoizedMomentumAuditModule
+          key={`${strategyId}-momentum`}
+          candidates={list3Results}
+          setChartData={() => {}}
+          executeTradeSafe={wrappedExecuteTradeSafe}
+          list3Config={list3Config}
+          realPrices={currentPrices}
+          activePositions={filteredPositions}
+          onRemoveSignal={handleBgRemoveSignal}
+          actionConfig={actionConfig}
+          onLog={onLog}
+          strategyId={strategyId}
+          isBackground={true}
         />
       )}
     </div>

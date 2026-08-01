@@ -10,9 +10,10 @@ interface Props {
     setChartData: (data: any) => void;
     executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => void;
     onRemove: () => void;
+    idx?: number;
 }
 
-export const List3Item: React.FC<Props> = ({ item, results, setChartData, executeTradeSafe, onRemove }) => {
+export const List3Item: React.FC<Props> = ({ item, results, setChartData, executeTradeSafe, onRemove, idx }) => {
     // Use passed results if available, otherwise fall back to item.list3Results
     const signals = results || item.list3Results || [];
     
@@ -50,7 +51,12 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
             </button>
 
             <div className="flex justify-between font-bold text-slate-300 mb-1 border-b border-slate-700/50 pb-1 pr-6">
-                <span>{item.symbol.replace('USDT', '')}</span>
+                <span className="flex items-center gap-1">
+                    {idx !== undefined && (
+                        <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
+                    )}
+                    <span>{item.symbol.replace('USDT', '')}</span>
+                </span>
                 <span className="text-slate-500">{item.price.toFixed(8)}</span>
             </div>
             

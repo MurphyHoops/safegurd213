@@ -155,41 +155,36 @@ export function analyzeList2Crossing(
             const isAlignedShort = e10 < e20 && e20 < e30 && e30 < e40;
             
             if (!conflict) {
-                const isLong = kClose >= kOpen;
-                // Alignment Check
-                const isAligned = isLong ? isAlignedLong : isAlignedShort;
-                
-                // [RIGID FRESHNESS] Divergence Trigger Logic
-                // We ONLY trigger on the FIRST candle that becomes aligned.
-                // Effectively meaning the previous candle MUST NOT have been aligned.
-                let isFirstDivergenceCandle = true;
-                if (config.requireAlignment && isAligned) {
-                    const prevIdx = checkIdx - 1;
-                    if (prevIdx >= 80) {
-                        const pe10 = getEmaVal(ema10, prevIdx, 10);
-                        const pe20 = getEmaVal(ema20, prevIdx, 20);
-                        const pe30 = getEmaVal(ema30, prevIdx, 30);
-                        const pe40 = getEmaVal(ema40, prevIdx, 40);
-                        if (pe10 !== null && pe20 !== null && pe30 !== null && pe40 !== null) {
-                            // Check if ALREADY aligned in the previous candle
-                            const isPrevAlignedLong = pe10 > pe20 && pe20 > pe30 && pe30 > pe40;
-                            const isPrevAlignedShort = pe10 < pe20 && pe20 < pe30 && pe30 < pe40;
-                            const isPrevAligned = isLong ? isPrevAlignedLong : isPrevAlignedShort;
-                            if (isPrevAligned) {
-                                isFirstDivergenceCandle = false;
-                            }
-                        }
+                // Determine Alignment & Freshness for Long and Short separately
+                const isAlignedL = isAlignedLong;
+                const isAlignedS = isAlignedShort;
+
+                let isFirstDivergenceL = true;
+                let isFirstDivergenceS = true;
+
+                const prevIdx = checkIdx - 1;
+                if (prevIdx >= 80) {
+                    const pe10 = getEmaVal(ema10, prevIdx, 10);
+                    const pe20 = getEmaVal(ema20, prevIdx, 20);
+                    const pe30 = getEmaVal(ema30, prevIdx, 30);
+                    const pe40 = getEmaVal(ema40, prevIdx, 40);
+                    if (pe10 !== null && pe20 !== null && pe30 !== null && pe40 !== null) {
+                        const isPrevAlignedLong = pe10 > pe20 && pe20 > pe30 && pe30 > pe40;
+                        const isPrevAlignedShort = pe10 < pe20 && pe20 < pe30 && pe30 < pe40;
+                        
+                        if (isPrevAlignedLong) isFirstDivergenceL = false;
+                        if (isPrevAlignedShort) isFirstDivergenceS = false;
                     }
                 }
 
                 // [CRITICAL] Backtrack Crossing Validation for Alignment Mode
-                // If the user requires alignment (发散), we must verify there was a crossing (交叉)
-                // that led to this alignment within a reasonable window (e.g., 20 candles).
-                let alignmentValidByCrossing = true;
-                let crossingIdx = checkIdx; // Track the exact crossing candle (defaults to checkIdx)
+                let alignmentValidByCrossingL = true;
+                let alignmentValidByCrossingS = true;
+                let crossingIdxL = checkIdx;
+                let crossingIdxS = checkIdx;
 
-                if (config.requireAlignment && isAligned && isFirstDivergenceCandle && !isCrossing) {
-                    alignmentValidByCrossing = false;
+                if (config.requireAlignment && isAlignedL && isFirstDivergenceL && !isCrossing) {
+                    alignmentValidByCrossingL = false;
                     for (let backtrack = 1; backtrack <= 20; backtrack++) { 
                         const bIdx = checkIdx - backtrack;
                         if (bIdx < 80) break;
@@ -204,8 +199,32 @@ export function analyzeList2Crossing(
                             const bMinEma = Math.min(be10, be20, be30, be40);
                             const isBCrossing = highs[bIdx] >= bMaxEma && lows[bIdx] <= bMinEma;
                             if (isBCrossing) {
-                                alignmentValidByCrossing = true;
-                                crossingIdx = bIdx; // Store the backtrack crossing K-line index
+                                alignmentValidByCrossingL = true;
+                                crossingIdxL = bIdx;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (config.requireAlignment && isAlignedS && isFirstDivergenceS && !isCrossing) {
+                    alignmentValidByCrossingS = false;
+                    for (let backtrack = 1; backtrack <= 20; backtrack++) { 
+                        const bIdx = checkIdx - backtrack;
+                        if (bIdx < 80) break;
+                        
+                        const be10 = getEmaVal(ema10, bIdx, 10);
+                        const be20 = getEmaVal(ema20, bIdx, 20);
+                        const be30 = getEmaVal(ema30, bIdx, 30);
+                        const be40 = getEmaVal(ema40, bIdx, 40);
+                        
+                        if (be10 !== null && be20 !== null && be30 !== null && be40 !== null) {
+                            const bMaxEma = Math.max(be10, be20, be30, be40);
+                            const bMinEma = Math.min(be10, be20, be30, be40);
+                            const isBCrossing = highs[bIdx] >= bMaxEma && lows[bIdx] <= bMinEma;
+                            if (isBCrossing) {
+                                alignmentValidByCrossingS = true;
+                                crossingIdxS = bIdx;
                                 break;
                             }
                         }
@@ -213,98 +232,129 @@ export function analyzeList2Crossing(
                 }
 
                 const candleRange = kHigh - kLow;
-                const isShort = kClose < kOpen;
-                
-                // 审计结果：实体比例 (Body Ratio) 算法优化
-                // 1. 严格计算穿越这根K线 (crossingIdx) 的实体比例
-                const cHigh = highs[crossingIdx];
-                const cLow = lows[crossingIdx];
-                const cClose = closes[crossingIdx];
-                const cOpen = opens[crossingIdx];
-                const cCandleRange = cHigh - cLow;
-                const cIsLong = cClose >= cOpen;
-
-                let bodyRatio = 0;
-                if (cCandleRange > 0) {
-                    if (cIsLong) {
-                        bodyRatio = ((cClose - cOpen) / cCandleRange) * 100;
-                    } else {
-                        bodyRatio = ((cOpen - cClose) / cCandleRange) * 100;
-                    }
-                }
-
-                // 2. 严格计算当前信号K线 (checkIdx) 本身的实体比例
-                const kCandleRange = kHigh - kLow;
-                const kIsLong = kClose >= kOpen;
-                let currentBodyRatio = 0;
-                if (kCandleRange > 0) {
-                    if (kIsLong) {
-                        currentBodyRatio = ((kClose - kOpen) / kCandleRange) * 100;
-                    } else {
-                        currentBodyRatio = ((kOpen - kClose) / kCandleRange) * 100;
-                    }
-                }
-
-                // 3. 取穿越K线与信号K线实体的最小值作为最终判定实体，防止极小实体信号蒙混过关
-                const finalBodyRatio = Math.min(bodyRatio, currentBodyRatio);
-                
                 const amp = kOpen > 0 ? (candleRange / kOpen) * 100 : 0;
                 const volSlice = volumes.slice(Math.max(0, checkIdx - 20), checkIdx);
                 const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
                 
                 const volValid = volumes[checkIdx] >= (avgVol * Math.max(0.1, volMultiplier));
-                const bodyValid = finalBodyRatio >= minBodyRatio;
                 const ampValid = amp >= squeezeThreshold && amp <= maxAmplitude;
 
-                let satisfiesTriggers = true;
-                if (config.requireCrossing && !isCrossing) satisfiesTriggers = false;
-                
-                // For Alignment: Must be aligned, MUST be the first candle of sequence, and MUST have a recent crossing
-                if (config.requireAlignment && (!isAligned || !isFirstDivergenceCandle || !alignmentValidByCrossing)) satisfiesTriggers = false;
-                
-                let isValid = false;
-                if (satisfiesTriggers) {
+                // LONG Check
+                let satisfiesTriggersL = false;
+                if (config.requireCrossing && config.requireAlignment) {
+                    const satisfiesCrossing = isCrossing && (kClose >= kOpen); // Green crossing
+                    const satisfiesAlignment = isAlignedL && isFirstDivergenceL && alignmentValidByCrossingL;
+                    if (satisfiesCrossing || satisfiesAlignment) satisfiesTriggersL = true;
+                } else if (config.requireCrossing) {
+                    if (isCrossing && (kClose >= kOpen)) satisfiesTriggersL = true;
+                } else if (config.requireAlignment) {
+                    if (isAlignedL && isFirstDivergenceL && alignmentValidByCrossingL) satisfiesTriggersL = true;
+                } else {
+                    if (kClose >= kOpen) satisfiesTriggersL = true; // Squeeze green candle
+                }
+
+                // SHORT Check
+                let satisfiesTriggersS = false;
+                if (config.requireCrossing && config.requireAlignment) {
+                    const satisfiesCrossing = isCrossing && (kClose < kOpen); // Red crossing
+                    const satisfiesAlignment = isAlignedS && isFirstDivergenceS && alignmentValidByCrossingS;
+                    if (satisfiesCrossing || satisfiesAlignment) satisfiesTriggersS = true;
+                } else if (config.requireCrossing) {
+                    if (isCrossing && (kClose < kOpen)) satisfiesTriggersS = true;
+                } else if (config.requireAlignment) {
+                    if (isAlignedS && isFirstDivergenceS && alignmentValidByCrossingS) satisfiesTriggersS = true;
+                } else {
+                    if (kClose < kOpen) satisfiesTriggersS = true; // Squeeze red candle
+                }
+
+                // Calculate body ratio for crossingIdxL and crossingIdxS
+                const cHighL = highs[crossingIdxL];
+                const cLowL = lows[crossingIdxL];
+                const cCloseL = closes[crossingIdxL];
+                const cOpenL = opens[crossingIdxL];
+                const cCandleRangeL = cHighL - cLowL;
+                const cIsLongL = cCloseL >= cOpenL;
+                let bodyRatioL = 0;
+                if (cCandleRangeL > 0) {
+                    bodyRatioL = (cIsLongL ? (cCloseL - cOpenL) : (cOpenL - cCloseL)) / cCandleRangeL * 100;
+                }
+
+                const cHighS = highs[crossingIdxS];
+                const cLowS = lows[crossingIdxS];
+                const cCloseS = closes[crossingIdxS];
+                const cOpenS = opens[crossingIdxS];
+                const cCandleRangeS = cHighS - cLowS;
+                const cIsLongS = cCloseS >= cOpenS;
+                let bodyRatioS = 0;
+                if (cCandleRangeS > 0) {
+                    bodyRatioS = (cIsLongS ? (cCloseS - cOpenS) : (cOpenS - cCloseS)) / cCandleRangeS * 100;
+                }
+
+                const kCandleRange = kHigh - kLow;
+                const kIsLong = kClose >= kOpen;
+                let currentBodyRatio = 0;
+                if (kCandleRange > 0) {
+                    currentBodyRatio = (kIsLong ? (kClose - kOpen) : (kOpen - kClose)) / kCandleRange * 100;
+                }
+
+                const finalBodyRatioL = Math.min(bodyRatioL, currentBodyRatio);
+                const bodyValidL = finalBodyRatioL >= minBodyRatio;
+
+                const finalBodyRatioS = Math.min(bodyRatioS, currentBodyRatio);
+                const bodyValidS = finalBodyRatioS >= minBodyRatio;
+
+                let isValidL = false;
+                if (satisfiesTriggersL) {
                     if (strictFiltering) {
-                        if (ampValid && volValid && bodyValid) {
-                            isValid = true;
-                        }
+                        if (ampValid && volValid && bodyValidL) isValidL = true;
                     } else {
-                        // In non-strict mode, if we selected a trigger, we don't force standard filters
-                        // unless it's pure squeeze mode (neither selected)
                         if (!config.requireCrossing && !config.requireAlignment) {
-                             if (ampValid && volValid && bodyValid) isValid = true;
+                            if (ampValid && volValid && bodyValidL) isValidL = true;
                         } else {
-                             isValid = true;
+                            isValidL = true;
                         }
                     }
                 }
 
-                if (isValid) {
-                    if (isLong) {
-                        longSignals.push({ 
-                            lag, 
-                            direction: 'LONG', 
-                            amp, 
-                            time: kTime, 
-                            bodyRatio: finalBodyRatio, 
-                            isAligned: isAlignedLong,
-                            ampValid,
-                            volValid,
-                            bodyValid
-                        });
-                    } else if (isShort) {
-                        shortSignals.push({ 
-                            lag, 
-                            direction: 'SHORT', 
-                            amp, 
-                            time: kTime, 
-                            bodyRatio: finalBodyRatio, 
-                            isAligned: isAlignedShort,
-                            ampValid,
-                            volValid,
-                            bodyValid
-                        });
+                let isValidS = false;
+                if (satisfiesTriggersS) {
+                    if (strictFiltering) {
+                        if (ampValid && volValid && bodyValidS) isValidS = true;
+                    } else {
+                        if (!config.requireCrossing && !config.requireAlignment) {
+                            if (ampValid && volValid && bodyValidS) isValidS = true;
+                        } else {
+                            isValidS = true;
+                        }
                     }
+                }
+
+                if (isValidL) {
+                    longSignals.push({ 
+                        lag, 
+                        direction: 'LONG', 
+                        amp, 
+                        time: kTime, 
+                        bodyRatio: finalBodyRatioL, 
+                        isAligned: isAlignedLong,
+                        ampValid,
+                        volValid,
+                        bodyValid: bodyValidL
+                    });
+                }
+
+                if (isValidS) {
+                    shortSignals.push({ 
+                        lag, 
+                        direction: 'SHORT', 
+                        amp, 
+                        time: kTime, 
+                        bodyRatio: finalBodyRatioS, 
+                        isAligned: isAlignedShort,
+                        ampValid,
+                        volValid,
+                        bodyValid: bodyValidS
+                    });
                 }
             }
         }

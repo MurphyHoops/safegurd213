@@ -2,7 +2,7 @@
 class AudioService {
   private synthesis: SpeechSynthesis;
   private lastSpeakTime: number = 0;
-  private minInterval: number = 3000; // Minimum 3 seconds between alerts
+  private minInterval: number = 1000; // Reduced to 1s for important real-time alerts
   private audioCtx: AudioContext | null = null; // Global Singleton Context
   private keepAliveSource: AudioBufferSourceNode | null = null;
 
@@ -10,10 +10,29 @@ class AudioService {
     this.synthesis = window.speechSynthesis;
   }
 
+  isVoiceEnabled(): boolean {
+    try {
+      const saved = localStorage.getItem('SAVIOR_SETTINGS');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.system && parsed.system.voiceBroadcast === false) {
+          return false;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to check voiceBroadcast setting", e);
+    }
+    return true; // Default is true
+  }
+
   speak(text: string, priority: boolean = false) {
     if (!this.synthesis) {
       console.warn("Speech synthesis not supported");
       return;
+    }
+
+    if (!this.isVoiceEnabled()) {
+      return; // Respect master voice switch
     }
 
     const now = Date.now();
@@ -28,14 +47,23 @@ class AudioService {
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'zh-CN';
-    utterance.rate = 1.1; // Slightly faster
-    utterance.pitch = 1.0;
+    utterance.rate = 1.05; // Friendly, clear speed
+    utterance.pitch = 1.15; // Slightly higher pitch for a sweet female tone
     
-    // Attempt to select a Chinese voice
+    // Attempt to select a Chinese voice, preferably female
     const voices = this.synthesis.getVoices();
-    const zhVoice = voices.find(v => v.lang.includes('zh') || v.lang.includes('CN'));
-    if (zhVoice) {
-      utterance.voice = zhVoice;
+    const femaleVoice = voices.find(v => 
+      v.lang.includes('zh') && 
+      (v.name.toLowerCase().includes('tingting') || 
+       v.name.toLowerCase().includes('xiao') || 
+       v.name.toLowerCase().includes('female') || 
+       v.name.toLowerCase().includes('huihui') || 
+       v.name.toLowerCase().includes('meijia') ||
+       v.name.toLowerCase().includes('yahei'))
+    ) || voices.find(v => v.lang.includes('zh') || v.lang.includes('CN'));
+    
+    if (femaleVoice) {
+      utterance.voice = femaleVoice;
     }
 
     this.synthesis.speak(utterance);

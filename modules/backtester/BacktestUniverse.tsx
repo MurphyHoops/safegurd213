@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { AppSettings, AccountData, Position, TradeLog, LogEntry, SystemEvent, PositionSide, KLine } from '../../types';
 import Dashboard from '../../components/Dashboard';
 import SettingsPanel from '../../components/SettingsPanel';
+import TradeLogModal from '../../components/TradeLogModal';
 import { LogCenterModule } from '../log-center';
 import { BacktestScannerDashboard } from './mirrored/BacktestScannerDashboard';
 import { Play, Pause, SkipForward, RotateCcw, X, Clock, TrendingUp, BarChart2 } from 'lucide-react';
@@ -36,6 +37,8 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
 
     const [showScanner, setShowScanner] = useState(true);
     const [backtestViewMode, setBacktestViewMode] = useState<'DASHBOARD' | 'PIPELINE'>('PIPELINE'); // Default to PIPELINE view for a highly active sandbox feel!
+    const [showTradeLogModal, setShowTradeLogModal] = useState(false);
+    const [tradeLogSearchSymbol, setTradeLogSearchSymbol] = useState<string>('');
 
     const timerRef = useRef<any>(null);
 
@@ -252,7 +255,10 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                                     networkStatus="healthy"
                                     isOnline={true}
                                     onRowLongPress={() => {}}
-                                    onShowHistory={() => {}}
+                                    onShowHistory={(symbol) => {
+                                        setTradeLogSearchSymbol(symbol);
+                                        setShowTradeLogModal(true);
+                                    }}
                                     hasHistory={() => tradeLogs.length > 0}
                                     onClearPositions={() => setPositions([])}
                                     onClosePosition={handleClosePosition}
@@ -263,10 +269,16 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                                     onOpenChart={() => {}}
                                     onVerifyPosition={() => {}}
                                     onOpenLogs={() => {}}
-                                    onOpenTradeModal={() => {}}
+                                    onOpenTradeModal={() => {
+                                        setTradeLogSearchSymbol('');
+                                        setShowTradeLogModal(true);
+                                    }}
                                     isSimulating={true}
                                     onToggleSimulation={() => {}}
-                                    onShowSymbolTradeLogs={() => {}}
+                                    onShowSymbolTradeLogs={(symbol) => {
+                                        setTradeLogSearchSymbol(symbol);
+                                        setShowTradeLogModal(true);
+                                    }}
                                     globalAutoReopen={false}
                                     onToggleLoop={() => {}}
                                     onOpenScanner={() => setShowScanner(true)}
@@ -318,6 +330,17 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                     />
                 )}
             </div>
+
+            {showTradeLogModal && (
+                <TradeLogModal 
+                    tradeLogs={tradeLogs} 
+                    positions={positions}
+                    systemEvents={[]}
+                    initialSearch={tradeLogSearchSymbol}
+                    onClose={() => setShowTradeLogModal(false)} 
+                    onOpenChart={() => {}}
+                />
+            )}
         </div>
     );
 };

@@ -4,7 +4,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     profit: {
         enabled: true,
         profitMode: 'SMART',
-        conventional: { minPosition: 100, profitPercent: 5, callbackPercent: 1, closePercent: 100 },
+        conventional: { minPosition: 100, profitPercent: 5, callbackPercent: 1, closePercent: 100, trailingEnabled: false, trailingTriggerProfit: 5, trailingRemainingProfit: 2 },
         atr: { 
             multiplier: 3.0, 
             volatilityPercent: 1.0,
@@ -58,7 +58,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
         trendHedgeEnabled: false,
         trendHedgeEmaPeriod: 80,
         breakKLineEnabled: false,
-        breakKLineRatio: 20
+        breakKLineRatio: 20,
+        extremeHedgeEnabled: false,
+        extremeHedgeDays: 300,
+        extremeHedgeTriggerRatio: 50
     },
     stopLoss: {
         hedgeProfitClear: false,
@@ -86,7 +89,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
     },
     martingale: { enabled: false },
-    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: [] },
+    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: ['XMR', 'LIT'], voiceBroadcast: true },
     scanner: {
         minVolume: 1, 
         maxVolume: 0,

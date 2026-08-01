@@ -189,7 +189,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
   if (embedMode) {
       return (
           <div className="w-full h-full flex flex-col overflow-hidden bg-[#0b0e11] shrink-0">
-              <div className="flex-1 flex overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
+              <div className="flex-1 flex gap-1 overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
                   <BacktestMarketScannerModule 
                       onCandidatesUpdate={handleList1Results} 
                       setChartData={setChartData}
@@ -267,7 +267,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
                   </div>
               </div>
 
-              <div className="flex-1 flex overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
+              <div className="flex-1 flex gap-1 overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
                   <BacktestMarketScannerModule 
                       onCandidatesUpdate={handleList1Results} 
                       setChartData={setChartData}

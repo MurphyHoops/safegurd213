@@ -17,6 +17,7 @@ interface Props {
     actionConfig?: ActionConfig | null;
     onLog?: (type: any, message: string) => void;
     strategyId?: string;
+    isBackground?: boolean;
 }
 
 const DEFAULT_CONFIG: List4Config = { 
@@ -48,7 +49,7 @@ const DEFAULT_CONFIG: List4Config = {
     }
 };
 
-export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData, executeTradeSafe, list3Config, realPrices, activePositions, onRemoveSignal, actionConfig, onLog, strategyId }) => {
+export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData, executeTradeSafe, list3Config, realPrices, activePositions, onRemoveSignal, actionConfig, onLog, strategyId, isBackground = false }) => {
     
     // PASS list3Config TO HOOK
     const { config, setConfig, list4, removeSymbol, clearItems } = useMomentumAudit(candidates, DEFAULT_CONFIG, list3Config, realPrices, activePositions, onRemoveSignal, strategyId);
@@ -140,6 +141,10 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
             }
         });
     }, [list4, activePositions, config.autoExecute, actionConfig?.autoExecute]);
+
+    if (isBackground) {
+        return null;
+    }
 
     return (
         <List4_Momentum 

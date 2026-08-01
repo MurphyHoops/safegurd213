@@ -491,7 +491,10 @@ export const useScannerLogic = (
         if (mode !== 'SMART' || !initialConfig.smartMode?.isActive) return;
 
         console.log("[Scanner] AI High-speed background task activated.");
-        const AI_SCAN_INTERVAL = 12000; // Slowed down from 8000
+        const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+        const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+        const scale = isBg ? 15 : 1;
+        const AI_SCAN_INTERVAL = 12000 * scale; // Slowed down from 8000, 15x slower in background
         const interval = setInterval(() => {
             if (!isScanningRef.current && !isFetchingRef.current) {
                 console.log("[AI-SMART] High-speed cycle triggered...");
@@ -500,7 +503,7 @@ export const useScannerLogic = (
         }, AI_SCAN_INTERVAL);
 
         return () => clearInterval(interval);
-    }, [mode, initialConfig.smartMode?.isActive, refreshList1Candidates]); // Removed isScanning dependency
+    }, [mode, initialConfig.smartMode?.isActive, refreshList1Candidates, strategyId]); // Removed isScanning dependency
 
     // --- MAJOR TREND DISCOVERY ENGINE ---
     const majorTrendConfigRef = useRef(initialConfig.majorTrend);
@@ -586,8 +589,24 @@ export const useScannerLogic = (
                         // Drop from highest point to current price (for Short)
                         const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
 
-                        const isLongMatch = enableLong && (dropFromMaxToMin >= cfg.minHistoryDrop) && (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance));
-                        const isShortMatch = enableShort && (pumpFromMinToMax >= cfg.minHistoryPump) && (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance));
+                        const minLowIdx = histLows.indexOf(minPrice);
+                        const maxHighIdx = histHighs.indexOf(maxPrice);
+                        const lowDaysAgo = minLowIdx !== -1 ? (histLows.length - 1 - minLowIdx) : 0;
+                        const highDaysAgo = maxHighIdx !== -1 ? (histHighs.length - 1 - maxHighIdx) : 0;
+
+                        const isLongMatch = enableLong && 
+                            (dropFromMaxToMin >= cfg.minHistoryDrop) && 
+                            (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
+                            (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance)) &&
+                            (lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
+                            (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300));
+
+                        const isShortMatch = enableShort && 
+                            (pumpFromMinToMax >= cfg.minHistoryPump) && 
+                            (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
+                            (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance)) &&
+                            (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
+                            (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
 
                         const stage1Match = isLongMatch || isShortMatch;
                         if (!stage1Match) return;
@@ -664,12 +683,19 @@ export const useScannerLogic = (
     useEffect(() => {
         if (!initialConfig.majorTrend?.enabled) return;
 
+        const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+        const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+        if (isBg) {
+            console.log(`[useScannerLogic] Skipping Major Trend background loop for background strategy ${strategyId}`);
+            return;
+        }
+
         const intervalMs = initialConfig.majorTrend.updateIntervalHours * 60 * 60 * 1000;
         
         // Auto background runs with default low speed (isManual = false)
         const timer = setInterval(() => runMajorTrendDiscovery(false), intervalMs);
         return () => clearInterval(timer);
-    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.updateIntervalHours, runMajorTrendDiscovery]);
+    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.updateIntervalHours, runMajorTrendDiscovery, strategyId]);
 
 
     return {

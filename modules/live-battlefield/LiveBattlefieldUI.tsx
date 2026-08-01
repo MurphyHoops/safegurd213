@@ -14,7 +14,7 @@ interface Props {
 }
 
 export const LiveBattlefieldModule: React.FC<Props> = ({ positions, realPrices, setChartData, onClosePosition, onStatsUpdate }) => {
-    const { sortMode, setSortMode, sortedPositions, stats } = useLiveBattlefield(positions, realPrices);
+    const { sortType, setSortType, sortOrder, setSortOrder, sortedPositions, stats } = useLiveBattlefield(positions, realPrices);
     
     // THROTTLE REF: Prevents render storm
     const lastUpdateRef = useRef<number>(0);
@@ -40,8 +40,10 @@ export const LiveBattlefieldModule: React.FC<Props> = ({ positions, realPrices, 
             realPrices={realPrices} 
             setChartData={setChartData} 
             onClosePosition={onClosePosition}
-            list5Sort={sortMode} 
-            setList5Sort={setSortMode}
+            sortType={sortType}
+            setSortType={setSortType}
+            sortOrder={sortOrder}
+            setSortOrder={setSortOrder}
         />
     );
 };

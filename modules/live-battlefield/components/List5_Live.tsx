@@ -25,13 +25,15 @@ interface List5Props {
     realPrices: Record<string, number>;
     setChartData: (data: any) => void;
     onClosePosition: (symbol: string, side: PositionSide) => void;
-    list5Sort: 'DESC' | 'ASC';
-    setList5Sort: (v: 'DESC' | 'ASC') => void;
+    sortType: 'PNL_PERCENT' | 'AMOUNT' | 'PNL_AMOUNT';
+    setSortType: (v: 'PNL_PERCENT' | 'AMOUNT' | 'PNL_AMOUNT') => void;
+    sortOrder: 'DESC' | 'ASC';
+    setSortOrder: (v: 'DESC' | 'ASC') => void;
 }
 
 const List5_Live: React.FC<List5Props> = ({ 
     moduleStats, sortedActivePositions, realPrices, setChartData, onClosePosition,
-    list5Sort, setList5Sort
+    sortType, setSortType, sortOrder, setSortOrder
 }) => {
     const [filterSide, setFilterSide] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
     const [filterPnL, setFilterPnL] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
@@ -48,8 +50,10 @@ const List5_Live: React.FC<List5Props> = ({
     const [manualSymbol, setManualSymbol] = useState('');
     const [manualSide, setManualSide] = useState<PositionSide>(PositionSide.LONG);
     const [manualAmount, setManualAmount] = useState<number | undefined>(undefined);
+    const [manualInputMode, setManualInputMode] = useState<'USDT' | 'QTY'>('USDT');
     const [verifyStatus, setVerifyStatus] = useState<'unverified' | 'verifying' | 'verified' | 'failed'>('unverified');
     const [verifiedPrice, setVerifiedPrice] = useState<number | null>(null);
+    const [matchedSymbols, setMatchedSymbols] = useState<{ symbol: string; price: number; base: string }[]>([]);
 
     const filteredList = useMemo(() => {
         return sortedActivePositions.filter(p => {
@@ -66,60 +70,133 @@ const List5_Live: React.FC<List5Props> = ({
     }, [sortedActivePositions, filterSide, filterPnL]);
 
     // Verify symbol on Binance Exchange (futures REST API check)
-    const handleVerifySymbol = async () => {
-        if (!manualSymbol.trim()) {
+    const handleVerifySymbol = async (targetSymbolOverride?: string) => {
+        const inputSymbol = typeof targetSymbolOverride === 'string' ? targetSymbolOverride : manualSymbol;
+        if (!inputSymbol.trim()) {
             setVerifyStatus('failed');
+            setMatchedSymbols([]);
             return;
         }
         
         setVerifyStatus('verifying');
         setVerifiedPrice(null);
+        setMatchedSymbols([]);
         
-        const clean = manualSymbol.trim().toUpperCase();
-        const candidates = [clean];
-        if (!clean.endsWith('USDT')) {
-            candidates.push(clean + 'USDT');
+        const clean = inputSymbol.trim().toUpperCase();
+        
+        // Let's collect all possible symbols from both local realPrices and Binance Exchange
+        let allTickers: { symbol: string; price: number }[] = [];
+        
+        // 1. Get from local realPrices
+        if (realPrices) {
+            Object.entries(realPrices).forEach(([sym, price]) => {
+                const upperSym = sym.toUpperCase();
+                const formatted = upperSym.endsWith('USDT') ? upperSym : upperSym + 'USDT';
+                allTickers.push({ symbol: formatted, price: price || 0 });
+            });
         }
         
-        const isMajor = isMajorCoin(clean);
-        if (!isMajor && !clean.startsWith('1000')) {
-            candidates.push('1000' + clean + 'USDT');
-            candidates.push('1000' + clean);
-        }
-
-        // 1. Instant check against local prices
-        for (const cand of candidates) {
-            if (realPrices && realPrices[cand]) {
-                setVerifiedPrice(realPrices[cand]);
-                setVerifyStatus('verified');
-                return;
-            }
-        }
-
-        // 2. Network verification with proxy support
-        for (const cand of candidates) {
-            try {
-                const symbolParam = cand.endsWith('USDT') ? cand : cand + 'USDT';
-                const url = `https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbolParam}`;
-                const response = await fetchWithFallback(url);
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data && data.symbol === symbolParam) {
-                        const price = parseFloat(data.price);
-                        if (price && !isNaN(price)) {
-                            setVerifiedPrice(price);
-                            setVerifyStatus('verified');
-                            return;
+        // 2. Fetch all tickers from Binance
+        try {
+            const url = `https://fapi.binance.com/fapi/v1/ticker/price`;
+            const response = await fetchWithFallback(url);
+            if (response.ok) {
+                const data = await response.json();
+                if (Array.isArray(data)) {
+                    data.forEach((item: any) => {
+                        const sym = item.symbol;
+                        const price = parseFloat(item.price);
+                        if (sym && price && !isNaN(price)) {
+                            // Avoid duplicates
+                            if (!allTickers.some(t => t.symbol === sym)) {
+                                allTickers.push({ symbol: sym, price });
+                            }
                         }
-                    }
+                    });
                 }
-            } catch (err) {
-                console.warn('[Verify] Symbol check failed for: ' + cand, err);
             }
+        } catch (err) {
+            console.warn('[Verify] Failed to fetch all tickers, using local pricing list', err);
         }
-
-        setVerifyStatus('failed');
+        
+        // Filter out non-USDT symbols to keep it clean (Binance Futures has mainly USDT and BUSD/COIN, USDT is the core)
+        const usdtTickers = allTickers.filter(t => t.symbol.endsWith('USDT'));
+        
+        // Helper to extract base coin
+        const getBaseCoin = (sym: string) => {
+            return sym.replace(/USDT$/, '');
+        };
+        
+        // Find exact matches first
+        const exactMatch = usdtTickers.find(t => {
+            const base = getBaseCoin(t.symbol);
+            return base === clean || t.symbol === clean;
+        });
+        
+        if (exactMatch) {
+            const base = getBaseCoin(exactMatch.symbol);
+            setManualSymbol(base); // Auto-fill with the base symbol (e.g. BTC)
+            setVerifiedPrice(exactMatch.price);
+            setVerifyStatus('verified');
+            setMatchedSymbols([]);
+            return;
+        }
+        
+        // If not exact match, let's do partial match
+        const matches = usdtTickers.filter(t => {
+            const base = getBaseCoin(t.symbol);
+            return base.includes(clean) || t.symbol.includes(clean);
+        });
+        
+        if (matches.length === 0) {
+            setVerifyStatus('failed');
+            setMatchedSymbols([]);
+            return;
+        }
+        
+        // Rank matches so that closest match starts first
+        const sortedMatches = [...matches].sort((a, b) => {
+            const baseA = getBaseCoin(a.symbol);
+            const baseB = getBaseCoin(b.symbol);
+            
+            let scoreA = 0;
+            if (baseA === clean) scoreA = 100;
+            else if (baseA === '1000' + clean || clean === '1000' + baseA) scoreA = 90;
+            else if (baseA.startsWith(clean)) scoreA = 80;
+            else if (baseA.includes(clean)) scoreA = 70;
+            
+            let scoreB = 0;
+            if (baseB === clean) scoreB = 100;
+            else if (baseB === '1000' + clean || clean === '1000' + baseB) scoreB = 90;
+            else if (baseB.startsWith(clean)) scoreB = 80;
+            else if (baseB.includes(clean)) scoreB = 70;
+            
+            if (scoreA !== scoreB) {
+                return scoreB - scoreA;
+            }
+            return baseA.localeCompare(baseB);
+        });
+        
+        // Auto-select the BEST candidate as verified! No extra clicks needed
+        const bestMatch = sortedMatches[0];
+        const bestBase = getBaseCoin(bestMatch.symbol);
+        setManualSymbol(bestBase);
+        setVerifiedPrice(bestMatch.price);
+        setVerifyStatus('verified');
+        
+        // Save alternative matched symbols (limit to top 12) if there are others
+        if (sortedMatches.length > 1) {
+            const matchedList = sortedMatches.slice(0, 12).map(t => ({
+                symbol: t.symbol,
+                price: t.price,
+                base: getBaseCoin(t.symbol)
+            }));
+            setMatchedSymbols(matchedList);
+        } else {
+            setMatchedSymbols([]);
+        }
     };
+
 
     // Fast order execution
     const handleImmediateOpen = () => {
@@ -128,7 +205,7 @@ const List5_Live: React.FC<List5Props> = ({
             return;
         }
         if (!manualAmount || manualAmount <= 0) {
-            alert('请输入合法的开仓金额 (U)！');
+            alert(`请输入合法的${manualInputMode === 'USDT' ? '金额(U)' : '数量(币)'}！`);
             return;
         }
 
@@ -136,15 +213,24 @@ const List5_Live: React.FC<List5Props> = ({
         const price = verifiedPrice || realPrices[cleanSymbol] || realPrices[manualSymbol];
         
         if (!price || price <= 0) {
-            alert('未能获取当前价格，无法进行U值计算，请先核验币种！');
+            alert('未能获取当前价格，无法进行计算，请先核验币种！');
             return;
         }
 
-        const quantity = manualAmount / price;
+        let quantity: number;
+        let amountUsdt: number | undefined;
+
+        if (manualInputMode === 'USDT') {
+            quantity = manualAmount / price;
+            amountUsdt = manualAmount;
+        } else {
+            quantity = manualAmount;
+            amountUsdt = undefined;
+        }
 
         if (typeof (window as any).openPositionManual === 'function') {
-            (window as any).openPositionManual(cleanSymbol, manualSide, quantity);
-            alert(`已向模拟器发送手动极速开仓信号:\n代币: ${cleanSymbol}\n方向: ${manualSide === PositionSide.LONG ? '多 (LONG)' : '空 (SHORT)'}\n金额: ${manualAmount} U\n计算数量: ${quantity.toFixed(4)}`);
+            (window as any).openPositionManual(cleanSymbol, manualSide, quantity, price, amountUsdt);
+            alert(`已向模拟器发送手动极速开仓信号:\n代币: ${cleanSymbol}\n方向: ${manualSide === PositionSide.LONG ? '多 (LONG)' : '空 (SHORT)'}\n${manualInputMode === 'USDT' ? `名义价值: ${manualAmount} U` : `数量: ${manualAmount}`}\n服务器端将精确执行。`);
             
             // Clear panel inputs on success
             setManualSymbol('');
@@ -225,7 +311,7 @@ const List5_Live: React.FC<List5Props> = ({
                         </div>
                         <button
                             type="button"
-                            onClick={handleVerifySymbol}
+                            onClick={() => handleVerifySymbol()}
                             disabled={verifyStatus === 'verifying'}
                             className={`px-2 py-1 text-[10px] font-bold rounded flex items-center gap-1 transition-all active:scale-95 cursor-pointer ${
                                 verifyStatus === 'verified' ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/30' :
@@ -249,6 +335,39 @@ const List5_Live: React.FC<List5Props> = ({
                     {verifyStatus === 'failed' && (
                         <div className="text-[9px] text-red-400 flex items-center gap-1 px-1.5 bg-red-950/20 py-0.5 rounded border border-red-500/10">
                             <span>✗ 币安未找到此币种（请检查或稍后核验）</span>
+                        </div>
+                    )}
+
+                    {/* Dynamic matched symbols suggestion area */}
+                    {matchedSymbols.length > 0 && (
+                        <div className="bg-slate-900 border border-slate-800 p-2 rounded space-y-1.5 shadow-md">
+                            <div className="text-[9px] text-slate-400 flex justify-between items-center font-bold">
+                                <span>🔍 找到多个类似币种 (请点击选择):</span>
+                                <button 
+                                    type="button" 
+                                    onClick={() => setMatchedSymbols([])} 
+                                    className="text-slate-500 hover:text-white transition-colors"
+                                >
+                                    清除
+                                </button>
+                            </div>
+                            <div className="flex flex-wrap gap-1 max-h-[100px] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800">
+                                {matchedSymbols.map((m) => (
+                                    <button
+                                        key={m.symbol}
+                                        type="button"
+                                        onClick={() => {
+                                            setManualSymbol(m.base);
+                                            setVerifiedPrice(m.price);
+                                            setVerifyStatus('verified');
+                                            setMatchedSymbols([]);
+                                        }}
+                                        className="text-[10px] bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-300 font-bold px-1.5 py-0.5 rounded transition-all cursor-pointer border border-slate-700 hover:border-indigo-500"
+                                    >
+                                        {m.base} (${m.price > 10 ? m.price.toFixed(2) : m.price.toFixed(4)})
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                     )}
 
@@ -281,7 +400,15 @@ const List5_Live: React.FC<List5Props> = ({
                         </div>
 
                         {/* Amount Input */}
-                        <div className="w-[100px]">
+                        <div className="w-[140px] flex items-center bg-slate-950/80 border border-slate-800 focus-within:border-slate-700 rounded px-1 overflow-hidden transition-colors">
+                            <button
+                                type="button"
+                                onClick={() => setManualInputMode(prev => prev === 'USDT' ? 'QTY' : 'USDT')}
+                                className="text-[10px] font-bold text-slate-400 hover:text-white px-1 py-1 shrink-0"
+                                title="点击切换：按USDT金额输入 / 按币数量输入"
+                            >
+                                {manualInputMode === 'USDT' ? 'USDT' : 'QTY'}
+                            </button>
                             <input 
                                 type="number"
                                 step="any"
@@ -290,8 +417,8 @@ const List5_Live: React.FC<List5Props> = ({
                                     const val = parseFloat(e.target.value);
                                     setManualAmount(isNaN(val) ? undefined : val);
                                 }}
-                                placeholder="金额 (U)"
-                                className="w-full bg-slate-950/80 border border-slate-800 focus:border-slate-700 rounded px-2 py-1 text-xs text-white placeholder-slate-600 font-bold text-right font-mono"
+                                placeholder={manualInputMode === 'USDT' ? "总金额(U)" : "数量"}
+                                className="w-full bg-transparent outline-none px-1 py-1 text-xs text-white placeholder-slate-600 font-bold text-right font-mono"
                             />
                         </div>
                     </div>
@@ -309,18 +436,74 @@ const List5_Live: React.FC<List5Props> = ({
             
             {/* Control Bar */}
             <div className="px-2 py-2 bg-emerald-950/20 border-b border-slate-800 flex flex-col gap-2 sticky top-0 z-10">
-                <div className="flex justify-between items-center">
-                    <div className="text-[10px] font-bold text-emerald-500 uppercase flex items-center gap-1">
-                        <Filter size={10} /> 筛选与排序
+                <div className="flex flex-col gap-1.5">
+                    <div className="flex justify-between items-center">
+                        <div className="text-[10px] font-bold text-emerald-500 uppercase flex items-center gap-1">
+                            <Filter size={10} /> 筛选与排序
+                        </div>
                     </div>
-                    {/* Sort Toggle */}
-                    <button 
-                        onClick={() => setList5Sort(list5Sort === 'DESC' ? 'ASC' : 'DESC')} 
-                        className="flex items-center gap-1 text-[9px] bg-slate-800 border border-slate-700 px-2 py-0.5 rounded text-slate-300 hover:text-white transition-colors"
-                    >
-                        {list5Sort === 'DESC' ? '盈亏: 高→低' : '盈亏: 低→高'}
-                        {list5Sort === 'DESC' ? <ArrowDown size={10}/> : <ArrowUp size={10}/>}
-                    </button>
+                    {/* Tri-Sort buttons */}
+                    <div className="grid grid-cols-3 gap-1 bg-slate-950/60 p-0.5 rounded border border-slate-800">
+                        {/* 1. 盈亏% */}
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (sortType === 'PNL_PERCENT') {
+                                    setSortOrder(sortOrder === 'DESC' ? 'ASC' : 'DESC');
+                                } else {
+                                    setSortType('PNL_PERCENT');
+                                }
+                            }}
+                            className={`py-1 px-1 rounded text-[9px] font-bold transition-all flex items-center justify-center gap-0.5 ${
+                                sortType === 'PNL_PERCENT'
+                                    ? 'bg-slate-800 text-white font-black shadow-sm border border-slate-700'
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                        >
+                            <span>盈亏%</span>
+                            {sortType === 'PNL_PERCENT' && (sortOrder === 'DESC' ? <ArrowDown size={8} /> : <ArrowUp size={8} />)}
+                        </button>
+
+                        {/* 2. 持仓数量 */}
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (sortType === 'AMOUNT') {
+                                    setSortOrder(sortOrder === 'DESC' ? 'ASC' : 'DESC');
+                                } else {
+                                    setSortType('AMOUNT');
+                                }
+                            }}
+                            className={`py-1 px-1 rounded text-[9px] font-bold transition-all flex items-center justify-center gap-0.5 ${
+                                sortType === 'AMOUNT'
+                                    ? 'bg-slate-800 text-white font-black shadow-sm border border-slate-700'
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                        >
+                            <span>持仓 U</span>
+                            {sortType === 'AMOUNT' && (sortOrder === 'DESC' ? <ArrowDown size={8} /> : <ArrowUp size={8} />)}
+                        </button>
+
+                        {/* 3. 盈亏金额 */}
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (sortType === 'PNL_AMOUNT') {
+                                    setSortOrder(sortOrder === 'DESC' ? 'ASC' : 'DESC');
+                                } else {
+                                    setSortType('PNL_AMOUNT');
+                                }
+                            }}
+                            className={`py-1 px-1 rounded text-[9px] font-bold transition-all flex items-center justify-center gap-0.5 ${
+                                sortType === 'PNL_AMOUNT'
+                                    ? 'bg-slate-800 text-white font-black shadow-sm border border-slate-700'
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                        >
+                            <span>盈亏金</span>
+                            {sortType === 'PNL_AMOUNT' && (sortOrder === 'DESC' ? <ArrowDown size={8} /> : <ArrowUp size={8} />)}
+                        </button>
+                    </div>
                 </div>
 
                 {/* Filters Row */}

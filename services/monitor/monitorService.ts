@@ -40,7 +40,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => {
                 const parsed = JSON.parse(raw);
                 if (Array.isArray(parsed)) {
                     // Filter corrupted or truncated logs
-                    initialLogs = parsed.filter(l => l && typeof l === 'object' && l.id && l.message);
+                    initialLogs = parsed.filter(l => l && typeof l === 'object' && l.id && l.message && typeof l.timestamp === 'number' && !isNaN(l.timestamp));
                 }
             }
         } catch (e) {

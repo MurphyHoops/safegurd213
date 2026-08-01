@@ -96,6 +96,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                             executeTradeSafe={executeTradeSafe}
                             setChartData={setChartData}
                             onRemove={() => onRemoveItem(item.symbol)}
+                            idx={idx}
                         />
                     ))}
                     {filteredList.length === 0 && <div className="h-full flex flex-col items-center justify-center opacity-20 text-slate-500 py-10"><Compass size={40} className="mb-2"/><span className="text-[10px] font-bold">等待结构确认信号</span></div>}

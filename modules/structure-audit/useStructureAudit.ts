@@ -380,6 +380,10 @@ export const useStructureAudit = (
 
   // --- EFFECT: UI Countdowns ---
   useEffect(() => {
+    const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+    const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+    if (isBg) return;
+
     const ALL_TFS = ["5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"];
     const timer = setInterval(() => {
       const now = Date.now();
@@ -403,7 +407,7 @@ export const useStructureAudit = (
       setCountdowns(newCounts);
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [strategyId]);
 
   const updateList3FromCache = useCallback(() => {
     const allItems: ScannerItem[] = Array.from(cacheRef.current.values());
@@ -1152,7 +1156,17 @@ export const useStructureAudit = (
   }, [candidates, runPriorityAnalysisInternal, updateList3FromCache]);
 
   useEffect(() => {
+    let verifyCounter = 0;
     const checkTimer = setInterval(() => {
+      const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+      const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+      if (isBg) {
+        verifyCounter++;
+        if (verifyCounter % 12 !== 0) {
+          return; // Skip 11 out of 12 runs (run once per minute) in background
+        }
+      }
+
       if (
         isScanningRef.current ||
         !candidatesRef.current ||

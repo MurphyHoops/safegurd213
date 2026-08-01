@@ -27,10 +27,12 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     onClearRecords,
     onUpdateCustomSettings,
     onVerifyPosition,
+    onManualHedge,
     networkStatus,
     isOnline,
     manuallyClosedSymbols
 }) => {
+    const [sortKey, setSortKey] = useState<'PNL_PCT' | 'AMOUNT' | 'PNL_AMOUNT'>('PNL_PCT');
     const [sortMode, setSortMode] = useState<'DESC' | 'ASC'>('DESC');
     const [confirmClear, setConfirmClear] = useState(false);
     const [confirmClearRecords, setConfirmClearRecords] = useState(false);
@@ -103,7 +105,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
         shortCount,
         hedgePairsCount,
         activeStrategies
-    } = usePositionsListLogic(activePositionsList, realPrices, sortMode, settings);
+    } = usePositionsListLogic(activePositionsList, realPrices, sortKey, sortMode, settings);
 
     const strategiesDisplay = activeStrategies.length > 0 ? `(${activeStrategies.join(', ')})` : '';
 
@@ -181,13 +183,59 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                     >
                         <List size={12}/> {activeTab === 'BACKTEST' ? '回测流水' : '历史流水'}
                     </button>
-                    <button 
-                        onClick={() => setSortMode(sortMode === 'DESC' ? 'ASC' : 'DESC')} 
-                        className="flex items-center gap-1 text-[10px] bg-slate-800 border border-slate-700 px-2 py-1 rounded text-slate-300 hover:text-white transition-colors"
-                    >
-                        {sortMode === 'DESC' ? '盈亏↓' : '盈亏↑'}
-                        {sortMode === 'DESC' ? <ArrowDown size={11}/> : <ArrowUp size={11}/>}
-                    </button>
+                    {/* Sort controls group */}
+                    <div className="flex items-center bg-slate-900 border border-slate-800 rounded p-0.5 gap-0.5">
+                        <button 
+                            type="button"
+                            onClick={() => {
+                                if (sortKey === 'PNL_PCT') {
+                                    setSortMode(sortMode === 'DESC' ? 'ASC' : 'DESC');
+                                } else {
+                                    setSortKey('PNL_PCT');
+                                    setSortMode('DESC');
+                                }
+                            }}
+                            className={`flex items-center gap-0.5 text-[10px] px-1.5 py-1 rounded transition-all ${sortKey === 'PNL_PCT' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'}`}
+                            title="按盈亏比例 (%) 排序"
+                        >
+                            <span>盈亏%</span>
+                            {sortKey === 'PNL_PCT' && (sortMode === 'DESC' ? <ArrowDown size={10}/> : <ArrowUp size={10}/>)}
+                        </button>
+
+                        <button 
+                            type="button"
+                            onClick={() => {
+                                if (sortKey === 'AMOUNT') {
+                                    setSortMode(sortMode === 'DESC' ? 'ASC' : 'DESC');
+                                } else {
+                                    setSortKey('AMOUNT');
+                                    setSortMode('DESC');
+                                }
+                            }}
+                            className={`flex items-center gap-0.5 text-[10px] px-1.5 py-1 rounded transition-all ${sortKey === 'AMOUNT' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'}`}
+                            title="按持仓数量/大小 (USDT) 排序"
+                        >
+                            <span>持仓</span>
+                            {sortKey === 'AMOUNT' && (sortMode === 'DESC' ? <ArrowDown size={10}/> : <ArrowUp size={10}/>)}
+                        </button>
+
+                        <button 
+                            type="button"
+                            onClick={() => {
+                                if (sortKey === 'PNL_AMOUNT') {
+                                    setSortMode(sortMode === 'DESC' ? 'ASC' : 'DESC');
+                                } else {
+                                    setSortKey('PNL_AMOUNT');
+                                    setSortMode('DESC');
+                                }
+                            }}
+                            className={`flex items-center gap-0.5 text-[10px] px-1.5 py-1 rounded transition-all ${sortKey === 'PNL_AMOUNT' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'}`}
+                            title="按盈亏金额 (USDT) 排序"
+                        >
+                            <span>盈亏额</span>
+                            {sortKey === 'PNL_AMOUNT' && (sortMode === 'DESC' ? <ArrowDown size={10}/> : <ArrowUp size={10}/>)}
+                        </button>
+                    </div>
                     <button 
                         onClick={handleBatchCloseWithConfirm} 
                         className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded transition-colors border ${confirmClear ? 'bg-red-600 hover:bg-red-700 text-white border-red-400 animate-pulse' : 'bg-slate-800 hover:bg-red-900/50 text-slate-400 border-slate-700'}`}
@@ -360,8 +408,10 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                             onClosePosition={onClosePosition}
                             onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
                             onVerifyPosition={onVerifyPosition}
+                            onManualHedge={onManualHedge}
                             aiSmartMasterEnabled={settings?.profit?.aiSmartMasterEnabled}
                             globalProfitSettings={settings?.profit}
+                            globalHedgingSettings={settings?.hedging}
                             isManuallyClosed={manuallyClosedSymbols.has(p.symbol)}
                             hasCustomSettings={!!p.customProfitSettings}
                         />

@@ -85,7 +85,7 @@ export function checkStrategy4_Amputation(
         if (hasPulledBack) {
             const exitReason = `3. 断臂呼吸解套: 盈利率自最高点(${peakPnLPercent.toFixed(2)}%)回调达到设定的回撤空间${breathingSpace}% (当前: ${winningPnLPercent.toFixed(2)}% | 盈利 ${winningPnL.toFixed(2)}U >= 设定安全垫 ${targetProfit.toFixed(2)}U)`;
             
-            if (slSettings.amputationHedgeOnlyExit && !slSettings.amputationReopenEnabled && hedgePosition && closeHedgeOnly) {
+            if (slSettings.amputationHedgeOnlyExit && hedgePosition && closeHedgeOnly) {
                 // 只清对冲，主仓保留续航
                 const onlyHedgeReason = exitReason + " [只清对冲、主仓续航]";
                 closeHedgeOnly(hedgePosition.entryId, hedgePosition.unrealizedPnL, onlyHedgeReason);

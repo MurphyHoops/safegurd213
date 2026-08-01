@@ -30,7 +30,13 @@ const DEFAULT_CONFIG: MajorTrendConfig = {
     enableShort: true,
     enableSideways: true,
     maxExtremeDistanceLong: 5,
-    maxExtremeDistanceShort: 5
+    maxExtremeDistanceShort: 5,
+    minExtremeDistanceLong: 0,
+    minExtremeDistanceShort: 0,
+    extremeDaysMinLong: 0,
+    extremeDaysMaxLong: 300,
+    extremeDaysMinShort: 0,
+    extremeDaysMaxShort: 300
 };
 
 export const MajorTrendSection: React.FC<Props> = ({ 
@@ -180,8 +186,14 @@ export const MajorTrendSection: React.FC<Props> = ({
                                     </div>
 
                                     <div className="bg-black/30 border border-slate-800/50 rounded p-1">
-                                        <div className="text-[8px] text-slate-500 mb-0.5">最低点到当前价格涨幅低于</div>
-                                        <div className="flex items-center justify-between">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">最低点到当前涨幅区间</div>
+                                        <div className="flex items-center gap-1 font-mono">
+                                            <SmartNumberInput 
+                                                value={activeConfig.minExtremeDistanceLong ?? 0} 
+                                                onChange={v => updateField('minExtremeDistanceLong', v)}
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-emerald-400 font-bold"
+                                            />
+                                            <span className="text-slate-600">~</span>
                                             <SmartNumberInput 
                                                 value={activeConfig.maxExtremeDistanceLong !== undefined ? activeConfig.maxExtremeDistanceLong : activeConfig.maxExtremeDistance} 
                                                 onChange={v => {
@@ -191,9 +203,27 @@ export const MajorTrendSection: React.FC<Props> = ({
                                                         maxExtremeDistance: v
                                                     });
                                                 }}
-                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-emerald-400 font-bold"
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-emerald-400 font-bold"
                                             />
                                             <span className="text-[8.5px] text-slate-500">%</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">最低点距今日天数区间</div>
+                                        <div className="flex items-center gap-1 font-mono">
+                                            <SmartNumberInput 
+                                                value={activeConfig.extremeDaysMinLong ?? 0} 
+                                                onChange={v => updateField('extremeDaysMinLong', v)}
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-sky-400 font-bold"
+                                            />
+                                            <span className="text-slate-600">~</span>
+                                            <SmartNumberInput 
+                                                value={activeConfig.extremeDaysMaxLong ?? 300} 
+                                                onChange={v => updateField('extremeDaysMaxLong', v)}
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-sky-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">天</span>
                                         </div>
                                     </div>
                                 </div>
@@ -222,8 +252,14 @@ export const MajorTrendSection: React.FC<Props> = ({
                                     </div>
 
                                     <div className="bg-black/30 border border-slate-800/50 rounded p-1">
-                                        <div className="text-[8px] text-slate-500 mb-0.5">最高点到当前价格跌幅低于</div>
-                                        <div className="flex items-center justify-between">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">最高点到当前跌幅区间</div>
+                                        <div className="flex items-center gap-1 font-mono">
+                                            <SmartNumberInput 
+                                                value={activeConfig.minExtremeDistanceShort ?? 0} 
+                                                onChange={v => updateField('minExtremeDistanceShort', v)}
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-rose-400 font-bold"
+                                            />
+                                            <span className="text-slate-600">~</span>
                                             <SmartNumberInput 
                                                 value={activeConfig.maxExtremeDistanceShort !== undefined ? activeConfig.maxExtremeDistanceShort : activeConfig.maxExtremeDistance} 
                                                 onChange={v => {
@@ -233,9 +269,27 @@ export const MajorTrendSection: React.FC<Props> = ({
                                                         maxExtremeDistance: v
                                                     });
                                                 }}
-                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-rose-400 font-bold"
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-rose-400 font-bold"
                                             />
                                             <span className="text-[8.5px] text-slate-500">%</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="text-[8px] text-slate-500 mb-0.5">最高点距今日天数区间</div>
+                                        <div className="flex items-center gap-1 font-mono">
+                                            <SmartNumberInput 
+                                                value={activeConfig.extremeDaysMinShort ?? 0} 
+                                                onChange={v => updateField('extremeDaysMinShort', v)}
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-sky-400 font-bold"
+                                            />
+                                            <span className="text-slate-600">~</span>
+                                            <SmartNumberInput 
+                                                value={activeConfig.extremeDaysMaxShort ?? 300} 
+                                                onChange={v => updateField('extremeDaysMaxShort', v)}
+                                                className="w-10 bg-transparent text-[10px] text-left outline-none text-sky-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">天</span>
                                         </div>
                                     </div>
                                 </div>

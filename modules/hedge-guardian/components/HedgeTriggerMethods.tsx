@@ -100,6 +100,34 @@ export const HedgeTriggerMethods: React.FC<Props> = ({ settings, onChange }) => 
                     <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.breakKLineEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
                 </div>
             </div>
+
+            {/* Method 4: 300-day Extreme Price Target Hedge */}
+            <div className="flex flex-col bg-slate-900/50 p-2 rounded border border-slate-700/50 space-y-1.5">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-300 font-bold">4. 300天极值比例对冲</span>
+                        <div className="relative w-16">
+                            <input 
+                                type="number" 
+                                className="w-full bg-slate-800 border border-slate-600 rounded px-1 py-0.5 text-xs text-indigo-400 text-center font-bold font-mono" 
+                                value={Number.isNaN(settings.extremeHedgeTriggerRatio) ? '' : (settings.extremeHedgeTriggerRatio ?? 50)} 
+                                onChange={(e) => onChange('extremeHedgeTriggerRatio', parseFloat(e.target.value))} 
+                            />
+                            <span className="absolute right-1 top-0.5 text-[9px] text-slate-500">%</span>
+                        </div>
+                    </div>
+                    <div 
+                        onClick={() => onChange('extremeHedgeEnabled', !settings.extremeHedgeEnabled)} 
+                        className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.extremeHedgeEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                    >
+                        <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.extremeHedgeEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                    </div>
+                </div>
+                <div className="text-[9px] text-slate-500 leading-tight">
+                    规则：开仓拉取过去 <strong>300天</strong> 最低/最高价，开仓点距极值亏损 D%，当行情回调 ( ? )% 比例（即 D * ( ? )%）时对冲。<br/>
+                    <span className="text-indigo-400 opacity-90 font-bold">例：多单，最低距开仓价差20%，设50%，即实际亏损10%（价位90）时触发对冲。</span>
+                </div>
+            </div>
         </div>
     );
 };

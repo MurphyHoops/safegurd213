@@ -18,6 +18,7 @@ interface Props {
     onLog?: (type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => void;
     onRemoveSignalReady?: (fn: (uniqueId: string) => void) => void;
     strategyId?: string;
+    isBackground?: boolean;
 }
 
 const DEFAULT_CONFIG: List2Config = {
@@ -34,11 +35,13 @@ const DEFAULT_CONFIG: List2Config = {
     sortMode: 'MOST',
     requireCrossing: true,
     requireAlignment: false,
-    strictFiltering: true
+    strictFiltering: true,
+    viewMode: 'ALL',
+    syncDirectionFilterToList3: false
 };
 
 export const GrandCrossingModule: React.FC<Props> = ({ 
-    networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady, strategyId
+    networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady, strategyId, isBackground = false
 }) => {
     
     // --- FILTER CANDIDATES TO COMPLY WITH USER WATCHLIST INTENT ---
@@ -73,12 +76,21 @@ export const GrandCrossingModule: React.FC<Props> = ({
     // --- SYNC OUTPUT ---
     const lastListStrRef = React.useRef<string>('');
     useEffect(() => {
-        const str = JSON.stringify(list2);
+        let outputList = list2 || [];
+        if (config?.syncDirectionFilterToList3) {
+            const dir = config.viewMode || 'ALL';
+            if (dir === 'LONG') {
+                outputList = list2.filter(item => item && item.direction === 'LONG');
+            } else if (dir === 'SHORT') {
+                outputList = list2.filter(item => item && item.direction === 'SHORT');
+            }
+        }
+        const str = JSON.stringify(outputList);
         if (str !== lastListStrRef.current) {
             lastListStrRef.current = str;
-            onResultsUpdate(list2);
+            onResultsUpdate(outputList);
         }
-    }, [list2, onResultsUpdate]);
+    }, [list2, config?.syncDirectionFilterToList3, config?.viewMode, onResultsUpdate]);
 
     // --- LOCAL UI STATE ---
     const [activeFilterTf, setActiveFilterTf] = useState<string | null>(null);
@@ -110,6 +122,10 @@ export const GrandCrossingModule: React.FC<Props> = ({
     const filteredList = activeFilterTf 
         ? list2.filter(item => item.groupedResults?.some(r => r.tf === activeFilterTf))
         : list2;
+
+    if (isBackground) {
+        return null;
+    }
 
     return (
         <List2_GrandCrossing 

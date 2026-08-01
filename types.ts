@@ -63,6 +63,8 @@ export interface Position {
     currentEmaValue?: number;
     triggerReason?: string;
     isBacktestRecord?: boolean;
+    periodExtremePrice?: number;
+    extremeHedgeTriggerPrice?: number;
     backtestEntryTime?: number;
     currentIndicators?: {
         rsi: number;
@@ -77,6 +79,7 @@ export interface Position {
     reopenCount?: number;
     correlationId?: number; // Added: Correlation ID for hedge pairing
     parentEntryId?: string;
+    isManual?: boolean;
 }
 
 export interface LogEntry {
@@ -157,6 +160,9 @@ export interface ConventionalSettings {
     profitPercent: number;
     callbackPercent: number;
     closePercent: number;
+    trailingEnabled?: boolean;
+    trailingTriggerProfit?: number;
+    trailingRemainingProfit?: number;
 }
 
 export interface AtrSettings {
@@ -250,6 +256,9 @@ export interface HedgingSettings {
     breakKLineRatio: number;
     combinedLossLimitEnabled?: boolean;
     combinedLossLimitPercent?: number;
+    extremeHedgeEnabled?: boolean;
+    extremeHedgeDays?: number;
+    extremeHedgeTriggerRatio?: number;
 }
 
 export interface AdvisorSettings {
@@ -295,6 +304,7 @@ export interface SystemSettings {
     directMode?: boolean;
     realTrading?: boolean;
     symbolBlacklist?: string[];
+    voiceBroadcast?: boolean;
 }
 
 export interface ScannerSettings {

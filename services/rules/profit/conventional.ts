@@ -17,10 +17,27 @@ export function checkConventionalProfit(
     // 0. 门槛检查：持仓金额
     if (positionValue < settings.minPosition) return false;
 
-    // 1. 门槛检查：是否达到激活止盈的最低收益率
+    // 1. 托底平仓检查 (Trailing floor profit protection)
+    if (settings.trailingEnabled && 
+        settings.trailingTriggerProfit !== undefined && 
+        settings.trailingRemainingProfit !== undefined &&
+        maxPnl >= settings.trailingTriggerProfit) {
+        
+        if (currentPnl <= settings.trailingRemainingProfit) {
+            close(
+                position.symbol, 
+                position.side, 
+                `常规托底平仓触发: 最高盈利达到 ${maxPnl.toFixed(2)}% >= 托底激活阈值 ${settings.trailingTriggerProfit.toFixed(2)}%，回调后当前盈利仅剩 ${currentPnl.toFixed(2)}% <= 托底底线 ${settings.trailingRemainingProfit.toFixed(2)}%`,
+                settings.closePercent || 100
+            );
+            return true;
+        }
+    }
+
+    // 2. 门槛检查：是否达到激活止盈的最低收益率
     if (maxPnl < settings.profitPercent) return false;
 
-    // 2. 回撤检查
+    // 3. 回撤检查
     const drawdown = maxPnl - currentPnl;
     const effectiveCallback = (settings.closePercent && settings.closePercent < 100 && settings.callbackPercent === 0) ? 0.01 : settings.callbackPercent;
     

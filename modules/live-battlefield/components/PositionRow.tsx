@@ -30,12 +30,24 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
     const isLong = position.side === PositionSide.LONG;
     const rawCurrentPrice = realPrice || position.markPrice || position.entryPrice; 
     
-    const getStrategyLabel = (id?: string) => {
+    const getStrategyNameById = (id?: string) => {
         if (!id) return null;
         if (id === 'manual') return '手动';
+        try {
+            const saved = localStorage.getItem('SCANNER_STRATEGIES_LIST');
+            if (saved) {
+                const list = JSON.parse(saved);
+                if (Array.isArray(list)) {
+                    const found = list.find((s: any) => s.id === id);
+                    if (found && found.name) {
+                        return found.name;
+                    }
+                }
+            }
+        } catch (e) {}
         const num = id.replace('strat-', '');
-        if (num && !isNaN(Number(num))) {
-            return `选币 ${num}`;
+        if (num && !isNaN(Number(num)) && Number(num) < 1000) {
+            return `自动选币 ${num}`;
         }
         return id;
     };
@@ -97,7 +109,7 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
                          <span className={`text-[9px] px-1 rounded font-bold ${isLong ? 'bg-emerald-900/30 text-emerald-400' : 'bg-red-900/30 text-red-400'}`}>{isLong ? '多' : '空'}</span>
                          {position.strategyId && (
                               <span className="text-[8px] px-1.5 rounded font-bold bg-indigo-900/40 text-indigo-400 border border-indigo-500/30">
-                                  {getStrategyLabel(position.strategyId)}
+                                  {getStrategyNameById(position.strategyId)}
                               </span>
                          )}
                          {position.isBacktestRecord && (

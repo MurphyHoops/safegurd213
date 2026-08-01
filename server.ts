@@ -357,8 +357,95 @@ async function startServer() {
                 console.warn("[Binance Order] Failed to fetch position mode, defaulting to One-way Mode");
             }
 
-            // 4. Check notional value limit (>= 5 USDT)
-            if (currentPrice > 0) {
+            // 3.5 Handle CLOSE action safety checks, auto-cancel open orders, and size synchronization
+            if (action === "CLOSE") {
+                // A. Cancel all open orders for this symbol first to release reserved position limits (SL/TP)
+                try {
+                    console.log(`[Binance Order] [Auto-Cancel] Cancelling all open orders for ${formattedSymbol} before closing...`);
+                    const cancelTimestamp = Date.now();
+                    const cancelQueryString = `symbol=${formattedSymbol}&timestamp=${cancelTimestamp}&recvWindow=5000`;
+                    const cancelSignature = crypto
+                        .createHmac("sha256", apiSecret)
+                        .update(cancelQueryString)
+                        .digest("hex");
+                    
+                    const cancelResponse = await fetch(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQueryString}&signature=${cancelSignature}`, {
+                        method: "DELETE",
+                        headers: { "X-MBX-APIKEY": apiKey }
+                    });
+                    
+                    if (cancelResponse.ok) {
+                        console.log(`[Binance Order] [Auto-Cancel] Successfully cancelled all open orders for ${formattedSymbol}`);
+                    } else {
+                        const cancelErr = await cancelResponse.text();
+                        console.warn(`[Binance Order] [Auto-Cancel] Failed to cancel open orders: ${cancelErr}`);
+                    }
+                } catch (err) {
+                    console.error(`[Binance Order] [Auto-Cancel] Exception during cancel:`, err);
+                }
+
+                // B. Fetch actual position risk on the exchange to adjust quantity or handle already-closed positions
+                try {
+                    console.log(`[Binance Order] [Sync Qty] Fetching active position size for ${formattedSymbol} from Binance...`);
+                    const posTimestamp = Date.now();
+                    const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=5000`;
+                    const posSignature = crypto
+                        .createHmac("sha256", apiSecret)
+                        .update(posQueryString)
+                        .digest("hex");
+                    
+                    const posResponse = await fetch(`https://fapi.binance.com/fapi/v2/positionRisk?${posQueryString}&signature=${posSignature}`, {
+                        headers: { "X-MBX-APIKEY": apiKey }
+                    });
+                    
+                    if (posResponse.ok) {
+                        const positionsData = await posResponse.json();
+                        if (Array.isArray(positionsData)) {
+                            let targetAmt = 0;
+                            if (isHedgeMode) {
+                                const targetSide = side === "LONG" ? "LONG" : "SHORT";
+                                const matched = positionsData.find((p: any) => p.positionSide === targetSide);
+                                if (matched) {
+                                    targetAmt = Math.abs(parseFloat(matched.positionAmt));
+                                }
+                            } else {
+                                const matched = positionsData.find((p: any) => p.positionSide === "BOTH");
+                                if (matched) {
+                                    targetAmt = Math.abs(parseFloat(matched.positionAmt));
+                                }
+                            }
+                            
+                            console.log(`[Binance Order] [Sync Qty] Requested to close: ${finalQty}, actual position size on exchange: ${targetAmt}`);
+                            
+                            if (targetAmt === 0) {
+                                console.log(`[Binance Order] Position is already closed or 0 on Binance. Returning successful mock response.`);
+                                return res.json({
+                                    success: true,
+                                    orderId: "ALREADY_CLOSED_ON_EXCHANGE",
+                                    clientOrderId: "ALREADY_CLOSED_ON_EXCHANGE",
+                                    symbol: formattedSymbol,
+                                    side: side === "LONG" ? "SELL" : "BUY",
+                                    qty: finalQty,
+                                    message: `该仓位在币安交易所已处于平仓或0持仓状态，无需重复平仓。`
+                                });
+                            }
+                            
+                            if (targetAmt < finalQty) {
+                                console.log(`[Binance Order] [Sync Qty] Corrected quantity from ${finalQty} to actual position size ${targetAmt}`);
+                                finalQty = targetAmt;
+                            }
+                        }
+                    } else {
+                        const posErr = await posResponse.text();
+                        console.warn(`[Binance Order] [Sync Qty] Failed to fetch position risk: ${posErr}`);
+                    }
+                } catch (err) {
+                    console.error(`[Binance Order] [Sync Qty] Exception during position risk fetch:`, err);
+                }
+            }
+
+            // 4. Check notional value limit (>= 5 USDT) - Only for OPEN orders
+            if (action === "OPEN" && currentPrice > 0) {
                 const notionalValue = finalQty * currentPrice;
                 if (notionalValue < 5.0) {
                     return res.status(400).json({ 
@@ -402,6 +489,8 @@ async function startServer() {
 
             if (binancePositionSide) {
                 orderParams.positionSide = binancePositionSide;
+            } else if (action === "CLOSE") {
+                orderParams.reduceOnly = "true";
             }
 
             // Convert parameters to sorted query string for signature
@@ -815,6 +904,9 @@ async function startServer() {
                   
                   // Otherwise, return 400/404 immediately to avoid wasting time with retries!
                   console.log(`[Proxy] Immediately stopping on status ${response.status} for ${urlToFetch} (no retries for 400/404)`);
+                  if (targetUrl.includes("/klines")) {
+                      break;
+                  }
                   const text = await response.text();
                   try {
                       return res.status(response.status).json(JSON.parse(text));

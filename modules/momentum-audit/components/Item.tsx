@@ -10,9 +10,10 @@ interface Props {
     executeTradeSafe: (symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => boolean;
     setChartData: (data: any) => void;
     onRemove: () => void;
+    idx?: number;
 }
 
-const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartData, onRemove }) => {
+const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartData, onRemove, idx }) => {
     // Robust defensive check: Ensure item and its nested objects exist
     if (!item) return null;
 
@@ -83,6 +84,9 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                     title="点击查看 K 线图 (含触发线)"
                 >
                     <div className="flex items-center gap-2">
+                        {idx !== undefined && (
+                            <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
+                        )}
                         <span className="text-xs font-bold text-white">{item.symbol ? item.symbol.replace('USDT','') : 'UNKNOWN'}</span>
                     </div>
                     <span className="text-[8px] text-slate-500 font-bold uppercase flex items-center gap-1">现价: <span className="text-white">{formatPrice(item.price)}</span></span>

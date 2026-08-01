@@ -187,7 +187,7 @@ export class BinanceWebSocket {
         'wss://nbstream.binance.com/lapi/v1/stream?streams=!ticker@arr'
     ];
     private currentUrlIndex = 0;
-    private lastMessageTime = Date.now();
+    public lastMessageTime = Date.now();
     private isConnected = false;
     private consecutiveFailures = 0;
     private fallbackTimer: any = null;

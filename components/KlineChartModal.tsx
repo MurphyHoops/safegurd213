@@ -54,6 +54,8 @@ interface Props {
   disappearedTime?: number; // Time the signal disappeared
   onClose: () => void;
   onTimeframeChange?: (timeframe: string) => void;
+  lookbackDays?: number;
+  sidewaysDays?: number;
 }
 
 interface KlineData {
@@ -239,7 +241,7 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
     return await fetchWithTimeout(futuresUrl, 'Final-Direct-Fallback');
 }
 
-const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange }) => {
+const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays }) => {
   const backtest = useOptionalBacktest();
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
   const serializedConfig = JSON.stringify(list2Config);
@@ -369,19 +371,22 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       let timerId: any;
       
       const calculateDailyStats = async () => {
-          let lookbackDays = 300;
-          let sidewaysDays = 7;
-          try {
-              const savedConfig = localStorage.getItem('SCANNER_CONFIG_24H');
-              if (savedConfig) {
-                  const parsed = JSON.parse(savedConfig);
-                  if (parsed && parsed.majorTrend) {
-                      lookbackDays = parsed.majorTrend.lookbackDays || 300;
-                      sidewaysDays = parsed.majorTrend.sidewaysDays || 7;
+          let lookbackDays = propLookbackDays || 300;
+          let sidewaysDays = propSidewaysDays !== undefined ? propSidewaysDays : 7;
+          
+          if (!propLookbackDays) {
+              try {
+                  const savedConfig = localStorage.getItem('SCANNER_CONFIG_24H');
+                  if (savedConfig) {
+                      const parsed = JSON.parse(savedConfig);
+                      if (parsed && parsed.majorTrend) {
+                          lookbackDays = parsed.majorTrend.lookbackDays || 300;
+                          sidewaysDays = parsed.majorTrend.sidewaysDays !== undefined ? parsed.majorTrend.sidewaysDays : 7;
+                      }
                   }
+              } catch (e) {
+                  console.warn("[KlineChart] Failed to parse major trend configuration from localStorage:", e);
               }
-          } catch (e) {
-              console.warn("[KlineChart] Failed to parse major trend configuration from localStorage:", e);
           }
 
           const limit = lookbackDays + 25;
@@ -425,9 +430,12 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
           try {
               const currentPrice = dailyKlines[dailyKlines.length - 1].close;
-              const historySlice = dailyKlines.slice(0, Math.max(1, dailyKlines.length - sidewaysDays));
-              const maxHigh = Math.max(...historySlice.map(c => c.high));
-              const minLow = Math.min(...historySlice.map(c => c.low));
+              
+              // Align with Item.tsx: slice to exactly lookbackDays
+              const periodKlines = dailyKlines.slice(-lookbackDays);
+              const historySlice = periodKlines.slice(0, Math.max(1, periodKlines.length - sidewaysDays));
+              const maxHigh = historySlice.length > 0 ? Math.max(...historySlice.map(c => c.high)) : currentPrice;
+              const minLow = historySlice.length > 0 ? Math.min(...historySlice.map(c => c.low)) : currentPrice;
 
               const actualDrop = maxHigh > 0 ? ((maxHigh - currentPrice) / maxHigh) * 100 : 0;
               const actualPump = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
@@ -484,7 +492,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           isMounted = false;
           clearTimeout(timerId);
       };
-  }, [symbol, backtest?.isPlaying, directMode, loading]);
+  }, [symbol, backtest?.isPlaying, directMode, loading, propLookbackDays, propSidewaysDays]);
 
 
   // Viewport State
@@ -505,6 +513,25 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   const startIndexRef = useRef<number>(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 500 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let animationFrameId: number;
+    const observer = new ResizeObserver((entries) => {
+      if (!entries || entries.length === 0) return;
+      const { width, height } = entries[0].contentRect;
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = requestAnimationFrame(() => {
+        setDimensions({ width: width || 800, height: height || 500 });
+      });
+    });
+    observer.observe(containerRef.current);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, []);
 
   // Recalculate signals whenever fullData or config changes
   useEffect(() => {
@@ -899,8 +926,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   
   const renderChart = () => {
       if (visibleData.length === 0) return null;
-      const width = containerRef.current?.clientWidth || 800;
-      const height = containerRef.current?.clientHeight || 500;
+      const { width, height } = dimensions;
       if (width === 0 || height === 0) return null;
 
       const chartHeight = height * 0.8;

@@ -64,6 +64,7 @@ export const useMomentumAudit = (
     const activePositionsRef = useRef(activePositions);
     const onRemoveSignalRef = useRef(onRemoveSignal);
     const currentTimeRef = useRef(currentTime);
+    const lastRunRef = useRef(0);
 
     // Cache for retention logic
     const invalidSignalCacheRef = useRef<Map<string, number>>(new Map());
@@ -355,8 +356,17 @@ export const useMomentumAudit = (
     });
     // Run analysis synchronously and immediately for millisecond-level execution speed
     const runAnalysisSync = useCallback(() => {
+        const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+        const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+        if (isBg) {
+            const now = Date.now();
+            if (now - lastRunRef.current < 5000) {
+                return;
+            }
+            lastRunRef.current = now;
+        }
         runMomentumAnalysis.current();
-    }, []);
+    }, [strategyId]);
 
     // CRITICAL LATENCY REFIX: Re-run analysis immediately when list 3 candidates list updates
     useEffect(() => {

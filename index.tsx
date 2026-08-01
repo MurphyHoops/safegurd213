@@ -5,8 +5,8 @@ if (typeof window !== 'undefined' && window.performance && typeof window.perform
         try {
             return originalMeasure.apply(this, arguments as any);
         } catch (e) {
-            console.error('🛡️ [Performance Monitor] Failed to measure:', name, startMark, endMark, e);
-            throw e;
+            console.warn('🛡️ [Performance Monitor] Bypassed measure error (non-fatal):', name, e);
+            // DO NOT rethrow the exception. Performance measure errors should never crash the application.
         }
     };
 }

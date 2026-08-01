@@ -158,7 +158,10 @@ export const PositionSettingsModal: React.FC<Props> = ({
                     minPosition: 100,
                     profitPercent: 5.0,
                     callbackPercent: 1.0,
-                    closePercent: 100
+                    closePercent: 100,
+                    trailingEnabled: false,
+                    trailingTriggerProfit: 5.0,
+                    trailingRemainingProfit: 2.0
                 };
             }
             next.conventional = {
@@ -192,7 +195,10 @@ export const PositionSettingsModal: React.FC<Props> = ({
         minPosition: 100,
         profitPercent: 5.0,
         callbackPercent: 1.0,
-        closePercent: 100
+        closePercent: 100,
+        trailingEnabled: false,
+        trailingTriggerProfit: 5.0,
+        trailingRemainingProfit: 2.0
     };
 
     const slParams = localSettings.stopLoss || {
