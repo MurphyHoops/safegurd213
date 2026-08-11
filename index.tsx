@@ -215,6 +215,26 @@ window.addEventListener('unhandledrejection', (event) => {
         return;
     }
 
+    // Ignore non-fatal network or Binance API rejections during system boot
+    const lowercaseReason = reasonText.toLowerCase();
+    if (
+        lowercaseReason.includes('fetch') ||
+        lowercaseReason.includes('networkerror') ||
+        lowercaseReason.includes('load failed') ||
+        lowercaseReason.includes('timeout') ||
+        lowercaseReason.includes('abort') ||
+        lowercaseReason.includes('binance') ||
+        lowercaseReason.includes('ticker') ||
+        lowercaseReason.includes('klines') ||
+        lowercaseReason.includes('cors') ||
+        lowercaseReason.includes('econnrefused') ||
+        lowercaseReason.includes('socket')
+    ) {
+        console.warn('🛡️ [System Shield] Bypassed background network/API exception:', reasonText);
+        persistRawSystemLog('WARN', 'SHIELD', `【网络限扰】引导阶段非致命网络异常已隔离: ${reasonText}`);
+        return;
+    }
+
     // Check if React is mounted and running normally
     const root = document.getElementById('root');
     const isReactMounted = 

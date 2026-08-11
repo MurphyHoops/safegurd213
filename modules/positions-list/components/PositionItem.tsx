@@ -219,7 +219,7 @@ export const PositionItem: React.FC<Props> = ({
                     ) : (
                         <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${isModule1Active ? 'bg-emerald-900/20 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-600'}`}>
                             <Target size={8} />
-                            <span>{isModule1Active ? '标准风控' : '手动模式'}</span>
+                            <span>{isModule1Active ? (isHedgedActive ? '对冲仓位' : '标准风控') : '手动模式'}</span>
                         </div>
                     )}
                     {hasAmmo && (

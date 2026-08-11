@@ -18,31 +18,8 @@ export function checkSmartProfit(
         return false;
     }
 
-    // 1. 检查是否达到启动盈利阈值 (智能模式接管)
-    if (maxPnl >= settings.activationProfit) {
-        // 2. 计算动态回调比例 (1 - maxPnl%)
-        const effectiveMaxPnl = Math.min(maxPnl, 100); 
-        const callbackRatio = 1 - (effectiveMaxPnl / 100); 
-        
-        // 3. 计算允许的最大回撤值
-        const allowedDrawdown = maxPnl * callbackRatio;
-        
-        // 4. 计算当前实际回撤值
-        const currentDrawdown = maxPnl - currentPnl;
-
-        // 5. 判断是否触发平仓
-        if (currentDrawdown >= allowedDrawdown) {
-            close(
-                position.symbol, 
-                position.side, 
-                `智能止盈: 最高盈利 ${maxPnl.toFixed(2)}%, 允许回调 ${allowedDrawdown.toFixed(2)}% (比例 ${(callbackRatio * 100).toFixed(2)}%), 实际盈利锁定在 ${currentPnl.toFixed(2)}%`,
-                100 // 智能止盈通常全平
-            );
-            return true;
-        }
-    } 
-    // 6. 如果未达到智能启动阈值，且开启了阶梯常规平仓功能
-    else if (settings.conventionalEnabled && tiers.length > 0) {
+    // 1. 如果开启了阶梯常规平仓功能且配置了阶梯，优先评估并执行阶梯常规平仓及保底逻辑
+    if (settings.conventionalEnabled && tiers.length > 0) {
         // A. 计算“阶梯保底线” (Safety Floor)
         let safetyFloor = -999;
         let floorReason = "";
@@ -85,6 +62,38 @@ export function checkSmartProfit(
                 return true;
             }
         }
+
+        // 关键修复：当开启了阶梯保底锁定方案时，如果当前盈利在阶梯有效范围内 (未突破最高阶梯的失效值)，
+        // 应当由阶梯规则完全接管。不应再往下执行指数衰减锁定模式（Step 2），防止两个模式冲突导致意外的提前平仓！
+        const maxTierExpiry = tiers.reduce((max, t) => Math.max(max, t.expiry), 0);
+        if (maxPnl < maxTierExpiry) {
+            return false;
+        }
     }
+
+    // 2. 检查是否达到启动盈利阈值 (智能模式/指数衰减锁定模式)
+    if (maxPnl >= settings.activationProfit) {
+        // 计算动态回调比例 (1 - maxPnl%)
+        const effectiveMaxPnl = Math.min(maxPnl, 100); 
+        const callbackRatio = 1 - (effectiveMaxPnl / 100); 
+        
+        // 计算允许的最大回撤值
+        const allowedDrawdown = maxPnl * callbackRatio;
+        
+        // 计算当前实际回撤值
+        const currentDrawdown = maxPnl - currentPnl;
+
+        // 判断是否触发平仓
+        if (currentDrawdown >= allowedDrawdown) {
+            close(
+                position.symbol, 
+                position.side, 
+                `智能止盈: 最高盈利 ${maxPnl.toFixed(2)}%, 允许回调 ${allowedDrawdown.toFixed(2)}% (比例 ${(callbackRatio * 100).toFixed(2)}%), 实际盈利锁定在 ${currentPnl.toFixed(2)}%`,
+                100 // 智能止盈通常全平
+            );
+            return true;
+        }
+    } 
+
     return false;
 }

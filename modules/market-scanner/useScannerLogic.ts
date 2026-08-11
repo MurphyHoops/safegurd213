@@ -12,12 +12,19 @@ export const useScannerLogic = (
     fixedModeView: 'MONITOR' | 'SEARCH',
     directMode: boolean = false,
     mode: 'LIVE' | 'BACKTEST' | 'SMART' = 'LIVE',
-    strategyId?: string
+    strategyId?: string,
+    isScanAllowed: boolean = true
 ) => {
     const suffix = strategyId ? `_${strategyId}` : '';
-    const list1CacheKey = `SCANNER_LIST1_CACHE${suffix}`;
+    const list1CacheKey = `SCANNER_LIST1${suffix}`;
     const blacklistKey = `SCANNER_BLACKLIST${suffix}`;
     const majorTrendCandidatesKey = `SCANNER_MAJOR_TREND_CANDIDATES${suffix}`;
+
+    // --- ROTATION / SCANNABILITY GUARD ---
+    const isScanAllowedRef = useRef(isScanAllowed);
+    useEffect(() => {
+        isScanAllowedRef.current = isScanAllowed;
+    }, [isScanAllowed]);
 
     // --- ATOMIC STATE ---
     const [list1, setList1] = useState<ScannerItem[]>(() => {
@@ -89,19 +96,44 @@ export const useScannerLogic = (
     const modeRef = useRef(mode);
     const wasForceFullRef = useRef(false);
     
+    // --- 早上8点成交量缓存 ---
+    const volume8amCacheRef = useRef<Map<string, { volume: number, timestamp: number }>>(new Map());
+    
     // --- MAJOR TREND DISCOVERY STATE ---
     const [majorTrendCandidates, setMajorTrendCandidates] = useState<Set<string>>(() => {
         try {
             const saved = localStorage.getItem(majorTrendCandidatesKey);
-            return new Set(saved ? JSON.parse(saved) : []);
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                return new Set(Array.isArray(parsed) ? parsed : []);
+            }
+            return new Set();
         } catch (e) { return new Set(); }
     });
+
+    // Persist Major Trend Candidates
+    useEffect(() => {
+        try {
+            localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(majorTrendCandidates)));
+        } catch (e) {
+            console.warn("Failed to persist Major Trend Candidates");
+        }
+    }, [majorTrendCandidates, majorTrendCandidatesKey]);
+
     const [isMajorScanning, setIsMajorScanning] = useState(false);
     const [majorProgress, setMajorProgress] = useState({ current: 0, total: 0 });
 
+    const majorTrendLimitsKey = `SCANNER_MAJOR_TREND_LIMITS${suffix}`;
+    const [majorTrendLimits, setMajorTrendLimits] = useState<Record<string, { maxZ: number, minZ: number }>>(() => {
+        try {
+            const saved = localStorage.getItem(majorTrendLimitsKey);
+            return saved ? JSON.parse(saved) : {};
+        } catch (e) { return {}; }
+    });
+
     useEffect(() => {
-        localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(majorTrendCandidates)));
-    }, [majorTrendCandidates, majorTrendCandidatesKey]);
+        localStorage.setItem(majorTrendLimitsKey, JSON.stringify(majorTrendLimits));
+    }, [majorTrendLimits, majorTrendLimitsKey]);
 
     // --- RATE LIMIT & BAN PROTECTION ---
     const bannedUntilRef = useRef<number>(0);
@@ -224,13 +256,37 @@ export const useScannerLogic = (
                     initialConfig, 
                     customSymbolSet, 
                     fixedModeView,
-                    majorTrendCandidates
+                    majorTrendCandidates,
+                    majorTrendLimits
                 );
                 
+                // Map volume8am from cache if exists
+                const nowTime = Date.now();
+                const expiry = 5 * 60 * 1000;
+                filtered.forEach(item => {
+                    const cached = volume8amCacheRef.current.get(item.symbol);
+                    if (cached && (nowTime - cached.timestamp < expiry)) {
+                        item.volume8am = cached.volume;
+                    }
+                });
+
+                // Apply 8AM filtering if enabled
+                let finalCandidates = filtered;
+                if (initialConfig.enableVol8am) {
+                    const minVol8am = initialConfig.minVolume8am ?? 0;
+                    const maxVol8am = initialConfig.maxVolume8am ?? 0;
+                    finalCandidates = filtered.filter(item => {
+                        const vol8am = item.volume8am || 0;
+                        if (vol8am < minVol8am) return false;
+                        if (maxVol8am > 0 && vol8am > maxVol8am) return false;
+                        return true;
+                    });
+                }
+
                 // APPLY SMART ANALYSIS IF IN SMART MODE
                 const smartAnalyzed = mode === 'SMART' 
-                    ? applySmartAnalysis(filtered, initialConfig)
-                    : filtered;
+                    ? applySmartAnalysis(finalCandidates, initialConfig)
+                    : finalCandidates;
 
                 // Filter out blacklisted symbols
                 const nonBlacklisted = smartAnalyzed.filter(item => item && item.symbol && !blacklist.has(item.symbol));
@@ -265,6 +321,7 @@ export const useScannerLogic = (
                     return prev;
                 });
             } else if (list1 && Array.isArray(list1) && list1.length > 0) {
+                const isMajorTrendActive = initialConfig.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0 && !initialConfig.useCustomOnly;
                 const filtered = list1.filter(item => {
                     if (!item || !item.symbol) return false;
                     if (blacklist.has(item.symbol)) return false;
@@ -273,6 +330,10 @@ export const useScannerLogic = (
                     if (vol < initialConfig.minVolume) return false;
                     if (initialConfig.maxVolume > 0 && vol > initialConfig.maxVolume) return false;
                     
+                    if (isMajorTrendActive) {
+                        return majorTrendCandidates && majorTrendCandidates.has(item.symbol);
+                    }
+
                     const chg = item.change || 0;
                     if (Math.abs(chg) < initialConfig.minChange) return false;
                     
@@ -289,7 +350,7 @@ export const useScannerLogic = (
         } catch (err) {
             console.error("[Scanner] Instant re-filter failed:", err);
         }
-    }, [initialConfig, customSymbolSet, fixedModeView, blacklist, mode]); // Stabilized dependencies
+    }, [initialConfig, customSymbolSet, fixedModeView, blacklist, mode, majorTrendCandidates, majorTrendLimits]); // Stabilized dependencies
 
     const directModeRef = useRef(directMode);
     useEffect(() => { directModeRef.current = directMode; }, [directMode]);
@@ -299,6 +360,12 @@ export const useScannerLogic = (
     // --- CORE ACTION: Fetch & Process ---
     const marketStatsRef = useRef(marketStats); 
     const refreshList1Candidates = useCallback(async (currentConfig: ScanConfig, forceFull = false) => {
+        // Rotation / Scan Allowed Check
+        if (!isScanAllowedRef.current) {
+            setScanStatusText("轮循休眠中...");
+            return;
+        }
+
         // 1. BAN CHECK
         const now = Date.now();
         if (now < bannedUntilRef.current) {
@@ -379,13 +446,55 @@ export const useScannerLogic = (
                 configRef.current, 
                 customSymbolSetRef.current, 
                 fixedModeViewRef.current,
-                majorTrendCandidates
+                majorTrendCandidates,
+                majorTrendLimits
             );
             
+            // --- 早上8点成交量异步获取与过滤 (Since 8 AM Volume) ---
+            const cacheExpiryMs = 5 * 60 * 1000; // 5 minute cache
+            const nowTime = Date.now();
+
+            // Fetch 1d klines concurrently to fill volume8am for candidates
+            await Promise.all(filtered.map(async (item) => {
+                const cached = volume8amCacheRef.current.get(item.symbol);
+                let vol8am = 0;
+                if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
+                    vol8am = cached.volume;
+                } else {
+                    try {
+                        const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
+                        const res1d = await fetchWithFallback(url1d, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
+                        const klines1d = await res1d.json();
+                        if (Array.isArray(klines1d) && klines1d.length > 0) {
+                            // index 7 is quote asset volume (USDT volume)
+                            vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
+                            volume8amCacheRef.current.set(item.symbol, { volume: vol8am, timestamp: nowTime });
+                        }
+                    } catch (err) {
+                        console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
+                        vol8am = cached ? cached.volume : 0;
+                    }
+                }
+                item.volume8am = vol8am;
+            }));
+
+            // Filter by 8AM volume if enabled
+            let finalCandidates = filtered;
+            if (configRef.current.enableVol8am) {
+                const minVol8am = configRef.current.minVolume8am ?? 0;
+                const maxVol8am = configRef.current.maxVolume8am ?? 0;
+                finalCandidates = filtered.filter(item => {
+                    const vol8am = item.volume8am || 0;
+                    if (vol8am < minVol8am) return false;
+                    if (maxVol8am > 0 && vol8am > maxVol8am) return false;
+                    return true;
+                });
+            }
+
             // APPLY SMART ANALYSIS IF IN SMART MODE
             const smartAnalyzed = modeRef.current === 'SMART' 
-                ? applySmartAnalysis(filtered, configRef.current)
-                : filtered;
+                ? applySmartAnalysis(finalCandidates, configRef.current)
+                : finalCandidates;
 
             const nonBlacklisted = smartAnalyzed.filter(item => !blacklistRef.current.has(item.symbol));
             const prevSymbols = new Set(list1Ref.current.map(i => i.symbol));
@@ -510,6 +619,10 @@ export const useScannerLogic = (
     useEffect(() => { majorTrendConfigRef.current = initialConfig.majorTrend; }, [initialConfig.majorTrend]);
 
     const runMajorTrendDiscovery = useCallback(async (isManual: boolean = false) => {
+        if (!isScanAllowedRef.current) {
+            return;
+        }
+
         const cfg = majorTrendConfigRef.current;
         if (!cfg || !cfg.enabled) return;
         
@@ -520,26 +633,54 @@ export const useScannerLogic = (
         }
         
         setIsMajorScanning(true);
-        // Ensure we get all USDT perpetual symbols from the latest raw data
-        const allSymbols = rawDataRef.current.map(i => i.symbol).filter(s => s.endsWith('USDT'));
-        if (allSymbols.length === 0) {
+        
+        // Step 1: Market Primary Screening (市场初筛)
+        // Filter symbols that meet the Volume Filter (成交范围) & not blacklisted
+        const allSymbolsData = rawDataRef.current.filter(i => i.symbol && i.symbol.endsWith('USDT'));
+        if (allSymbolsData.length === 0) {
             setIsMajorScanning(false);
             return;
         }
 
-        setMajorProgress({ current: 0, total: allSymbols.length });
+        const primaryCandidates = allSymbolsData.filter(item => {
+            const volumeM = (parseFloat(item.quoteVolume) || 0) / 1000000;
+            // Check List 1's standard Volume filters (成交范围)
+            const meetsVolume = volumeM >= configRef.current.minVolume && 
+                                (configRef.current.maxVolume === 0 || volumeM <= configRef.current.maxVolume);
+            return meetsVolume && !blacklistRef.current.has(item.symbol);
+        });
+
+        if (primaryCandidates.length === 0) {
+            setIsMajorScanning(false);
+            return;
+        }
+
+        // Initialize progress with primary candidate count
+        setMajorProgress({ current: 0, total: primaryCandidates.length });
         
+        // Wait a short delay (e.g., 2000ms) to allow the primary screening state to register as requested
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) {
+            setIsMajorScanning(false);
+            return;
+        }
+
+        const targetSymbols = primaryCandidates.map(i => i.symbol);
+        
+        // Step 2: Individual Technical & Deep Indicator Calculation (单个币精细指标计算)
         // Dynamic Rate: Manual/First run = 30/min, Background = Configured (capped at 15)
         const batchSize = isManual ? 30 : Math.min(15, (cfg.requestPerMinute || 15));
         const validSymbols = new Set<string>();
+        const limitsMap: Record<string, { maxZ: number, minZ: number }> = {};
         
-        for (let i = 0; i < allSymbols.length; i += batchSize) {
+        for (let i = 0; i < targetSymbols.length; i += batchSize) {
             if (!isMountedRef.current) break;
             // Allow stopping if the mode is disabled during scan
             if (!majorTrendConfigRef.current?.enabled) break;
             
-            const batch = allSymbols.slice(i, i + batchSize);
-            setMajorProgress({ current: i, total: allSymbols.length });
+            const batch = targetSymbols.slice(i, i + batchSize);
+            setMajorProgress({ current: i, total: targetSymbols.length });
             
             // Limit concurrency within batch
             const concurrencyLimit = 5;
@@ -612,16 +753,125 @@ export const useScannerLogic = (
                         if (!stage1Match) return;
 
                         // Sideways accumulation check
-                        if (enableSideways) {
-                            const sidewaysIndex = prices.length - 1 - cfg.sidewaysDays;
-                            if (sidewaysIndex >= 0) {
-                                const referencePrice = prices[sidewaysIndex];
-                                const changeFromRef = ((currentPrice - referencePrice) / referencePrice) * 100;
-                                if (changeFromRef > cfg.sidewaysMaxPump || changeFromRef < -cfg.sidewaysMaxDrop) {
-                                    return;
-                                }
+                        let maxZ = currentPrice;
+                        let minZ = currentPrice;
+                        if (enableSideways && cfg.sidewaysDays > 0) {
+                            const sidewaysHighs = highs.slice(-cfg.sidewaysDays);
+                            const sidewaysLows = lows.slice(-cfg.sidewaysDays);
+                            maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
+                            minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
+
+                            // 当前价格距离过去Z天内最高点到当前价格跌幅低于X%
+                            // dropFromMax = (MaxZ - Current) / MaxZ * 100 < X
+                            const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
+
+                            // 最低点到当前价格涨幅低于Y%
+                            // riseFromMin = (Current - MinZ) / MinZ * 100 < Y
+                            const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
+
+                            if (dropFromMax >= cfg.sidewaysMaxDrop || riseFromMin >= cfg.sidewaysMaxPump) {
+                                return;
                             }
                         }
+
+                        // Store sideways limits
+                        limitsMap[symbol] = { maxZ, minZ };
+
+                        // --- MARKET START TREND FILTER (Stage 1.8) ---
+                        let isStartTrendValid = true;
+                        
+                        const shouldCheckLong = isLongMatch && cfg.enableStartTrendLong;
+                        const shouldCheckShort = isShortMatch && cfg.enableStartTrendShort;
+
+                        if ((shouldCheckLong || shouldCheckShort) && cfg.startTrendGroups && cfg.startTrendGroups.some(g => g.enabled)) {
+                            try {
+                                const activeGroups = cfg.startTrendGroups.filter(g => g.enabled);
+                                const maxHours = Math.max(...activeGroups.map(g => g.hours), 24);
+                                const limit1h = maxHours + 5;
+                                const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=${limit1h}`;
+                                const res1h = await fetchWithFallback(url1h, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
+                                const klines1h = await res1h.json();
+
+                                if (!Array.isArray(klines1h) || klines1h.length === 0) {
+                                    isStartTrendValid = false;
+                                } else {
+                                    const currentPrice1h = parseFloat(klines1h[klines1h.length - 1][4]);
+                                    if (isNaN(currentPrice1h) || currentPrice1h <= 0) {
+                                        isStartTrendValid = false;
+                                    } else {
+                                        for (const group of activeGroups) {
+                                            const h = group.hours;
+                                            if (klines1h.length < h) {
+                                                isStartTrendValid = false;
+                                                break;
+                                            }
+                                            
+                                            const lastHCandles = klines1h.slice(-h);
+                                            const periodOpen = parseFloat(lastHCandles[0][1]);
+
+                                            // --- 验证做多 (Long) ---
+                                            let isLongValid = true;
+                                            if (shouldCheckLong) {
+                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                                if (periodLows.length === 0 || periodHighs.length === 0) {
+                                                    isLongValid = false;
+                                                } else {
+                                                    const periodMinLow = Math.min(...periodLows);
+                                                    const periodMaxHigh = Math.max(...periodHighs);
+                                                    
+                                                    // 1. 最低点到当前价格的涨幅满足 [minLong, maxLong]%
+                                                    const changePct = ((currentPrice1h - periodMinLow) / periodMinLow) * 100;
+                                                    
+                                                    // 2. 当前价格到最高点的跌幅必须小于 maxPullbackLong%
+                                                    const declinePct = ((periodMaxHigh - currentPrice1h) / periodMaxHigh) * 100;
+                                                    const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 2;
+                                                    
+                                                    if (isNaN(changePct) || changePct < group.minLong || changePct > group.maxLong || isNaN(declinePct) || declinePct >= maxPullbackLong) {
+                                                        isLongValid = false;
+                                                    }
+                                                }
+                                            }
+
+                                            // --- 验证做空 (Short) ---
+                                            let isShortValid = true;
+                                            if (shouldCheckShort) {
+                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                                if (periodHighs.length === 0 || periodLows.length === 0) {
+                                                    isShortValid = false;
+                                                } else {
+                                                    const periodMaxHigh = Math.max(...periodHighs);
+                                                    const periodMinLow = Math.min(...periodLows);
+                                                    
+                                                    // 1. 最高点到当前价格的跌幅满足 [minShort, maxShort]%
+                                                    const declinePct = ((periodMaxHigh - currentPrice1h) / periodMaxHigh) * 100;
+                                                    
+                                                    // 2. 当前价格到最低点的涨幅必须小于 maxPullbackShort%
+                                                    const increasePct = ((currentPrice1h - periodMinLow) / periodMinLow) * 100;
+                                                    const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 2;
+                                                    
+                                                    if (isNaN(declinePct) || declinePct < group.minShort || declinePct > group.maxShort || isNaN(increasePct) || increasePct >= maxPullbackShort) {
+                                                        isShortValid = false;
+                                                    }
+                                                }
+                                            }
+
+                                            // If checked Long and it failed, or checked Short and it failed
+                                            if ((shouldCheckLong && !isLongValid) || (shouldCheckShort && !isShortValid)) {
+                                                isStartTrendValid = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (err) {
+                                console.error(`[StartTrend] Error checking ${symbol}:`, err);
+                                isStartTrendValid = false;
+                            }
+                        }
+
+                        if (!isStartTrendValid) return;
 
                         // --- NEW ADVANCED FILTERS ---
                         if (cfg.filterEmaPeriod > 0) {
@@ -665,7 +915,7 @@ export const useScannerLogic = (
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
 
-            if (i + batchSize < allSymbols.length) {
+            if (i + batchSize < targetSymbols.length) {
                 // Optimized wait: 4 seconds to respect weight while remaining fast
                 await new Promise(resolve => setTimeout(resolve, 4000));
             }
@@ -673,8 +923,11 @@ export const useScannerLogic = (
 
         if (isMountedRef.current) {
             setMajorTrendCandidates(validSymbols);
+            setMajorTrendLimits(limitsMap);
+            localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(validSymbols)));
+            localStorage.setItem(majorTrendLimitsKey, JSON.stringify(limitsMap));
             setIsMajorScanning(false);
-            setMajorProgress({ current: allSymbols.length, total: allSymbols.length });
+            setMajorProgress({ current: targetSymbols.length, total: targetSymbols.length });
             audioService.speak("大行情发现任务完成");
         }
     }, []);

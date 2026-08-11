@@ -15,6 +15,14 @@ export function checkStrategy4_Amputation(
     const slSettings = settings.stopLoss;
     if (!slSettings || !slSettings.amputationEnabled) return false;
 
+    // 🔒 [断臂求生防重复砍仓安全锁] 8秒内不允许对同一仓位进行二次砍仓
+    const now = Date.now();
+    const lastAmpMain = mainPosition.lastAmputationTime || 0;
+    const lastAmpHedge = hedgePosition ? (hedgePosition.lastAmputationTime || 0) : 0;
+    if (now - lastAmpMain < 8000 || now - lastAmpHedge < 8000) {
+        return false;
+    }
+
     // 建立极端防御机制：即便用户浏览器中存在旧版 localStorage 且缺失新属性，也完全兜底，杜绝 NaN 与白屏
     const triggerProfitPercent = typeof slSettings.amputationTriggerProfit === 'number' && !Number.isNaN(slSettings.amputationTriggerProfit)
         ? slSettings.amputationTriggerProfit

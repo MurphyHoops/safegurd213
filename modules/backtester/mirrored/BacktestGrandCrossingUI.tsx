@@ -87,7 +87,9 @@ export const BacktestGrandCrossingModule: React.FC<Props> = ({
     const resultsStr = JSON.stringify(outputList);
     if (resultsStr !== lastResultsStrRef.current) {
       lastResultsStrRef.current = resultsStr;
-      onResultsUpdate(outputList);
+      setTimeout(() => {
+        onResultsUpdate(outputList);
+      }, 0);
     }
   }, [list2, config?.syncDirectionFilterToList3, config?.viewMode, onResultsUpdate]);
 

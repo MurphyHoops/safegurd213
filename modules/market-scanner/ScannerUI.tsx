@@ -30,6 +30,13 @@ interface Props {
     onExportStrategy?: (id: string) => void;
     onImportStrategy?: (id: string, file: File) => void;
     isBackground?: boolean;
+    activeStrategyId?: string;
+    isScanAllowed?: boolean;
+    isRotationEnabled?: boolean;
+    rotationIntervalMinutes?: number;
+    rotationTimeLeft?: number;
+    onToggleRotation?: (enabled: boolean) => void;
+    onChangeRotationInterval?: (minutes: number) => void;
 }
 
 export const MarketScannerModule: React.FC<Props> = (props) => {
@@ -72,11 +79,18 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     onRenameStrategy = () => {},
     onExportStrategy,
     onImportStrategy,
-    isBackground = false
+    isBackground = false,
+    activeStrategyId = '',
+    isScanAllowed = true,
+    isRotationEnabled = false,
+    rotationIntervalMinutes = 5,
+    rotationTimeLeft = 0,
+    onToggleRotation = () => {},
+    onChangeRotationInterval = () => {}
 }) => {
     // --- LOCAL UI STATE ---
     const [fixedModeView, setFixedModeView] = usePersistedState<'MONITOR' | 'SEARCH'>('SCANNER_FIXED_MODE_VIEW', 'MONITOR');
-    const [scanInterval, setScanInterval] = usePersistedState('SCANNER_INTERVAL', 1);
+    const [scanInterval, setScanInterval] = usePersistedState('SCANNER_INTERVAL', 10);
     const [isPaused, setIsPaused] = useState(false);
     
     // Ref to track transferred symbols to prevent infinite loops
@@ -93,7 +107,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
         list1, isScanning, scanStatusText, marketStats, nextScanTime, setNextScanTime, refreshList1Candidates, cancelScan,
         addToBlacklist, clearBlacklist,
         majorTrendCandidates, isMajorScanning, majorProgress, runMajorTrendDiscovery
-    } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, mode, selectedStrategyId);
+    } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, mode, selectedStrategyId, isScanAllowed);
 
     // --- EFFECT: Auto Transfer to Watchlist ---
     useEffect(() => {
@@ -128,15 +142,29 @@ const LiveMarketScannerModule: React.FC<Props> = ({
         const str = JSON.stringify(list1);
         if (str !== lastListStrRef.current) {
             lastListStrRef.current = str;
-            onCandidatesUpdate(list1);
+            setTimeout(() => {
+                onCandidatesUpdate(list1);
+            }, 0);
         }
     }, [list1, onCandidatesUpdate]);
 
-    // --- EFFECT: Initial Scan ---
+    // --- EFFECT: Trigger Scan When Allowed transitions to true ---
+    const hasScannedOnMountRef = React.useRef(false);
     useEffect(() => {
-        refreshList1Candidates(scanConfig, true);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        if (isScanAllowed && !isPaused) {
+            if (!hasScannedOnMountRef.current) {
+                hasScannedOnMountRef.current = true;
+                if (!list1 || list1.length === 0) {
+                    refreshList1Candidates(scanConfig, true);
+                } else {
+                    console.log(`[ScannerUI] Found cached list1 with ${list1.length} items. Skipping immediate scan on mount.`);
+                }
+            } else {
+                console.log(`[ScannerUI] isScanAllowed became true for strategy ${selectedStrategyId}. Running scan immediately.`);
+                refreshList1Candidates(scanConfig, false);
+            }
+        }
+    }, [isScanAllowed, isPaused, scanConfig, refreshList1Candidates, selectedStrategyId, list1]);
 
     // --- EFFECT: Interval ---
     const isScanningRef = React.useRef(isScanning);
@@ -151,7 +179,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
         const activeStratId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
         const isBg = selectedStrategyId && activeStratId ? selectedStrategyId !== activeStratId : false;
         const scale = isBg ? 15 : 1;
-        const intervalMs = scanInterval * 60 * 1000 * scale;
+        const intervalMs = scanInterval * 1000 * scale;
         
         const tick = () => {
             if (!isScanningRef.current) {
@@ -254,12 +282,18 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             backtestProps={backtestProps}
             strategies={strategies}
             selectedStrategyId={selectedStrategyId}
+            activeStrategyId={activeStrategyId} 
             onSelectStrategy={onSelectStrategy}
             onAddStrategy={onAddStrategy}
             onDeleteStrategy={onDeleteStrategy}
             onRenameStrategy={onRenameStrategy}
             onExportStrategy={onExportStrategy}
             onImportStrategy={onImportStrategy}
+            isRotationEnabled={isRotationEnabled}
+            rotationIntervalMinutes={rotationIntervalMinutes}
+            rotationTimeLeft={rotationTimeLeft}
+            onToggleRotation={onToggleRotation}
+            onChangeRotationInterval={onChangeRotationInterval}
         />
     );
 };

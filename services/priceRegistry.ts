@@ -68,22 +68,26 @@ class PriceRegistry {
                     const prEntries = this.priceElements.get(targetSym);
                     if (prEntries) {
                         prEntries.forEach(entry => {
-                            const text = `${entry.prefix}${formatPrice(targetPrice)}${entry.suffix}`;
-                            if (entry.element.innerText !== text) {
-                                entry.element.innerText = text;
-                                
-                                if (entry.flashColor && prevPrice !== undefined) {
-                                    // Note: Flash uses the original price direction for simplicity
-                                    if (price > prevPrice) {
-                                        entry.element.classList.add('text-emerald-400');
-                                        entry.element.classList.remove('text-red-400');
-                                        setTimeout(() => entry.element.classList.remove('text-emerald-400'), 180);
-                                    } else if (price < prevPrice) {
-                                        entry.element.classList.add('text-red-400');
-                                        entry.element.classList.remove('text-emerald-400');
-                                        setTimeout(() => entry.element.classList.remove('text-red-400'), 180);
+                            try {
+                                const text = `${entry.prefix}${formatPrice(targetPrice)}${entry.suffix}`;
+                                if (entry.element.innerText !== text) {
+                                    entry.element.innerText = text;
+                                    
+                                    if (entry.flashColor && prevPrice !== undefined) {
+                                        // Note: Flash uses the original price direction for simplicity
+                                        if (price > prevPrice) {
+                                            entry.element.classList.add('text-emerald-400');
+                                            entry.element.classList.remove('text-red-400');
+                                            setTimeout(() => entry.element.classList.remove('text-emerald-400'), 180);
+                                        } else if (price < prevPrice) {
+                                            entry.element.classList.add('text-red-400');
+                                            entry.element.classList.remove('text-emerald-400');
+                                            setTimeout(() => entry.element.classList.remove('text-red-400'), 180);
+                                        }
                                     }
                                 }
+                            } catch (err) {
+                                // Ignore silent errors for unmounted or stale components
                             }
                         });
                     }
@@ -92,53 +96,57 @@ class PriceRegistry {
                     const pnlEntries = this.pnlElements.get(targetSym);
                     if (pnlEntries) {
                         pnlEntries.forEach(entry => {
-                            const isLong = entry.side === 'LONG';
-                            
-                            // Detect and fix 1000x scale mismatch between entryPrice and targetPrice
-                            let calcPrice = targetPrice;
-                            if (entry.entryPrice > 0 && targetPrice > 0) {
-                                const ratio = targetPrice / entry.entryPrice;
-                                if (ratio > 500) calcPrice = targetPrice / 1000;
-                                else if (ratio < 0.002) calcPrice = targetPrice * 1000;
-                            }
-
-                            const diff = isLong ? calcPrice - entry.entryPrice : entry.entryPrice - calcPrice;
-                            
-                            if (entry.isPct) {
-                                let pnlPct = 0;
-                                if (entry.entryPrice > 0) {
-                                    pnlPct = (diff / entry.entryPrice) * 100;
-                                }
-                                if (!isFinite(pnlPct)) pnlPct = 0;
+                            try {
+                                const isLong = entry.side === 'LONG';
                                 
-                                const text = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
-                                if (entry.element.innerText !== text) {
-                                    entry.element.innerText = text;
-                                    if (pnlPct >= 0) {
-                                        entry.element.className = entry.element.className
-                                            .replace(/\btext-red-\d+\b/g, '')
-                                            .replace(/\btext-emerald-\d+\b/g, '') + ' text-emerald-500';
-                                    } else {
-                                        entry.element.className = entry.element.className
-                                            .replace(/\btext-emerald-\d+\b/g, '')
-                                            .replace(/\btext-red-\d+\b/g, '') + ' text-red-500';
+                                // Detect and fix 1000x scale mismatch between entryPrice and targetPrice
+                                let calcPrice = targetPrice;
+                                if (entry.entryPrice > 0 && targetPrice > 0) {
+                                    const ratio = targetPrice / entry.entryPrice;
+                                    if (ratio > 500) calcPrice = targetPrice / 1000;
+                                    else if (ratio < 0.002) calcPrice = targetPrice * 1000;
+                                }
+
+                                const diff = isLong ? calcPrice - entry.entryPrice : entry.entryPrice - calcPrice;
+                                
+                                if (entry.isPct) {
+                                    let pnlPct = 0;
+                                    if (entry.entryPrice > 0) {
+                                        pnlPct = (diff / entry.entryPrice) * 100;
+                                    }
+                                    if (!isFinite(pnlPct)) pnlPct = 0;
+                                    
+                                    const text = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
+                                    if (entry.element.innerText !== text) {
+                                        entry.element.innerText = text;
+                                        if (pnlPct >= 0) {
+                                            entry.element.className = entry.element.className
+                                                .replace(/\btext-red-\d+\b/g, '')
+                                                .replace(/\btext-emerald-\d+\b/g, '') + ' text-emerald-500';
+                                        } else {
+                                            entry.element.className = entry.element.className
+                                                .replace(/\btext-emerald-\d+\b/g, '')
+                                                .replace(/\btext-red-\d+\b/g, '') + ' text-red-500';
+                                        }
+                                    }
+                                } else {
+                                    const pnlVal = diff * entry.amount;
+                                    const text = `${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}`;
+                                    if (entry.element.innerText !== text) {
+                                        entry.element.innerText = text;
+                                        if (pnlVal >= 0) {
+                                            entry.element.className = entry.element.className
+                                                .replace(/\btext-red-\d+\b/g, '')
+                                                .replace(/\btext-emerald-\d+\b/g, '') + ' text-emerald-400 font-bold';
+                                        } else {
+                                            entry.element.className = entry.element.className
+                                                .replace(/\btext-emerald-\d+\b/g, '')
+                                                .replace(/\btext-red-\d+\b/g, '') + ' text-red-400 font-bold';
+                                        }
                                     }
                                 }
-                            } else {
-                                const pnlVal = diff * entry.amount;
-                                const text = `${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}`;
-                                if (entry.element.innerText !== text) {
-                                    entry.element.innerText = text;
-                                    if (pnlVal >= 0) {
-                                        entry.element.className = entry.element.className
-                                            .replace(/\btext-red-\d+\b/g, '')
-                                            .replace(/\btext-emerald-\d+\b/g, '') + ' text-emerald-400 font-bold';
-                                    } else {
-                                        entry.element.className = entry.element.className
-                                            .replace(/\btext-emerald-\d+\b/g, '')
-                                            .replace(/\btext-red-\d+\b/g, '') + ' text-red-400 font-bold';
-                                    }
-                                }
+                            } catch (err) {
+                                // Ignore silent errors for unmounted or stale components
                             }
                         });
                     }

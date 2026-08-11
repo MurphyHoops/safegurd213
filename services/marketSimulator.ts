@@ -25,9 +25,10 @@ export class MarketSimulator {
     private WARMUP_PERIOD = 15000; // 15s lock after boot to prevent stale data spikes
     
     // Real trading automated execution callbacks
-    public onRealHedge?: (position: Position, side: PositionSide, amountUsdt: number, reason: string) => Promise<void>;
-    public onRealClose?: (position: Position, reason: string, customAmount?: number) => Promise<void>;
+    public onRealHedge?: (position: Position, side: PositionSide, amountUsdt: number, reason: string, exactQty?: number) => Promise<void>;
+    public onRealClose?: (position: Position, reason: string, customAmount?: number, ratio?: number) => Promise<void>;
     public onRealOpen?: (position: Position, quantity: number, reason: string) => Promise<void>;
+    public onRealReopen?: (symbol: string, side: PositionSide, amountUsdt: number, reason: string, extraProps?: Partial<Position>) => Promise<void>;
     
     private lastHeartbeatTime: number = 0;
     private lastEmaCheckTime: number = 0;
@@ -45,6 +46,15 @@ export class MarketSimulator {
     private pendingAutoOpens: Array<{ symbol: string; side: PositionSide; amount: number; extremePrice: number; pullbackPercent: number; mainEntryId: string }> = [];
     private lastReopenTimes: Record<string, number> = {};
     private initialSyncCompleted: boolean = false;
+    private pendingRealOpenProps: Record<string, Partial<Position>> = {};
+
+    public registerPendingRealOpenProps(symbol: string, side: PositionSide, props: Partial<Position>) {
+        const key = `${normalizeSymbol(symbol)}_${side}`;
+        this.pendingRealOpenProps[key] = {
+            ...this.pendingRealOpenProps[key],
+            ...props
+        };
+    }
 
     constructor(
         account: AccountData,
@@ -192,69 +202,160 @@ export class MarketSimulator {
 
         // 1. Process and match new/existing positions
         for (const newPos of newPositions) {
-            const oldPos = oldPositions.find(p => p.symbol === newPos.symbol && p.side === newPos.side);
-            
-            if (oldPos) {
-                // Preserve original entry ID, time, and custom local attributes
-                const mergedPos: Position = {
-                    ...newPos,
-                    entryId: oldPos.entryId || newPos.entryId,
-                    entryTime: oldPos.entryTime || newPos.entryTime,
-                    signalTf: oldPos.signalTf || newPos.signalTf,
-                    signalCandle: oldPos.signalCandle || newPos.signalCandle,
-                    entryEmas: oldPos.entryEmas || newPos.entryEmas,
-                    isHedged: oldPos.isHedged,
-                    mainPositionId: oldPos.mainPositionId,
-                    isReopened: oldPos.isReopened,
-                    reopenCount: oldPos.reopenCount,
-                    correlationId: oldPos.correlationId,
-                    hedgeRetries: oldPos.hedgeRetries,
-                    cumulativeHedgeLoss: oldPos.cumulativeHedgeLoss,
-                    cumulativeHedgeProfit: oldPos.cumulativeHedgeProfit,
-                    customProfitSettings: oldPos.customProfitSettings || newPos.customProfitSettings
-                };
-                updatedPositions.push(mergedPos);
+            const symbolKey = normalizeSymbol(newPos.symbol);
+            const lookupKey = `${symbolKey}_${newPos.side}`;
+            const pendingProps = this.pendingRealOpenProps ? this.pendingRealOpenProps[lookupKey] : undefined;
 
-                // Ensure an OPEN log exists for this still active position
-                const hasOpenLog = this.tradeLogs.some(l => l.entry_id === mergedPos.entryId && l.status === 'OPEN');
-                if (!hasOpenLog) {
-                    this.tradeLogs.unshift({
-                        symbol: mergedPos.symbol,
-                        entry_id: mergedPos.entryId,
-                        status: 'OPEN',
-                        is_hedge: !!mergedPos.mainPositionId,
-                        entry_timestamp: mergedPos.entryTime,
-                        direction: mergedPos.side,
-                        cost_usdt: mergedPos.amount * mergedPos.entryPrice,
-                        entry_price: mergedPos.entryPrice,
-                        correlationId: mergedPos.correlationId,
-                        is_reopened: mergedPos.isReopened,
-                        reopenCount: mergedPos.reopenCount,
-                        timeframe: mergedPos.signalTf || '5m',
-                        events: [{
-                            timestamp: mergedPos.entryTime,
-                            action: '开仓',
-                            price: mergedPos.entryPrice,
-                            amount: mergedPos.amount,
-                            reason: '实盘发现/触发开仓'
-                        }]
-                    });
+            // Find ALL local positions that match this symbol and side
+            // CRITICAL DEFENSE: If there is a pending real open prop (indicating we just triggered a new open/reopen order),
+            // we MUST NOT match this incoming position with any old/stale position.
+            // This ensures the new position gets registered with a fresh entryTime and entryId, rather than inheriting stale ones.
+            const hasPendingOpen = !!pendingProps;
+            const matchingOldPositions = hasPendingOpen
+                ? []
+                : oldPositions.filter(p => normalizeSymbol(p.symbol) === normalizeSymbol(newPos.symbol) && p.side === newPos.side && p.amount > 0);
+            
+            if (matchingOldPositions.length > 0) {
+                // Determine scale factor if there are multiple positions
+                const totalOldAmount = matchingOldPositions.reduce((sum, p) => sum + p.amount, 0);
+                const scaleFactor = totalOldAmount > 0 ? (newPos.amount / totalOldAmount) : 1;
+
+                for (const oldPos of matchingOldPositions) {
+                    // Preserve original entry ID, time, and custom local attributes
+                    const mergedPos: Position = {
+                        ...newPos,
+                        entryId: oldPos.entryId || newPos.entryId,
+                        entryTime: oldPos.entryTime || newPos.entryTime,
+                        amount: matchingOldPositions.length > 1 ? oldPos.amount * scaleFactor : newPos.amount,
+                        signalTf: oldPos.signalTf || newPos.signalTf,
+                        signalCandle: oldPos.signalCandle || newPos.signalCandle,
+                        entryEmas: oldPos.entryEmas || newPos.entryEmas,
+                        isHedged: oldPos.isHedged,
+                        mainPositionId: oldPos.mainPositionId,
+                        isReopened: oldPos.isReopened,
+                        reopenCount: oldPos.reopenCount,
+                        correlationId: oldPos.correlationId,
+                        hedgeRetries: oldPos.hedgeRetries,
+                        cumulativeHedgeLoss: oldPos.cumulativeHedgeLoss,
+                        cumulativeHedgeProfit: oldPos.cumulativeHedgeProfit,
+                        cumulativeAmputationLoss: oldPos.cumulativeAmputationLoss,
+                        cumulativeAmputationProfit: oldPos.cumulativeAmputationProfit,
+                        lastAmputationTime: oldPos.lastAmputationTime,
+                        amputationTriggered: oldPos.amputationTriggered,
+                        maxPnLAfterAmputationTrigger: oldPos.maxPnLAfterAmputationTrigger,
+                        maxPnLPercentAfterAmputationTrigger: oldPos.maxPnLPercentAfterAmputationTrigger,
+                        isUnshackled: oldPos.isUnshackled,
+                        amputatedAmount: oldPos.amputatedAmount,
+                        maxPnLPercent: oldPos.maxPnLPercent,
+                        customProfitSettings: 'customProfitSettings' in newPos ? newPos.customProfitSettings : oldPos.customProfitSettings
+                    };
+                    updatedPositions.push(mergedPos);
+
+                    // Ensure an OPEN log exists for this still active position, matching by entryId or (symbol + side)
+                    let existingOpenLog = this.tradeLogs.find(l => 
+                        l.status === 'OPEN' && 
+                        (l.entry_id === mergedPos.entryId || 
+                         (normalizeSymbol(l.symbol) === normalizeSymbol(mergedPos.symbol) && l.direction === mergedPos.side))
+                    );
+
+                    if (existingOpenLog) {
+                        // Self-healing / Binding
+                        if (existingOpenLog.entry_id !== mergedPos.entryId) {
+                            console.log(`[Simulator Healing] Binding log entryId from ${existingOpenLog.entry_id} to ${mergedPos.entryId}`);
+                            existingOpenLog.entry_id = mergedPos.entryId;
+                        }
+                        if ((!existingOpenLog.entry_price || existingOpenLog.entry_price <= 0) && mergedPos.entryPrice > 0) {
+                            console.log(`[Simulator Healing] Healing entry_price for ${mergedPos.symbol} from ${existingOpenLog.entry_price} to ${mergedPos.entryPrice}`);
+                            existingOpenLog.entry_price = mergedPos.entryPrice;
+                            existingOpenLog.cost_usdt = mergedPos.amount * mergedPos.entryPrice;
+                            if (existingOpenLog.events && existingOpenLog.events[0]) {
+                                existingOpenLog.events[0].price = mergedPos.entryPrice;
+                                existingOpenLog.events[0].amount = mergedPos.amount;
+                            }
+                        }
+                    } else {
+                        const fallbackPrice = mergedPos.markPrice || this.realPrices[normalizeSymbol(mergedPos.symbol)] || 0;
+                        const finalEntryPrice = (mergedPos.entryPrice && mergedPos.entryPrice > 0) ? mergedPos.entryPrice : fallbackPrice;
+                        if (mergedPos.entryPrice <= 0 && finalEntryPrice > 0) {
+                            mergedPos.entryPrice = finalEntryPrice;
+                        }
+
+                        this.tradeLogs.unshift({
+                            symbol: mergedPos.symbol,
+                            entry_id: mergedPos.entryId,
+                            status: 'OPEN',
+                            is_hedge: !!mergedPos.mainPositionId,
+                            entry_timestamp: mergedPos.entryTime,
+                            direction: mergedPos.side,
+                            cost_usdt: mergedPos.amount * mergedPos.entryPrice,
+                            entry_price: mergedPos.entryPrice,
+                            correlationId: mergedPos.correlationId,
+                            is_reopened: mergedPos.isReopened,
+                            reopenCount: mergedPos.reopenCount,
+                            timeframe: mergedPos.signalTf || '5m',
+                            events: [{
+                                timestamp: mergedPos.entryTime,
+                                action: '开仓',
+                                price: mergedPos.entryPrice,
+                                amount: mergedPos.amount,
+                                reason: '实盘发现/触发开仓'
+                            }]
+                        });
+                    }
                 }
             } else {
                 // Brand new position discovered
                 const entryId = newPos.entryId || `real_${newPos.symbol}_${newPos.side}`;
-                const entryTime = newPos.entryTime || Date.now();
+                const entryTime = Date.now();
+                
+                const symbolKey = normalizeSymbol(newPos.symbol);
+                const lookupKey = `${symbolKey}_${newPos.side}`;
+                const pendingProps = this.pendingRealOpenProps ? this.pendingRealOpenProps[lookupKey] : undefined;
+
                 const processedPos: Position = {
                     ...newPos,
                     entryId,
                     entryTime,
-                    signalTf: newPos.signalTf || '5m' // Default TF if not provided
+                    signalTf: newPos.signalTf || '5m', // Default TF if not provided
+                    ...pendingProps
                 };
+
+                if (pendingProps) {
+                    delete this.pendingRealOpenProps[lookupKey];
+                    this.addLog('SUCCESS', `🔄 [恢复开仓/复开标记] 成功为新同步的持仓 ${newPos.symbol} ${newPos.side} 恢复自定义属性 (复开: ${pendingProps.isReopened ? '是' : '否'}, 次数: ${pendingProps.reopenCount || 0})`);
+                }
+
                 updatedPositions.push(processedPos);
 
-                // Add corresponding OPEN log
-                const hasOpenLog = this.tradeLogs.some(l => l.entry_id === entryId && l.status === 'OPEN');
-                if (!hasOpenLog) {
+                // Ensure an OPEN log exists for this brand new position, matching by entryId or (symbol + side)
+                let existingOpenLog = this.tradeLogs.find(l => 
+                    l.status === 'OPEN' && 
+                    (l.entry_id === entryId || 
+                     (normalizeSymbol(l.symbol) === normalizeSymbol(processedPos.symbol) && l.direction === processedPos.side))
+                );
+
+                if (existingOpenLog) {
+                    // Self-healing / Binding
+                    if (existingOpenLog.entry_id !== entryId) {
+                        console.log(`[Simulator Healing] Binding log entryId from ${existingOpenLog.entry_id} to ${entryId}`);
+                        existingOpenLog.entry_id = entryId;
+                    }
+                    if ((!existingOpenLog.entry_price || existingOpenLog.entry_price <= 0) && processedPos.entryPrice > 0) {
+                        console.log(`[Simulator Healing] Healing entry_price for ${processedPos.symbol} from ${existingOpenLog.entry_price} to ${processedPos.entryPrice}`);
+                        existingOpenLog.entry_price = processedPos.entryPrice;
+                        existingOpenLog.cost_usdt = processedPos.amount * processedPos.entryPrice;
+                        if (existingOpenLog.events && existingOpenLog.events[0]) {
+                            existingOpenLog.events[0].price = processedPos.entryPrice;
+                            existingOpenLog.events[0].amount = processedPos.amount;
+                        }
+                    }
+                } else {
+                    const fallbackPrice = processedPos.markPrice || this.realPrices[normalizeSymbol(processedPos.symbol)] || 0;
+                    const finalEntryPrice = (processedPos.entryPrice && processedPos.entryPrice > 0) ? processedPos.entryPrice : fallbackPrice;
+                    if (processedPos.entryPrice <= 0 && finalEntryPrice > 0) {
+                        processedPos.entryPrice = finalEntryPrice;
+                    }
+
                     this.tradeLogs.unshift({
                         symbol: processedPos.symbol,
                         entry_id: entryId,
@@ -280,16 +381,155 @@ export class MarketSimulator {
             }
         }
 
+        // 1.5 Auto-pairing of main and hedge positions (Real Trading Self-Healing Shield)
+        // Ensure that if a symbol has two opposing positions (one LONG, one SHORT) in real trading,
+        // they are robustly paired up so that Savior's rule engines track them as a parent-child hedge.
+        // This is a CRITICAL self-healing layer that guarantees they are NEVER orphaned or split.
+        const symbolGroups: Record<string, Position[]> = {};
+        for (const p of updatedPositions) {
+            const sym = normalizeSymbol(p.symbol);
+            if (!symbolGroups[sym]) symbolGroups[sym] = [];
+            symbolGroups[sym].push(p);
+        }
+
+        for (const [sym, posList] of Object.entries(symbolGroups)) {
+            if (posList.length === 2) {
+                const posA = posList[0];
+                const posB = posList[1];
+                if (posA.side !== posB.side) {
+                    let main: Position | null = null;
+                    let hedge: Position | null = null;
+
+                    // A. Identify based on existing parent/child relationship
+                    if (posA.mainPositionId === posB.entryId) {
+                        main = posB;
+                        hedge = posA;
+                    } else if (posB.mainPositionId === posA.entryId) {
+                        main = posA;
+                        hedge = posB;
+                    } 
+                    // B. Identify based on startsWith('HEDGE_')
+                    else if (posA.entryId?.startsWith('HEDGE_')) {
+                        main = posB;
+                        hedge = posA;
+                    } else if (posB.entryId?.startsWith('HEDGE_')) {
+                        main = posA;
+                        hedge = posB;
+                    }
+                    // C. Identify based on tradeLogs open history
+                    else {
+                        const hedgeLog = this.tradeLogs.find(l => 
+                            l.symbol && normalizeSymbol(l.symbol) === normalizeSymbol(sym) && 
+                            l.status === 'OPEN' && l.is_hedge === true
+                        );
+                        if (hedgeLog) {
+                            if (posA.side === hedgeLog.direction) {
+                                hedge = posA;
+                                main = posB;
+                            } else if (posB.side === hedgeLog.direction) {
+                                hedge = posB;
+                                main = posA;
+                            }
+                        }
+                    }
+
+                    // D. Fallback: If we STILL cannot determine but we have two opposing positions,
+                    // we MUST pair them up anyway to prevent double-hedging, which causes severe bugs.
+                    if (!main || !hedge) {
+                        // Compare entry times (older is main, newer is hedge)
+                        const timeA = posA.entryTime || 0;
+                        const timeB = posB.entryTime || 0;
+                        if (Math.abs(timeA - timeB) > 500) {
+                            if (timeA < timeB) {
+                                main = posA;
+                                hedge = posB;
+                            } else {
+                                main = posB;
+                                hedge = posA;
+                            }
+                        } else {
+                            // If entry times are too close (e.g. both created at same sync tick),
+                            // make the larger amount the main position.
+                            const amtA = posA.amount || 0;
+                            const amtB = posB.amount || 0;
+                            if (amtA !== amtB) {
+                                if (amtA > amtB) {
+                                    main = posA;
+                                    hedge = posB;
+                                } else {
+                                    main = posB;
+                                    hedge = posA;
+                                }
+                            } else {
+                                // Default fallback if amounts are also equal: LONG is main, SHORT is hedge
+                                if (posA.side === PositionSide.LONG) {
+                                    main = posA;
+                                    hedge = posB;
+                                } else {
+                                    main = posB;
+                                    hedge = posA;
+                                }
+                            }
+                        }
+                    }
+
+                    if (main && hedge) {
+                        main.isHedged = true;
+                        if (main.mainPositionId) {
+                            delete main.mainPositionId;
+                        }
+                        hedge.mainPositionId = main.entryId;
+                        hedge.isHedged = true;
+                        
+                        // Heal trade log flags to match
+                        const hedgeLog = this.tradeLogs.find(l => l.entry_id === hedge.entryId && l.status === 'OPEN');
+                        if (hedgeLog) {
+                            hedgeLog.is_hedge = true;
+                        }
+                        
+                        console.log(`[Self-Healing Pairing] Successfully paired opposing positions for ${sym}: Main=${main.side} (${main.entryId}), Hedge=${hedge.side} (${hedge.entryId})`);
+                    }
+                }
+            } else if (posList.length === 1) {
+                // If there's only 1 position for the symbol, keep its existing mainPositionId/isHedged identity
+                // per user instruction so that the remaining side is still marked as 'Hedged position' or 'Original position'.
+                const singlePos = posList[0];
+                // Do not reset flags to preserve hedged status
+            }
+        }
+
         // 2. Detect closed positions
         for (const oldPos of oldPositions) {
-            const existsInNew = newPositions.some(p => p.symbol === oldPos.symbol && p.side === oldPos.side);
+            const existsInNew = newPositions.some(p => normalizeSymbol(p.symbol) === normalizeSymbol(oldPos.symbol) && p.side === oldPos.side);
             if (!existsInNew) {
-                // If in real trading, only sync-close positions that are actually real (starts with 'real_')
-                const isRealPos = oldPos.entryId?.startsWith('real_');
+                // If in real trading, only sync-close positions that are actually real (starts with 'real_' or 'HEDGE_')
+                const isRealPos = oldPos.entryId?.startsWith('real_') || oldPos.entryId?.startsWith('HEDGE_') || oldPos.isPendingSync;
                 if (isReal && !isRealPos) {
                     // Ignore simulation positions during real-trading sync
                     console.log(`[MarketSimulator] Ignoring simulated position ${oldPos.symbol} during real-trading position sync.`);
                     continue;
+                }
+
+                // If this is a real position but is pending sync or was recently opened, preserve it in the active list
+                if (isReal && !oldPos.isBeingClosed && (oldPos.isPendingSync || (oldPos.entryId?.startsWith('HEDGE_') && Date.now() - oldPos.entryTime < 20000))) {
+                    console.log(`[MarketSimulator] Preserving pending sync/recently opened hedge position ${oldPos.symbol} (${oldPos.side})`);
+                    updatedPositions.push(oldPos);
+                    continue;
+                }
+
+                // If this position was fully amputated to 0, preserve it so it stays in UI with amount = 0
+                // ONLY preserve it if there is still another active (non-zero amount) position left for this symbol in updatedPositions
+                if (oldPos.isAmputatedToZero && !oldPos.isBeingClosed) {
+                    const hasActiveForSymbol = updatedPositions.some(p => normalizeSymbol(p.symbol) === normalizeSymbol(oldPos.symbol) && p.amount > 0);
+                    if (hasActiveForSymbol) {
+                        console.log(`[MarketSimulator] Preserving amputated-to-zero position ${oldPos.symbol} (${oldPos.side}) as other active positions exist`);
+                        oldPos.amount = 0; // Ensure amount is exactly 0
+                        updatedPositions.push(oldPos);
+                        continue;
+                    } else {
+                        console.log(`[MarketSimulator] Removing amputated-to-zero position ${oldPos.symbol} (${oldPos.side}) as no active positions remain for this symbol`);
+                        continue;
+                    }
                 }
 
                 // If this is the initial sync after program restart, do NOT log close to prevent ghost closing records from stale local cache on boot.
@@ -297,6 +537,9 @@ export class MarketSimulator {
                     console.log(`[MarketSimulator] Initial sync: omitting close log for ${oldPos.symbol} as it was not found in active real positions`);
                     continue;
                 }
+
+                // Keep main position's isHedged flag even when the hedge position is closed, so it continues rescue rule checks.
+                // Do not reset mainPos.isHedged = false here.
 
                 // Position has been closed! Check if we already logged it as CLOSED
                 const alreadyClosed = this.tradeLogs.some(l => l.entry_id === oldPos.entryId && l.status === 'CLOSED');
@@ -313,6 +556,31 @@ export class MarketSimulator {
 
         this.positions = updatedPositions;
         this.emitUpdate(true);
+    }
+
+    public cleanAmputatedPositionsForSymbol(symbol: string) {
+        const cleanSymbol = normalizeSymbol(symbol);
+        // Check if there are any ACTIVE (non-zero amount) positions left for this symbol
+        const hasActive = this.positions.some(p => normalizeSymbol(p.symbol) === cleanSymbol && p.amount > 0);
+        if (!hasActive) {
+            // Remove all 0-amount positions for this symbol
+            const originalLength = this.positions.length;
+            this.positions = this.positions.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.isAmputatedToZero));
+            if (this.positions.length < originalLength) {
+                console.log(`[MarketSimulator] Cleaned up amputated-to-zero positions for ${cleanSymbol} as no active positions remain.`);
+            }
+        }
+    }
+
+    public removePositionLocally(symbol: string, side: PositionSide) {
+        const cleanSymbol = normalizeSymbol(symbol);
+        const pos = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side === side);
+        if (pos) {
+            pos.isBeingClosed = true; // Mark as closed
+            this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
+            this.cleanAmputatedPositionsForSymbol(symbol);
+            this.emitUpdate(true);
+        }
     }
 
     public resetMarginBalance(amount: number) {
@@ -566,6 +834,19 @@ export class MarketSimulator {
 
         const upperSymbol = normalizeSymbol(mainPosition.symbol);
 
+        // 🛡️ [Strict Duplicate Hedge Guard]
+        const existingHedge = this.positions.find(p => 
+            normalizeSymbol(p.symbol) === upperSymbol && 
+            p.side === side && 
+            p.amount > 0 &&
+            (p.mainPositionId === mainPosition.entryId || p.entryId?.startsWith('HEDGE_'))
+        );
+        if (mainPosition.isHedged || existingHedge) {
+            this.addLog('WARNING', `🛡️ [对冲重复拦截] ${upperSymbol} 已被标记为已对冲，或已存在活跃对冲单 ${existingHedge?.entryId || ''}，拦截本次重复对冲开仓。`);
+            mainPosition.isHedged = true; // Repair flag
+            return;
+        }
+
         // Robust real-time execution price check:
         let executionPrice = price;
         let wsPrice = this.realPrices[upperSymbol];
@@ -588,20 +869,32 @@ export class MarketSimulator {
             executionPrice = wsPrice;
         }
 
+        // CRITICAL FIX: Calculate exact hedge quantity based on parent's initial amount and active ratio
+        const originalQty = mainPosition.initialAmount !== undefined ? mainPosition.initialAmount : mainPosition.amount;
+        
+        const hedgeSettings = this.settings.hedging;
+        let activeHedgeRatio = hedgeSettings?.enabled ? hedgeSettings.hedgeRatio : 100;
+
+        const slSettings = this.settings.stopLoss;
+        if (slSettings.hedgeProfitClear) {
+            activeHedgeRatio = slSettings.hedgeOpenRatio; // Strategy 2 Override
+        } else if (slSettings.callbackProfitClear) {
+            activeHedgeRatio = slSettings.callbackHedgeRatio; // Strategy 3 Override
+        }
+
+        const exactQty = originalQty * (activeHedgeRatio / 100);
+        const exactUsdtAmount = exactQty * executionPrice;
+
         if (this.settings?.system?.realTrading && this.onRealHedge) {
-            this.onRealHedge(mainPosition, side, amount, reason || '自动防爆对冲');
-            // Mark the main position as hedged locally so we don't trigger again while waiting for API sync
-            mainPosition.isHedged = true;
-            mainPosition.hedgeRetries = (mainPosition.hedgeRetries || 0) + 1;
-            this.emitUpdate(true);
-            return;
+            this.onRealHedge(mainPosition, side, exactUsdtAmount, reason || '自动防爆对冲', exactQty);
         }
 
         const entryId = 'HEDGE_' + Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
         const newPos: Position = {
             symbol: mainPosition.symbol,
             side,
-            amount: amount / executionPrice,
+            amount: exactQty,
+            initialAmount: exactQty,
             entryPrice: executionPrice,
             markPrice: executionPrice,
             liquidationPrice: side === PositionSide.LONG ? executionPrice * 0.5 : executionPrice * 1.5,
@@ -610,6 +903,7 @@ export class MarketSimulator {
             entryId,
             entryTime: Date.now(),
             isHedged: true,
+            isPendingSync: this.settings.system?.realTrading ? true : undefined,
             mainPositionId: mainPosition.entryId,
             triggerReason: reason,
             correlationId: mainPosition.correlationId,
@@ -657,37 +951,27 @@ export class MarketSimulator {
             ? this.positions.find(p => p.entryId === entryId)
             : this.positions.find(p => p.symbol === symbol && p.side === side);
         if (pos) {
+            pos.isBeingClosed = true;
             if (this.settings?.system?.realTrading && this.onRealClose) {
                 this.onRealClose(pos, reason);
+                this.recordTradeLog(pos, reason);
                 // Filter out immediately locally to avoid double-triggering before sync
                 this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
+                this.cleanAmputatedPositionsForSymbol(pos.symbol);
                 this.emitUpdate(true);
                 return;
             }
 
-            // If we are closing a hedge position, we must reset the main position's isHedged flag
-            if (pos.isHedged && pos.mainPositionId) {
-                const main = this.positions.find(p => p.entryId === pos.mainPositionId);
-                if (main) {
-                    main.isHedged = false;
-                }
-            }
+            // Do not reset the main position's isHedged flag when closing the hedge position
+            // so that the main position remains marked as 'Original position' and can still trigger rescues.
 
-            // If we are closing a main position that has a hedge, we should probably close the hedge too
-            // Or at least mark the hedge as no longer hedging this main position.
-            // For safety, let's just close the hedge as well to prevent orphaned hedges.
-            if (pos.isHedged === true && !pos.mainPositionId) {
-                // This is a main position that has been hedged
-                const hedge = this.positions.find(p => p.mainPositionId === pos.entryId);
-                if (hedge) {
-                    this.recordTradeLog(hedge, reason + ' (Orphaned Hedge)');
-                    this.positions = this.positions.filter(p => p !== hedge);
-                }
-            }
+            // Do not automatically close the hedge position when the main position is closed,
+            // so that the remaining hedge position stays active and continues callback/profit take rules.
 
             // Record trade log and filter out the closed position
             this.recordTradeLog(pos, reason);
             this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
+            this.cleanAmputatedPositionsForSymbol(pos.symbol);
 
             // Voice announcement for simulated close
             const cleanSym = pos.symbol.replace('USDT', '');
@@ -711,6 +995,11 @@ export class MarketSimulator {
         const isAmputationProfitExit = reason.includes('断臂') || reason.toLowerCase().includes('amputation');
         
         if (main) {
+            main.isBeingClosed = true;
+            if (hedge) {
+                hedge.isBeingClosed = true;
+            }
+
             // Rule A: Check if autoOpenAfterHedgeProfit is enabled, and there was an active hedge
             if (hedge && this.settings.stopLoss.autoOpenAfterHedgeProfit) {
                 const maxPnL = hedge.maxPnLPercent || 0;
@@ -741,6 +1030,21 @@ export class MarketSimulator {
             const isHedgeProfitable = hedge ? (hedge.unrealizedPnL || 0) > 0 : false;
             const isMainProfitable = (main.unrealizedPnL || 0) > 0;
 
+            // Real-trading close dispatch
+            if (this.settings?.system?.realTrading && this.onRealClose) {
+                if (isAmputationProfitExit) {
+                    const positionsToClose = this.positions.filter(p => p.symbol === main.symbol);
+                    for (const p of positionsToClose) {
+                        this.onRealClose(p, reason + ' (断臂全清)');
+                    }
+                } else {
+                    if (hedge) {
+                        this.onRealClose(hedge, reason);
+                    }
+                    this.onRealClose(main, reason);
+                }
+            }
+
             // Close positions: Clean up positions
             if (isAmputationProfitExit) {
                 // Clear ALL positions for this symbol if Amputation
@@ -767,6 +1071,8 @@ export class MarketSimulator {
                 this.saveCooldowns();
                 this.addLog('INFO', `Closed Main ${main.side} on ${main.symbol}: ${reason}`);
             }
+
+            this.cleanAmputatedPositionsForSymbol(main.symbol);
 
             // Voice announcement for simulated closePair
             const cleanSym = main.symbol.replace('USDT', '');
@@ -827,6 +1133,20 @@ export class MarketSimulator {
 
         const corrId = pos.correlationId || nextReopenCount;
 
+        const extraProps: Partial<Position> = {
+            isReopened: true,
+            reopenCount: nextReopenCount,
+            correlationId: corrId,
+            parentEntryId: pos.entryId
+        };
+
+        if (this.settings?.system?.realTrading && this.onRealReopen) {
+            this.registerPendingRealOpenProps(pos.symbol, pos.side, extraProps);
+            this.addLog('INFO', `⚡ [实盘自动复开触发] 正在向币安发送原仓位复开指令: ${pos.symbol} ${pos.side} | 原始USDT本金: ${initialUsdtCost.toFixed(2)}U | 原因: ${reason}`);
+            this.onRealReopen(pos.symbol, pos.side, initialUsdtCost, reason, extraProps);
+            return;
+        }
+
         // 调用 openPosition，不传入额外的 amount 和 initialAmount 覆盖属性，
         // 这样 openPosition 会基于 initialUsdtCost 自动根据当前最新执行价格（executionPrice）计算出全新的币数并将其作为 amount 与 initialAmount 存入新仓位。
         this.openPosition(
@@ -837,12 +1157,7 @@ export class MarketSimulator {
             pos.signalTf || '1m', 
             undefined, 
             undefined, 
-            {
-                isReopened: true,
-                reopenCount: nextReopenCount,
-                correlationId: corrId,
-                parentEntryId: pos.entryId
-            }
+            extraProps
         );
         this.addLog('SUCCESS', `🔄 [原仓位复开] 已开启独立复开仓位: ${pos.symbol} ${pos.side} | 原始USDT本金: ${initialUsdtCost.toFixed(2)}U | 原因: ${reason} | 复开次数: ${nextReopenCount}`);
         
@@ -854,14 +1169,21 @@ export class MarketSimulator {
     }
 
     public amputate(position: Position, ratio: number, reason: string) {
+        // 🔒 [断臂求生防重复砍仓安全锁] 8秒内不允许对同一仓位进行二次砍仓，留足币安执行与API同步时间
+        const now = Date.now();
+        const lastAmp = position.lastAmputationTime || 0;
+        if (now - lastAmp < 8000) {
+            console.warn(`[Amputation Cooldown] 🛡️ 拦截重复砍仓触发: ${position.symbol} ${position.side} 处于8秒冷却中(上次砍仓: ${now - lastAmp}ms前)`);
+            return;
+        }
+        position.lastAmputationTime = now;
+
         const cutAmount = position.amount * (ratio / 100);
         
-        if (this.settings?.system?.realTrading && this.onRealClose) {
-            this.onRealClose(position, reason, cutAmount);
-            // Adjust local position size to avoid double-cutting before sync
-            position.amount -= cutAmount;
-            position.amputatedAmount = (position.amputatedAmount || 0) + cutAmount;
-            this.emitUpdate(true);
+        if (this.settings?.system?.realTrading) {
+            if (this.onRealClose) {
+                this.onRealClose(position, reason, cutAmount, ratio);
+            }
             return;
         }
         
@@ -869,13 +1191,19 @@ export class MarketSimulator {
         const realizedPnL = position.unrealizedPnL * (ratio / 100);
         
         position.amount -= cutAmount;
+        if (position.amount <= 0.0001) {
+            position.amount = 0;
+            position.isAmputatedToZero = true;
+        }
         position.amputatedAmount = (position.amputatedAmount || 0) + cutAmount;
         
         if (realizedPnL < 0) {
             position.cumulativeAmputationLoss = (position.cumulativeAmputationLoss || 0) + Math.abs(realizedPnL);
+        } else {
+            position.cumulativeAmputationProfit = (position.cumulativeAmputationProfit || 0) + realizedPnL;
         }
         
-        const now = Date.now();
+        // now is already declared at the top of amputate method
         const isStopLoss = realizedPnL < 0;
 
         const wasEverHedged = position.isHedged || (position.hedgeRetries || 0) > 0 || !!position.mainPositionId || (position.cumulativeHedgeLoss || 0) > 0 || (position.cumulativeHedgeProfit || 0) > 0;
@@ -918,9 +1246,91 @@ export class MarketSimulator {
         this.emitUpdate(true);
     }
 
+    public handleRealAmputationSuccess(
+        symbol: string, 
+        side: PositionSide, 
+        cutAmount: number, 
+        ratio: number, 
+        reason: string, 
+        realizedPnL: number
+    ) {
+        const cleanSym = normalizeSymbol(symbol);
+        const position = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSym && p.side === side);
+        if (!position) return;
+
+        const now = Date.now();
+        position.lastAmputationTime = now;
+        
+        position.amount = Math.max(0, position.amount - cutAmount);
+        if (position.amount <= 0.0001) {
+            position.amount = 0;
+            position.isAmputatedToZero = true;
+        }
+        position.amputatedAmount = (position.amputatedAmount || 0) + cutAmount;
+
+        if (realizedPnL < 0) {
+            position.cumulativeAmputationLoss = (position.cumulativeAmputationLoss || 0) + Math.abs(realizedPnL);
+        } else {
+            position.cumulativeAmputationProfit = (position.cumulativeAmputationProfit || 0) + realizedPnL;
+        }
+
+        const isStopLoss = realizedPnL < 0;
+        const wasEverHedged = position.isHedged || (position.hedgeRetries || 0) > 0 || !!position.mainPositionId || (position.cumulativeHedgeLoss || 0) > 0 || (position.cumulativeHedgeProfit || 0) > 0;
+
+        // 记录交易日志
+        this.tradeLogs.unshift({
+            symbol: position.symbol,
+            entry_id: position.entryId + '_cut_' + now + '_' + Math.random().toString(36).substring(2, 9),
+            status: 'CLOSED',
+            profit_usdt: realizedPnL,
+            exit_reason: reason,
+            is_hedge: wasEverHedged,
+            entry_timestamp: position.entryTime,
+            exit_timestamp: now,
+            direction: position.side,
+            cost_usdt: cutAmount * position.entryPrice,
+            entry_price: position.entryPrice,
+            exit_price: position.markPrice || position.entryPrice,
+            profit_percent: position.unrealizedPnLPercentage || 0,
+            current_amount: position.amount,
+            main_entry_id: position.mainPositionId,
+            parent_entry_id: position.entryId,
+            timeframe: position.signalTf,
+            last_stop_loss_time: isStopLoss ? now : undefined,
+            stop_loss_rule: isStopLoss ? reason : undefined
+        });
+
+        // Add sub-event to main log
+        this.addTradeEvent(position, `减仓 (${ratio}%)`, position.markPrice || position.entryPrice, cutAmount, reason, realizedPnL);
+
+        // 真实扣除或增加账户余额
+        this.account.marginBalance += realizedPnL;
+        this.account.totalBalance = this.account.marginBalance;
+        
+        if (realizedPnL >= 0) {
+            this.addLog('SUCCESS', `💰 [实盘部分止盈成功] ${position.symbol} ${position.side} 减仓 ${ratio}% | 实现盈利: +${realizedPnL.toFixed(2)} | ${reason}`);
+        } else {
+            this.addLog('WARNING', `✂️ [实盘部分止损成功] ${position.symbol} ${position.side} 减仓 ${ratio}% | 实现亏损: ${realizedPnL.toFixed(2)} | ${reason}`);
+        }
+        this.emitUpdate(true);
+    }
+
     public refill(position: Position, reason: string) {
         if (!this.isNetworkHealthy) {
             this.addLog('WARNING', `网络异常拦截: 拒绝补仓 ${position.symbol} ${position.side}`);
+            return;
+        }
+
+        // 🛡️ [Hedge State Lock for Refill]
+        const upperSymbol = position.symbol.toUpperCase();
+        const hasOppositeActive = this.positions.some(p => 
+            p.symbol.toUpperCase() === upperSymbol && 
+            p.side !== position.side && 
+            p.amount > 0
+        );
+        const isRescueRefill = reason.includes('断臂') || reason.includes('求生');
+        if (hasOppositeActive && !isRescueRefill) {
+            this.addLog('WARNING', `🛡️ [对冲补仓拦截] ${position.symbol} 处于双向持仓对冲状态，安全锁已激活，拒绝自动补仓！只有等断臂砍仓/平对冲之后才能补仓。`);
             return;
         }
 
@@ -930,10 +1340,6 @@ export class MarketSimulator {
         
         if (this.settings?.system?.realTrading && this.onRealOpen) {
             this.onRealOpen(position, refillAmount, reason);
-            // Clean amputatedAmount locally so we don't double refill before sync
-            position.amputatedAmount = 0;
-            this.emitUpdate(true);
-            return;
         }
         
         // Calculate new average entry price
@@ -982,12 +1388,6 @@ export class MarketSimulator {
             
             if (this.settings?.system?.realTrading && this.onRealClose) {
                 this.onRealClose(hedge, reason);
-                if (main) {
-                    main.isHedged = false;
-                }
-                this.positions = this.positions.filter(p => p.entryId !== hedgeId);
-                this.emitUpdate(true);
-                return;
             }
 
             if (main) {
@@ -997,7 +1397,17 @@ export class MarketSimulator {
                 } else {
                     main.cumulativeHedgeLoss = (main.cumulativeHedgeLoss || 0) + Math.abs(profit);
                 }
-                main.isHedged = false; // 重置对冲标记，允许再次对冲
+
+                // 转移对冲单在期间通过断臂砍仓已经发生的累计损失
+                if (hedge.cumulativeAmputationLoss) {
+                    main.cumulativeAmputationLoss = (main.cumulativeAmputationLoss || 0) + hedge.cumulativeAmputationLoss;
+                }
+                if (hedge.cumulativeAmputationProfit) {
+                    main.cumulativeAmputationProfit = (main.cumulativeAmputationProfit || 0) + hedge.cumulativeAmputationProfit;
+                }
+
+                // Do not reset isHedged to false, keep it marked as 'Original position'
+                main.isHedged = true;
                 
                 // 记录对冲单期间达到的极限价格，用于判断下一次是否突破
                 const maxPnL = hedge.maxPnLPercent || 0;
@@ -1370,14 +1780,24 @@ export class MarketSimulator {
                     
                     if (pos.side === PositionSide.LONG) {
                         const distPercent = ((entry - lowest) / entry) * 100;
-                        const triggerLossPercent = distPercent * ratio;
-                        pos.extremeHedgeTriggerPrice = entry * (1 - triggerLossPercent / 100);
-                        this.addLog('SUCCESS', `📈 [300天历史最低] 成功载入 ${pos.symbol}: 最低价 ${lowest.toFixed(4)} | 距开仓亏损: ${distPercent.toFixed(2)}% | 设定比例: ${(ratio * 100).toFixed(0)}% | 对冲启动价: ${pos.extremeHedgeTriggerPrice.toFixed(4)}`);
+                        if (distPercent <= 0) {
+                            pos.extremeHedgeTriggerPrice = undefined;
+                            this.addLog('WARNING', `📈 [300天历史最低] ${pos.symbol} 开仓价 ${entry.toFixed(4)} 已处于或低于300天历史最低价 ${lowest.toFixed(4)}，极值对冲指标暂不启动（已置空），防爆对冲将严格由常规亏损比例触发。`);
+                        } else {
+                            const triggerLossPercent = distPercent * ratio;
+                            pos.extremeHedgeTriggerPrice = entry * (1 - triggerLossPercent / 100);
+                            this.addLog('SUCCESS', `📈 [300天历史最低] 成功载入 ${pos.symbol}: 最低价 ${lowest.toFixed(4)} | 距开仓亏损: ${distPercent.toFixed(2)}% | 设定比例: ${(ratio * 100).toFixed(0)}% | 对冲启动价: ${pos.extremeHedgeTriggerPrice.toFixed(4)}`);
+                        }
                     } else {
                         const distPercent = ((highest - entry) / entry) * 100;
-                        const triggerLossPercent = distPercent * ratio;
-                        pos.extremeHedgeTriggerPrice = entry * (1 + triggerLossPercent / 100);
-                        this.addLog('SUCCESS', `📈 [300天历史最高] 成功载入 ${pos.symbol}: 最高价 ${highest.toFixed(4)} | 距开仓亏损: ${distPercent.toFixed(2)}% | 设定比例: ${(ratio * 100).toFixed(0)}% | 对冲启动价: ${pos.extremeHedgeTriggerPrice.toFixed(4)}`);
+                        if (distPercent <= 0) {
+                            pos.extremeHedgeTriggerPrice = undefined;
+                            this.addLog('WARNING', `📈 [300天历史最高] ${pos.symbol} 开仓价 ${entry.toFixed(4)} 已处于或高于300天历史最高价 ${highest.toFixed(4)}，极值对冲指标暂不启动（已置空），防爆对冲将严格由常规亏损比例触发。`);
+                        } else {
+                            const triggerLossPercent = distPercent * ratio;
+                            pos.extremeHedgeTriggerPrice = entry * (1 + triggerLossPercent / 100);
+                            this.addLog('SUCCESS', `📈 [300天历史最高] 成功载入 ${pos.symbol}: 最高价 ${highest.toFixed(4)} | 距开仓亏损: ${distPercent.toFixed(2)}% | 设定比例: ${(ratio * 100).toFixed(0)}% | 对冲启动价: ${pos.extremeHedgeTriggerPrice.toFixed(4)}`);
+                        }
                     }
                     this.emitUpdate(true);
                 } else {
@@ -1449,6 +1869,9 @@ export class MarketSimulator {
         // We iterate backwards to safely remove items while iterating
         for (let i = this.positions.length - 1; i >= 0; i--) {
             const position = this.positions[i];
+            if (!position || !position.symbol) {
+                continue;
+            }
             const symbolKey = normalizeSymbol(position.symbol);
             
             // CRITICAL: Skip strategy checking if we don't have fresh price for this specific symbol yet
@@ -1504,6 +1927,9 @@ export class MarketSimulator {
         // 3. Check Hedging Rules
         for (let i = this.positions.length - 1; i >= 0; i--) {
             const position = this.positions[i];
+            if (!position || !position.symbol) {
+                continue;
+            }
             const symbolKey = normalizeSymbol(position.symbol);
 
             // CRITICAL: Skip hedging if no fresh price yet
@@ -1558,15 +1984,29 @@ export class MarketSimulator {
                 continue;
             }
 
+            // 🛡️ [Minimum Position Size Safeguard]
+            const entryValue = position.amount * position.entryPrice;
+            const minPositionThreshold = Number(hedgeSettings.minPosition ?? 10);
+            if (entryValue < minPositionThreshold) {
+                continue;
+            }
+
             // Fuse Check (Secondary bypass if needed, but respect user maxHedgeRetries settings)
             const slSettings = this.settings.stopLoss;
             if (slSettings.fuseEnabled && (position.hedgeRetries || 0) >= slSettings.maxHedgeRetries) {
                 continue;
             }
 
+            const pnlPercent = position.unrealizedPnLPercentage;
+
+            // 🛡️ [Extreme Price/PnL Anomaly Safeguard]
+            if (pnlPercent < -25) {
+                console.warn(`[Secondary Hedge Blocked] Anomaly detected for ${position.symbol}: Calculated loss is ${pnlPercent.toFixed(2)}%, which exceeds the -25% safety ceiling. Blocking auto-hedge.`);
+                continue;
+            }
+
             let secondaryTriggered = false;
             let secondaryReason = "";
-            const pnlPercent = position.unrealizedPnLPercentage;
 
             // A. Check Loss Condition (亏损值触发二次检测 - Bypasses historical extreme to guarantee anti-explosion)
             if (hedgeSettings.triggerLossEnabled !== false && pnlPercent <= -Math.abs(hedgeSettings.triggerLossPercent) + 0.001) {
@@ -1614,6 +2054,26 @@ export class MarketSimulator {
             }
 
             if (secondaryTriggered) {
+                // Respect oscillationCheck and extremePrice to prevent unauthorized re-opening of closed hedges,
+                // except for extreme 300-day value trigger where historical extreme is bypassed by design.
+                let isWorseThanExtreme = true;
+                const isExtremeHedge = secondaryReason.includes('300天极值');
+                
+                if (!isExtremeHedge && hedgeSettings.oscillationCheck === true && position.extremePrice !== undefined) {
+                    if (position.side === PositionSide.LONG) {
+                        isWorseThanExtreme = position.markPrice < position.extremePrice;
+                    } else {
+                        isWorseThanExtreme = position.markPrice > position.extremePrice;
+                    }
+                }
+
+                if (!isWorseThanExtreme) {
+                    console.log(`[Secondary Detection Blocked] 🛡️ ${position.symbol} 二次检测对冲被拦截: 开启了震荡防重开保护，且未突破历史极值价格 ${position.extremePrice}`);
+                    secondaryTriggered = false;
+                }
+            }
+
+            if (secondaryTriggered) {
                 const hedgeSide = position.side === PositionSide.LONG ? PositionSide.SHORT : PositionSide.LONG;
                 let activeHedgeRatio = hedgeSettings.hedgeRatio;
                 if (slSettings.hedgeProfitClear) {
@@ -1634,6 +2094,9 @@ export class MarketSimulator {
         // 4. Check Rescue Rules
         for (let i = this.positions.length - 1; i >= 0; i--) {
             const position = this.positions[i];
+            if (!position || !position.symbol) {
+                continue;
+            }
             const symbolKey = normalizeSymbol(position.symbol);
 
             // CRITICAL: Skip rescue if no fresh price yet
@@ -1881,7 +2344,7 @@ export class MarketSimulator {
 
               // 2. Calculate PnL Value (USDT)
               // Ensure amount is valid
-              if (isNaN(p.amount) || p.amount === 0) {
+              if (isNaN(p.amount)) {
                   const fallbackAmount = 100 / (p.entryPrice || 60000); // 100U fallback if quantity is lost
                   p.amount = fallbackAmount;
               }

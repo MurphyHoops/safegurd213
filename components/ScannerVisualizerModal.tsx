@@ -8,6 +8,17 @@ interface VisualizerItem {
   symbol: string;
   timeframe?: string;
   triggeredTime?: number;
+  signals?: any[];
+  entryPrice?: number;
+  entryTime?: number;
+  currentPrice?: number;
+  highlightTime?: number;
+  showAuditLines?: boolean;
+  extraLines?: any[];
+  appearedTime?: number;
+  disappearedTime?: number;
+  lookbackDays?: number;
+  sidewaysDays?: number;
 }
 
 interface Props {
@@ -183,6 +194,17 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   list2Config={list2Config}
                   disablePortal={true}
                   onClose={() => setSelectedSymbol(null)}
+                  signals={currentItem?.signals || []}
+                  entryPrice={currentItem?.entryPrice}
+                  entryTime={currentItem?.entryTime}
+                  currentPrice={currentItem?.currentPrice}
+                  highlightTime={currentItem?.highlightTime}
+                  showAuditLines={currentItem?.showAuditLines || false}
+                  extraLines={currentItem?.extraLines}
+                  appearedTime={currentItem?.appearedTime}
+                  disappearedTime={currentItem?.disappearedTime}
+                  lookbackDays={currentItem?.lookbackDays}
+                  sidewaysDays={currentItem?.sidewaysDays}
                 />
               </div>
             ) : (

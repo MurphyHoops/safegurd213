@@ -27,6 +27,7 @@ import { normalizeSymbol, resolvePrice } from "../services/symbolUtils";
 import KlineChartModal from "./KlineChartModal";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { usePersistedState } from "../hooks/usePersistedState";
+import { loadState, saveState } from "../utils/persistence";
 
 // --- ALL ATOMIC MODULES ---
 import { MarketScannerModule } from "../modules/market-scanner";
@@ -220,7 +221,9 @@ const ScannerDashboardInner: React.FC<
       const posStr = JSON.stringify(backtestPositions);
       if (posStr !== lastPositionsRef.current) {
         lastPositionsRef.current = posStr; // Update ref BEFORE calling the callback to prevent sync loops
-        onBacktestPositionsUpdate(backtestPositions);
+        setTimeout(() => {
+          onBacktestPositionsUpdate(backtestPositions);
+        }, 0);
       }
     }
   }, [backtestPositions, onBacktestPositionsUpdate]);
@@ -239,8 +242,86 @@ const ScannerDashboardInner: React.FC<
     "strat-1"
   );
 
+  // --- AUTOMATIC STRATEGY ROTATION STATES ---
+  const [isRotationEnabled, setIsRotationEnabled] = usePersistedState<boolean>(
+    "SCANNER_ROTATION_ENABLED",
+    false
+  );
+  const [rotationIntervalMinutes, setRotationIntervalMinutes] = usePersistedState<number>(
+    "SCANNER_ROTATION_INTERVAL",
+    5
+  );
+  const [rotationActiveStrategyId, setRotationActiveStrategyId] = usePersistedState<string>(
+    "SCANNER_ROTATION_ACTIVE_STRATEGY_ID",
+    "strat-1"
+  );
+  const [rotationTimeLeft, setRotationTimeLeft] = useState<number>(5 * 60);
+
+  // --- AUTOMATIC STRATEGY ROTATION TIMER ---
+  useEffect(() => {
+    if (!isRotationEnabled) {
+      setRotationTimeLeft(0);
+      return;
+    }
+
+    // Initialize or adjust time left if it is 0 or invalid
+    setRotationTimeLeft((prev) => (prev <= 0 ? rotationIntervalMinutes * 60 : prev));
+
+    const intervalId = setInterval(() => {
+      setRotationTimeLeft((prev) => {
+        if (prev <= 1) {
+          // Time's up! Trigger rotation to next active strategy (include all configured strategies)
+          const activeStrats = strategies.filter(s => !s.unconfigured);
+          if (activeStrats.length > 0) {
+            const currentIndex = activeStrats.findIndex(s => s.id === rotationActiveStrategyId);
+            const nextIndex = (currentIndex === -1 || currentIndex === activeStrats.length - 1) ? 0 : currentIndex + 1;
+            const nextStrat = activeStrats[nextIndex];
+
+            // Update active scanning strategy
+            setRotationActiveStrategyId(nextStrat.id);
+            
+            // Log rotation info
+            if (onLog) {
+              onLog("INFO", `[策略轮循] 切换扫描线程至: "${nextStrat.name}" 进行大盘初筛。`);
+            }
+            audioService.speak(`开始扫描${nextStrat.name}`);
+            
+            return rotationIntervalMinutes * 60;
+          }
+          return rotationIntervalMinutes * 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [
+    isRotationEnabled,
+    rotationIntervalMinutes,
+    rotationActiveStrategyId,
+    strategies,
+    onLog,
+    setRotationActiveStrategyId
+  ]);
+
+  // Keep rotationActiveStrategyId valid
+  useEffect(() => {
+    if (!isRotationEnabled) return;
+    const activeStrats = strategies.filter(s => !s.unconfigured);
+    if (activeStrats.length > 0) {
+      const exists = activeStrats.some(s => s.id === rotationActiveStrategyId);
+      if (!exists) {
+        setRotationActiveStrategyId(activeStrats[0].id);
+        setRotationTimeLeft(rotationIntervalMinutes * 60);
+      }
+    }
+  }, [strategies, isRotationEnabled, rotationActiveStrategyId, rotationIntervalMinutes, setRotationActiveStrategyId]);
+
   const handleSelectStrategy = useCallback((id: string) => {
     setSelectedStrategyId(id);
+    setList1Candidates(loadState<ScannerItem[]>(`SCANNER_LIST1_${id}`, []));
+    setList2Results(loadState<ScannerItem[]>(`SCANNER_LIST2_${id}`, []));
+    setList3Results(loadState<ScannerItem[]>(`SCANNER_LIST3_${id}`, []));
   }, [setSelectedStrategyId]);
 
   const handleAddStrategy = useCallback(() => {
@@ -259,11 +340,22 @@ const ScannerDashboardInner: React.FC<
   }, [selectedStrategyId, setStrategies, onLog]);
 
   const handleDeleteStrategy = useCallback((id: string) => {
+    // Synchronously clean up deleted strategy lists from disk
+    localStorage.removeItem(`SCANNER_LIST1_${id}`);
+    localStorage.removeItem(`SCANNER_LIST2_${id}`);
+    localStorage.removeItem(`SCANNER_LIST3_${id}`);
+    localStorage.removeItem(`SCANNER_LIST3_CONFIG_${id}`);
+    localStorage.removeItem(`SCANNER_ACTION_CONFIG_${id}`);
+
     setStrategies((prev) => {
       if (prev.length <= 1) return prev;
       const filtered = prev.filter((s) => s.id !== id);
       if (selectedStrategyId === id && filtered.length > 0) {
-        setSelectedStrategyId(filtered[0].id);
+        const nextId = filtered[0].id;
+        setSelectedStrategyId(nextId);
+        setList1Candidates(loadState<ScannerItem[]>(`SCANNER_LIST1_${nextId}`, []));
+        setList2Results(loadState<ScannerItem[]>(`SCANNER_LIST2_${nextId}`, []));
+        setList3Results(loadState<ScannerItem[]>(`SCANNER_LIST3_${nextId}`, []));
       }
       return filtered;
     });
@@ -499,7 +591,15 @@ const ScannerDashboardInner: React.FC<
         extremeDaysMinLong: 0,
         extremeDaysMaxLong: 300,
         extremeDaysMinShort: 0,
-        extremeDaysMaxShort: 300
+        extremeDaysMaxShort: 300,
+        enableStartTrend: false,
+        enableStartTrendLong: false,
+        enableStartTrendShort: false,
+        startTrendGroups: [
+          { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
+          { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
+          { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
+        ]
       }
     },
   );
@@ -547,7 +647,15 @@ const ScannerDashboardInner: React.FC<
         extremeDaysMinLong: 0,
         extremeDaysMaxLong: 300,
         extremeDaysMinShort: 0,
-        extremeDaysMaxShort: 300
+        extremeDaysMaxShort: 300,
+        enableStartTrend: false,
+        enableStartTrendLong: false,
+        enableStartTrendShort: false,
+        startTrendGroups: [
+          { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
+          { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
+          { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
+        ]
       }
     },
   );
@@ -804,9 +912,44 @@ const ScannerDashboardInner: React.FC<
   };
 
   // --- DATA PIPELINE STATE ---
-  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>([]);
-  const [list2Results, setList2Results] = useState<ScannerItem[]>([]);
-  const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
+  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>(() => {
+    return loadState<ScannerItem[]>(`SCANNER_LIST1_${selectedStrategyId || 'strat-1'}`, []);
+  });
+  const [list2Results, setList2Results] = useState<ScannerItem[]>(() => {
+    return loadState<ScannerItem[]>(`SCANNER_LIST2_${selectedStrategyId || 'strat-1'}`, []);
+  });
+  const [list3Results, setList3Results] = useState<ScannerItem[]>(() => {
+    return loadState<ScannerItem[]>(`SCANNER_LIST3_${selectedStrategyId || 'strat-1'}`, []);
+  });
+
+  const lastSavedStrategyIdRef1 = useRef(selectedStrategyId);
+  const lastSavedStrategyIdRef2 = useRef(selectedStrategyId);
+  const lastSavedStrategyIdRef3 = useRef(selectedStrategyId);
+
+  // Automatically persist visible lists whenever they change for the active strategy
+  useEffect(() => {
+    if (lastSavedStrategyIdRef1.current !== selectedStrategyId) {
+      lastSavedStrategyIdRef1.current = selectedStrategyId;
+      return;
+    }
+    saveState(`SCANNER_LIST1_${selectedStrategyId}`, list1Candidates);
+  }, [list1Candidates, selectedStrategyId]);
+
+  useEffect(() => {
+    if (lastSavedStrategyIdRef2.current !== selectedStrategyId) {
+      lastSavedStrategyIdRef2.current = selectedStrategyId;
+      return;
+    }
+    saveState(`SCANNER_LIST2_${selectedStrategyId}`, list2Results);
+  }, [list2Results, selectedStrategyId]);
+
+  useEffect(() => {
+    if (lastSavedStrategyIdRef3.current !== selectedStrategyId) {
+      lastSavedStrategyIdRef3.current = selectedStrategyId;
+      return;
+    }
+    saveState(`SCANNER_LIST3_${selectedStrategyId}`, list3Results);
+  }, [list3Results, selectedStrategyId]);
 
   const handleList1Results = useCallback((results: ScannerItem[]) => {
     setList1Candidates(prev => {
@@ -909,12 +1052,8 @@ const ScannerDashboardInner: React.FC<
   const currentBalance =
     scannerMode === "BACKTEST" ? backtestAccount.marginBalance : liveBalance;
 
-  // Clear transient lists immediately on strategy selection changes to prevent layout leaks
-  useEffect(() => {
-    setList1Candidates([]);
-    setList2Results([]);
-    setList3Results([]);
-  }, [selectedStrategyId]);
+  // Clear transient lists synchronously in handleSelectStrategy and handleDeleteStrategy
+  // to avoid parent-child render timing race conditions on selectedStrategyId changes.
 
   // --- REFS FOR STABLE CALLBACKS ---
   const actionConfigRef = useRef<ActionConfig | null>(null);
@@ -1059,6 +1198,20 @@ const ScannerDashboardInner: React.FC<
         scannerMode === "BACKTEST"
           ? backtestPositionsRef.current
           : livePositionsRef.current;
+
+      // 🛡️ [Anti-Double Open Safety Check]
+      const existingPos = activePositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol);
+      if (existingPos) {
+        if (onLog) {
+          onLog(
+            "WARNING",
+            `🛡️ [防重复开仓拦截] ${cleanSymbol} 已经存在持仓 (${existingPos.side}，数量 ${existingPos.amount.toFixed(4)})，拦截本次自动开仓。`
+          );
+        }
+        console.warn(`[Trade Reject] Duplicate open blocked: ${cleanSymbol} already has an active position.`);
+        return false;
+      }
+
       const balance =
         scannerMode === "BACKTEST"
           ? backtestAccountRef.current?.marginBalance || 0
@@ -1599,6 +1752,13 @@ const ScannerDashboardInner: React.FC<
                 onRenameStrategy={handleRenameStrategy}
                 onExportStrategy={handleExportStrategy}
                 onImportStrategy={handleImportStrategy}
+                activeStrategyId={isRotationEnabled ? rotationActiveStrategyId : selectedStrategyId}
+                isScanAllowed={!isRotationEnabled || rotationActiveStrategyId === selectedStrategyId}
+                isRotationEnabled={isRotationEnabled}
+                rotationIntervalMinutes={rotationIntervalMinutes}
+                rotationTimeLeft={rotationTimeLeft}
+                onToggleRotation={setIsRotationEnabled}
+                onChangeRotationInterval={setRotationIntervalMinutes}
               />
             </ErrorBoundary>
 
@@ -1832,12 +1992,12 @@ const ScannerDashboardInner: React.FC<
       {/* Background Multi-Strategy Runners */}
       {strategies.map((strat) => {
         if (strat.id === selectedStrategyId) return null; // Already rendered visibly in UI
-        if (!strat.active) return null; // Only run if enabled/active
         if (strat.unconfigured) return null; // Don't run if unconfigured
         return (
           <BackgroundStrategyRunner
             key={strat.id}
             strategyId={strat.id}
+            active={strat.active}
             networkStatus={networkStatus}
             currentPrices={currentPrices}
             currentPositions={currentPositions}
@@ -1847,6 +2007,9 @@ const ScannerDashboardInner: React.FC<
             directMode={directMode}
             activeMode={activeMode}
             settings={settings}
+            isRotationEnabled={isRotationEnabled}
+            rotationActiveStrategyId={rotationActiveStrategyId}
+            selectedStrategyId={selectedStrategyId}
           />
         );
       })}
@@ -1856,6 +2019,7 @@ const ScannerDashboardInner: React.FC<
 
 interface BackgroundStrategyRunnerProps {
   strategyId: string;
+  active: boolean;
   networkStatus: any;
   currentPrices: Record<string, number>;
   currentPositions: Position[];
@@ -1865,10 +2029,14 @@ interface BackgroundStrategyRunnerProps {
   directMode: boolean;
   activeMode: "24H" | "8AM";
   settings: any;
+  isRotationEnabled: boolean;
+  rotationActiveStrategyId: string;
+  selectedStrategyId: string;
 }
 
 const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
   strategyId,
+  active,
   networkStatus,
   currentPrices,
   currentPositions,
@@ -1877,7 +2045,10 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
   mode,
   directMode,
   activeMode,
-  settings
+  settings,
+  isRotationEnabled,
+  rotationActiveStrategyId,
+  selectedStrategyId
 }) => {
   const [config24H, setConfig24H] = usePersistedState<ScanConfig>(
     `SCANNER_CONFIG_24H_${strategyId}`,
@@ -1982,9 +2153,28 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     [activeMode, config24H, config8AM],
   );
 
-  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>([]);
-  const [list2Results, setList2Results] = useState<ScannerItem[]>([]);
-  const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
+  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>(() => {
+    return loadState<ScannerItem[]>(`SCANNER_LIST1_${strategyId}`, []);
+  });
+  const [list2Results, setList2Results] = useState<ScannerItem[]>(() => {
+    return loadState<ScannerItem[]>(`SCANNER_LIST2_${strategyId}`, []);
+  });
+  const [list3Results, setList3Results] = useState<ScannerItem[]>(() => {
+    return loadState<ScannerItem[]>(`SCANNER_LIST3_${strategyId}`, []);
+  });
+
+  // Automatically persist visible lists whenever they change for this background strategy
+  useEffect(() => {
+    saveState(`SCANNER_LIST1_${strategyId}`, list1Candidates);
+  }, [list1Candidates, strategyId]);
+
+  useEffect(() => {
+    saveState(`SCANNER_LIST2_${strategyId}`, list2Results);
+  }, [list2Results, strategyId]);
+
+  useEffect(() => {
+    saveState(`SCANNER_LIST3_${strategyId}`, list3Results);
+  }, [list3Results, strategyId]);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
   const [actionConfig, setActionConfig] = useState<ActionConfig | null>(null);
 
@@ -2076,6 +2266,8 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
         isSyncing={false}
         selectedStrategyId={strategyId}
         isBackground={true}
+        isScanAllowed={isRotationEnabled ? rotationActiveStrategyId === strategyId : active}
+        activeStrategyId={isRotationEnabled ? rotationActiveStrategyId : selectedStrategyId}
       />
 
       {/* 2. Crossover */}

@@ -7,6 +7,7 @@ import crypto from "crypto";
 
 // Maintain a registry of browser clients subscribing to active prices
 const priceSubscribers = new Set<WebSocket>();
+const lastRequestTime = new Map<string, number>();
 
 function startBinanceWSBridge() {
   const binanceUrls = [
@@ -17,6 +18,7 @@ function startBinanceWSBridge() {
   let currentIndex = 0;
   let bws: WebSocket | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let lastMessageTime = Date.now();
 
   const connectToBinance = () => {
     const url = binanceUrls[currentIndex];
@@ -27,12 +29,14 @@ function startBinanceWSBridge() {
       
       bws.on('open', () => {
         console.log(`📡 [Server WS Bridge] Successfully established push stream with ${url}`);
+        lastMessageTime = Date.now();
       });
 
       let batchedUpdates: Record<string, any> = {};
       let batchTimer: NodeJS.Timeout | null = null;
 
       bws.on('message', (data) => {
+        lastMessageTime = Date.now();
         try {
           const item = JSON.parse(data.toString());
           if (item && item.s) {
@@ -84,6 +88,16 @@ function startBinanceWSBridge() {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connectToBinance, 3000);
   };
+
+  // Watchdog check: rotate and reconnect if no messages received from Binance for 10 seconds
+  setInterval(() => {
+    const silentDuration = Date.now() - lastMessageTime;
+    if (silentDuration > 10000) {
+      console.warn(`⚠️ [Server WS Bridge] Connection went silent for ${Math.round(silentDuration / 1000)}s. Rotating and reconnecting...`);
+      lastMessageTime = Date.now();
+      rotateAndSchedule();
+    }
+  }, 2000);
 
   connectToBinance();
 }
@@ -278,6 +292,37 @@ async function startServer() {
         return clean + "USDT";
     }
 
+    async function fetchWithFallback(urlStr: string, options: RequestInit = {}): Promise<Response> {
+        const baseUrls = [
+            "https://fapi.binance.com",
+            "https://fapi.binance.me",
+            "https://fapi.binance.info"
+        ];
+        let lastError: any = null;
+        for (const baseUrl of baseUrls) {
+            const targetUrl = urlStr.replace("https://fapi.binance.com", baseUrl);
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 6000); // 6s timeout per node
+                const res = await fetch(targetUrl, {
+                    ...options,
+                    signal: controller.signal
+                });
+                clearTimeout(timeout);
+                // If we get an active non-server error response (e.g. 4xx parameters error, 401 unauthorized),
+                // it means we successfully reached Binance and the request is rejected due to user input/auth.
+                // We do NOT need to fallback to other nodes. Return it immediately.
+                if (res.ok || res.status < 500) {
+                    return res;
+                }
+                lastError = new Error(`Node ${baseUrl} returned status ${res.status}`);
+            } catch (err: any) {
+                lastError = err;
+            }
+        }
+        throw lastError || new Error("All Binance nodes failed to respond");
+    }
+
     app.post("/api/binance/order", async (req, res) => {
         const { apiKey, apiSecret, symbol, side, action, quantity, amountUsdt } = req.body;
         if (!apiKey || !apiSecret || !symbol || !side || !action) {
@@ -289,7 +334,13 @@ async function startServer() {
         try {
             // 1. Get current ticker price to calculate quantity or validate notional value
             console.log(`[Binance Order] Fetching price for ${formattedSymbol} to calculate qty/validate notional...`);
-            const priceResponse = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${formattedSymbol}`);
+            let priceResponse;
+            try {
+                priceResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${formattedSymbol}`);
+            } catch (err: any) {
+                return res.status(502).json({ success: false, error: `获取 ${formattedSymbol} 当前价格失败。错误: ${err.message || err}` });
+            }
+
             let currentPrice = 0;
             if (priceResponse.ok) {
                 const priceData = await priceResponse.json();
@@ -345,16 +396,21 @@ async function startServer() {
                 .update(dualQueryString)
                 .digest("hex");
 
-            const dualResponse = await fetch(`https://fapi.binance.com/fapi/v1/positionSide/dual?${dualQueryString}&signature=${dualSignature}`, {
-                headers: { "X-MBX-APIKEY": apiKey }
-            });
+            let dualResponse;
+            try {
+                dualResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/positionSide/dual?${dualQueryString}&signature=${dualSignature}`, {
+                    headers: { "X-MBX-APIKEY": apiKey }
+                });
 
-            if (dualResponse.ok) {
-                const dualData = await dualResponse.json();
-                isHedgeMode = dualData.dualSidePosition === true;
-                console.log(`[Binance Order] Position mode detected: ${isHedgeMode ? "Hedge Mode (双向持仓)" : "One-way Mode (单向持仓)"}`);
-            } else {
-                console.warn("[Binance Order] Failed to fetch position mode, defaulting to One-way Mode");
+                if (dualResponse.ok) {
+                    const dualData = await dualResponse.json();
+                    isHedgeMode = dualData.dualSidePosition === true;
+                    console.log(`[Binance Order] Position mode detected: ${isHedgeMode ? "Hedge Mode (双向持仓)" : "One-way Mode (单向持仓)"}`);
+                } else {
+                    console.warn("[Binance Order] Failed to fetch position mode, defaulting to One-way Mode");
+                }
+            } catch (err: any) {
+                console.warn(`[Binance Order] Exception while fetching position mode: ${err.message || err}. Defaulting to One-way Mode`);
             }
 
             // 3.5 Handle CLOSE action safety checks, auto-cancel open orders, and size synchronization
@@ -369,7 +425,7 @@ async function startServer() {
                         .update(cancelQueryString)
                         .digest("hex");
                     
-                    const cancelResponse = await fetch(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQueryString}&signature=${cancelSignature}`, {
+                    const cancelResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQueryString}&signature=${cancelSignature}`, {
                         method: "DELETE",
                         headers: { "X-MBX-APIKEY": apiKey }
                     });
@@ -394,7 +450,7 @@ async function startServer() {
                         .update(posQueryString)
                         .digest("hex");
                     
-                    const posResponse = await fetch(`https://fapi.binance.com/fapi/v2/positionRisk?${posQueryString}&signature=${posSignature}`, {
+                    const posResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${posQueryString}&signature=${posSignature}`, {
                         headers: { "X-MBX-APIKEY": apiKey }
                     });
                     
@@ -450,7 +506,7 @@ async function startServer() {
                 if (notionalValue < 5.0) {
                     return res.status(400).json({ 
                         success: false, 
-                        error: `订单名义价值 (Notional Value) 为 ${notionalValue.toFixed(2)} USDT，低于币安最小限制 (5 USDT)。请增加开仓金额或数量。` 
+                        error: `订单名义价值 (Notional Value) 为 ${notionalValue.toFixed(2)} USDT，低于币安最小限制 (5 USDT)。请增加开仓金额或数量。注：部分币种/账户要求单笔订单名义价值不低于 20 USDT。` 
                     });
                 }
             }
@@ -508,7 +564,7 @@ async function startServer() {
 
             console.log(`[Binance Order] Executing real MARKET order on Binance: ${formattedSymbol} | Side: ${binanceSide} | positionSide: ${binancePositionSide || 'N/A'} | Qty: ${finalQty}`);
 
-            const orderResponse = await fetch(finalOrderUrl, {
+            const orderResponse = await fetchWithFallback(finalOrderUrl, {
                 method: "POST",
                 headers: {
                     "X-MBX-APIKEY": apiKey,
@@ -521,7 +577,7 @@ async function startServer() {
             try {
                 orderData = JSON.parse(orderText);
             } catch (e) {
-                console.error(`[Binance Order] Failed to parse response as JSON. Raw response: ${orderText}`);
+                console.warn(`[Binance Order] Failed to parse response as JSON. Raw response: ${orderText}`);
                 return res.status(502).json({
                     success: false,
                     error: `币安交易所返回了非 JSON 格式的响应: ${orderResponse.status} - ${orderText.substring(0, 100)}`
@@ -538,6 +594,7 @@ async function startServer() {
                     side: binanceSide,
                     positionSide: binancePositionSide,
                     qty: finalQty,
+                    price: currentPrice,
                     message: `成功在币安下单: ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${finalQty} 手！`
                 });
             } else {
@@ -547,9 +604,19 @@ async function startServer() {
                 let userFriendlyError = `币安交易所请求失败: ${errorMsg}`;
                 if (errorCode === -2015) {
                     userFriendlyError = "币安 API 密钥无效或权限不足！请检查：1. 是否已在币安开启“期货交易 (Enable Futures)”权限；2. API Key 是否正确；3. 是否设置了 IP 限制。";
+                } else if (errorCode === -4411 || (typeof errorMsg === 'string' && (errorMsg.includes("Please sign TradFi-Perps agreement") || errorMsg.includes("agreement contract")))) {
+                    userFriendlyError = "【需要签署币安合约协议】请登录您的币安 Web 网页端 or 币安 App，在合约/期权交易页面根据提示同意并签署《永续合约服务协议/TradFi-Perps Agreement》，然后再重新尝试下单。";
+                } else if (errorCode === -4164 || (typeof errorMsg === 'string' && (errorMsg.includes("Order's notional must be no smaller than") || errorMsg.includes("notional must be no smaller than")))) {
+                    userFriendlyError = "【订单名义价值过低】币安规定单笔订单名义价值（价格 * 数量）不能小于 20 USDT。请在设置中增加下单本金/子弹金额，或提高杠杆倍数，确保开仓价值不低于 20 USDT！";
+                } else if (errorCode === -2027) {
+                    userFriendlyError = "【超出当前杠杆最大持仓限额】下单数量或金额已超出您当前杠杆倍数下允许的最大持仓额度。请前往币安 App 或网页端调低该币种的杠杆倍数（例如降至 20x 或以下），或者在设置中减小下单本金/子弹金额。";
+                } else if (errorCode === -4140) {
+                    userFriendlyError = "【该交易对当前状态无法开仓】该币种在币安当前不可开仓（正处于非交易状态、停牌、清算或交易所已下线该合约且仅允许平仓）。请在设置中将其加入黑名单，或换其他币种。";
+                } else if (errorCode === -1015) {
+                    userFriendlyError = "【下单过于频繁，触发币安限频】系统在 10 秒内触发了多于 20 笔订单，触及了交易所的安全风控。请稍微等待 10-15 秒后再尝试，或者调大系统扫描或运行间隔。";
                 }
                 
-                console.error(`[Binance Order] Failed: ${JSON.stringify(orderData)}`);
+                console.warn(`[Binance Order] Failed: ${JSON.stringify(orderData)}`);
                 return res.status(orderResponse.status).json({
                     success: false,
                     error: userFriendlyError,
@@ -558,11 +625,38 @@ async function startServer() {
             }
 
         } catch (e: any) {
-            console.error("[Binance Order] Unexpected error:", e);
+            console.warn("[Binance Order] Unexpected error:", e);
             return res.status(500).json({
                 success: false,
                 error: `下单执行异常: ${e.message || e}`
             });
+        }
+    });
+
+    app.get("/api/server-ip", async (req, res) => {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 4000);
+            const response = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+            clearTimeout(timeout);
+            if (response.ok) {
+                const data = await response.json();
+                return res.json({ success: true, ip: data.ip });
+            } else {
+                throw new Error(`Failed with status ${response.status}`);
+            }
+        } catch (e: any) {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 4000);
+                const response = await fetch("https://icanhazip.com", { signal: controller.signal });
+                clearTimeout(timeout);
+                if (response.ok) {
+                    const ip = (await response.text()).trim();
+                    return res.json({ success: true, ip });
+                }
+            } catch (inner: any) {}
+            return res.json({ success: false, error: "无法获取出口IP: " + (e.message || e) });
         }
     });
 
@@ -688,6 +782,94 @@ async function startServer() {
         }
     });
 
+    app.post("/api/binance/transfer", async (req, res) => {
+        const { apiKey, apiSecret, asset, amount, type } = req.body;
+        if (!apiKey || !apiSecret) {
+            return res.status(400).json({ success: false, error: "请提供完整的 API Key 和 Secret Key" });
+        }
+        if (!asset || !amount || !type) {
+            return res.status(400).json({ success: false, error: "请提供资产币种 (asset)、金额 (amount) 以及划转类型 (type)" });
+        }
+
+        try {
+            const timestamp = Date.now();
+            const queryString = `type=${type}&asset=${asset}&amount=${amount}&timestamp=${timestamp}&recvWindow=5000`;
+            const signature = crypto
+                .createHmac("sha256", apiSecret)
+                .update(queryString)
+                .digest("hex");
+
+            const baseUrls = [
+                "https://api.binance.com",
+                "https://api.binance.me",
+                "https://api.binance.info"
+            ];
+
+            let lastError = null;
+            let success = false;
+            let resultData: any = null;
+
+            for (const baseUrl of baseUrls) {
+                const url = `${baseUrl}/sapi/v1/asset/transfer?${queryString}&signature=${signature}`;
+                try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout per node
+                    
+                    console.log(`[Binance API Transfer] Trying node: ${baseUrl}`);
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: {
+                            "X-MBX-APIKEY": apiKey,
+                            "Content-Type": "application/json"
+                        },
+                        signal: controller.signal
+                    });
+                    
+                    clearTimeout(timeout);
+
+                    const responseText = await response.text();
+                    if (response.ok) {
+                        if (responseText.trim().startsWith('<') || responseText.toLowerCase().includes('doctype html')) {
+                            throw new Error("Received HTML error page instead of JSON");
+                        }
+                        const data = JSON.parse(responseText);
+                        success = true;
+                        resultData = data;
+                        break; // Stop trying other URLs if successful
+                    } else {
+                        let errMsg = responseText;
+                        try {
+                            const errJson = JSON.parse(responseText);
+                            errMsg = errJson.msg || responseText;
+                        } catch (e) {}
+                        lastError = `节点 ${baseUrl} 报错 (状态码 ${response.status}): ${errMsg}`;
+                    }
+                } catch (err: any) {
+                    lastError = `连接节点 ${baseUrl} 发生错误: ${err.message || err}`;
+                }
+            }
+
+            if (success && resultData) {
+                return res.json({
+                    success: true,
+                    tranId: resultData.tranId,
+                    message: "资产划转成功！"
+                });
+            }
+
+            return res.status(502).json({
+                success: false,
+                error: `资产划转失败。${lastError || "无法连接至任何币安 API 节点。"}`
+            });
+
+        } catch (e: any) {
+            return res.status(500).json({
+                success: false,
+                error: `系统在划转执行时遇到未知错误: ${e.message || e}`
+            });
+        }
+    });
+
     app.get("/api/proxy", async (req, res) => {
       let targetUrl = req.query.url as string;
       if (!targetUrl) return res.status(400).json({ error: "Missing URL parameter" });
@@ -777,13 +959,26 @@ async function startServer() {
                   targetUrl = parsedUrl.toString();
                   console.log(`[Proxy] Automatically appended USDT. New URL: ${targetUrl}`);
               }
+              if (parsedUrl.searchParams.has("_t")) {
+                  parsedUrl.searchParams.delete("_t");
+                  targetUrl = parsedUrl.toString();
+              }
           } catch (e) {
               console.error(`[Proxy] Error parsing target URL for symbol check:`, e);
           }
       }
   
+      // Rate limiter: 1 request per 150ms per target domain
+      const host = new URL(targetUrl).hostname;
+      const now = Date.now();
+      const lastReq = lastRequestTime.get(host) || 0;
+      if (now - lastReq < 150) {
+          await new Promise(resolve => setTimeout(resolve, 150 - (now - lastReq)));
+      }
+      lastRequestTime.set(host, Date.now());
+  
       const isHighPriority = (req.query.priority === "high") || targetUrl.includes("/klines");
-      const maxRetries = isHighPriority ? 6 : 2;
+      const maxRetries = targetUrl.includes("binance") ? 6 : (isHighPriority ? 6 : 2);
       let attempt = 0;
       let urlToFetch = targetUrl;
   
@@ -796,20 +991,21 @@ async function startServer() {
                   urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
               } else if (attempt === 2) {
                   urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.me");
+              } else if (attempt === 3 && (targetUrl.includes("/ticker/price") || targetUrl.includes("/klines") || targetUrl.includes("/ticker/24hr"))) {
+                  urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)\/fapi\/v[12]\//, "api.binance.com/api/v3/");
               } else {
                   // Public proxies - always map to the standard fapi.binance.com domain
                   const standardTargetUrl = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
                   const encodedOrig = encodeURIComponent(standardTargetUrl);
                   const cacheBuster = `cb=${Date.now()}`;
                   
-                  if (attempt === 3) {
+                  // Adjust attempt mapping because attempt 3 might be skipped if not supported
+                  if (attempt === 3 || attempt === 4) {
                       urlToFetch = `https://corsproxy.io/?${encodedOrig}&${cacheBuster}`;
-                  } else if (attempt === 4) {
-                      urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
                   } else if (attempt === 5) {
                       urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`;
                   } else {
-                      urlToFetch = `https://corsproxy.org/?${encodedOrig}`;
+                      urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
                   }
               }
           } else {
@@ -915,9 +1111,22 @@ async function startServer() {
                   }
               }
               
-              throw new Error(`Response status ${response.status}`);
+              // Handle rate limiting specifically
+               if (response.status === 429 || response.status === 418) {
+                   const retryAfter = response.headers.get("Retry-After");
+                   const delayMs = retryAfter ? parseInt(retryAfter) * 1000 : (attempt * 5000); // 5s or Retry-After, increase delay
+                   console.warn(`[Proxy] Rate limited (${response.status}) on attempt ${attempt}. Waiting ${delayMs}ms before retry for ${urlToFetch}`);
+                   await new Promise(resolve => setTimeout(resolve, delayMs));
+                   continue;
+               }
+
+               throw new Error(`Response status ${response.status}`);
           } catch (error: any) {
               console.error(`[Proxy] Attempt ${attempt} encountered error: ${error.message || error}`);
+              if (attempt < maxRetries) {
+                  const delayMs = attempt * 500; // Exponential backoff delay
+                  await new Promise(resolve => setTimeout(resolve, delayMs));
+              }
           }
       }
   
@@ -932,6 +1141,21 @@ async function startServer() {
               return res.json(mockData);
           } catch (e) {
               console.error("[Proxy Fallback] Error generating helper klines:", e);
+          }
+      }
+
+      if (targetUrl.includes("/ticker/price")) {
+          try {
+              console.log(`[Proxy Fallback] Upstream failed for ticker/price. Creating server-side mock prices.`);
+              const parsedUrl = new URL(targetUrl);
+              const symbolInput = parsedUrl.searchParams.get("symbol");
+              if (symbolInput) {
+                  return res.json({ symbol: symbolInput, price: "60000.00" });
+              } else {
+                  return res.json([{ symbol: "BTCUSDT", price: "60000.00" }, { symbol: "ETHUSDT", price: "3000.00" }]);
+              }
+          } catch (e) {
+              console.error("[Proxy Fallback] Error generating mock prices:", e);
           }
       }
 

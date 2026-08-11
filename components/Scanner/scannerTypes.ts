@@ -52,6 +52,7 @@ export interface ScannerItem {
     symbol: string;
     price: number;
     volume24h?: number; 
+    volume8am?: number;
     change8am?: number; 
     volume?: string;
     change?: number;
@@ -283,6 +284,17 @@ export interface SmartScanConfig {
     alertSensitivity: 'LOW' | 'MEDIUM' | 'HIGH';
 }
 
+export interface StartTrendGroup {
+    enabled: boolean;
+    hours: number;
+    minLong: number;
+    maxLong: number;
+    maxPullbackLong?: number; // 做多：当前价格距最高点最大跌幅% (正数表示，需小于该值)
+    minShort: number;
+    maxShort: number;
+    maxPullbackShort?: number; // 做空：当前价格距最低点最大涨幅% (正数表示，需小于该值)
+}
+
 export interface MajorTrendConfig {
     enabled: boolean;
     updateIntervalHours: number; // 默认 4 小时
@@ -316,6 +328,12 @@ export interface MajorTrendConfig {
     filterCrossingCount?: number;
     filterLongMaxPump?: number;
     filterShortMinDrop?: number;
+
+    // Market Start Trend Settings
+    enableStartTrend?: boolean; // “行情启动趋势”功能开关 (总开关 / 多空通用开关)
+    enableStartTrendLong?: boolean; // “行情启动趋势”做多独立开关
+    enableStartTrendShort?: boolean; // “行情启动趋势”做空独立开关
+    startTrendGroups?: StartTrendGroup[]; // 3组“行情启动趋势”设置
 }
 
 export interface ScanConfig {
@@ -323,11 +341,16 @@ export interface ScanConfig {
     source: 'GAINERS' | 'LOSERS' | 'BOTH'; 
     minVolume: number;
     maxVolume: number; 
+    enableVol24h?: boolean;
+    enableVol8am?: boolean;
+    minVolume8am?: number;
+    maxVolume8am?: number;
     minChange: number;
     customSymbols: string;
     useCustomOnly: boolean;
     batchSize: number; 
     limit: number;
+    scanInterval?: number;
     list1DefaultTf?: string; // Default for K-line charts in List 1
     list2Config?: List2Config;
     smartMode?: SmartScanConfig;

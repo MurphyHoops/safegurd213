@@ -60,8 +60,10 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
     useEffect(() => {
         const str = JSON.stringify(list3);
         if (str !== lastListStrRef.current) {
-            onResultsUpdate(list3);
             lastListStrRef.current = str;
+            setTimeout(() => {
+                onResultsUpdate(list3);
+            }, 0);
         }
     }, [list3, onResultsUpdate]);
 
@@ -70,7 +72,9 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
         const str = JSON.stringify(config);
         if (str !== prevConfigStrRef.current) {
             prevConfigStrRef.current = str;
-            onConfigUpdate(config);
+            setTimeout(() => {
+                onConfigUpdate(config);
+            }, 0);
         }
     }, [config, onConfigUpdate]);
 

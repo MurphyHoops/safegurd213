@@ -1,0 +1,57 @@
+# All-Domain Scanner & Savior Terminal - Developer Rules
+
+## 1. Core Code Locks (绝对禁止修改的代码与功能锁)
+Any development tool, agent, or developer MUST strictly respect the following code locks to ensure real-time stability and protect live-trading execution:
+
+*   **Real-time Mode Code Lock (Global Scanner List 1-6)**:
+    Do NOT modify any code in:
+    - `/modules/market-scanner/` (List 1) - **LOCKED**
+    - `/modules/grand-crossing/` (List 2) - **STRICTLY LOCKED**
+    - `/modules/structure-audit/` (List 3) - **LOCKED**
+    - `/modules/momentum-audit/` (List 4) - **LOCKED**
+    - `/modules/final-audit/` (List 5) - **LOCKED**
+    - `/modules/terminal-dashboard/` (List 6) - **LOCKED**
+    - `/components/Scanner/` (Scanner-related components) - **LOCKED**
+    - `/services/rules/` (Core algorithmic rules for L1-L6) - **LOCKED**
+    - `/services/scanner/` (Scanner orchestration logic) - **LOCKED**
+    - `/services/apiService.ts` (Network core) - **LOCKED**
+
+*   **List 4 Special Rules (防追高熔断 & 动态方向锁)**:
+    - Special rule logic preventing extreme chasing and dynamic direction locks are 100% frozen.
+
+*   **K-Line Data Fetching Lock (`raceFetchKlines`)**:
+    - Do NOT modify proxy fallback layers in `/components/KlineChartModal.tsx` or `/services/realtime/BinanceRealtimeService.ts` or `/components/ScannerDashboard.tsx` or `/components/TradeLogModal.tsx`.
+
+*   **Strategy 4 Amputation ("断臂求生" - Only Clear Hedge)**:
+    - The code inside `/services/rules/rescue/strategy4_amputation.ts` and `/components/Settings/RescueStrategies/Strategy4_Amputation.tsx` is strictly locked.
+
+*   **List 1 Instant Open & Reopen (立即开仓 & 立即再开)**:
+    - Closed-loop automated trigger logic in `/modules/market-scanner/components/List1_Selection.tsx` and `/components/ScannerDashboard.tsx` is strictly locked.
+
+*   **Real-time Price Push & Position Sync Engine (DOM-Bypass / Web-Worker WebSocket)**:
+    - Highly optimized thread-safe pipelines in `/services/binanceWs.ts`, `/services/priceRegistry.ts`, `/components/RealtimePriceSpan.tsx`, `/components/RealtimePnlSpan.tsx`, and `/modules/live-battlefield/components/PositionRow.tsx` are strictly frozen. Throttling MUST remain >= 150ms to prevent event loop starvation.
+
+*   **Real-trading Automated Execution**:
+    - Real-trading execution hooks (`onRealClose`, `onRealReopen`, `handleRealAmputationSuccess`, etc.) in `/services/marketSimulator.ts` and `/App.tsx` are locked.
+
+---
+
+## 2. Universal Developer Constraints (三大通用铁律)
+
+1.  **不准改其他功能 (Do Not Modify Unrelated Features)**:
+    - Never touch, modify, or rewrite any code that is outside the explicit scope of the current request.
+    - If a change is requested, make the smallest surgical change possible.
+
+2.  **不准擅自重构 (No Unauthorized Refactoring / Restructuring)**:
+    - Do NOT attempt to refactor, perform "atomic splitting", or reorganize files/modules unless explicitly instructed to do so. 
+    - The system is built with high-performance event loop throttling, precise React state synchronization, and DOM-bypassing price renders. Unauthorized restructuring is highly likely to break the high-frequency trading loop.
+
+3.  **不准擅自增加依赖 (Do Not Add Unnecessary Dependencies)**:
+    - Do NOT install any new NPM packages or libraries without explicit confirmation.
+    - Rely entirely on the pre-installed standard libraries.
+
+---
+
+## 3. Strict Safety Markers (在代码中保留的安全印记)
+When writing comments or documentation in code files, clearly mark them as:
+`// 🔒 [SECURITY_LOCK]: DO NOT MODIFY OR REFACTOR THIS BLOC OF CODE TO MAINTAIN REAL-TIME PIPELINE INTEGRITY.`

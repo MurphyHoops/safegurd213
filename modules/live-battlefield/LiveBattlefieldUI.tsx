@@ -28,8 +28,10 @@ export const LiveBattlefieldModule: React.FC<Props> = ({ positions, realPrices, 
         const currentStatsStr = `${stats.symbolCount}-${stats.totalPnl.toFixed(2)}`;
         
         if (currentStatsStr !== lastStatsRef.current) {
-            onStatsUpdate(stats);
             lastStatsRef.current = currentStatsStr;
+            setTimeout(() => {
+                onStatsUpdate(stats);
+            }, 0);
         }
     }, [stats, onStatsUpdate]);
 

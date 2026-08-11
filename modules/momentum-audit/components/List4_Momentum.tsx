@@ -81,7 +81,23 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                 {showVisualizer && (
                     <ScannerVisualizerModal 
                         title="4. 动能审计"
-                        items={filteredList.map(i => ({ symbol: i.symbol, timeframe: i.tf }))}
+                        items={filteredList.map(i => {
+                            const m = i.momentum || { status: 'INVALID', midPoint: 0, entryTrigger: 0, invalidReason: 'Data Loading...' };
+                            return {
+                                symbol: i.symbol,
+                                timeframe: i.tf || '15m',
+                                signals: i.structure?.signalTime ? [{ time: i.structure.signalTime, type: i.direction as any }] : [],
+                                entryPrice: i.structure?.signalPrice,
+                                entryTime: i.structure?.signalTime,
+                                currentPrice: i.price,
+                                highlightTime: i.enterList4Time,
+                                showAuditLines: true,
+                                extraLines: [
+                                    { price: m.entryTrigger, label: "TRIGGER (攻)", color: "#fbbf24", style: "dashed" },
+                                    { price: m.midPoint, label: "DEFENSE (守)", color: "#f87171", style: "dashed" }
+                                ]
+                            };
+                        })}
                         defaultTf="15m"
                         onClose={() => setShowVisualizer(false)}
                     />

@@ -27,6 +27,41 @@ export function checkRescueRules(
         return false;
     }
 
+    // 针对留守对冲仓位 (Orphaned Hedge Position) 的规则进行托管
+    if (position.mainPositionId) {
+        const parentMainExists = allPositions.some(p => p.entryId === position.mainPositionId);
+        if (!parentMainExists) {
+            const slSettings = settings.stopLoss;
+            const hedgePnL = position.unrealizedPnL;
+            
+            // 1. 回调盈利收割 (Strategy 3.A)
+            if (slSettings.callbackProfitClear) {
+                const maxHedgePnl = position.maxPnLPercent || 0;
+                if (hedgePnL > 0 && position.unrealizedPnLPercentage >= slSettings.callbackTargetProfit) {
+                    const drawdown = maxHedgePnl - position.unrealizedPnLPercentage;
+                    if (drawdown >= slSettings.callbackRate) {
+                        closeHedgeOnly(position.entryId, hedgePnL, `4.3 留守对冲仓回调盈利收割: 利润 ${hedgePnL.toFixed(2)}`);
+                        return true;
+                    }
+                }
+            }
+
+            // 2. 对冲单回调止损 (Strategy 3.A2)
+            if (slSettings.callbackStopLoss > 0 && position.unrealizedPnLPercentage <= -slSettings.callbackStopLoss) {
+                closeHedgeOnly(position.entryId, hedgePnL, `4.3 留守对冲仓位回调止损: 亏损 ${hedgePnL.toFixed(2)}`);
+                return true;
+            }
+
+            // 3. 对冲止损 (Strategy 2.1)
+            if (slSettings.hedgeProfitClear && slSettings.hedgeProfitClearStopLoss > 0 && position.unrealizedPnLPercentage <= -slSettings.hedgeProfitClearStopLoss) {
+                closeHedgeOnly(position.entryId, hedgePnL, `4.2 留守对冲仓位对冲止损: 亏损 ${hedgePnL.toFixed(2)}`);
+                return true;
+            }
+
+            return false;
+        }
+    }
+
     if (!position.mainPositionId) {
         const hedgePosition = allPositions.find(p => p.mainPositionId === position.entryId);
         

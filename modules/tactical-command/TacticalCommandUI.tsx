@@ -30,7 +30,9 @@ export const TacticalCommandModule: React.FC<Props> = ({
         const str = JSON.stringify(config);
         if (str !== prevConfigStrRef.current) {
             prevConfigStrRef.current = str;
-            onConfigUpdate(config);
+            setTimeout(() => {
+                onConfigUpdate(config);
+            }, 0);
         }
     }, [config, onConfigUpdate]);
 

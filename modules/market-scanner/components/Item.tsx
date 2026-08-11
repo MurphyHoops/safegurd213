@@ -306,7 +306,22 @@ export const List1Item: React.FC<Props> = ({
                 (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
                 (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
 
-            if (!isLongMatch && !isShortMatch) {
+            let isSidewaysMatch = true;
+            if (enableSideways && highs.length > sidewaysDays) {
+                const sidewaysHighs = highs.slice(-sidewaysDays);
+                const sidewaysLows = lows.slice(-sidewaysDays);
+                const maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
+                const minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
+
+                const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
+                const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
+
+                if (dropFromMax >= (cfg.sidewaysMaxDrop ?? 10) || riseFromMin >= (cfg.sidewaysMaxPump ?? 10)) {
+                    isSidewaysMatch = false;
+                }
+            }
+
+            if ((!isLongMatch && !isShortMatch) || !isSidewaysMatch) {
                 return null;
             }
         }
@@ -448,8 +463,11 @@ export const List1Item: React.FC<Props> = ({
                         ${item.price.toFixed(item.price < 1 ? (item.price < 0.001 ? 6 : 4) : 2)}
                     </div>
                     
-                    <div className="text-[8.5px] text-slate-500 font-semibold leading-none mt-0.5">
-                        额:<span className="text-slate-300 font-bold">{item.volume24h ? `${item.volume24h.toFixed(1)}M` : '-'}</span>
+                    <div className="text-[8px] text-slate-500 font-semibold leading-none mt-1 flex flex-col gap-[2px]">
+                        <div>24H额: <span className="text-slate-300 font-bold">{item.volume24h ? `${item.volume24h.toFixed(1)}M` : '-'}</span></div>
+                        {item.volume8am !== undefined && (
+                            <div>8AM额: <span className="text-blue-400 font-bold">{`${item.volume8am.toFixed(1)}M`}</span></div>
+                        )}
                     </div>
                 </div>
 

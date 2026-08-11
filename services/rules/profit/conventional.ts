@@ -18,19 +18,43 @@ export function checkConventionalProfit(
     if (positionValue < settings.minPosition) return false;
 
     // 1. 托底平仓检查 (Trailing floor profit protection)
-    if (settings.trailingEnabled && 
-        settings.trailingTriggerProfit !== undefined && 
-        settings.trailingRemainingProfit !== undefined &&
-        maxPnl >= settings.trailingTriggerProfit) {
+    if (settings.trailingEnabled) {
+        // Build active tiers to evaluate
+        const activeTiers: { threshold: number; floor: number }[] = [];
         
-        if (currentPnl <= settings.trailingRemainingProfit) {
-            close(
-                position.symbol, 
-                position.side, 
-                `常规托底平仓触发: 最高盈利达到 ${maxPnl.toFixed(2)}% >= 托底激活阈值 ${settings.trailingTriggerProfit.toFixed(2)}%，回调后当前盈利仅剩 ${currentPnl.toFixed(2)}% <= 托底底线 ${settings.trailingRemainingProfit.toFixed(2)}%`,
-                settings.closePercent || 100
-            );
-            return true;
+        if (settings.trailingTiers && settings.trailingTiers.length > 0) {
+            activeTiers.push(...settings.trailingTiers);
+        } else if (settings.trailingTriggerProfit !== undefined && settings.trailingRemainingProfit !== undefined) {
+            activeTiers.push({
+                threshold: settings.trailingTriggerProfit,
+                floor: settings.trailingRemainingProfit
+            });
+        }
+
+        // Find the highest tier that has been reached (maxPnl >= tier.threshold)
+        let activeTier: { threshold: number; floor: number } | null = null;
+        for (const tier of activeTiers) {
+            if (maxPnl >= tier.threshold) {
+                if (!activeTier || tier.threshold > activeTier.threshold) {
+                    activeTier = tier;
+                }
+            }
+        }
+
+        if (activeTier) {
+            if (currentPnl <= activeTier.floor) {
+                close(
+                    position.symbol, 
+                    position.side, 
+                    `常规阶梯托底平仓触发: 最高盈利达到 ${maxPnl.toFixed(2)}% >= 阶梯阈值 ${activeTier.threshold.toFixed(2)}%，回调后当前盈利仅剩 ${currentPnl.toFixed(2)}% <= 托底底线 ${activeTier.floor.toFixed(2)}%`,
+                    settings.closePercent || 100
+                );
+                return true;
+            }
+            
+            // 关键修复：一旦进入常规托底保护，常规的回撤止盈（Drawdown Callback）应当被屏蔽/接管，
+            // 否则常规的 callbackPercent (通常很小) 会抢在托底底线之前触发平仓，使得托底平仓逻辑失效！
+            return false;
         }
     }
 

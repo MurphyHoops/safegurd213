@@ -223,13 +223,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               cycles.push(currentCycle);
           });
 
-          let symbolHedgeCount = 0;
           let symbolGrossTotal = 0;
           let symbolLossTotal = 0;
           let symbolNetTotal = 0;
           let symbolHedgeTotalCount = 0;
           let symbolCycleLastStopLossTime = 0;
-          const allSymbolRelatedIds = new Set<string>();
+          const recoverySymbolRelatedIds = new Set<string>();
 
           cycles.forEach(cycleIds => {
               const cycleLogs = symbolLogs.filter(l => cycleIds.has(l.entry_id));
@@ -245,12 +244,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                   let cycleHasClosedHedge = false;
                   let cycleHasMainEntry = false;
                   let cycleLastStopLossTime = 0;
+                  let cycleLastStopLossRule = '';
                   const cycleRelatedIds = new Set<string>();
 
                   cycleLogs.forEach(l => {
                       if (l.status !== 'CLOSED') return;
                       cycleRelatedIds.add(l.entry_id);
-                      allSymbolRelatedIds.add(l.entry_id);
 
                       const p = Number(l.profit_usdt || 0);
                       if (p > 0) cycleGrossProfit += p;
@@ -258,6 +257,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                           cycleTotalLoss += Math.abs(p);
                           if (l.exit_timestamp && l.exit_timestamp > cycleLastStopLossTime) {
                               cycleLastStopLossTime = l.exit_timestamp;
+                              cycleLastStopLossRule = l.exit_reason || l.stop_loss_rule || '';
                           }
                           if (l.is_hedge) {
                               cycleStopLossCount++;
@@ -281,23 +281,50 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                    [...cycleLogs].sort((a,b) => (b.exit_timestamp || 0) - (a.exit_timestamp || 0))[0];
 
                       if (repLog) {
-                          rSummaries.push({
-                              mainLog: repLog,
-                              grossProfit: cycleGrossProfit,
-                              totalLoss: cycleTotalLoss,
-                              netProfit: cycleNetProfit,
-                              hedgeCount: cycleStopLossCount,
-                              lastStopLossTime: cycleLastStopLossTime,
-                              relatedIds: cycleRelatedIds
-                          });
-                      }
+                          if (cycleNetProfit >= 0) {
+                              rSummaries.push({
+                                  mainLog: repLog,
+                                  grossProfit: cycleGrossProfit,
+                                  totalLoss: cycleTotalLoss,
+                                  netProfit: cycleNetProfit,
+                                  hedgeCount: cycleStopLossCount,
+                                  lastStopLossTime: cycleLastStopLossTime,
+                                  relatedIds: cycleRelatedIds
+                              });
 
-                      symbolGrossTotal += cycleGrossProfit;
-                      symbolLossTotal += cycleTotalLoss;
-                      symbolNetTotal += cycleNetProfit;
-                      symbolHedgeTotalCount += cycleStopLossCount;
-                      if (cycleLastStopLossTime > symbolCycleLastStopLossTime) {
-                          symbolCycleLastStopLossTime = cycleLastStopLossTime;
+                              symbolGrossTotal += cycleGrossProfit;
+                              symbolLossTotal += cycleTotalLoss;
+                              symbolNetTotal += cycleNetProfit;
+                              symbolHedgeTotalCount += cycleStopLossCount;
+                              if (cycleLastStopLossTime > symbolCycleLastStopLossTime) {
+                                  symbolCycleLastStopLossTime = cycleLastStopLossTime;
+                              }
+                              cycleRelatedIds.forEach(id => recoverySymbolRelatedIds.add(id));
+                          } else {
+                              aSummaries.push({
+                                  mainLog: repLog,
+                                  totalLoss: cycleTotalLoss,
+                                  hedgeCount: cycleStopLossCount,
+                                  lastStopLossTime: cycleLastStopLossTime,
+                                  lastStopLossRule: cycleLastStopLossRule,
+                                  relatedIds: cycleRelatedIds
+                              });
+
+                              const existing = aStats.get(symbol) || { totalLoss: 0, hedgeCount: 0, lastStopLossTime: 0, lastStopLossRule: '' };
+                              existing.totalLoss += cycleTotalLoss;
+                              existing.hedgeCount += cycleStopLossCount;
+                              if (cycleLastStopLossTime > existing.lastStopLossTime) {
+                                  existing.lastStopLossTime = cycleLastStopLossTime;
+                                  existing.lastStopLossRule = cycleLastStopLossRule;
+                              }
+                              aStats.set(symbol, existing);
+                              
+                              const existingIds = aRelatedIdsMap.get(symbol) || new Set<string>();
+                              cycleRelatedIds.forEach(id => existingIds.add(id));
+                              aRelatedIdsMap.set(symbol, existingIds);
+                              
+                              aTotalLoss += cycleTotalLoss;
+                          }
                       }
                   }
               } else {
@@ -364,7 +391,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               }
           });
 
-          if (allSymbolRelatedIds.size > 0) {
+          if (recoverySymbolRelatedIds.size > 0) {
               rStats.set(symbol, {
                   netProfit: symbolNetTotal,
                   grossProfit: symbolGrossTotal,
@@ -372,7 +399,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                   hedgeCount: symbolHedgeTotalCount,
                   lastStopLossTime: symbolCycleLastStopLossTime
               });
-              rRelatedIdsMap.set(symbol, allSymbolRelatedIds);
+              rRelatedIdsMap.set(symbol, recoverySymbolRelatedIds);
               rTotal += symbolNetTotal;
           }
       });

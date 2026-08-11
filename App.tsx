@@ -50,6 +50,7 @@ const arePositionsEqual = (prev: Position[], next: Position[]): boolean => {
             p.cumulativeHedgeProfit !== n.cumulativeHedgeProfit ||
             p.cumulativeHedgeLoss !== n.cumulativeHedgeLoss ||
             p.cumulativeAmputationLoss !== n.cumulativeAmputationLoss ||
+            p.cumulativeAmputationProfit !== n.cumulativeAmputationProfit ||
             p.maxPnLPercent !== n.maxPnLPercent ||
             JSON.stringify(p.customProfitSettings) !== JSON.stringify(n.customProfitSettings)
         ) {
@@ -238,15 +239,13 @@ const AppContent: React.FC = () => {
 
     // --- MAIN MOUNTED FLAG & PANIC SELF-HEALING ---
     useEffect(() => {
-        if (!isInitializing) {
-            (window as any).__MAIN_APP_MOUNTED__ = true;
-            console.log("🛡️ [System Guard] Main app successfully initialized and mounted. Clearing any false-alarm panic UI.");
-            const panic = document.getElementById('panic-ui');
-            if (panic) {
-                panic.remove();
-            }
+        (window as any).__MAIN_APP_MOUNTED__ = true;
+        console.log("🛡️ [System Guard] Main app successfully mounted. Clearing any false-alarm panic UI.");
+        const panic = document.getElementById('panic-ui');
+        if (panic) {
+            panic.remove();
         }
-    }, [isInitializing]);
+    }, []);
 
     // --- EMERGENCY TIMEOUT (8秒硬跳过) ---
     useEffect(() => {
@@ -325,6 +324,8 @@ const AppContent: React.FC = () => {
 
                         // Add manual log to simulator
                         if (simulatorRef.current) {
+                            const finalPrice = resData.price || customPrice || priceBufferRef.current[cleanSymbol] || 0;
+                            const finalCost = amountUsdt || (qty * finalPrice);
                             simulatorRef.current.tradeLogs.unshift({
                                 symbol: cleanSymbol,
                                 entry_id: resData.orderId || `MANUAL_${Date.now()}`,
@@ -332,13 +333,13 @@ const AppContent: React.FC = () => {
                                 is_hedge: false,
                                 entry_timestamp: Date.now(),
                                 direction: side,
-                                cost_usdt: qty * (resData.price || 0),
-                                entry_price: resData.price || 0,
+                                cost_usdt: finalCost,
+                                entry_price: finalPrice,
                                 events: [{
                                     timestamp: Date.now(),
                                     action: '主仓开仓',
-                                    price: resData.price || 0,
-                                    amount: qty,
+                                    price: finalPrice,
+                                    amount: qty || (finalCost / (finalPrice || 1)),
                                     reason: '手动实盘开仓'
                                 }]
                             });
@@ -507,14 +508,18 @@ const AppContent: React.FC = () => {
                 simulatorRef.current.updateRealPrices(normalized);
                 
                 // CRITICAL INSTANT-TICK:
-                // Eliminate the 200ms loop delay. The very millisecond a price tick arrives from the WebSocket,
-                // we instantly tick the simulator so it can recalculate PnL and match critical triggers (Stop Loss,
-                // Take Profit, Hedge Boundaries, Trailing, Amputation) with ZERO delay!
+                // Throttled to prevent flooding the main thread and freezing the browser!
+                // Runs at most once every 150ms when active positions are open to evaluate triggers,
+                // which is visually and execution-wise instantaneous while saving 90%+ CPU processing.
                 if (activePositionsRef.current.length > 0) {
-                    try {
-                        simulatorRef.current.tick(isSimulatingRef.current);
-                    } catch (tickErr) {
-                        console.error("[InstantTick] Error in instant simulator execution:", tickErr);
+                    const now = Date.now();
+                    if (now - lastInstantTickTimeRef.current >= 150) {
+                        lastInstantTickTimeRef.current = now;
+                        try {
+                            simulatorRef.current.tick(isSimulatingRef.current);
+                        } catch (tickErr) {
+                            console.error("[InstantTick] Error in instant simulator execution:", tickErr);
+                        }
                     }
                 }
             }
@@ -667,6 +672,7 @@ const AppContent: React.FC = () => {
     const failCountRef = useRef(0);
     const lastAutoRetryRef = useRef(0);
     const lastTickTimestampRef = useRef(0); 
+    const lastInstantTickTimeRef = useRef(0);
     const MAX_RETRIES = 5; 
 
     // --- CONCURRENCY LOCK (Prevents Task Stacking Crash) ---
@@ -681,6 +687,14 @@ const AppContent: React.FC = () => {
     const onRealHedgeRef = useRef<any>(null);
     const onRealCloseRef = useRef<any>(null);
     const onRealOpenRef = useRef<any>(null);
+    const onRealReopenRef = useRef<any>(null);
+    const pendingHedgesRef = useRef<Set<string>>(new Set());
+    const pendingClosesRef = useRef<Set<string>>(new Set());
+    const recentlyOpenedHedgesRef = useRef<Map<string, number>>(new Map());
+    const recentlyClosedPositionsRef = useRef<Map<string, number>>(new Map());
+    const recentlyOpenedPositionsRef = useRef<Map<string, number>>(new Map());
+    const lastHedgeAttemptRef = useRef<Map<string, number>>(new Map());
+    const lastAutoTransferTimeRef = useRef<number>(0);
     
     // Manual or Auto Retry Handler
     const handleRetryConnection = () => {
@@ -982,19 +996,24 @@ const AppContent: React.FC = () => {
         );
 
         // Link real trading automated execution callbacks via refs to prevent stale closure issues
-        sim.onRealHedge = async (pos, side, amountUsdt, reason) => {
+        sim.onRealHedge = async (pos, side, amountUsdt, reason, exactQty) => {
             if (onRealHedgeRef.current) {
-                await onRealHedgeRef.current(pos, side, amountUsdt, reason);
+                await onRealHedgeRef.current(pos, side, amountUsdt, reason, exactQty);
             }
         };
-        sim.onRealClose = async (pos, reason, customAmount) => {
+        sim.onRealClose = async (pos, reason, customAmount, ratio) => {
             if (onRealCloseRef.current) {
-                await onRealCloseRef.current(pos, reason, customAmount);
+                await onRealCloseRef.current(pos, reason, customAmount, ratio);
             }
         };
         sim.onRealOpen = async (pos, quantity, reason) => {
             if (onRealOpenRef.current) {
                 await onRealOpenRef.current(pos, quantity, reason);
+            }
+        };
+        sim.onRealReopen = async (symbol, side, amountUsdt, reason, extraProps) => {
+            if (onRealReopenRef.current) {
+                await onRealReopenRef.current(symbol, side, amountUsdt, reason, extraProps);
             }
         };
 
@@ -1070,6 +1089,45 @@ const AppContent: React.FC = () => {
                         
                         if (simulatorRef.current) {
                             simulatorRef.current.setPositions(realPositions);
+                        }
+
+                        // --- AUTO TRANSFER TRIGGER ---
+                        const autoTransferEnabled = settings.system.enableAutoTransfer;
+                        const threshold = settings.system.autoTransferThreshold || 1000;
+                        const amount = settings.system.autoTransferAmount || 200;
+                        
+                        if (autoTransferEnabled && typeof balance === 'number' && balance > threshold) {
+                            const now = Date.now();
+                            // 5 minutes cooldown between auto-transfers to prevent double-triggering
+                            if (now - lastAutoTransferTimeRef.current > 5 * 60 * 1000) {
+                                lastAutoTransferTimeRef.current = now;
+                                handleLog('INFO', `🚀 [自动资金划转] 检测到合约可用账户余额 (${balance.toFixed(2)} USDT) 已超过设定的阈值 (${threshold} USDT)，开始执行自动划转：划转 ${amount} USDT 到现货账户...`);
+                                
+                                fetch("/api/binance/transfer", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                        apiKey,
+                                        apiSecret,
+                                        asset: "USDT",
+                                        amount: amount,
+                                        type: "UMFUTURE_MAIN" // Futures to Spot
+                                    })
+                                })
+                                .then(async r => {
+                                    const result = await r.json();
+                                    if (r.ok && result.success) {
+                                        handleLog('SUCCESS', `🟢 [自动资金划转成功] 已成功从合约账户划转 ${amount} USDT 到现货账户！(流水号: ${result.tranId})`);
+                                        audioService.speak(`自动划转成功，已将 ${amount} 美元划转至现货账户`);
+                                    } else {
+                                        handleLog('DANGER', `❌ [自动资金划转失败] 划转执行失败: ${result.error || '未知网络错误'}`);
+                                        audioService.speak("自动资金划转失败，请检查账户可用额度或API权限", true);
+                                    }
+                                })
+                                .catch(err => {
+                                    handleLog('DANGER', `❌ [自动资金划转异常] 划转请求遇到网络异常: ${err.message || err}`);
+                                });
+                            }
                         }
                     } else {
                         console.error("[Binance Background Sync] API Error:", data);
@@ -1188,6 +1246,36 @@ const AppContent: React.FC = () => {
             return;
         }
 
+        // 🛡️ [Anti-Double Open & Hedging Protection]
+        if (simulatorRef.current) {
+            const activePositions = simulatorRef.current.getPositions();
+            const existing = activePositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol);
+            if (existing) {
+                if (extraProps?.isReopened && (existing.isBeingClosed || existing.amount === 0)) {
+                    simulatorRef.current.addLog("INFO", `🔄 [复开安全通道] 检测到 ${cleanSymbol} 存在持仓，但由于是自动复开且原仓位正在平仓/已平仓，允许执行复开。`);
+                } else {
+                    simulatorRef.current.addLog("WARNING", `🛡️ [防重复开仓拦截] 实盘/模拟开仓指令被拦截: ${cleanSymbol} 已经存在持仓 (${existing.side}，数量 ${existing.amount.toFixed(4)})，防止重复开仓及对冲异常。`);
+                    return;
+                }
+            }
+
+            // Also check for pending hedges in progress
+            const hasPendingHedge = Array.from(pendingHedgesRef.current.keys()).some(k => k.startsWith(cleanSymbol));
+            if (hasPendingHedge) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [防重复开仓拦截] 实盘开仓指令被拦截: ${cleanSymbol} 正在进行自动对冲，禁止此时开立新的标准仓位。`);
+                return;
+            }
+        }
+
+        // 🛡️ [Replication Lag Protection for Standard Positions]
+        const lastOpenTime = recentlyOpenedPositionsRef.current.get(cleanSymbol);
+        if (lastOpenTime && Date.now() - lastOpenTime < 10000 && !extraProps?.isReopened) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [开仓延迟拦截] ${cleanSymbol} 的开仓指令于 ${((Date.now() - lastOpenTime)/1000).toFixed(1)} 秒前执行成功，仍在等待币安持仓同步，拦截本次重复触发。`);
+            }
+            return;
+        }
+
         const speakOpenPosition = () => {
             try {
                 const stratId = extraProps?.strategyId || 'strat-1';
@@ -1233,6 +1321,12 @@ const AppContent: React.FC = () => {
             }
 
             if (simulatorRef.current) {
+                simulatorRef.current.registerPendingRealOpenProps(cleanSymbol, side, {
+                    signalTf,
+                    signalCandle,
+                    entryEmas,
+                    ...extraProps
+                });
                 simulatorRef.current.addLog("INFO", `[实盘自动开仓] 策略/信号触发开仓: ${cleanSymbol} ${side} | 金额: ${amount} U`);
             }
 
@@ -1252,6 +1346,7 @@ const AppContent: React.FC = () => {
 
                 const resData = await response.json();
                 if (response.ok && resData.success) {
+                    recentlyOpenedPositionsRef.current.set(cleanSymbol, Date.now());
                     if (simulatorRef.current) {
                         simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动开仓成功: ${cleanSymbol} ${side} | 数量: ${resData.qty} | ID: ${resData.orderId}`);
                     }
@@ -1279,7 +1374,7 @@ const AppContent: React.FC = () => {
         }
     }, []);
 
-    const handleAutoHedge = useCallback(async (position: Position, side: PositionSide, amountUsdt: number, reason: string) => {
+    const handleAutoHedge = useCallback(async (position: Position, side: PositionSide, amountUsdt: number, reason: string, exactQty?: number) => {
         const cleanSymbol = normalizeSymbol(position.symbol);
         const apiKey = settingsRef.current.system.binanceApiKey;
         const apiSecret = settingsRef.current.system.binanceApiSecret;
@@ -1288,12 +1383,77 @@ const AppContent: React.FC = () => {
             return;
         }
 
-        if (simulatorRef.current) {
-            simulatorRef.current.addLog("INFO", `⚡ [自动对冲触发] 亏损达到条件，正在向币安发送市价对冲订单: ${cleanSymbol} ${side} | 金额: ${amountUsdt.toFixed(2)} U | 原因: ${reason}`);
+        // 🛡️ [Minimum Position Size Safeguard]
+        const hedgeSettings = settingsRef.current.hedging;
+        const entryValue = position.amount * position.entryPrice;
+        const minPositionThreshold = Number(hedgeSettings?.minPosition ?? 10);
+        if (entryValue < minPositionThreshold) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲金额拦截] ${cleanSymbol} 持仓金额 ${entryValue.toFixed(2)} USDT 小于设定的对冲起步金额 ${minPositionThreshold} USDT，拦截本次自动对冲开仓。`);
+            }
+            return;
         }
 
+        // 🛡️ [Extreme Price/PnL Anomaly Safeguard]
+        const pnlPercent = position.unrealizedPnLPercentage;
+        if (pnlPercent < -25) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("DANGER", `🛡️ [对冲异常拦截] ${cleanSymbol} 亏损计算异常 (${pnlPercent.toFixed(2)}%)，超过跌幅25%安全红线，怀疑为价格源精度/异常抖动，拒绝向币安发送对冲订单！`);
+            }
+            return;
+        }
+
+        // 1. Double-open safety check against local state
+        if (simulatorRef.current) {
+            const activePositions = simulatorRef.current.getPositions();
+            const existingOpposite = activePositions.find(p => 
+                normalizeSymbol(p.symbol) === cleanSymbol && p.side === side
+            );
+            if (existingOpposite) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲重复拦截] 检测到 ${cleanSymbol} 已存在 ${side} 方向对冲仓位，拦截本次自动开对冲动作。`);
+                return;
+            }
+        }
+
+        // 2. Concurrency lock for pending requests
+        const lockKey = `${cleanSymbol}_${side}`;
+        if (pendingHedgesRef.current.has(lockKey)) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲并发拦截] 正在处理 ${cleanSymbol} ${side} 的开对冲请求，请勿重复操作。`);
+            }
+            return;
+        }
+
+        // 3. Rate Limit Protection (2 seconds between attempts)
+        const lastAttemptTime = lastHedgeAttemptRef.current.get(lockKey);
+        if (lastAttemptTime && Date.now() - lastAttemptTime < 2000) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲高频拦截] ${cleanSymbol} ${side} 的自动对冲请求距离上次触发太近 (< 2秒)，强制等待冷却。`);
+            }
+            return;
+        }
+
+        // 4. Replication Lag Protection (10 seconds after successful hedge)
+        const lastHedgeTime = recentlyOpenedHedgesRef.current.get(lockKey);
+        if (lastHedgeTime && Date.now() - lastHedgeTime < 10000) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲延迟拦截] ${cleanSymbol} ${side} 的自动对冲指令于 ${((Date.now() - lastHedgeTime)/1000).toFixed(1)} 秒前执行成功，仍在等待币安持仓同步，拦截本次重复触发。`);
+            }
+            return;
+        }
+
+        lastHedgeAttemptRef.current.set(lockKey, Date.now());
+        pendingHedgesRef.current.add(lockKey);
+
+        if (simulatorRef.current) {
+            const qtyText = exactQty !== undefined ? `数量: ${exactQty.toFixed(4)}` : `金额: ${amountUsdt.toFixed(2)} U`;
+            simulatorRef.current.addLog("INFO", `⚡ [自动对冲触发] 亏损达到条件，正在向币安发送市价对冲订单: ${cleanSymbol} ${side} | ${qtyText} | 原因: ${reason}`);
+        }
+
+        let isSuccess = false;
         try {
-            const response = await fetch("/api/binance/order", {
+            // Set up fetch with 20000ms timeout to support backend multi-node fallbacks
+            const fetchPromise = fetch("/api/binance/order", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -1302,12 +1462,22 @@ const AppContent: React.FC = () => {
                     symbol: cleanSymbol,
                     side: side,
                     action: "OPEN",
-                    amountUsdt: amountUsdt
+                    quantity: exactQty,
+                    amountUsdt: exactQty !== undefined ? undefined : amountUsdt
                 })
             });
 
+            const timeoutPromise = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("Timeout")), 20000)
+            );
+
+            // Race fetch against 20-second timeout
+            const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+
             const resData = await response.json();
             if (response.ok && resData.success) {
+                isSuccess = true;
+                recentlyOpenedHedgesRef.current.set(lockKey, Date.now());
                 if (simulatorRef.current) {
                     simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动对冲开仓成功: ${cleanSymbol} ${side} | 数量: ${resData.qty} | ID: ${resData.orderId}`);
                 }
@@ -1324,18 +1494,30 @@ const AppContent: React.FC = () => {
             } else {
                 const errMsg = resData.error || "未知交易所错误";
                 if (simulatorRef.current) {
-                    simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动对冲开仓失败: ${errMsg}`);
+                    simulatorRef.current.addLog("DANGER", `🚨 [对冲响应失败] 自动对冲开仓失败: ${errMsg}`);
                 }
-                audioService.speak("自动对冲失败");
+                audioService.speak("警报，对冲开仓指令执行失败，请手动检查仓位", true);
+                // Wait/Sleep 3 seconds on failure before allowing retry
+                await new Promise(resolve => setTimeout(resolve, 3000));
             }
         } catch (e: any) {
             if (simulatorRef.current) {
-                simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动对冲网络异常: ${e.message || e}`);
+                simulatorRef.current.addLog("DANGER", `🚨 [对冲响应异常] 自动对冲网络异常或未收到响应: ${e.message || e}`);
             }
+            audioService.speak("警报，对冲网络异常，未收到回复指令，请立即手动核对仓位", true);
+            // Wait/Sleep 3 seconds on timeout/exception before allowing retry
+            await new Promise(resolve => setTimeout(resolve, 3000));
+        } finally {
+            // Always delay clearing the lock for a short duration to let Binance states settle
+            if (isSuccess) {
+                // For success, wait 2 seconds before removing lock to let API Sync run
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            pendingHedgesRef.current.delete(lockKey);
         }
     }, []);
 
-    const handleAutoClose = useCallback(async (position: Position, reason: string, customQty?: number) => {
+    const handleAutoClose = useCallback(async (position: Position, reason: string, customQty?: number, ratio?: number) => {
         const cleanSymbol = normalizeSymbol(position.symbol);
         const apiKey = settingsRef.current.system.binanceApiKey;
         const apiSecret = settingsRef.current.system.binanceApiSecret;
@@ -1344,14 +1526,35 @@ const AppContent: React.FC = () => {
             return;
         }
 
+        const lockKey = `${cleanSymbol}_${position.side}`;
+        if (pendingClosesRef.current.has(lockKey)) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("INFO", `⚡ [自动平仓拦截] ${cleanSymbol} 平仓/砍仓正在处理中，拒绝重复提交。`);
+            }
+            return;
+        }
+
+        // Debounce: prevent triggering within 5 seconds if a close was triggered recently
+        const lastCloseTime = recentlyClosedPositionsRef.current.get(lockKey);
+        if (lastCloseTime && Date.now() - lastCloseTime < 5000) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("INFO", `⚡ [自动平仓拦截] ${cleanSymbol} 5秒内已平仓/砍仓过，锁定冷却中。`);
+            }
+            return;
+        }
+
+        pendingClosesRef.current.add(lockKey);
+
         const closeQty = customQty !== undefined ? customQty : position.amount;
 
         if (simulatorRef.current) {
             simulatorRef.current.addLog("INFO", `⚡ [自动平仓触发] 策略触发平仓，正在向币安发送平仓请求: ${cleanSymbol} ${position.side} | 数量: ${closeQty.toFixed(4)} | 原因: ${reason}`);
         }
 
+        let isSuccess = false;
         try {
-            const response = await fetch("/api/binance/order", {
+            // Set up fetch with 20000ms timeout to support backend multi-node fallbacks
+            const fetchPromise = fetch("/api/binance/order", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -1364,10 +1567,35 @@ const AppContent: React.FC = () => {
                 })
             });
 
+            const timeoutPromise = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("Timeout")), 20000)
+            );
+
+            // Race fetch against 20-second timeout
+            const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+
             const resData = await response.json();
             if (response.ok && resData.success) {
+                isSuccess = true;
+                recentlyClosedPositionsRef.current.set(lockKey, Date.now());
                 if (simulatorRef.current) {
                     simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动平仓成功: ${cleanSymbol} ${position.side} | ID: ${resData.orderId}`);
+                    if (customQty !== undefined && ratio !== undefined) {
+                        // 🔒 [断臂求生实盘成功回调]
+                        const realizedPnL = (position.unrealizedPnL || 0) * (ratio / 100);
+                        simulatorRef.current.handleRealAmputationSuccess(
+                            cleanSymbol,
+                            position.side,
+                            customQty,
+                            ratio,
+                            reason,
+                            realizedPnL
+                        );
+                    } else {
+                        if (closeQty >= position.amount) {
+                            simulatorRef.current.removePositionLocally(cleanSymbol, position.side);
+                        }
+                    }
                 }
                 
                 const cleanSym = position.symbol.replace('USDT', '');
@@ -1384,14 +1612,26 @@ const AppContent: React.FC = () => {
             } else {
                 const errMsg = resData.error || "未知交易所错误";
                 if (simulatorRef.current) {
-                    simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动平仓失败: ${errMsg}`);
+                    simulatorRef.current.addLog("DANGER", `🚨 [平仓响应失败] 自动平仓失败: ${errMsg}`);
                 }
-                audioService.speak("自动平仓失败");
+                audioService.speak("警报，平仓/砍仓指令执行失败，请手动检查仓位", true);
+                // Wait/Sleep 3 seconds on failure before allowing retry
+                await new Promise(resolve => setTimeout(resolve, 3000));
             }
         } catch (e: any) {
             if (simulatorRef.current) {
-                simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动平仓网络异常: ${e.message || e}`);
+                simulatorRef.current.addLog("DANGER", `🚨 [平仓响应异常] 自动平仓网络异常或未收到响应: ${e.message || e}`);
             }
+            audioService.speak("警报，平仓网络异常，未收到回复指令，请立即手动核对仓位", true);
+            // Wait/Sleep 3 seconds on timeout/exception before allowing retry
+            await new Promise(resolve => setTimeout(resolve, 3000));
+        } finally {
+            // Always delay clearing the lock for a short duration to let Binance states settle
+            if (isSuccess) {
+                // For success, wait 2 seconds before removing lock to let API Sync run
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            pendingClosesRef.current.delete(lockKey);
         }
     }, []);
 
@@ -1402,6 +1642,21 @@ const AppContent: React.FC = () => {
         if (!apiKey || !apiSecret) {
             console.error("[Auto Refill] API keys not configured");
             return;
+        }
+
+        // 🛡️ [Hedge State Lock for Real Refill]
+        const isRescueRefill = reason.includes('断臂') || reason.includes('求生');
+        if (simulatorRef.current && !isRescueRefill) {
+            const activePositions = simulatorRef.current.getPositions();
+            const hasOppositeActive = activePositions.some(p => 
+                normalizeSymbol(p.symbol) === cleanSymbol && 
+                p.side !== position.side && 
+                p.amount > 0
+            );
+            if (hasOppositeActive) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲实盘补仓拦截] ${cleanSymbol} 处于双向持仓对冲状态，安全锁已激活，拒绝发送补仓指令。`);
+                return;
+            }
         }
 
         if (simulatorRef.current) {
@@ -1448,10 +1703,43 @@ const AppContent: React.FC = () => {
         }
     }, []);
 
+    const handleAutoReopen = useCallback(async (symbol: string, side: PositionSide, amountUsdt: number, reason: string, extraProps?: Partial<Position>) => {
+        const cleanSymbol = normalizeSymbol(symbol);
+        const apiKey = settingsRef.current.system.binanceApiKey;
+        const apiSecret = settingsRef.current.system.binanceApiSecret;
+        if (!apiKey || !apiSecret) {
+            console.error("[Auto Reopen] API keys not configured");
+            return;
+        }
+
+        if (simulatorRef.current) {
+            simulatorRef.current.addLog("INFO", `⚡ [自动复开延迟起步] 延迟 1.5 秒以确保币安平仓完全成交且完成同步...`);
+        }
+        
+        // 1.5 second delay to let Binance finish processing the previous close/amputation market orders
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        if (simulatorRef.current) {
+            simulatorRef.current.addLog("INFO", `⚡ [自动复开触发] 正在向币安发送开仓指令以完全复开原仓位: ${cleanSymbol} ${side} | 原始USDT本金: ${amountUsdt.toFixed(2)}U | 原因: ${reason}`);
+        }
+
+        try {
+            await handleOpenPosition(cleanSymbol, side, amountUsdt, 0, '1m', undefined, undefined, {
+                ...extraProps,
+                isReopened: true
+            });
+        } catch (e: any) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("DANGER", `🚨 [自动复开异常] 发送开仓指令失败: ${e.message || e}`);
+            }
+        }
+    }, [handleOpenPosition]);
+
     // Keep execution refs up to date on every render cycle to avoid stale closures
     onRealHedgeRef.current = handleAutoHedge;
     onRealCloseRef.current = handleAutoClose;
     onRealOpenRef.current = handleAutoOpenRefill;
+    onRealReopenRef.current = handleAutoReopen;
 
     // @LOCKED: Manually closed state logic
 const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(new Set());
@@ -1477,8 +1765,8 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 return;
             }
 
-            // Get position to close to find exact quantity from latest synced state
-            const posToClose = binanceRealPositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side === side);
+            // Get position to close to find exact quantity from latest synced state or active UI positions
+            const posToClose = combinedPositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side === side) || binanceRealPositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side === side);
             if (!posToClose) {
                 alert("错误: 未在当前实盘持仓中找到该仓位！");
                 return;
@@ -1507,6 +1795,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     if (simulatorRef.current) {
                         simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 平仓成功: ${cleanSymbol} ${side} | ID: ${resData.orderId}`);
                         simulatorRef.current.recordRealTradeLog(posToClose, '手动平仓');
+                        simulatorRef.current.removePositionLocally(cleanSymbol, side);
                     }
                     audioService.speak("实盘平仓执行成功");
 
@@ -1531,7 +1820,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         } else {
             simulatorRef.current?.closePosition(cleanSymbol, side, 'MANUAL');
         }
-    }, [binanceRealPositions]);
+    }, [combinedPositions, binanceRealPositions]);
 
     const handleBatchClose = useCallback(async () => {
         const isReal = settingsRef.current.system.realTrading;
@@ -1543,17 +1832,20 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 return;
             }
 
-            if (binanceRealPositions.length === 0) {
+            const positionsToClose = combinedPositions.length > 0 ? combinedPositions : binanceRealPositions;
+            const activePositionsToClose = positionsToClose.filter(p => p && p.amount > 0 && !p.isAmputatedToZero);
+
+            if (activePositionsToClose.length === 0) {
                 alert("没有当前持仓可以清仓。");
                 return;
             }
 
             if (simulatorRef.current) {
-                simulatorRef.current.addLog("INFO", `[实盘一键清仓] 正在向币安发送批量平仓指令，共 ${binanceRealPositions.length} 个仓位...`);
+                simulatorRef.current.addLog("INFO", `[实盘一键清仓] 正在向币安发送批量平仓指令，共 ${activePositionsToClose.length} 个仓位...`);
             }
 
             // Loop and close each position on Binance
-            for (const pos of binanceRealPositions) {
+            for (const pos of activePositionsToClose) {
                 try {
                     const cleanSymbol = normalizeSymbol(pos.symbol);
                     if (simulatorRef.current) {
@@ -1577,6 +1869,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         if (simulatorRef.current) {
                             simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 平仓成功: ${cleanSymbol} ${pos.side} | ID: ${resData.orderId}`);
                             simulatorRef.current.recordRealTradeLog(pos, '一键全平');
+                            simulatorRef.current.removePositionLocally(cleanSymbol, pos.side);
                         }
                     } else {
                         const errMsg = resData.error || "未知交易所错误";
@@ -1608,7 +1901,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(currentPositions));
             }
         }
-    }, [binanceRealPositions]);
+    }, [combinedPositions, binanceRealPositions]);
 
     const handleUpdateCustomSettings = useCallback((symbol: string, customSettings?: any) => {
         if (symbol === 'GLOBAL_MASTER_TOGGLE' || symbol === 'GLOBAL_CUSTODY_MODE') {
@@ -1673,6 +1966,19 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         const cleanSymbol = normalizeSymbol(position.symbol);
         const hedgeSide = position.side === PositionSide.LONG ? PositionSide.SHORT : PositionSide.LONG;
         
+        // Prevent manual hedge duplication
+        if (simulatorRef.current) {
+            const activePositions = simulatorRef.current.getPositions();
+            const existingHedge = activePositions.find(p => 
+                normalizeSymbol(p.symbol) === cleanSymbol && 
+                p.side === hedgeSide
+            );
+            if (existingHedge) {
+                alert(`🛡️ [手动对冲拦截] 该品种已存在 ${hedgeSide} 方向的对冲单，请勿重复开仓！`);
+                return;
+            }
+        }
+
         let activeHedgeRatio = settings.hedging?.hedgeRatio || 100;
         if (settings.stopLoss?.hedgeProfitClear) {
             activeHedgeRatio = settings.stopLoss?.hedgeOpenRatio || 100;

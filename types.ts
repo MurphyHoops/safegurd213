@@ -43,6 +43,7 @@ export interface Position {
     cumulativeHedgeLoss?: number;
     amputatedAmount?: number;
     cumulativeAmputationLoss?: number;
+    cumulativeAmputationProfit?: number;
     hedgeRetries?: number;
     mainPositionId?: string;
     strategyId?: string;
@@ -80,6 +81,10 @@ export interface Position {
     correlationId?: number; // Added: Correlation ID for hedge pairing
     parentEntryId?: string;
     isManual?: boolean;
+    isPendingSync?: boolean;
+    isAmputatedToZero?: boolean;
+    isBeingClosed?: boolean;
+    lastAmputationTime?: number;
 }
 
 export interface LogEntry {
@@ -155,6 +160,11 @@ export interface SimulationSettings {
     limit?: number;
 }
 
+export interface TrailingTier {
+    threshold: number;
+    floor: number;
+}
+
 export interface ConventionalSettings {
     minPosition: number;
     profitPercent: number;
@@ -163,6 +173,7 @@ export interface ConventionalSettings {
     trailingEnabled?: boolean;
     trailingTriggerProfit?: number;
     trailingRemainingProfit?: number;
+    trailingTiers?: TrailingTier[];
 }
 
 export interface AtrSettings {
@@ -305,6 +316,9 @@ export interface SystemSettings {
     realTrading?: boolean;
     symbolBlacklist?: string[];
     voiceBroadcast?: boolean;
+    enableAutoTransfer?: boolean;
+    autoTransferThreshold?: number;
+    autoTransferAmount?: number;
 }
 
 export interface ScannerSettings {
@@ -317,6 +331,7 @@ export interface ScannerSettings {
     customSymbols: string;
     useCustomOnly: boolean;
     batchSize: number;
+    scanInterval: number;
 }
 
 export interface TrendHunterSettings {

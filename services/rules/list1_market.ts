@@ -13,7 +13,8 @@ export function processMarketData(
     config: ScanConfig,
     customSymbolSet: Set<string>,
     fixedModeView: 'MONITOR' | 'SEARCH' = 'MONITOR',
-    majorTrendCandidates?: Set<string>
+    majorTrendCandidates?: Set<string>,
+    majorTrendLimits?: Record<string, { maxZ: number, minZ: number }>
 ): { list1: ScannerItem[], stats: MarketStats } {
     
     let up = 0, down = 0, btcChange = 0;
@@ -34,8 +35,28 @@ export function processMarketData(
         if (!t.symbol || !t.symbol.endsWith('USDT')) return;
         
         // Major Trend Filter (Stage 2)
-        if (isMajorTrendActive && !majorTrendCandidates.has(t.symbol)) {
-            return;
+        if (isMajorTrendActive) {
+            if (!majorTrendCandidates || !majorTrendCandidates.has(t.symbol)) {
+                return;
+            }
+        }
+
+        // Live Sideways Accumulation Check (using real-time price)
+        if (isMajorTrendActive && config.majorTrend?.enabled && config.majorTrend?.enableSideways && majorTrendLimits) {
+            const limitInfo = majorTrendLimits[t.symbol];
+            if (limitInfo) {
+                const price = parseFloat(t.lastPrice) || 0;
+                const maxZ = Math.max(limitInfo.maxZ, price);
+                const minZ = Math.min(limitInfo.minZ, price);
+
+                const dropFromMax = ((maxZ - price) / maxZ) * 100;
+                const riseFromMin = ((price - minZ) / minZ) * 100;
+
+                if (dropFromMax >= (config.majorTrend.sidewaysMaxDrop ?? 10) || 
+                    riseFromMin >= (config.majorTrend.sidewaysMaxPump ?? 10)) {
+                    return; // Exclude the coin dynamically in real-time
+                }
+            }
         }
 
         const price = parseFloat(t.lastPrice) || 0;
@@ -107,12 +128,17 @@ export function processMarketData(
         // OR if Major Trend is not active at all.
         // If Major Trend IS active, these candidates represent a different selection logic.
         filtered = allCandidates.filter(i => {
-            // Basic Volume filter usually applies to everyone for safety
-            if ((i.volume24h || 0) < config.minVolume) return false;
-            if (config.maxVolume > 0 && (i.volume24h || 0) > config.maxVolume) return false;
+            // Basic Volume filter usually applies to everyone for safety (unless explicitly disabled)
+            const check24h = config.enableVol24h !== false;
+            if (check24h) {
+                if ((i.volume24h || 0) < config.minVolume) return false;
+                if (config.maxVolume > 0 && (i.volume24h || 0) > config.maxVolume) return false;
+            }
 
-            // If this symbol is part of the Major Trend discovery, it BYPASSES regular change filters
-            if (isMajorTrendActive && majorTrendCandidates.has(i.symbol)) return true;
+            if (isMajorTrendActive) {
+                // If Major Trend is active, we ONLY allow coins that are in the majorTrendCandidates!
+                return majorTrendCandidates && majorTrendCandidates.has(i.symbol);
+            }
 
             // Regular filters for Config A / Standard Mode
             if (config.source === 'GAINERS' && (i.change || 0) <= 0) return false;

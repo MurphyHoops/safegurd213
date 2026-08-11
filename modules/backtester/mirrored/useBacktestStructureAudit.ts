@@ -61,8 +61,10 @@ export const useBacktestStructureAudit = (
     useEffect(() => {
         const configStr = JSON.stringify(config);
         if (configStr !== lastConfigStrRef.current) {
-            callbacksRef.current.onConfigUpdate(config);
             lastConfigStrRef.current = configStr;
+            setTimeout(() => {
+                callbacksRef.current.onConfigUpdate(config);
+            }, 0);
         }
     }, [config]);
 
@@ -90,8 +92,10 @@ export const useBacktestStructureAudit = (
                 if (resultsRef.current.length !== 0) {
                     lastResultsStrRef.current = '[]';
                     setResults([]);
-                    callbacksRef.current.onResultsUpdate([]);
                     resultsRef.current = [];
+                    setTimeout(() => {
+                        callbacksRef.current.onResultsUpdate([]);
+                    }, 0);
                 }
                 return;
             }
@@ -207,7 +211,9 @@ export const useBacktestStructureAudit = (
             lastResultsStrRef.current = resultsStr;
             resultsRef.current = newResults;
             setResults(newResults);
-            callbacksRef.current.onResultsUpdate(newResults);
+            setTimeout(() => {
+                callbacksRef.current.onResultsUpdate(newResults);
+            }, 0);
         }
     } finally {
         isScanningRef.current = false;

@@ -26,7 +26,7 @@ export const ActionSection: React.FC<Props> = ({ scanConfig, setScanConfig, scan
             <div className="flex items-center justify-between bg-slate-800/50 rounded p-1.5 mb-1 border border-slate-700/50 h-9">
                 {/* Left: Loop Input */}
                 <div className="flex items-center gap-1.5 border-r border-slate-700 pr-2 mr-2">
-                    <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">循环(min)</span>
+                    <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">循环(sec)</span>
                     <input type="number" min="1" value={Number.isNaN(scanInterval) ? '' : scanInterval} onChange={(e) => setScanInterval(Math.max(1, parseInt(e.target.value) || 1))} className="w-8 h-5 bg-slate-900 border border-slate-700 rounded text-center text-[10px] text-white outline-none font-bold focus:border-emerald-500" />
                 </div>
                 

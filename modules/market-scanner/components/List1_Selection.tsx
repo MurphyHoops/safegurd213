@@ -63,12 +63,18 @@ interface Props {
     // Strategy Props
     strategies?: StrategyItem[];
     selectedStrategyId?: string;
+    activeStrategyId?: string;
     onSelectStrategy?: (id: string) => void;
     onAddStrategy?: () => void;
     onDeleteStrategy?: (id: string) => void;
     onRenameStrategy?: (id: string, name: string) => void;
     onExportStrategy?: (id: string) => void;
     onImportStrategy?: (id: string, file: File) => void;
+    isRotationEnabled?: boolean;
+    rotationIntervalMinutes?: number;
+    rotationTimeLeft?: number;
+    onToggleRotation?: (enabled: boolean) => void;
+    onChangeRotationInterval?: (minutes: number) => void;
 }
 
 const List1_Selection: React.FC<Props> = ({ 
@@ -77,7 +83,12 @@ const List1_Selection: React.FC<Props> = ({
     onToggleSymbol, onSelectAll, onDeselectAll, onDeleteSymbol, onClearBlacklist, marketStats, nextScanTime, setChartData,
     mode = 'LIVE', downloadProgressMap = {}, onDownload,
     scannerMode, setScannerMode, majorTrendCandidates, isMajorScanning, majorProgress, runMajorTrendDiscovery, backtestProps,
-    strategies = [], selectedStrategyId = '', onSelectStrategy = () => {}, onAddStrategy = () => {}, onDeleteStrategy = () => {}, onRenameStrategy = () => {}, onExportStrategy, onImportStrategy
+    strategies = [], selectedStrategyId = '', activeStrategyId = '', onSelectStrategy = () => {}, onAddStrategy = () => {}, onDeleteStrategy = () => {}, onRenameStrategy = () => {}, onExportStrategy, onImportStrategy,
+    isRotationEnabled = false,
+    rotationIntervalMinutes = 5,
+    rotationTimeLeft = 0,
+    onToggleRotation = () => {},
+    onChangeRotationInterval = () => {}
 }) => {
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -105,6 +116,7 @@ const List1_Selection: React.FC<Props> = ({
         highToCurrentDeclinePct: number;
         lowDaysAgo: number;
         highDaysAgo: number;
+        isSidewaysMatch?: boolean;
         loading: boolean;
     }>>({});
 
@@ -201,6 +213,22 @@ const List1_Selection: React.FC<Props> = ({
                         const lowDaysAgo = minLowIdx !== -1 ? (periodKlines.length - 1 - minLowIdx) : 0;
                         const highDaysAgo = maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0;
 
+                        let isSidewaysMatch = true;
+                        if (enableSideways && highs.length > sidewaysDays) {
+                            const sidewaysHighs = highs.slice(-sidewaysDays);
+                            const sidewaysLows = lows.slice(-sidewaysDays);
+                            const maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
+                            const minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
+
+                            const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
+                            const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
+
+                            if (dropFromMax >= (scanConfig.majorTrend?.sidewaysMaxDrop ?? 10) || 
+                                riseFromMin >= (scanConfig.majorTrend?.sidewaysMaxPump ?? 10)) {
+                                isSidewaysMatch = false;
+                            }
+                        }
+
                         setMetricsCache(prev => ({
                             ...prev,
                             [symbol]: {
@@ -210,6 +238,7 @@ const List1_Selection: React.FC<Props> = ({
                                 highToCurrentDeclinePct,
                                 lowDaysAgo,
                                 highDaysAgo,
+                                isSidewaysMatch,
                                 loading: false
                             }
                         }));
@@ -304,7 +333,9 @@ const List1_Selection: React.FC<Props> = ({
                 (metrics.highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
                 (metrics.highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
 
-            return isLongMatch || isShortMatch;
+            const isSidewaysMatch = metrics.isSidewaysMatch !== false;
+
+            return (isLongMatch || isShortMatch) && isSidewaysMatch;
         });
     }, [sortedList1, metricsCache, scanConfig.majorTrend]);
 
@@ -343,6 +374,45 @@ const List1_Selection: React.FC<Props> = ({
                     </div>
                 </div>
 
+                {/* ⏳ Auto-Rotation Switch & Interval Control */}
+                <div className="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800 text-[10px] gap-2">
+                    <div className="flex items-center gap-1.5">
+                        <label className="relative inline-flex items-center cursor-pointer select-none">
+                            <input 
+                                type="checkbox" 
+                                checked={isRotationEnabled} 
+                                onChange={(e) => onToggleRotation(e.target.checked)}
+                                className="sr-only peer"
+                            />
+                            <div className="w-7 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600 peer-checked:after:bg-white"></div>
+                            <span className="ml-1.5 font-bold text-slate-300">自动轮循</span>
+                        </label>
+                    </div>
+
+                    {isRotationEnabled && (
+                        <div className="text-slate-500 font-bold shrink-0">
+                            倒计时: <span className="text-amber-400 font-mono">{Math.floor(rotationTimeLeft / 60)}分{String(rotationTimeLeft % 60).padStart(2, '0')}秒</span>
+                        </div>
+                    )}
+
+                    <div className="flex items-center gap-1 text-slate-400">
+                        <span className="shrink-0">间隔:</span>
+                        <input
+                            type="number"
+                            min={1}
+                            max={120}
+                            value={rotationIntervalMinutes}
+                            onChange={(e) => {
+                                const val = Math.max(1, parseInt(e.target.value) || 1);
+                                onChangeRotationInterval(val);
+                            }}
+                            className="bg-slate-950 border border-slate-800 rounded px-1 py-0.5 text-slate-200 font-mono text-[9px] font-bold w-10 text-center focus:outline-none focus:border-indigo-500"
+                            title="每个策略轮流扫描的时间（分钟）"
+                        />
+                        <span className="shrink-0 text-slate-500">分</span>
+                    </div>
+                </div>
+
                 {/* Strategy Tabs */}
                 <div className="flex flex-wrap gap-1 items-center">
                     {strategies.map((strat) => {
@@ -372,9 +442,17 @@ const List1_Selection: React.FC<Props> = ({
                                     />
                                 ) : (
                                     <span
-                                        className="cursor-pointer select-none py-0.5"
+                                        className="cursor-pointer select-none py-0.5 flex items-center gap-1"
                                         onClick={() => onSelectStrategy(strat.id)}
                                     >
+                                        {activeStrategyId === strat.id && (
+                                            <div className="flex items-center gap-1 shrink-0">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                                {isRotationEnabled && (
+                                                    <RotateCw size={9} className="text-emerald-400 animate-spin" />
+                                                )}
+                                            </div>
+                                        )}
                                         {strat.name}
                                     </span>
                                 )}

@@ -14,6 +14,8 @@ import {
   ChevronRight,
   CircleDot,
   History,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { List4Config } from "../../../components/Scanner/scannerTypes";
 import { RulesModal } from "./RulesModal";
@@ -34,6 +36,15 @@ export const List4Control: React.FC<List4PanelProps> = ({
   const [isAutoDirGuardCollapsed, setIsAutoDirGuardCollapsed] = useState(true);
   const [isAdvancedFilterCollapsed, setIsAdvancedFilterCollapsed] = useState(true);
   const [isAutoRemoveCollapsed, setIsAutoRemoveCollapsed] = useState(true);
+  const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('list4_control_collapsed') === 'true');
+
+  const toggleCollapse = () => {
+    setIsCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem('list4_control_collapsed', String(next));
+      return next;
+    });
+  };
 
   const setAntiChase = (field: string, val: number) => {
     setConfig((p) => ({
@@ -176,26 +187,34 @@ export const List4Control: React.FC<List4PanelProps> = ({
   ];
 
   return (
-    <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-2 shrink-0 relative overflow-y-auto max-h-[500px] custom-scrollbar">
-      <div className="flex items-center justify-between">
+    <div className={`p-3 bg-slate-900 border-b border-slate-800 shrink-0 relative ${isCollapsed ? '' : 'overflow-y-auto max-h-[500px] custom-scrollbar space-y-2'}`}>
+      <div className="flex items-center justify-between cursor-pointer select-none" onClick={toggleCollapse}>
         <div className="font-bold text-amber-500 text-sm flex items-center gap-2">
           <Flame size={14} /> 4. 动能审计 (MOMENTUM)
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setShowRules(true)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowRules(true);
+            }}
             className="text-slate-500 hover:text-amber-400 transition-colors"
             title="查看防守线规则"
           >
             <Info size={12} />
           </button>
+          <div className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300">
+            <span>{isCollapsed ? '展开设置' : '折叠设置'}</span>
+            {isCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </div>
         </div>
       </div>
 
       {/* Rules & History Modals */}
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
 
-      <div className="space-y-2">
+      {!isCollapsed && (
+        <div className="space-y-2">
         <div className="flex items-center justify-between bg-amber-900/30 px-3 py-2 rounded border border-amber-500/40 shadow-sm">
           <div className="flex items-center gap-1.5 text-amber-300 font-bold text-[11px]">
             <Zap size={14} className="text-amber-400 fill-amber-400/20" />
@@ -869,6 +888,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 };

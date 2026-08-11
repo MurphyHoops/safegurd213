@@ -23,6 +23,24 @@ export function checkHedgingRules(
     const entryValue = position.amount * position.entryPrice;
     const minPositionThreshold = Number(hedgeSettings.minPosition ?? 10);
 
+    // 🛡️ [Minimum Position Size Safeguard]
+    // If the entry value of the position is less than the configured minPosition threshold,
+    // we absolutely block automatic hedging to prevent dust or micro-positions from triggering hedges.
+    if (entryValue < minPositionThreshold) {
+        return false;
+    }
+
+    // 🛡️ [Extreme Price/PnL Anomaly Safeguard]
+    // Under 20x leverage, a raw price drop of >25% would require 500% margin loss, which is mathematically impossible
+    // for an active, unliquidated position on Binance. If unrealizedPnLPercentage is below -25% (e.g. -99.9%),
+    // it is 100% a pricing/precision mismatch (e.g. SHIB vs 1000SHIB). We must block automatic hedging to prevent
+    // disastrous false-positive trades in real-trading.
+    const pnlPercent = position.unrealizedPnLPercentage;
+    if (pnlPercent < -25) {
+        console.warn(`[Hedge Blocked] Anomaly detected for ${position.symbol}: Calculated loss is ${pnlPercent.toFixed(2)}%, which exceeds the -25% safety ceiling. Blocking auto-hedge.`);
+        return false;
+    }
+
     // 4. 熔断检查 (Fuse Check)
     const slSettings = settings.stopLoss;
     if (slSettings.fuseEnabled) {
@@ -37,7 +55,6 @@ export function checkHedgingRules(
     let triggerReason = "";
 
     // A. 亏损比例检查
-    const pnlPercent = position.unrealizedPnLPercentage;
     let lossHedgeTriggered = false;
     if (hedgeSettings.triggerLossEnabled !== false) {
         const triggerLossPercentValue = Number(hedgeSettings.triggerLossPercent ?? 1.0);

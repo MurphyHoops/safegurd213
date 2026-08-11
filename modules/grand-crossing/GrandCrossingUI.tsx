@@ -88,7 +88,9 @@ export const GrandCrossingModule: React.FC<Props> = ({
         const str = JSON.stringify(outputList);
         if (str !== lastListStrRef.current) {
             lastListStrRef.current = str;
-            onResultsUpdate(outputList);
+            setTimeout(() => {
+                onResultsUpdate(outputList);
+            }, 0);
         }
     }, [list2, config?.syncDirectionFilterToList3, config?.viewMode, onResultsUpdate]);
 

@@ -43,11 +43,11 @@ Do NOT modify this logic or settings unless explicitly instructed to fix a criti
 - `/components/ScannerDashboard.tsx` (Specifically the `useEffect` instant open hook, refs, and closed-loop execution triggers) - **STRICTLY LOCKED**
 Do NOT modify this logic or settings unless explicitly instructed to fix a critical regression.
 
-## List 1 Big Market Trend Discovery - Code Lock
-**CRITICAL**: The core logic, parameters, and UI controls for the List 1 "大行情发现模式" (Big Market Trend Discovery Mode), including direction switches (enableLong, enableShort) and sideways switch (enableSideways), are now strictly locked.
-- `/modules/market-scanner/useScannerLogic.ts` (Specifically `runMajorTrendDiscovery` filter logic) - **STRICTLY LOCKED**
-- `/modules/market-scanner/components/MajorTrendSection.tsx` (Specifically the custom core and sideways UI switches) - **STRICTLY LOCKED**
-- `/components/Scanner/scannerTypes.ts` (Specifically the `MajorTrendConfig` switches definition) - **STRICTLY LOCKED**
+## List 1 Big Market Trend Discovery - Modified
+**NOTE**: The core logic, parameters, and UI controls for the List 1 "大行情发现模式" (Big Market Trend Discovery Mode) were unlocked and modified on 2026-08-01 per user request to change the "Sideways Consolidation" (横盘蓄势) logic.
+- `/modules/market-scanner/useScannerLogic.ts` (Specifically `runMajorTrendDiscovery` filter logic) - **MODIFIED**
+- `/modules/market-scanner/components/MajorTrendSection.tsx` (Specifically the custom core and sideways UI switches) - **MODIFIED**
+- `/components/Scanner/scannerTypes.ts` (Specifically the `MajorTrendConfig` switches definition) - **UNLOCKED**
 Do NOT modify this logic or settings unless explicitly instructed to fix a critical regression.
 
 ## Real-time Price Push & Position Sync Engine - Code Lock
@@ -59,5 +59,18 @@ Do NOT modify this logic or settings unless explicitly instructed to fix a criti
 - `/modules/live-battlefield/components/PositionRow.tsx` - **LOCKED**
 - `/modules/positions-list/components/PositionItem.tsx` - **LOCKED**
 Do NOT modify this logic, subscriptions, or rendering pipelines unless explicitly instructed to fix a critical regression.
+
+## WebSocket Real-time Ticking Thread Safety - Code Lock
+**CRITICAL**: The high-frequency WebSocket tick throttling mechanism in `App.tsx` is strictly locked. 
+- In `/App.tsx` (Specifically the `binanceWs.subscribe` callback logic and `lastInstantTickTimeRef` checks) - **STRICTLY LOCKED**
+This prevents event loop starvation, browser freezes, and subsequent unhandled rendering crashes ("blue/white screens"). The tick frequency MUST remain throttled to >= 150ms. Do NOT remove this throttling layer!
+
+## Real-trading Automated Execution & Auto-Reopen - Code Lock
+**CRITICAL**: The core logic, callbacks, and safety parameters for the Binance real-trading automated execution, partial amputation callbacks, and automatic reopening mechanisms are now strictly locked.
+- `/services/marketSimulator.ts` (Specifically real-trading execution hooks `onRealClose`, `onRealReopen`, `handleRealAmputationSuccess`, and reopen limit checks in `reopenPosition`) - **STRICTLY LOCKED**
+- `/App.tsx` (Specifically the setup callbacks `sim.onRealClose`/`sim.onRealReopen`, real-trading position opening rules bypass logic `extraProps?.isReopened`, and delayed execution handlers `handleAutoReopen`) - **STRICTLY LOCKED**
+Do NOT modify this logic, timing delays, or synchronization rules unless explicitly requested with a specific confirmation directive.
+
+
 
 

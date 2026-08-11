@@ -4,7 +4,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
     profit: {
         enabled: true,
         profitMode: 'SMART',
-        conventional: { minPosition: 100, profitPercent: 5, callbackPercent: 1, closePercent: 100, trailingEnabled: false, trailingTriggerProfit: 5, trailingRemainingProfit: 2 },
+        conventional: { 
+            minPosition: 100, 
+            profitPercent: 5, 
+            callbackPercent: 1, 
+            closePercent: 100, 
+            trailingEnabled: false, 
+            trailingTriggerProfit: 5, 
+            trailingRemainingProfit: 2,
+            trailingTiers: [
+                { threshold: 6, floor: 2 },
+                { threshold: 12, floor: 4 },
+                { threshold: 24, floor: 8 },
+                { threshold: 48, floor: 16 }
+            ]
+        },
         atr: { 
             multiplier: 3.0, 
             volatilityPercent: 1.0,
@@ -89,7 +103,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
     },
     martingale: { enabled: false },
-    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: ['XMR', 'LIT'], voiceBroadcast: true },
+    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: ['XMR', 'LIT'], voiceBroadcast: true, enableAutoTransfer: false, autoTransferThreshold: 1000, autoTransferAmount: 200 },
     scanner: {
         minVolume: 1, 
         maxVolume: 0,
@@ -99,7 +113,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
         limit: 520,   
         customSymbols: '',
         useCustomOnly: false,
-        batchSize: 40
+        batchSize: 40,
+        scanInterval: 10
     },
     trendHunter: { enabled: false }
 };

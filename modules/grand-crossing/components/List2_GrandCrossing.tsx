@@ -118,7 +118,25 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                 {showVisualizer && (
                     <ScannerVisualizerModal 
                         title="2. 绝对防御"
-                        items={displayList.map(i => ({ symbol: i.symbol, timeframe: i.tf }))}
+                        items={displayList.map(i => {
+                            const tf = i.tf || activeFilterTf || '15m';
+                            const signals: { time: number, type: 'LONG' | 'SHORT' }[] = [];
+                            i.groupedResults?.forEach(res => {
+                                if (res.tf === tf && res.crossingTimes) {
+                                    res.crossingTimes.forEach(t => {
+                                        signals.push({ time: t, type: res.direction || 'LONG' });
+                                    });
+                                }
+                            });
+                            return {
+                                symbol: i.symbol,
+                                timeframe: tf,
+                                signals: signals,
+                                currentPrice: i.price,
+                                showAuditLines: false,
+                                entryPrice: i.price, // Same as currentPrice as list2 entry representation
+                            };
+                        })}
                         defaultTf={activeFilterTf || '15m'}
                         list2Config={config}
                         onClose={() => setShowVisualizer(false)}

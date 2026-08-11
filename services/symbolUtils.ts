@@ -9,14 +9,14 @@ export const normalizeSymbol = (s: string): string => {
     return s.toUpperCase()
         .trim()
         .replace(/_PREP$/, '')
-        .replace(/USDT$/, '') // Only remove if it's at the end
+        .replace(/USDT$/, '')
         .replace(/[^A-Z0-9]/g, '');
 };
 
 export const isMemeScaledCoin = (symbol: string): boolean => {
     if (!symbol) return false;
     const clean = symbol.toUpperCase().replace(/^1000/, '').replace(/USDT$/, '').trim();
-    const scaleMemeSymbols = ['PEPE', 'SHIB', 'BONK', 'FLOKI', 'LUNC', 'SATS', 'RATS', 'XEC', 'BABYDOGE', 'CATI'];
+    const scaleMemeSymbols = ['PEPE', 'SHIB', 'BONK', 'FLOKI', 'LUNC', 'SATS', 'RATS', 'XEC', 'BABYDOGE', 'CATI', 'CAT'];
     return scaleMemeSymbols.includes(clean);
 };
 
