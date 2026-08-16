@@ -12,15 +12,11 @@ export function processMarketData(
     rawData: any[], 
     config: ScanConfig,
     customSymbolSet: Set<string>,
-    fixedModeView: 'MONITOR' | 'SEARCH' = 'MONITOR',
-    majorTrendCandidates?: Set<string>,
-    majorTrendLimits?: Record<string, { maxZ: number, minZ: number }>
+    fixedModeView: 'MONITOR' | 'SEARCH' = 'MONITOR'
 ): { list1: ScannerItem[], stats: MarketStats } {
     
     let up = 0, down = 0, btcChange = 0;
     const allCandidates: ScannerItem[] = [];
-
-    const isMajorTrendActive = config.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0 && !config.useCustomOnly;
 
     // Safety check: if rawData is not an array (e.g. API error object), return empty
     if (!Array.isArray(rawData)) {
@@ -33,31 +29,6 @@ export function processMarketData(
     // 1. First Pass: Stats & Normalization
     rawData.forEach((t: any) => {
         if (!t.symbol || !t.symbol.endsWith('USDT')) return;
-        
-        // Major Trend Filter (Stage 2)
-        if (isMajorTrendActive) {
-            if (!majorTrendCandidates || !majorTrendCandidates.has(t.symbol)) {
-                return;
-            }
-        }
-
-        // Live Sideways Accumulation Check (using real-time price)
-        if (isMajorTrendActive && config.majorTrend?.enabled && config.majorTrend?.enableSideways && majorTrendLimits) {
-            const limitInfo = majorTrendLimits[t.symbol];
-            if (limitInfo) {
-                const price = parseFloat(t.lastPrice) || 0;
-                const maxZ = Math.max(limitInfo.maxZ, price);
-                const minZ = Math.min(limitInfo.minZ, price);
-
-                const dropFromMax = ((maxZ - price) / maxZ) * 100;
-                const riseFromMin = ((price - minZ) / minZ) * 100;
-
-                if (dropFromMax >= (config.majorTrend.sidewaysMaxDrop ?? 10) || 
-                    riseFromMin >= (config.majorTrend.sidewaysMaxPump ?? 10)) {
-                    return; // Exclude the coin dynamically in real-time
-                }
-            }
-        }
 
         const price = parseFloat(t.lastPrice) || 0;
         const volume = parseFloat(t.quoteVolume) || 0; // Raw volume
@@ -124,9 +95,6 @@ export function processMarketData(
             }
         });
     } else {
-        // Standard Filters apply ONLY to coins NOT in the Major Trend Candidate list, 
-        // OR if Major Trend is not active at all.
-        // If Major Trend IS active, these candidates represent a different selection logic.
         filtered = allCandidates.filter(i => {
             // Basic Volume filter usually applies to everyone for safety (unless explicitly disabled)
             const check24h = config.enableVol24h !== false;
@@ -135,9 +103,10 @@ export function processMarketData(
                 if (config.maxVolume > 0 && (i.volume24h || 0) > config.maxVolume) return false;
             }
 
-            if (isMajorTrendActive) {
-                // If Major Trend is active, we ONLY allow coins that are in the majorTrendCandidates!
-                return majorTrendCandidates && majorTrendCandidates.has(i.symbol);
+            if (config.majorTrend?.enabled) {
+                // In Major Trend Discovery Mode, we allow all basic tickers that pass Volume checks
+                // Deep metrics filtering is handled dynamically by the frontend UI
+                return true;
             }
 
             // Regular filters for Config A / Standard Mode

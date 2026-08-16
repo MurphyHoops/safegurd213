@@ -46,28 +46,6 @@ export const WatchlistSection: React.FC<Props> = ({
         return localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') || 'strat-1';
     }, []);
 
-    const majorTrendCandidates = useMemo(() => {
-        try {
-            const saved = localStorage.getItem(`SCANNER_MAJOR_TREND_CANDIDATES_${activeStrategyId}`);
-            if (saved) {
-                const parsed = JSON.parse(saved);
-                return new Set<string>(Array.isArray(parsed) ? parsed : []);
-            }
-            return new Set<string>();
-        } catch (e) {
-            return new Set<string>();
-        }
-    }, [activeStrategyId]);
-
-    const majorTrendLimits = useMemo(() => {
-        try {
-            const saved = localStorage.getItem(`SCANNER_MAJOR_TREND_LIMITS_${activeStrategyId}`);
-            return saved ? JSON.parse(saved) : undefined;
-        } catch (e) {
-            return undefined;
-        }
-    }, [activeStrategyId]);
-
     const autoCandidates = useMemo(() => {
         try {
             const raw = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
@@ -78,15 +56,13 @@ export const WatchlistSection: React.FC<Props> = ({
                 parsed,
                 { ...scanConfig, useCustomOnly: false },
                 new Set(),
-                'MONITOR',
-                majorTrendCandidates,
-                majorTrendLimits
+                'MONITOR'
             );
             return filtered;
         } catch (e) {
             return [];
         }
-    }, [scanConfig, majorTrendCandidates, majorTrendLimits]);
+    }, [scanConfig]);
 
     const handleSelectDropdown = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const val = e.target.value;

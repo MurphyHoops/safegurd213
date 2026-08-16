@@ -32,7 +32,9 @@ export function analyzeList2Crossing(
     const flatLookback = config.flatLookback !== undefined ? config.flatLookback : 50;
     const flatThreshold = config.flatThreshold !== undefined ? config.flatThreshold : 5;
     const strictFiltering = config.strictFiltering !== undefined ? config.strictFiltering : true;
-    const retentionThreshold = config.newModeRetention ?? 9;
+    const retentionThreshold = (config as any).maxLag !== undefined
+        ? (config as any).maxLag
+        : (config.lookbackBars ?? 5);
     
     // We scan deeper to correctly identify the START of continuous signals (like alignment)
     // so we can expire them after 'retentionThreshold' bars.
@@ -231,6 +233,75 @@ export function analyzeList2Crossing(
                     }
                 }
 
+                // [NEW FILTER] Check if EMA10 has crossed EMA20, EMA30, and EMA40 within the preceding 20 bars of the divergence formation
+                let crossedAllL = true;
+                let crossedAllS = true;
+
+                // 2026-08-15: 用户指令关闭 && isFirstDivergenceL 要求，只要对齐就往前判断20根K线是否穿越
+                // 这些功能的失效是从来都没有下指令的，以后在没特别下指令的时候，你绝对不能乱修改程序里的功能；【如果有特别原因需要涉及其它功能修改的，必须要在询问，等待我确认后再修改】
+                if (isAlignedL /* && isFirstDivergenceL */) {
+                    let crossed20 = false;
+                    let crossed30 = false;
+                    let crossed40 = false;
+                    for (let b = 1; b <= 20; b++) {
+                        const bIdx = checkIdx - b;
+                        if (bIdx - 1 < 80) break;
+
+                        const cur10 = getEmaVal(ema10, bIdx, 10);
+                        const cur20 = getEmaVal(ema20, bIdx, 20);
+                        const cur30 = getEmaVal(ema30, bIdx, 30);
+                        const cur40 = getEmaVal(ema40, bIdx, 40);
+
+                        const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                        const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                        const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                        const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+
+                        if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
+                            if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                        }
+                        if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
+                            if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
+                        }
+                        if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
+                            if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
+                        }
+                    }
+                    crossedAllL = crossed20 && crossed30 && crossed40;
+                }
+
+                // 2026-08-15: 用户指令关闭 && isFirstDivergenceS 要求，只要对齐就往前判断20根K线是否穿越
+                if (isAlignedS /* && isFirstDivergenceS */) {
+                    let crossed20 = false;
+                    let crossed30 = false;
+                    let crossed40 = false;
+                    for (let b = 1; b <= 20; b++) {
+                        const bIdx = checkIdx - b;
+                        if (bIdx - 1 < 80) break;
+
+                        const cur10 = getEmaVal(ema10, bIdx, 10);
+                        const cur20 = getEmaVal(ema20, bIdx, 20);
+                        const cur30 = getEmaVal(ema30, bIdx, 30);
+                        const cur40 = getEmaVal(ema40, bIdx, 40);
+
+                        const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                        const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                        const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                        const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+
+                        if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
+                            if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                        }
+                        if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
+                            if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
+                        }
+                        if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
+                            if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
+                        }
+                    }
+                    crossedAllS = crossed20 && crossed30 && crossed40;
+                }
+
                 const candleRange = kHigh - kLow;
                 const amp = kOpen > 0 ? (candleRange / kOpen) * 100 : 0;
                 const volSlice = volumes.slice(Math.max(0, checkIdx - 20), checkIdx);
@@ -243,12 +314,14 @@ export function analyzeList2Crossing(
                 let satisfiesTriggersL = false;
                 if (config.requireCrossing && config.requireAlignment) {
                     const satisfiesCrossing = isCrossing && (kClose >= kOpen); // Green crossing
-                    const satisfiesAlignment = isAlignedL && isFirstDivergenceL && alignmentValidByCrossingL;
-                    if (satisfiesCrossing || satisfiesAlignment) satisfiesTriggersL = true;
+                    // 2026-08-15: 用户指令关闭 isFirstDivergenceL 和 alignmentValidByCrossingL ("一穿四") 过滤
+                    const satisfiesAlignment = isAlignedL && crossedAllL; // && isFirstDivergenceL && alignmentValidByCrossingL;
+                    if (satisfiesCrossing && satisfiesAlignment) satisfiesTriggersL = true;
                 } else if (config.requireCrossing) {
                     if (isCrossing && (kClose >= kOpen)) satisfiesTriggersL = true;
                 } else if (config.requireAlignment) {
-                    if (isAlignedL && isFirstDivergenceL && alignmentValidByCrossingL) satisfiesTriggersL = true;
+                    // 2026-08-15: 用户指令关闭 isFirstDivergenceL 和 alignmentValidByCrossingL ("一穿四") 过滤
+                    if (isAlignedL && crossedAllL /* && isFirstDivergenceL && alignmentValidByCrossingL */) satisfiesTriggersL = true;
                 } else {
                     if (kClose >= kOpen) satisfiesTriggersL = true; // Squeeze green candle
                 }
@@ -257,12 +330,14 @@ export function analyzeList2Crossing(
                 let satisfiesTriggersS = false;
                 if (config.requireCrossing && config.requireAlignment) {
                     const satisfiesCrossing = isCrossing && (kClose < kOpen); // Red crossing
-                    const satisfiesAlignment = isAlignedS && isFirstDivergenceS && alignmentValidByCrossingS;
-                    if (satisfiesCrossing || satisfiesAlignment) satisfiesTriggersS = true;
+                    // 2026-08-15: 用户指令关闭 isFirstDivergenceS 和 alignmentValidByCrossingS ("一穿四") 过滤
+                    const satisfiesAlignment = isAlignedS && crossedAllS; // && isFirstDivergenceS && alignmentValidByCrossingS;
+                    if (satisfiesCrossing && satisfiesAlignment) satisfiesTriggersS = true;
                 } else if (config.requireCrossing) {
                     if (isCrossing && (kClose < kOpen)) satisfiesTriggersS = true;
                 } else if (config.requireAlignment) {
-                    if (isAlignedS && isFirstDivergenceS && alignmentValidByCrossingS) satisfiesTriggersS = true;
+                    // 2026-08-15: 用户指令关闭 isFirstDivergenceS 和 alignmentValidByCrossingS ("一穿四") 过滤
+                    if (isAlignedS && crossedAllS /* && isFirstDivergenceS && alignmentValidByCrossingS */) satisfiesTriggersS = true;
                 } else {
                     if (kClose < kOpen) satisfiesTriggersS = true; // Squeeze red candle
                 }

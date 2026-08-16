@@ -162,6 +162,7 @@ export interface ScannerItem {
 export interface List2Config {
     timeframes: string[];
     newModeRetention?: number; 
+    lookbackBars?: number;
     volMultiplier: number;
     squeezeThreshold: number; 
     maxAmplitude: number;     

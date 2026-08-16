@@ -12,20 +12,36 @@ interface Props {
 export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
     return (
         <div className="space-y-3">
-            {/* ROW 1: Signal Retention */}
-            <div className="bg-slate-800/50 p-2 rounded border border-slate-700/50 flex items-center justify-between">
+            {/* ROW 1: Signal Retention & Lookback */}
+            <div className="bg-slate-800/50 p-2 rounded border border-slate-700/50 space-y-2">
                 <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-bold">
-                    <History size={11} className="text-emerald-500"/> 信号存续 (Retention)
+                    <History size={11} className="text-emerald-500"/> 信号存续 (Retention & Lookback)
                 </div>
-                <div className="flex items-center gap-2 bg-slate-900/50 rounded px-2 py-1 border border-slate-800/50">
-                    <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">消失阈值 (K线数)</span>
-                    <input 
-                        type="number" 
-                        value={Number.isNaN(config.newModeRetention) ? '' : (config.newModeRetention ?? 9)} 
-                        onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, newModeRetention: parseInt(e.target.value) || 0})); }} 
-                        className="w-10 bg-transparent text-right text-[10px] font-bold text-orange-400 outline-none p-0 border-b border-orange-500/30 focus:border-orange-500" 
-                    />
-                    <Hourglass size={10} className="text-orange-500/70"/>
+                <div className="grid grid-cols-2 gap-2">
+                    <div className="flex items-center justify-between bg-slate-900/50 rounded px-2 py-1 border border-slate-800/50">
+                        <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">访问过去 (Lookback)</span>
+                        <div className="flex items-center gap-1">
+                            <input 
+                                type="number" 
+                                value={Number.isNaN(config.lookbackBars) ? '' : (config.lookbackBars ?? 5)} 
+                                onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, lookbackBars: parseInt(e.target.value) || 0})); }} 
+                                className="w-6 bg-transparent text-right text-[10px] font-bold text-cyan-400 outline-none p-0 border-b border-cyan-500/30 focus:border-cyan-500" 
+                            />
+                            <span className="text-[9px] text-slate-500 font-bold">根</span>
+                        </div>
+                    </div>
+                    <div className="flex items-center justify-between bg-slate-900/50 rounded px-2 py-1 border border-slate-800/50">
+                        <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">寿命根数 (Retention)</span>
+                        <div className="flex items-center gap-1">
+                            <input 
+                                type="number" 
+                                value={Number.isNaN(config.newModeRetention) ? '' : (config.newModeRetention ?? 9)} 
+                                onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, newModeRetention: parseInt(e.target.value) || 0})); }} 
+                                className="w-6 bg-transparent text-right text-[10px] font-bold text-orange-400 outline-none p-0 border-b border-orange-500/30 focus:border-orange-500" 
+                            />
+                            <span className="text-[9px] text-slate-500 font-bold">根</span>
+                        </div>
+                    </div>
                 </div>
             </div>
 

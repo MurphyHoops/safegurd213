@@ -14,6 +14,17 @@ interface Props {
     onDeleteSymbol: (symbol: string) => void;
     setChartData: (data: any) => void;
     mode?: 'LIVE' | 'BACKTEST' | 'SMART';
+    extremeMetrics?: {
+        maxDeclinePct: number;
+        maxIncreasePct: number;
+        lowToCurrentIncreasePct: number;
+        highToCurrentDeclinePct: number;
+        lowDaysAgo: number;
+        highDaysAgo: number;
+        loading: boolean;
+        minPeriodLow?: number;
+        maxPeriodHigh?: number;
+    };
     downloadProgress?: number; // 0-100
     onDownload?: (symbol: string) => void;
 }
@@ -27,7 +38,7 @@ const KLINE_1H_CACHE: Record<string, { timestamp: number; klines: any[] }> =
 
 export const List1Item: React.FC<Props> = ({ 
     item, idx, scanConfig, fixedModeView, customSymbolSet, onToggleSymbol, onDeleteSymbol, setChartData,
-    mode = 'LIVE', downloadProgress, onDownload
+    mode = 'LIVE', extremeMetrics, downloadProgress, onDownload
 }) => {
     if (!item || !item.symbol) return null;
     
@@ -42,51 +53,17 @@ export const List1Item: React.FC<Props> = ({
     const [loadingKlines, setLoadingKlines] = useState(false);
 
     useEffect(() => {
-        let active = true;
-        const fetchHistory = async () => {
-            const limit = lookbackDays + 20;
-            const now = Date.now();
-            
-            const symbolCache = KLINE_LIMIT_CACHE[item.symbol] || {};
-            const cached = symbolCache[lookbackDays];
-            if (cached && now - cached.timestamp < 10 * 60 * 1000) { // 10 minutes cache
-                setKlines(cached.klines);
-                return;
-            }
-
-            setLoadingKlines(true);
-            try {
-                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=${limit}`;
-                const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d));
-                const data = await res.json();
-                if (Array.isArray(data) && active) {
-                    if (!KLINE_LIMIT_CACHE[item.symbol]) {
-                        KLINE_LIMIT_CACHE[item.symbol] = {};
-                    }
-                    KLINE_LIMIT_CACHE[item.symbol][lookbackDays] = {
-                        timestamp: now,
-                        klines: data
-                    };
-                    setKlines(data);
-                }
-            } catch (err: any) {
-                if (err.message && (err.message.includes('400') || err.message.includes('404'))) {
-                    console.warn("Skipping klines for invalid/unavailable symbol: " + item.symbol);
-                } else {
-                    console.error("Failed to fetch klines for " + item.symbol, err);
-                }
-            } finally {
-                if (active) {
-                    setLoadingKlines(false);
-                }
-            }
-        };
-
-        fetchHistory();
-        return () => {
-            active = false;
-        };
-    }, [item.symbol, lookbackDays]);
+        if (extremeMetrics) {
+            // Already calculated and cached by parent, no need to fetch daily history
+            return;
+        }
+        if (mode === 'BACKTEST') {
+            return;
+        }
+        // In LIVE mode, the parent List1_Selection pre-calculates and caches daily history sequentially.
+        // Child components should skip making duplicate parallel fetches to prevent network storms.
+        return;
+    }, [item.symbol, lookbackDays, extremeMetrics, mode]);
 
     const [intervalsData, setIntervalsData] = useState<Record<string, { klines: any[]; loading: boolean }>>({
         '1h': { klines: [], loading: false },
@@ -105,65 +82,77 @@ export const List1Item: React.FC<Props> = ({
     ];
 
     useEffect(() => {
+        if (mode === 'BACKTEST') {
+            // Completely disable multi-interval live fetching in BACKTEST mode to maximize performance
+            return;
+        }
+
         let active = true;
-        const fetchAllIntervals = async () => {
-            const limit = 30;
-            const now = Date.now();
 
-            setIntervalsData(prev => {
-                const updated = { ...prev };
-                for (const cfg of intervalMap) {
-                    updated[cfg.key] = { ...updated[cfg.key], loading: true };
-                }
-                return updated;
-            });
+        // Introduce a 1200ms debounce/delay timer before fetching auxiliary intervals.
+        // This ensures rapid layout/candidate refreshes do not spam standard Binance API endpoints.
+        const delayTimer = setTimeout(() => {
+            const fetchAllIntervals = async () => {
+                const limit = 30;
+                const now = Date.now();
 
-            const promises = intervalMap.map(async (cfg) => {
-                const KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE || {};
-                if (!KLINE_INTERVAL_CACHE[item.symbol]) {
-                    KLINE_INTERVAL_CACHE[item.symbol] = {};
-                }
-
-                const cached = KLINE_INTERVAL_CACHE[item.symbol][cfg.interval];
-                if (cached && now - cached.timestamp < 5 * 60 * 1000) { // 5 mins cache
-                    return { key: cfg.key, klines: cached.klines };
-                }
-
-                try {
-                    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${cfg.interval}&limit=${limit}`;
-                    const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d));
-                    const data = await res.json();
-                    if (Array.isArray(data)) {
-                        KLINE_INTERVAL_CACHE[item.symbol][cfg.interval] = {
-                            timestamp: now,
-                            klines: data
-                        };
-                        return { key: cfg.key, klines: data };
-                    }
-                } catch (err) {
-                    console.error(`Failed to fetch ${cfg.interval} klines for ${item.symbol}`, err);
-                }
-                return { key: cfg.key, klines: [] };
-            });
-
-            const results = await Promise.all(promises);
-
-            if (active) {
                 setIntervalsData(prev => {
                     const updated = { ...prev };
-                    for (const res of results) {
-                        updated[res.key] = { klines: res.klines, loading: false };
+                    for (const cfg of intervalMap) {
+                        updated[cfg.key] = { ...updated[cfg.key], loading: true };
                     }
                     return updated;
                 });
-            }
-        };
 
-        fetchAllIntervals();
+                const promises = intervalMap.map(async (cfg) => {
+                    const KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE || {};
+                    if (!KLINE_INTERVAL_CACHE[item.symbol]) {
+                        KLINE_INTERVAL_CACHE[item.symbol] = {};
+                    }
+
+                    const cached = KLINE_INTERVAL_CACHE[item.symbol][cfg.interval];
+                    if (cached && now - cached.timestamp < 5 * 60 * 1000) { // 5 mins cache
+                        return { key: cfg.key, klines: cached.klines };
+                    }
+
+                    try {
+                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${cfg.interval}&limit=${limit}`;
+                        const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d));
+                        const data = await res.json();
+                        if (Array.isArray(data)) {
+                            KLINE_INTERVAL_CACHE[item.symbol][cfg.interval] = {
+                                timestamp: now,
+                                klines: data
+                            };
+                            return { key: cfg.key, klines: data };
+                        }
+                    } catch (err) {
+                        console.error(`Failed to fetch ${cfg.interval} klines for ${item.symbol}`, err);
+                    }
+                    return { key: cfg.key, klines: [] };
+                });
+
+                const results = await Promise.all(promises);
+
+                if (active) {
+                    setIntervalsData(prev => {
+                        const updated = { ...prev };
+                        for (const res of results) {
+                            updated[res.key] = { klines: res.klines, loading: false };
+                        }
+                        return updated;
+                    });
+                }
+            };
+
+            fetchAllIntervals();
+        }, 1200);
+
         return () => {
             active = false;
+            clearTimeout(delayTimer);
         };
-    }, [item.symbol]);
+    }, [item.symbol, mode]);
 
     const currentPrice = item.price;
 
@@ -271,61 +260,24 @@ export const List1Item: React.FC<Props> = ({
     const minPeriodLow = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
 
     const safeNum = (v: number) => (isNaN(v) || !isFinite(v)) ? 0 : v;
-    const maxDeclinePct = safeNum(maxPeriodHigh > 0 ? ((minPeriodLow - maxPeriodHigh) / maxPeriodHigh) * 100 : 0);
-    const highToCurrentDeclinePct = safeNum(maxPeriodHigh > 0 ? ((currentPrice - maxPeriodHigh) / maxPeriodHigh) * 100 : 0);
-    const maxIncreasePct = safeNum(minPeriodLow > 0 ? ((maxPeriodHigh - minPeriodLow) / minPeriodLow) * 100 : 0);
-    const lowToCurrentIncreasePct = safeNum(minPeriodLow > 0 ? ((currentPrice - minPeriodLow) / minPeriodLow) * 100 : 0);
+    
+    // Leverage pre-calculated metrics if available to completely bypass rendering overhead
+    const hasMetrics = !!extremeMetrics;
+    const loadingHistory = hasMetrics ? extremeMetrics.loading : loadingKlines;
+    const minPeriodLowVal = hasMetrics ? (extremeMetrics.minPeriodLow ?? currentPrice) : minPeriodLow;
+    const maxPeriodHighVal = hasMetrics ? (extremeMetrics.maxPeriodHigh ?? currentPrice) : maxPeriodHigh;
+
+    const maxDeclinePct = hasMetrics ? extremeMetrics.maxDeclinePct : (klines.length > 0 ? safeNum(maxPeriodHighVal > 0 ? ((minPeriodLowVal - maxPeriodHighVal) / maxPeriodHighVal) * 100 : 0) : 0);
+    const highToCurrentDeclinePct = safeNum(maxPeriodHighVal > 0 ? ((currentPrice - maxPeriodHighVal) / maxPeriodHighVal) * 100 : 0);
+    const maxIncreasePct = hasMetrics ? extremeMetrics.maxIncreasePct : (klines.length > 0 ? safeNum(minPeriodLowVal > 0 ? ((maxPeriodHighVal - minPeriodLowVal) / minPeriodLowVal) * 100 : 0) : 0);
+    const lowToCurrentIncreasePct = safeNum(minPeriodLowVal > 0 ? ((currentPrice - minPeriodLowVal) / minPeriodLowVal) * 100 : 0);
 
     const minLowIdx = histLows.indexOf(minPeriodLow);
     const maxHighIdx = histHighs.indexOf(maxPeriodHigh);
-    const lowDaysAgo = minLowIdx !== -1 ? (periodKlines.length - 1 - minLowIdx) : 0;
-    const highDaysAgo = maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0;
+    const lowDaysAgo = hasMetrics ? extremeMetrics.lowDaysAgo : (klines.length > 0 ? (minLowIdx !== -1 ? (periodKlines.length - 1 - minLowIdx) : 0) : 0);
+    const highDaysAgo = hasMetrics ? extremeMetrics.highDaysAgo : (klines.length > 0 ? (maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0) : 0);
 
-    // Live filtering: hide items that don't match active Major Trend criteria
-    if (scanConfig.majorTrend?.enabled) {
-        if (!loadingKlines && klines.length > 0) {
-            const cfg = scanConfig.majorTrend;
-            const enableLong = cfg.enableLong !== false;
-            const enableShort = cfg.enableShort !== false;
-            const dropFromMaxToMin = Math.abs(maxDeclinePct);
-            const pumpFromMinToMax = Math.abs(maxIncreasePct);
-            const distLong = Math.abs(lowToCurrentIncreasePct);
-            const distShort = Math.abs(highToCurrentDeclinePct);
-
-            const isLongMatch = enableLong && 
-                (dropFromMaxToMin >= (cfg.minHistoryDrop ?? 50)) && 
-                (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
-                (distLong <= (cfg.maxExtremeDistanceLong ?? cfg.maxExtremeDistance ?? 5)) &&
-                (lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
-                (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300));
-
-            const isShortMatch = enableShort && 
-                (pumpFromMinToMax >= (cfg.minHistoryPump ?? 100)) && 
-                (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
-                (distShort <= (cfg.maxExtremeDistanceShort ?? cfg.maxExtremeDistance ?? 5)) &&
-                (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
-                (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
-
-            let isSidewaysMatch = true;
-            if (enableSideways && highs.length > sidewaysDays) {
-                const sidewaysHighs = highs.slice(-sidewaysDays);
-                const sidewaysLows = lows.slice(-sidewaysDays);
-                const maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
-                const minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
-
-                const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
-                const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
-
-                if (dropFromMax >= (cfg.sidewaysMaxDrop ?? 10) || riseFromMin >= (cfg.sidewaysMaxPump ?? 10)) {
-                    isSidewaysMatch = false;
-                }
-            }
-
-            if ((!isLongMatch && !isShortMatch) || !isSidewaysMatch) {
-                return null;
-            }
-        }
-    }
+    // Core item metrics have been calculated and are ready for presentation.
 
     const renderPercent = (val: number | null) => {
         if (val === null) return <span className="text-slate-600 font-bold">--</span>;
@@ -476,37 +428,37 @@ export const List1Item: React.FC<Props> = ({
                     <div className="flex justify-between items-center gap-0.5">
                         <span className="text-slate-500 font-bold">极低点时间</span>
                         <span className="text-cyan-400 font-extrabold">
-                            {loadingKlines && klines.length === 0 ? '...' : `${lowDaysAgo}d`}
+                            {loadingHistory ? '...' : `${lowDaysAgo}d`}
                         </span>
                     </div>
                     <div className="flex justify-between items-center gap-0.5">
                         <span className="text-slate-500 font-bold">极高点时间</span>
                         <span className="text-pink-400 font-extrabold">
-                            {loadingKlines && klines.length === 0 ? '...' : `${highDaysAgo}d`}
+                            {loadingHistory ? '...' : `${highDaysAgo}d`}
                         </span>
                     </div>
                     <div className="flex justify-between items-center gap-0.5">
                         <span className="text-slate-500 font-bold">极值最大跌幅</span>
                         <span className="text-red-400 font-extrabold">
-                            {loadingKlines && klines.length === 0 ? '...' : `${maxDeclinePct.toFixed(1)}%`}
+                            {loadingHistory ? '...' : `${maxDeclinePct.toFixed(1)}%`}
                         </span>
                     </div>
                     <div className="flex justify-between items-center gap-0.5">
                         <span className="text-slate-500 font-bold">极值当前涨幅</span>
                         <span className="text-emerald-400 font-extrabold">
-                            {loadingKlines && klines.length === 0 ? '...' : `+${lowToCurrentIncreasePct.toFixed(1)}%`}
+                            {loadingHistory ? '...' : `+${lowToCurrentIncreasePct.toFixed(1)}%`}
                         </span>
                     </div>
                     <div className="flex justify-between items-center gap-0.5">
                         <span className="text-slate-500 font-bold">极值最大涨幅</span>
                         <span className="text-emerald-400 font-extrabold">
-                            {loadingKlines && klines.length === 0 ? '...' : `+${maxIncreasePct.toFixed(1)}%`}
+                            {loadingHistory ? '...' : `+${maxIncreasePct.toFixed(1)}%`}
                         </span>
                     </div>
                     <div className="flex justify-between items-center gap-0.5">
                         <span className="text-slate-500 font-bold">极值当前跌幅</span>
                         <span className="text-rose-400 font-extrabold">
-                            {loadingKlines && klines.length === 0 ? '...' : `${highToCurrentDeclinePct.toFixed(1)}%`}
+                            {loadingHistory ? '...' : `${highToCurrentDeclinePct.toFixed(1)}%`}
                         </span>
                     </div>
                 </div>

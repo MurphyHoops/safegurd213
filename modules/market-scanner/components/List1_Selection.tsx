@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Loader2, AlertTriangle, RotateCw, Maximize2, Upload, Download, Plus, Trash2, Edit3, Check, X as XIcon, Zap, ArrowUpDown } from 'lucide-react';
 import { fetchWithFallback } from '../../../services/apiService';
 import { StrategyItem } from '../../../types';
@@ -37,7 +37,6 @@ interface Props {
     scannerMode?: 'LIVE' | 'BACKTEST' | 'SMART';
     setScannerMode?: (mode: 'LIVE' | 'BACKTEST' | 'SMART') => void;
     // Major Trend Props
-    majorTrendCandidates?: Set<string>;
     isMajorScanning?: boolean;
     majorProgress?: { current: number, total: number };
     runMajorTrendDiscovery?: () => void;
@@ -75,6 +74,9 @@ interface Props {
     rotationTimeLeft?: number;
     onToggleRotation?: (enabled: boolean) => void;
     onChangeRotationInterval?: (minutes: number) => void;
+    majorTrendCandidates?: Set<string>;
+    onFilteredUpdate?: (list: ScannerItem[]) => void;
+    directMode?: boolean;
 }
 
 const List1_Selection: React.FC<Props> = ({ 
@@ -82,13 +84,16 @@ const List1_Selection: React.FC<Props> = ({
     fixedModeView, setFixedModeView, scanInterval, setScanInterval, customSymbolSet,
     onToggleSymbol, onSelectAll, onDeselectAll, onDeleteSymbol, onClearBlacklist, marketStats, nextScanTime, setChartData,
     mode = 'LIVE', downloadProgressMap = {}, onDownload,
-    scannerMode, setScannerMode, majorTrendCandidates, isMajorScanning, majorProgress, runMajorTrendDiscovery, backtestProps,
+    scannerMode, setScannerMode, isMajorScanning, majorProgress, runMajorTrendDiscovery, backtestProps,
     strategies = [], selectedStrategyId = '', activeStrategyId = '', onSelectStrategy = () => {}, onAddStrategy = () => {}, onDeleteStrategy = () => {}, onRenameStrategy = () => {}, onExportStrategy, onImportStrategy,
     isRotationEnabled = false,
     rotationIntervalMinutes = 5,
     rotationTimeLeft = 0,
     onToggleRotation = () => {},
-    onChangeRotationInterval = () => {}
+    onChangeRotationInterval = () => {},
+    majorTrendCandidates = new Set(),
+    onFilteredUpdate,
+    directMode
 }) => {
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -117,11 +122,61 @@ const List1_Selection: React.FC<Props> = ({
         lowDaysAgo: number;
         highDaysAgo: number;
         isSidewaysMatch?: boolean;
+        startTrendValid?: boolean;
+        startTrendValidLong?: boolean;
+        startTrendValidShort?: boolean;
         loading: boolean;
+        minPeriodLow?: number;
+        maxPeriodHigh?: number;
     }>>({});
 
     const lookbackDays = scanConfig.majorTrend?.lookbackDays || 300;
     const isLong = (scanConfig.instantOpenDirection || 'LONG') === 'LONG';
+
+    const list1Ref = useRef(list1);
+    useEffect(() => {
+        list1Ref.current = list1;
+    }, [list1]);
+
+    const metricsCacheRef = useRef(metricsCache);
+    useEffect(() => {
+        metricsCacheRef.current = metricsCache;
+    }, [metricsCache]);
+
+    // 🔒 [SECURITY_LOCK]: DO NOT RESET FULL CACHE EXCEPT WHEN LOOKBACK DAYS CHANGE to ensure warm cache hit-rates.
+    const lastLookbackDaysRef = useRef(lookbackDays);
+    const majorTrendConfigStr = JSON.stringify({
+        ...scanConfig.majorTrend,
+        lookbackDays: undefined
+    });
+    const lastMajorTrendConfigStrRef = useRef(majorTrendConfigStr);
+
+    useEffect(() => {
+        if (lastLookbackDaysRef.current !== lookbackDays) {
+            lastLookbackDaysRef.current = lookbackDays;
+            metricsCacheRef.current = {};
+            setMetricsCache({});
+        } else if (lastMajorTrendConfigStrRef.current !== majorTrendConfigStr) {
+            lastMajorTrendConfigStrRef.current = majorTrendConfigStr;
+            setMetricsCache(prev => {
+                const updated = { ...prev };
+                Object.keys(updated).forEach(symbol => {
+                    updated[symbol] = {
+                        ...updated[symbol],
+                        startTrendValidLong: undefined,
+                        startTrendValidShort: undefined,
+                    };
+                });
+                metricsCacheRef.current = updated;
+                return updated;
+            });
+        }
+    }, [majorTrendConfigStr, lookbackDays]);
+    // 🔒 [END_SECURITY_LOCK]
+
+    const fetchingSymbolsRef = useRef<Set<string>>(new Set());
+
+    const list1SymbolsStr = list1.map(item => item.symbol).join(',');
 
     useEffect(() => {
         let active = true;
@@ -130,34 +185,46 @@ const List1_Selection: React.FC<Props> = ({
         const fetchMetricsForList = async () => {
             const KLINE_LIMIT_CACHE = (window as any).KLINE_LIMIT_CACHE = (window as any).KLINE_LIMIT_CACHE || {};
 
-            for (const item of list1) {
-                if (!active) break;
+            const currentList = list1Ref.current;
+            const symbolsToFetch = currentList.filter(item => {
                 const symbol = item.symbol;
-                if (!symbol) continue;
+                if (!symbol) return false;
 
-                // Skip if already computed and not loading
-                if (metricsCache[symbol] && !metricsCache[symbol].loading) {
-                    continue;
+                // Optimize: If majorTrend is enabled and candidates exist, only fetch metrics for coins that are in majorTrendCandidates
+                if (scanConfig.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0) {
+                    const keySuffix = isLong ? '_LONG' : '_SHORT';
+                    const key = `${symbol}${keySuffix}`;
+                    if (!majorTrendCandidates.has(key)) {
+                        return false; // Skip this coin entirely from kline fetching!
+                    }
                 }
 
-                // Mark as loading in cache state
-                setMetricsCache(prev => {
-                    if (prev[symbol]?.loading) return prev;
-                    return {
-                        ...prev,
-                        [symbol]: {
-                            ...(prev[symbol] || {
-                                maxDeclinePct: 0,
-                                maxIncreasePct: 0,
-                                lowToCurrentIncreasePct: 0,
-                                highToCurrentDeclinePct: 0,
-                                lowDaysAgo: 0,
-                                highDaysAgo: 0,
-                            }),
-                            loading: true
-                        }
-                    };
-                });
+                // Skip if already computed and not loading, unless trend validation fields are undefined
+                const cachedMetrics = metricsCacheRef.current[symbol];
+                if (cachedMetrics && !cachedMetrics.loading) {
+                    const hasTrendActive = scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort;
+                    if (!hasTrendActive || (cachedMetrics.startTrendValidLong !== undefined && cachedMetrics.startTrendValidShort !== undefined)) {
+                        return false;
+                    }
+                }
+
+                // Skip if already being fetched
+                if (fetchingSymbolsRef.current.has(symbol)) {
+                    return false;
+                }
+
+                return true;
+            });
+
+            if (symbolsToFetch.length === 0) return;
+
+            // Mark all as fetching
+            symbolsToFetch.forEach(item => fetchingSymbolsRef.current.add(item.symbol));
+
+            // Fetch concurrently with Promise.all
+            await Promise.all(symbolsToFetch.map(async (item) => {
+                if (!active) return;
+                const symbol = item.symbol;
 
                 try {
                     const now = Date.now();
@@ -168,7 +235,7 @@ const List1_Selection: React.FC<Props> = ({
                         data = cached.klines;
                     } else {
                         const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=${limit}`;
-                        const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d));
+                        const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d), directMode);
                         data = await res.json();
                         if (Array.isArray(data)) {
                             if (!KLINE_LIMIT_CACHE[symbol]) {
@@ -229,6 +296,114 @@ const List1_Selection: React.FC<Props> = ({
                             }
                         }
 
+                        // 1h K-line starting trend calculations on the fly
+                        const startTrendGroups = scanConfig.majorTrend?.startTrendGroups || [];
+                        const enableStartTrendLong = scanConfig.majorTrend?.enableStartTrendLong;
+                        const enableStartTrendShort = scanConfig.majorTrend?.enableStartTrendShort;
+                        const hasActiveGroups = startTrendGroups.some(g => g.enabled);
+
+                        let startTrendValidLong = true;
+                        let startTrendValidShort = true;
+
+                        if ((enableStartTrendLong || enableStartTrendShort) && hasActiveGroups) {
+                            try {
+                                const activeGroups = startTrendGroups.filter(g => g.enabled);
+                                // 🔒 [SECURITY_LOCK]: KEEP LIMIT1H FIXED AT 100 TO MAXIMIZE CACHE HIT-RATES ACROSS DIFFERENT TIME COMBINATIONS
+                                const limit1h = 100; // Fixed large limit to maximize cache hits
+                                // 🔒 [END_SECURITY_LOCK]
+                                
+                                let klines1h: any[] | null = null;
+                                const cached1h = KLINE_LIMIT_CACHE[symbol]?.[`1h_${limit1h}`];
+                                if (cached1h && now - cached1h.timestamp < 3 * 60 * 1000) {
+                                    klines1h = cached1h.klines;
+                                } else {
+                                    const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=${limit1h}`;
+                                    const res1h = await fetchWithFallback(url1h, { timeout: 10000 }, (d) => Array.isArray(d), directMode);
+                                    klines1h = await res1h.json();
+                                    if (Array.isArray(klines1h)) {
+                                        if (!KLINE_LIMIT_CACHE[symbol]) {
+                                            KLINE_LIMIT_CACHE[symbol] = {};
+                                        }
+                                        KLINE_LIMIT_CACHE[symbol][`1h_${limit1h}`] = {
+                                            timestamp: now,
+                                            klines: klines1h
+                                        };
+                                    }
+                                }
+
+                                if (Array.isArray(klines1h) && klines1h.length > 0) {
+                                    const last1hPrice = parseFloat(klines1h[klines1h.length - 1][4]);
+                                    if (!isNaN(last1hPrice) && last1hPrice > 0) {
+                                        let isLongTrendValid = true;
+                                        let isShortTrendValid = true;
+
+                                        for (const group of activeGroups) {
+                                            const requiredCandles = group.hours; // hours
+
+                                            if (klines1h.length < requiredCandles) {
+                                                isLongTrendValid = false;
+                                                isShortTrendValid = false;
+                                                break;
+                                            }
+
+                                            const lastHCandles = klines1h.slice(-requiredCandles);
+
+                                            if (isLongTrendValid) {
+                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                                if (periodLows.length === 0 || periodHighs.length === 0) {
+                                                    isLongTrendValid = false;
+                                                } else {
+                                                    const periodMinLow = Math.min(...periodLows);
+                                                    const periodMaxHigh = Math.max(...periodHighs);
+                                                    
+                                                    const changePct = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
+                                                    const declinePct = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
+                                                    const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
+                                                    
+                                                    if (isNaN(changePct) || changePct < group.minLong || changePct > group.maxLong || isNaN(declinePct) || declinePct >= maxPullbackLong) {
+                                                        isLongTrendValid = false;
+                                                    }
+                                                }
+                                            }
+
+                                            if (isShortTrendValid) {
+                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                                if (periodHighs.length === 0 || periodLows.length === 0) {
+                                                    isShortTrendValid = false;
+                                                } else {
+                                                    const periodMaxHigh = Math.max(...periodHighs);
+                                                    const periodMinLow = Math.min(...periodLows);
+                                                    
+                                                    const declinePct = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
+                                                    const increasePct = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
+                                                    const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
+                                                    
+                                                    if (isNaN(declinePct) || declinePct < group.minShort || declinePct > group.maxShort || isNaN(increasePct) || increasePct >= maxPullbackShort) {
+                                                        isShortTrendValid = false;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        startTrendValidLong = enableStartTrendLong ? isLongTrendValid : true;
+                                        startTrendValidShort = enableStartTrendShort ? isShortTrendValid : true;
+                                    } else {
+                                        startTrendValidLong = false;
+                                        startTrendValidShort = false;
+                                    }
+                                } else {
+                                    startTrendValidLong = false;
+                                    startTrendValidShort = false;
+                                }
+                            } catch (err1h) {
+                                console.error("[StartTrend list views] Fetch 1h error: ", err1h);
+                                startTrendValidLong = false;
+                                startTrendValidShort = false;
+                            }
+                        }
+
                         setMetricsCache(prev => ({
                             ...prev,
                             [symbol]: {
@@ -239,12 +414,18 @@ const List1_Selection: React.FC<Props> = ({
                                 lowDaysAgo,
                                 highDaysAgo,
                                 isSidewaysMatch,
-                                loading: false
+                                startTrendValidLong,
+                                startTrendValidShort,
+                                loading: false,
+                                minPeriodLow,
+                                maxPeriodHigh
                             }
                         }));
                     }
+                    fetchingSymbolsRef.current.delete(symbol);
                 } catch (err) {
                     console.error("Failed to fetch metrics in list view for " + symbol, err);
+                    fetchingSymbolsRef.current.delete(symbol);
                     setMetricsCache(prev => ({
                         ...prev,
                         [symbol]: {
@@ -260,7 +441,7 @@ const List1_Selection: React.FC<Props> = ({
                         }
                     }));
                 }
-            }
+            }));
         };
 
         fetchMetricsForList();
@@ -268,7 +449,7 @@ const List1_Selection: React.FC<Props> = ({
         return () => {
             active = false;
         };
-    }, [list1, lookbackDays, scanConfig.majorTrend]);
+    }, [list1SymbolsStr, lookbackDays, majorTrendConfigStr]);
 
     const getSortValue = (item: ScannerItem, criterionId: number) => {
         const metrics = metricsCache[item.symbol];
@@ -277,7 +458,12 @@ const List1_Selection: React.FC<Props> = ({
         if (criterionId === 1) {
             return isLong ? Math.abs(metrics.maxDeclinePct) : Math.abs(metrics.maxIncreasePct);
         } else if (criterionId === 2) {
-            return isLong ? metrics.lowToCurrentIncreasePct : Math.abs(metrics.highToCurrentDeclinePct);
+            const currentPrice = item.price;
+            const minLow = metrics.minPeriodLow || currentPrice;
+            const maxHigh = metrics.maxPeriodHigh || currentPrice;
+            const liveLowToCurrentIncrease = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
+            const liveHighToCurrentDecline = maxHigh > 0 ? ((currentPrice - maxHigh) / maxHigh) * 100 : 0;
+            return isLong ? liveLowToCurrentIncrease : Math.abs(liveHighToCurrentDecline);
         } else if (criterionId === 3) {
             return isLong ? metrics.lowDaysAgo : metrics.highDaysAgo;
         }
@@ -306,38 +492,120 @@ const List1_Selection: React.FC<Props> = ({
     const filteredList = useMemo(() => {
         if (!scanConfig.majorTrend?.enabled) return sortedList1;
 
+        const cfg = (scanConfig.majorTrend || {}) as any;
+        const enableLong = cfg.enableLong !== false;
+        const enableShort = cfg.enableShort !== false;
+        const enableSideways = cfg.enableSideways !== false;
+
+        const hasCandidates = majorTrendCandidates && majorTrendCandidates.size > 0;
+
         return sortedList1.filter(item => {
+            // 🔒 [SECURITY_LOCK]: PRIORITY CANDIDATE PRECHECK. Skip any symbol not discovered by background major scan immediately
+            // to prevent the list from inflating when metric caches are undefined or loading.
+            if (hasCandidates) {
+                const keySuffix = isLong ? '_LONG' : '_SHORT';
+                const key = `${item.symbol}${keySuffix}`;
+                if (!majorTrendCandidates.has(key)) {
+                    return false;
+                }
+            }
+            // 🔒 [END_SECURITY_LOCK]
+
             const metrics = metricsCache[item.symbol];
-            if (!metrics) return true; // Keep while loading metrics
-            if (metrics.loading) return true; // Keep while loading metrics
+            if (!metrics) return true; // Keep loading items visible
+            if (metrics.loading) return true; // Keep loading items visible
 
-            const cfg = scanConfig.majorTrend;
-            const enableLong = cfg.enableLong !== false;
-            const enableShort = cfg.enableShort !== false;
-            const dropFromMaxToMin = Math.abs(metrics.maxDeclinePct);
-            const pumpFromMinToMax = Math.abs(metrics.maxIncreasePct);
-            const distLong = Math.abs(metrics.lowToCurrentIncreasePct);
-            const distShort = Math.abs(metrics.highToCurrentDeclinePct);
+            const currentPrice = item.price;
 
-            const isLongMatch = enableLong && 
-                (dropFromMaxToMin >= (cfg.minHistoryDrop ?? 50)) && 
-                (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
-                (distLong <= (cfg.maxExtremeDistanceLong ?? cfg.maxExtremeDistance ?? 5)) &&
-                (metrics.lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
-                (metrics.lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300));
+            if (isLong) {
+                // 做多方向
+                if (!enableLong) return false;
 
-            const isShortMatch = enableShort && 
-                (pumpFromMinToMax >= (cfg.minHistoryPump ?? 100)) && 
-                (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
-                (distShort <= (cfg.maxExtremeDistanceShort ?? cfg.maxExtremeDistance ?? 5)) &&
-                (metrics.highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
-                (metrics.highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
+                // 1. 最小历史跌幅 (maxDeclinePct is negative, e.g. -50%)
+                const minHistoryDrop = cfg.minHistoryDrop ?? 50;
+                if (Math.abs(metrics.maxDeclinePct) < minHistoryDrop) return false;
 
-            const isSidewaysMatch = metrics.isSidewaysMatch !== false;
+                // 2. 距离极点比例 (lowToCurrentIncreasePct)
+                const minLow = metrics.minPeriodLow || currentPrice;
+                const liveLowToCurrentIncrease = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
 
-            return (isLongMatch || isShortMatch) && isSidewaysMatch;
+                const minExtremeDistanceLong = cfg.minExtremeDistanceLong ?? 0;
+                const maxExtremeDistanceLong = cfg.maxExtremeDistanceLong !== undefined 
+                    ? cfg.maxExtremeDistanceLong 
+                    : (cfg.maxExtremeDistance ?? 5);
+                if (liveLowToCurrentIncrease < minExtremeDistanceLong || 
+                    liveLowToCurrentIncrease > maxExtremeDistanceLong) {
+                    return false;
+                }
+
+                // 3. 极点天数 (lowDaysAgo)
+                const extremeDaysMinLong = cfg.extremeDaysMinLong ?? 0;
+                const extremeDaysMaxLong = cfg.extremeDaysMaxLong ?? 300;
+                if (metrics.lowDaysAgo < extremeDaysMinLong || 
+                    metrics.lowDaysAgo > extremeDaysMaxLong) {
+                    return false;
+                }
+            } else {
+                // 做空方向
+                if (!enableShort) return false;
+
+                // 1. 最小历史涨幅 (maxIncreasePct)
+                const minHistoryPump = cfg.minHistoryPump ?? 100;
+                if (metrics.maxIncreasePct < minHistoryPump) return false;
+
+                // 2. 距离极点比例 (highToCurrentDeclinePct is negative, e.g. -5%)
+                const maxHigh = metrics.maxPeriodHigh || currentPrice;
+                const liveHighToCurrentDecline = maxHigh > 0 ? ((currentPrice - maxHigh) / maxHigh) * 100 : 0;
+
+                const minExtremeDistanceShort = cfg.minExtremeDistanceShort ?? 0;
+                const maxExtremeDistanceShort = cfg.maxExtremeDistanceShort !== undefined 
+                    ? cfg.maxExtremeDistanceShort 
+                    : (cfg.maxExtremeDistance ?? 5);
+                const distShort = Math.abs(liveHighToCurrentDecline);
+                if (distShort < minExtremeDistanceShort || distShort > maxExtremeDistanceShort) {
+                    return false;
+                }
+
+                // 3. 极点天数 (highDaysAgo)
+                const extremeDaysMinShort = cfg.extremeDaysMinShort ?? 0;
+                const extremeDaysMaxShort = cfg.extremeDaysMaxShort ?? 300;
+                if (metrics.highDaysAgo < extremeDaysMinShort || 
+                    metrics.highDaysAgo > extremeDaysMaxShort) {
+                    return false;
+                }
+            }
+
+            // 4. 横盘整理过滤
+            if (enableSideways) {
+                if (metrics.isSidewaysMatch === false) return false;
+            }
+
+            // 5. 行情启动趋势过滤 (Start Trend Filter)
+            if (isLong) {
+                if (scanConfig.majorTrend?.enableStartTrendLong) {
+                    if (metrics.startTrendValidLong === false) return false;
+                }
+            } else {
+                if (scanConfig.majorTrend?.enableStartTrendShort) {
+                    if (metrics.startTrendValidShort === false) return false;
+                }
+            }
+
+            return true;
         });
-    }, [sortedList1, metricsCache, scanConfig.majorTrend]);
+    }, [sortedList1, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates]);
+
+    const lastFilteredStrRef = useRef('');
+
+    useEffect(() => {
+        if (onFilteredUpdate) {
+            const str = filteredList.map(i => i.symbol).join(',');
+            if (str !== lastFilteredStrRef.current) {
+                lastFilteredStrRef.current = str;
+                onFilteredUpdate(filteredList);
+            }
+        }
+    }, [filteredList, onFilteredUpdate]);
 
     return (
         <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 flex-1 min-w-[380px] overflow-y-auto custom-scrollbar`}>
@@ -524,7 +792,6 @@ const List1_Selection: React.FC<Props> = ({
                 nextScanTime={nextScanTime}
                 scannerMode={scannerMode}
                 setScannerMode={setScannerMode}
-                majorTrendCandidates={majorTrendCandidates}
                 isMajorScanning={isMajorScanning}
                 majorProgress={majorProgress}
                 runMajorTrendDiscovery={runMajorTrendDiscovery}
@@ -744,7 +1011,7 @@ const List1_Selection: React.FC<Props> = ({
                 ) : (
                     filteredList.map((item, idx) => (
                         <List1Item 
-                            key={`${item.symbol}-${idx}`}
+                            key={item.symbol}
                             item={item}
                             idx={idx}
                             scanConfig={scanConfig}
@@ -753,7 +1020,8 @@ const List1_Selection: React.FC<Props> = ({
                             onToggleSymbol={onToggleSymbol}
                             onDeleteSymbol={onDeleteSymbol}
                             setChartData={setChartData}
-                            mode={mode}
+                            mode={scannerMode || mode}
+                            extremeMetrics={metricsCache[item.symbol]}
                             downloadProgress={downloadProgressMap[item.symbol]}
                             onDownload={onDownload}
                         />

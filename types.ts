@@ -85,6 +85,7 @@ export interface Position {
     isAmputatedToZero?: boolean;
     isBeingClosed?: boolean;
     lastAmputationTime?: number;
+    leverage?: number; // Added: Locked leverage for position and matching hedge
 }
 
 export interface LogEntry {
@@ -106,7 +107,7 @@ export interface TradeEvent {
 export interface TradeLog {
     symbol: string;
     entry_id: string;
-    status: 'OPEN' | 'CLOSED';
+    status: 'OPEN' | 'CLOSED' | 'CLOSED_OPEN';
     profit_usdt?: number;
     exit_reason?: string;
     signal_details?: any;

@@ -147,12 +147,14 @@ const AppContent: React.FC = () => {
     const [binanceRealPositions, setBinanceRealPositions] = useState<Position[]>([]);
     
     const handleBacktestPositionsUpdate = useCallback((newPos: Position[]) => {
-        setBacktestPositions(prev => {
-            if (JSON.stringify(prev) === JSON.stringify(newPos)) {
-                return prev;
-            }
-            return newPos;
-        });
+        setTimeout(() => {
+            setBacktestPositions(prev => {
+                if (JSON.stringify(prev) === JSON.stringify(newPos)) {
+                    return prev;
+                }
+                return newPos;
+            });
+        }, 0);
     }, []);
     
     // Stabilize positions array to prevent infinite loops in effects
@@ -262,7 +264,7 @@ const AppContent: React.FC = () => {
     // --- WEBSOCKET CONNECTION & AUTO-RECOVERY ---
     useEffect(() => {
         // @ts-ignore
-        window.openPositionManual = async (symbol: string, side: PositionSide, qty: number, customPrice?: number, amountUsdt?: number) => {
+        window.openPositionManual = async (symbol: string, side: PositionSide, qty: number, customPrice?: number, amountUsdt?: number, leverage?: number) => {
             const cleanSymbol = normalizeSymbol(symbol);
             const blacklist = settingsRef.current.system.symbolBlacklist || [];
             if (blacklist.includes(cleanSymbol)) {
@@ -286,7 +288,7 @@ const AppContent: React.FC = () => {
                 }
 
                 if (simulatorRef.current) {
-                    simulatorRef.current.addLog("INFO", `[实盘开仓] 正在向币安发送手动市价开仓请求: ${cleanSymbol} ${side} | 预估金额: ${amountUsdt || (qty * (customPrice || 1))} U`);
+                    simulatorRef.current.addLog("INFO", `[实盘开仓] 正在向币安发送手动市价开仓请求: ${cleanSymbol} ${side} | 杠杆: ${leverage || 20}x | 预估金额: ${amountUsdt || (qty * (customPrice || 1))} U`);
                 }
 
                 try {
@@ -295,7 +297,8 @@ const AppContent: React.FC = () => {
                         apiSecret,
                         symbol: cleanSymbol,
                         side: side,
-                        action: "OPEN"
+                        action: "OPEN",
+                        leverage: leverage || 20
                     };
                     
                     if (amountUsdt) {
@@ -1143,7 +1146,7 @@ const AppContent: React.FC = () => {
                 if (err && (err.name === 'AbortError' || err.message?.includes('aborted') || err.message?.includes('abort'))) {
                     console.log("[Binance Background Sync] Request was aborted gracefully.");
                 } else {
-                    console.error("[Binance Background Sync] Error:", err);
+                    console.warn("[Binance Background Sync] Sync transient failure:", err.message || err);
                 }
             }
         };
@@ -1249,6 +1252,20 @@ const AppContent: React.FC = () => {
         // 🛡️ [Anti-Double Open & Hedging Protection]
         if (simulatorRef.current) {
             const activePositions = simulatorRef.current.getPositions();
+            
+            // 🛑 STRICT HEDGE LOCK: If hedged, block automatic open/reopen/refill, BUT ALLOW MANUAL OPEN!
+            const isManual = (extraProps as any)?.isManual === true || ((extraProps as any)?.reason && typeof (extraProps as any).reason === 'string' && (extraProps as any).reason.includes("Manual"));
+            if (!isManual) {
+                const isSymbolHedged = activePositions.some(p => 
+                    normalizeSymbol(p.symbol) === cleanSymbol && 
+                    (p.isHedged || p.mainPositionId || activePositions.some(h => h.mainPositionId === p.entryId))
+                );
+                if (isSymbolHedged) {
+                    simulatorRef.current.addLog("WARNING", `🛡️ [防爆对冲严格锁拦截] ${cleanSymbol} 当前正处于对冲保护状态（未解套/未盈利砍仓），程序严禁自动开仓或补仓！`);
+                    return;
+                }
+            }
+
             const existing = activePositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol);
             if (existing) {
                 if (extraProps?.isReopened && (existing.isBeingClosed || existing.amount === 0)) {
@@ -1325,9 +1342,10 @@ const AppContent: React.FC = () => {
                     signalTf,
                     signalCandle,
                     entryEmas,
+                    leverage: extraProps?.leverage || 20,
                     ...extraProps
                 });
-                simulatorRef.current.addLog("INFO", `[实盘自动开仓] 策略/信号触发开仓: ${cleanSymbol} ${side} | 金额: ${amount} U`);
+                simulatorRef.current.addLog("INFO", `[实盘自动开仓] 策略/信号触发开仓: ${cleanSymbol} ${side} | 杠杆: ${extraProps?.leverage || 20}x | 金额: ${amount} U`);
             }
 
             try {
@@ -1340,7 +1358,8 @@ const AppContent: React.FC = () => {
                         symbol: cleanSymbol,
                         side: side,
                         action: "OPEN",
-                        amountUsdt: amount
+                        amountUsdt: amount,
+                        leverage: extraProps?.leverage || 20
                     })
                 });
 
@@ -1463,7 +1482,8 @@ const AppContent: React.FC = () => {
                     side: side,
                     action: "OPEN",
                     quantity: exactQty,
-                    amountUsdt: exactQty !== undefined ? undefined : amountUsdt
+                    amountUsdt: exactQty !== undefined ? undefined : amountUsdt,
+                    leverage: position.leverage || 20
                 })
             });
 
@@ -1479,7 +1499,57 @@ const AppContent: React.FC = () => {
                 isSuccess = true;
                 recentlyOpenedHedgesRef.current.set(lockKey, Date.now());
                 if (simulatorRef.current) {
-                    simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动对冲开仓成功: ${cleanSymbol} ${side} | 数量: ${resData.qty} | ID: ${resData.orderId}`);
+                    simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动对冲开仓成功: ${cleanSymbol} ${side} | 杠杆: ${position.leverage || 20}x | 数量: ${resData.qty} | ID: ${resData.orderId}`);
+                    
+                    const simPositions = simulatorRef.current.getPositions();
+                    const mainPos = simPositions.find(p => p.entryId === position.entryId || (normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side && !p.isHedged));
+                    if (mainPos) {
+                        mainPos.isHedged = true;
+                    }
+
+                    const entryId = 'HEDGE_' + Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
+                    const hedgePrice = resData.price || position.markPrice || position.entryPrice;
+                    const hedgeQty = resData.qty || (amountUsdt / hedgePrice);
+                    const newHedge: Position = {
+                        symbol: position.symbol,
+                        side: side,
+                        amount: hedgeQty,
+                        entryPrice: hedgePrice,
+                        markPrice: hedgePrice,
+                        liquidationPrice: side === PositionSide.LONG ? hedgePrice * 0.5 : hedgePrice * 1.5,
+                        unrealizedPnL: 0,
+                        unrealizedPnLPercentage: 0,
+                        entryId,
+                        entryTime: Date.now(),
+                        isHedged: true,
+                        mainPositionId: position.entryId,
+                        triggerReason: reason || '自动防爆对冲',
+                        correlationId: position.correlationId,
+                        reopenCount: position.reopenCount,
+                        leverage: position.leverage || 20
+                    };
+                    simPositions.push(newHedge);
+                    simulatorRef.current.setPositions(simPositions);
+
+                    simulatorRef.current.tradeLogs.unshift({
+                        symbol: cleanSymbol,
+                        entry_id: resData.orderId || `H_AUTO_${Date.now()}`,
+                        status: 'OPEN',
+                        is_hedge: true,
+                        entry_timestamp: Date.now(),
+                        direction: side,
+                        cost_usdt: amountUsdt,
+                        entry_price: hedgePrice,
+                        events: [{
+                            timestamp: Date.now(),
+                            action: '自动对冲开仓',
+                            price: hedgePrice,
+                            amount: hedgeQty,
+                            reason: reason || '自动防爆对冲'
+                        }]
+                    });
+                    simulatorRef.current.emitUpdate(true);
+                    setPositions([...simPositions]);
                 }
                 
                 const cleanSym = position.symbol.replace('USDT', '');

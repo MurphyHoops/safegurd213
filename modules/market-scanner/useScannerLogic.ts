@@ -98,14 +98,23 @@ export const useScannerLogic = (
     
     // --- 早上8点成交量缓存 ---
     const volume8amCacheRef = useRef<Map<string, { volume: number, timestamp: number }>>(new Map());
+    const majorTrendCandidatesRef = useRef<Set<string>>(new Set());
     
     // --- MAJOR TREND DISCOVERY STATE ---
+    const [hasRunMajorTrend, setHasRunMajorTrend] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true';
+        } catch (e) { return false; }
+    });
+
     const [majorTrendCandidates, setMajorTrendCandidates] = useState<Set<string>>(() => {
         try {
             const saved = localStorage.getItem(majorTrendCandidatesKey);
             if (saved) {
                 const parsed = JSON.parse(saved);
-                return new Set(Array.isArray(parsed) ? parsed : []);
+                const s = new Set(Array.isArray(parsed) ? parsed : []);
+                majorTrendCandidatesRef.current = s;
+                return s;
             }
             return new Set();
         } catch (e) { return new Set(); }
@@ -114,6 +123,7 @@ export const useScannerLogic = (
     // Persist Major Trend Candidates
     useEffect(() => {
         try {
+            majorTrendCandidatesRef.current = majorTrendCandidates;
             localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(majorTrendCandidates)));
         } catch (e) {
             console.warn("Failed to persist Major Trend Candidates");
@@ -245,7 +255,9 @@ export const useScannerLogic = (
                 mode,
                 customSymbols: symbols, 
                 fixedModeView, 
-                blacklistSize: blacklist.size 
+                blacklistSize: blacklist.size,
+                majorTrendCandidates: majorTrendCandidates ? Array.from(majorTrendCandidates).sort() : [],
+                hasRunMajorTrend
             });
             if (pulse === lastFilterPulseRef.current) return;
             lastFilterPulseRef.current = pulse; // Update ref early
@@ -255,9 +267,7 @@ export const useScannerLogic = (
                     rawDataRef.current, 
                     initialConfig, 
                     customSymbolSet, 
-                    fixedModeView,
-                    majorTrendCandidates,
-                    majorTrendLimits
+                    fixedModeView
                 );
                 
                 // Map volume8am from cache if exists
@@ -276,7 +286,8 @@ export const useScannerLogic = (
                     const minVol8am = initialConfig.minVolume8am ?? 0;
                     const maxVol8am = initialConfig.maxVolume8am ?? 0;
                     finalCandidates = filtered.filter(item => {
-                        const vol8am = item.volume8am || 0;
+                        const rawVol8am = item.volume8am;
+                        const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : (item.volume24h !== undefined ? item.volume24h : (parseFloat((item as any).volume || "0") || 0));
                         if (vol8am < minVol8am) return false;
                         if (maxVol8am > 0 && vol8am > maxVol8am) return false;
                         return true;
@@ -291,11 +302,17 @@ export const useScannerLogic = (
                 // Filter out blacklisted symbols
                 const nonBlacklisted = smartAnalyzed.filter(item => item && item.symbol && !blacklist.has(item.symbol));
 
+                // --- INTEGRATION OF TREND FILTERING FOR REAL-TIME RAW DATA ---
+                // We keep list1 as the full volume-passing set of candidates
+                // so the user can always see the initial screening list and run the deep scan.
+                // Display filtering is handled dynamically inside List1_Selection.tsx
+                const trendFiltered = nonBlacklisted;
+
                 // Compare with previous list to find new items
                 const currentList = Array.isArray(list1Ref.current) ? list1Ref.current : [];
                 const prevSymbols = new Set(currentList.map(i => i?.symbol).filter(Boolean));
                 
-                const finalFiltered = nonBlacklisted.map(item => ({
+                const finalFiltered = trendFiltered.map(item => ({
                     ...item,
                     isNew: !prevSymbols.has(item.symbol) && currentList.length > 0
                 }));
@@ -321,7 +338,6 @@ export const useScannerLogic = (
                     return prev;
                 });
             } else if (list1 && Array.isArray(list1) && list1.length > 0) {
-                const isMajorTrendActive = initialConfig.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0 && !initialConfig.useCustomOnly;
                 const filtered = list1.filter(item => {
                     if (!item || !item.symbol) return false;
                     if (blacklist.has(item.symbol)) return false;
@@ -330,8 +346,10 @@ export const useScannerLogic = (
                     if (vol < initialConfig.minVolume) return false;
                     if (initialConfig.maxVolume > 0 && vol > initialConfig.maxVolume) return false;
                     
-                    if (isMajorTrendActive) {
-                        return majorTrendCandidates && majorTrendCandidates.has(item.symbol);
+                    // In Major Trend Discovery Mode, we bypass standard daily change and direction filters
+                    // so we do not clear out the raw candidates if the discovery scan hasn't run or is empty.
+                    if (initialConfig.majorTrend?.enabled) {
+                        return true;
                     }
 
                     const chg = item.change || 0;
@@ -350,7 +368,7 @@ export const useScannerLogic = (
         } catch (err) {
             console.error("[Scanner] Instant re-filter failed:", err);
         }
-    }, [initialConfig, customSymbolSet, fixedModeView, blacklist, mode, majorTrendCandidates, majorTrendLimits]); // Stabilized dependencies
+    }, [initialConfig, customSymbolSet, fixedModeView, blacklist, mode, majorTrendCandidates, majorTrendLimits, hasRunMajorTrend]); // Stabilized dependencies
 
     const directModeRef = useRef(directMode);
     useEffect(() => { directModeRef.current = directMode; }, [directMode]);
@@ -445,51 +463,53 @@ export const useScannerLogic = (
                 data, 
                 configRef.current, 
                 customSymbolSetRef.current, 
-                fixedModeViewRef.current,
-                majorTrendCandidates,
-                majorTrendLimits
+                fixedModeViewRef.current
             );
             
             // --- 早上8点成交量异步获取与过滤 (Since 8 AM Volume) ---
             const cacheExpiryMs = 5 * 60 * 1000; // 5 minute cache
             const nowTime = Date.now();
 
-            // Fetch 1d klines concurrently to fill volume8am for candidates
-            await Promise.all(filtered.map(async (item) => {
-                const cached = volume8amCacheRef.current.get(item.symbol);
-                let vol8am = 0;
-                if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
-                    vol8am = cached.volume;
-                } else {
-                    try {
-                        const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
-                        const res1d = await fetchWithFallback(url1d, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
-                        const klines1d = await res1d.json();
-                        if (Array.isArray(klines1d) && klines1d.length > 0) {
-                            // index 7 is quote asset volume (USDT volume)
-                            vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
-                            volume8amCacheRef.current.set(item.symbol, { volume: vol8am, timestamp: nowTime });
-                        }
-                    } catch (err) {
-                        console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
-                        vol8am = cached ? cached.volume : 0;
-                    }
-                }
-                item.volume8am = vol8am;
-            }));
-
             // Filter by 8AM volume if enabled
             let finalCandidates = filtered;
             if (configRef.current.enableVol8am) {
+                // Fetch 1d klines concurrently to fill volume8am for candidates only when enabled
+                await Promise.all(filtered.map(async (item) => {
+                    const cached = volume8amCacheRef.current.get(item.symbol);
+                    let vol8am = 0;
+                    if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
+                        vol8am = cached.volume;
+                    } else {
+                        try {
+                            const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
+                            const res1d = await fetchWithFallback(url1d, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
+                            const klines1d = await res1d.json();
+                            if (Array.isArray(klines1d) && klines1d.length > 0) {
+                                // index 7 is quote asset volume (USDT volume)
+                                vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
+                                volume8amCacheRef.current.set(item.symbol, { volume: vol8am, timestamp: nowTime });
+                            }
+                        } catch (err) {
+                            console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
+                            vol8am = cached ? cached.volume : (item.volume24h !== undefined ? item.volume24h : (parseFloat((item as any).volume || "0") || 0));
+                        }
+                    }
+                    item.volume8am = vol8am;
+                }));
+
                 const minVol8am = configRef.current.minVolume8am ?? 0;
                 const maxVol8am = configRef.current.maxVolume8am ?? 0;
                 finalCandidates = filtered.filter(item => {
-                    const vol8am = item.volume8am || 0;
+                    const rawVol8am = item.volume8am;
+                    const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : (item.volume24h !== undefined ? item.volume24h : (parseFloat((item as any).volume || "0") || 0));
                     if (vol8am < minVol8am) return false;
                     if (maxVol8am > 0 && vol8am > maxVol8am) return false;
                     return true;
                 });
             }
+
+            // --- FILTER BY TREND IF ENABLED ---
+            // Display filtering is handled dynamically inside List1_Selection.tsx, so we keep finalCandidates intact here.
 
             // APPLY SMART ANALYSIS IF IN SMART MODE
             const smartAnalyzed = modeRef.current === 'SMART' 
@@ -635,20 +655,77 @@ export const useScannerLogic = (
         setIsMajorScanning(true);
         
         // Step 1: Market Primary Screening (市场初筛)
-        // Filter symbols that meet the Volume Filter (成交范围) & not blacklisted
-        const allSymbolsData = rawDataRef.current.filter(i => i.symbol && i.symbol.endsWith('USDT'));
-        if (allSymbolsData.length === 0) {
+        // If rawDataRef is empty, pre-fetch ticker data to ensure we have symbols
+        if (!rawDataRef.current || rawDataRef.current.length === 0) {
+            try {
+                const baseUrl = 'https://fapi.binance.com/fapi/v1/ticker';
+                const endpoint = `${baseUrl}/24hr?_t=${Date.now()}`;
+                const res = await fetchWithFallback(
+                    endpoint, 
+                    { cache: 'no-store', timeout: 45000 }, 
+                    (d) => Array.isArray(d) && d.length > 0, 
+                    directModeRef.current
+                );
+                const data = await res.json();
+                if (Array.isArray(data) && data.length > 0) {
+                    rawDataRef.current = data;
+                }
+            } catch (err) {
+                console.warn("[MajorTrend] Pre-fetch ticker data failed:", err);
+            }
+        }
+        
+        // Filter symbols using processMarketData and volume filters
+        const { list1: filtered } = processMarketData(
+            rawDataRef.current,
+            configRef.current,
+            customSymbolSetRef.current,
+            fixedModeViewRef.current
+        );
+
+        let baseFiltered = filtered.filter(item => !blacklistRef.current.has(item.symbol));
+        if (baseFiltered.length === 0) {
             setIsMajorScanning(false);
             return;
         }
 
-        const primaryCandidates = allSymbolsData.filter(item => {
-            const volumeM = (parseFloat(item.quoteVolume) || 0) / 1000000;
-            // Check List 1's standard Volume filters (成交范围)
-            const meetsVolume = volumeM >= configRef.current.minVolume && 
-                                (configRef.current.maxVolume === 0 || volumeM <= configRef.current.maxVolume);
-            return meetsVolume && !blacklistRef.current.has(item.symbol);
-        });
+        if (configRef.current.enableVol8am) {
+            const cacheExpiryMs = 5 * 60 * 1000;
+            const nowTime = Date.now();
+            await Promise.all(baseFiltered.map(async (item) => {
+                const cached = volume8amCacheRef.current.get(item.symbol);
+                let vol8am = 0;
+                if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
+                    vol8am = cached.volume;
+                } else {
+                    try {
+                        const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
+                        const res1d = await fetchWithFallback(url1d, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
+                        const klines1d = await res1d.json();
+                        if (Array.isArray(klines1d) && klines1d.length > 0) {
+                            vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
+                            volume8amCacheRef.current.set(item.symbol, { volume: vol8am, timestamp: nowTime });
+                        }
+                    } catch (err) {
+                        console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
+                        vol8am = cached ? cached.volume : item.volume24h;
+                    }
+                }
+                item.volume8am = vol8am;
+            }));
+
+            const minVol8am = configRef.current.minVolume8am ?? 0;
+            const maxVol8am = configRef.current.maxVolume8am ?? 0;
+            baseFiltered = baseFiltered.filter(item => {
+                const rawVol8am = item.volume8am;
+                const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : item.volume24h;
+                if (vol8am < minVol8am) return false;
+                if (maxVol8am > 0 && vol8am > maxVol8am) return false;
+                return true;
+            });
+        }
+
+        const primaryCandidates = baseFiltered;
 
         if (primaryCandidates.length === 0) {
             setIsMajorScanning(false);
@@ -657,9 +734,6 @@ export const useScannerLogic = (
 
         // Initialize progress with primary candidate count
         setMajorProgress({ current: 0, total: primaryCandidates.length });
-        
-        // Wait a short delay (e.g., 2000ms) to allow the primary screening state to register as requested
-        await new Promise(resolve => setTimeout(resolve, 2000));
 
         if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) {
             setIsMajorScanning(false);
@@ -668,257 +742,390 @@ export const useScannerLogic = (
 
         const targetSymbols = primaryCandidates.map(i => i.symbol);
         
-        // Step 2: Individual Technical & Deep Indicator Calculation (单个币精细指标计算)
-        // Dynamic Rate: Manual/First run = 30/min, Background = Configured (capped at 15)
-        const batchSize = isManual ? 30 : Math.min(15, (cfg.requestPerMinute || 15));
-        const validSymbols = new Set<string>();
+        // -------------------------------------------------------------
+        // STEP 1: 大周期空间寻底/筑顶过滤 (Group 1 - Space/Extreme Filter)
+        // -------------------------------------------------------------
+        const passedStage1: Array<{
+            symbol: string;
+            isLongMatch: boolean;
+            isShortMatch: boolean;
+            highs: number[];
+            lows: number[];
+            prices: number[];
+            closes: number[];
+            currentPrice: number;
+        }> = [];
+
+        setMajorProgress({
+            current: 0,
+            total: targetSymbols.length,
+            stage: 'group1',
+            group1Passed: 0,
+            group2Passed: 0,
+            group3Passed: 0,
+            currentSymbol: ''
+        } as any);
+
+        const limitConcurrency = async (tasks: (() => Promise<any>)[], concurrency: number) => {
+            const executing: Promise<any>[] = [];
+            for (const task of tasks) {
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
+                const p = task();
+                executing.push(p);
+                p.then(() => {
+                    const idx = executing.indexOf(p);
+                    if (idx !== -1) executing.splice(idx, 1);
+                });
+                if (executing.length >= concurrency) {
+                    await Promise.race(executing);
+                }
+            }
+            await Promise.all(executing);
+        };
+
+        const tasks = targetSymbols.map((symbol) => async () => {
+            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) return;
+            try {
+                const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
+                const limit = timeParam + 20; 
+                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${cfg.filterKLinePeriod || '1d'}&limit=${limit}`;
+                const res = await fetchWithFallback(url, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
+                const klines = await res.json();
+                
+                if (!Array.isArray(klines) || klines.length < timeParam * 0.5) return;
+
+                const prices = klines.map((k: any) => parseFloat(k[4])); 
+                const periodKlines = klines.slice(-timeParam);
+                const highs = periodKlines.map((k: any) => parseFloat(k[2]));
+                const lows = periodKlines.map((k: any) => parseFloat(k[3]));
+                const closes = periodKlines.map((k: any) => parseFloat(k[4]));
+
+                const currentPrice = closes[closes.length - 1];
+                
+                const enableLong = cfg.enableLong !== false;
+                const enableShort = cfg.enableShort !== false;
+                const enableSideways = cfg.enableSideways !== false;
+
+                let histHighs = highs;
+                let histLows = lows;
+                if (enableSideways && highs.length > cfg.sidewaysDays) {
+                    const endIdx = Math.max(1, highs.length - cfg.sidewaysDays);
+                    histHighs = highs.slice(0, endIdx);
+                    histLows = lows.slice(0, endIdx);
+                }
+
+                const maxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
+                const minPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
+
+                const dropFromMaxToMin = ((maxPrice - minPrice) / maxPrice) * 100;
+                const pumpFromMinToMax = ((maxPrice - minPrice) / minPrice) * 100;
+
+                const distLong = ((currentPrice - minPrice) / minPrice) * 100;
+                const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
+
+                const minLowIdx = histLows.indexOf(minPrice);
+                const maxHighIdx = histHighs.indexOf(maxPrice);
+                const lowDaysAgo = minLowIdx !== -1 ? (histLows.length - 1 - minLowIdx) : 0;
+                const highDaysAgo = maxHighIdx !== -1 ? (histHighs.length - 1 - maxHighIdx) : 0;
+
+                const isLongMatch = enableLong && 
+                    (dropFromMaxToMin >= cfg.minHistoryDrop) && 
+                    (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
+                    (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance)) &&
+                    (lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
+                    (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300));
+
+                const isShortMatch = enableShort && 
+                    (pumpFromMinToMax >= cfg.minHistoryPump) && 
+                    (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
+                    (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance)) &&
+                    (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
+                    (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
+
+                const stage1Match = (!enableLong && !enableShort) || isLongMatch || isShortMatch;
+                if (!stage1Match) return;
+
+                // Advanced filters
+                if (cfg.filterEmaPeriod > 0) {
+                    if (prices.length < cfg.filterEmaPeriod) return;
+                    const ema = calculateEMA(prices, cfg.filterEmaPeriod);
+                    let crossCount = 0;
+                    let lastDirection: 'UP' | 'DOWN' | null = null;
+                    let lastCrossIndex = -1;
+
+                    for (let i = cfg.filterEmaPeriod - 1; i < prices.length; i++) {
+                        const emaVal = ema[i - (cfg.filterEmaPeriod - 1)];
+                        const currentDirection = prices[i] > emaVal ? 'UP' : 'DOWN';
+                        if (lastDirection && currentDirection !== lastDirection) {
+                            crossCount++;
+                            lastCrossIndex = i;
+                        }
+                        lastDirection = currentDirection;
+                    }
+
+                    if (crossCount >= cfg.filterCrossingCount) return;
+
+                    if (lastCrossIndex !== -1 && lastCrossIndex < prices.length - 1) {
+                        const crossPrice = prices[lastCrossIndex];
+                        const maxFuturePrice = Math.max(...prices.slice(lastCrossIndex + 1));
+                        const minFuturePrice = Math.min(...prices.slice(lastCrossIndex + 1));
+
+                        const maxPumpAfterCross = ((maxFuturePrice - crossPrice) / crossPrice) * 100;
+                        const maxDropAfterCross = ((minFuturePrice - crossPrice) / crossPrice) * 100;
+
+                        if (lastDirection === 'UP' && maxPumpAfterCross > cfg.filterLongMaxPump) return;
+                        if (lastDirection === 'DOWN' && maxDropAfterCross < cfg.filterShortMinDrop) return;
+                    }
+                }
+
+                passedStage1.push({
+                    symbol,
+                    isLongMatch,
+                    isShortMatch,
+                    highs,
+                    lows,
+                    prices,
+                    closes,
+                    currentPrice
+                });
+            } catch (e) {
+                console.warn(`[MajorTrend] Stage 1 error for ${symbol}:`, e);
+            } finally {
+                setMajorProgress(prev => ({
+                    ...prev,
+                    current: prev.current + 1,
+                    group1Passed: passedStage1.length,
+                    currentSymbol: symbol
+                }));
+            }
+        });
+
+        await limitConcurrency(tasks, 15);
+
+        setMajorProgress(prev => ({
+            ...prev,
+            current: targetSymbols.length,
+            group1Passed: passedStage1.length
+        }));
+
+        if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) {
+            setIsMajorScanning(false);
+            return;
+        }
+
+        // -------------------------------------------------------------
+        // STEP 2: 横盘波幅整理过滤 (Group 2 - Sideways Consolidation Filter)
+        // -------------------------------------------------------------
+        setMajorProgress(prev => ({
+            ...prev,
+            current: 0,
+            total: passedStage1.length,
+            stage: 'group2',
+            group2Passed: 0
+        }));
+
+        const passedStage2: typeof passedStage1 = [];
         const limitsMap: Record<string, { maxZ: number, minZ: number }> = {};
-        
-        for (let i = 0; i < targetSymbols.length; i += batchSize) {
-            if (!isMountedRef.current) break;
-            // Allow stopping if the mode is disabled during scan
-            if (!majorTrendConfigRef.current?.enabled) break;
-            
-            const batch = targetSymbols.slice(i, i + batchSize);
-            setMajorProgress({ current: i, total: targetSymbols.length });
-            
-            // Limit concurrency within batch
-            const concurrencyLimit = 5;
-            for (let b = 0; b < batch.length; b += concurrencyLimit) {
-                const chunk = batch.slice(b, b + concurrencyLimit);
-                // Process Batch Chunk
-                await Promise.all(chunk.map(async (symbol) => {
+        const enableSideways = cfg.enableSideways !== false;
+
+        for (let i = 0; i < passedStage1.length; i++) {
+            const item = passedStage1[i];
+            const { symbol, highs, lows, currentPrice } = item;
+
+            let maxZ = currentPrice;
+            let minZ = currentPrice;
+            let sidewaysMatch = true;
+
+            if (enableSideways && cfg.sidewaysDays > 0) {
+                const sidewaysHighs = highs.slice(-cfg.sidewaysDays);
+                const sidewaysLows = lows.slice(-cfg.sidewaysDays);
+                maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
+                minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
+
+                const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
+                const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
+
+                if (dropFromMax >= cfg.sidewaysMaxDrop || riseFromMin >= cfg.sidewaysMaxPump) {
+                    sidewaysMatch = false;
+                }
+            }
+
+            if (sidewaysMatch) {
+                limitsMap[symbol] = { maxZ, minZ };
+                passedStage2.push(item);
+            }
+
+            setMajorProgress(prev => ({
+                ...prev,
+                current: i + 1,
+                group2Passed: passedStage2.length
+            }));
+        }
+
+        if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) {
+            setIsMajorScanning(false);
+            return;
+        }
+
+        // -------------------------------------------------------------
+        // STEP 3: 行情启动趋势确认 (Group 3 - Start Trend Filter)
+        // -------------------------------------------------------------
+        setMajorProgress(prev => ({
+            ...prev,
+            current: 0,
+            total: passedStage2.length,
+            stage: 'group3',
+            group3Passed: 0
+        }));
+
+        const validSymbols = new Set<string>();
+
+        const allGroups = cfg.startTrendGroups || [];
+        const activeGroupsWithIdx = allGroups
+            .map((g, idx) => ({ ...g, idx }))
+            .filter(g => g.enabled);
+
+        if (activeGroupsWithIdx.length > 0) {
+            const limit1h = 100; // Fixed large limit to maximize cache hits
+
+            const step3Tasks = passedStage2.map((item, i) => async () => {
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) return;
+
+                const { symbol, isLongMatch, isShortMatch } = item;
+                const shouldCheckLong = isLongMatch && cfg.enableStartTrendLong;
+                const shouldCheckShort = isShortMatch && cfg.enableStartTrendShort;
+
+                let isLongTrendValid = true;
+                let isShortTrendValid = true;
+
+                if (shouldCheckLong || shouldCheckShort) {
                     try {
-                        const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
-                        const limit = timeParam + 20; 
-                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${cfg.filterKLinePeriod || '1d'}&limit=${limit}`;
-                        const res = await fetchWithFallback(url, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
-                        const klines = await res.json();
-                        
-                        if (!Array.isArray(klines) || klines.length < timeParam * 0.5) return;
+                        const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=${limit1h}`;
+                        const res1h = await fetchWithFallback(url1h, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
+                        const klines1h = await res1h.json();
 
-                        const prices = klines.map((k: any) => parseFloat(k[4])); 
-                        const periodKlines = klines.slice(-timeParam);
-                        const highs = periodKlines.map((k: any) => parseFloat(k[2]));
-                        const lows = periodKlines.map((k: any) => parseFloat(k[3]));
-                        const closes = periodKlines.map((k: any) => parseFloat(k[4]));
+                        if (Array.isArray(klines1h) && klines1h.length > 0) {
+                            const currentPrice = parseFloat(klines1h[klines1h.length - 1][4]);
+                            if (!isNaN(currentPrice) && currentPrice > 0) {
+                                for (const group of activeGroupsWithIdx) {
+                                    let lastHCandles: any[] = [];
+                                    if (group.idx === 0) {
+                                        // 组合0：只针对从早上8点开始到当前的一个行情趋势，取消4h时间设置
+                                        const now = new Date();
+                                        const d8am = new Date(now);
+                                        d8am.setHours(8, 0, 0, 0);
+                                        if (now.getTime() < d8am.getTime()) {
+                                            d8am.setDate(d8am.getDate() - 1);
+                                        }
+                                        const t8am = d8am.getTime();
 
-                        const currentPrice = closes[closes.length - 1];
-                        
-                        const enableLong = cfg.enableLong !== false;
-                        const enableShort = cfg.enableShort !== false;
-                        const enableSideways = cfg.enableSideways !== false;
-
-                        let histHighs = highs;
-                        let histLows = lows;
-                        if (enableSideways && highs.length > cfg.sidewaysDays) {
-                            const endIdx = Math.max(1, highs.length - cfg.sidewaysDays);
-                            histHighs = highs.slice(0, endIdx);
-                            histLows = lows.slice(0, endIdx);
-                        }
-
-                        const maxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
-                        const minPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
-
-                        // Max drop from highest point to lowest point
-                        const dropFromMaxToMin = ((maxPrice - minPrice) / maxPrice) * 100;
-                        // Max pump from lowest point to highest point
-                        const pumpFromMinToMax = ((maxPrice - minPrice) / minPrice) * 100;
-
-                        // Gain from lowest point to current price (for Long)
-                        const distLong = ((currentPrice - minPrice) / minPrice) * 100;
-                        // Drop from highest point to current price (for Short)
-                        const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
-
-                        const minLowIdx = histLows.indexOf(minPrice);
-                        const maxHighIdx = histHighs.indexOf(maxPrice);
-                        const lowDaysAgo = minLowIdx !== -1 ? (histLows.length - 1 - minLowIdx) : 0;
-                        const highDaysAgo = maxHighIdx !== -1 ? (histHighs.length - 1 - maxHighIdx) : 0;
-
-                        const isLongMatch = enableLong && 
-                            (dropFromMaxToMin >= cfg.minHistoryDrop) && 
-                            (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
-                            (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance)) &&
-                            (lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
-                            (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300));
-
-                        const isShortMatch = enableShort && 
-                            (pumpFromMinToMax >= cfg.minHistoryPump) && 
-                            (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
-                            (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance)) &&
-                            (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
-                            (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
-
-                        const stage1Match = isLongMatch || isShortMatch;
-                        if (!stage1Match) return;
-
-                        // Sideways accumulation check
-                        let maxZ = currentPrice;
-                        let minZ = currentPrice;
-                        if (enableSideways && cfg.sidewaysDays > 0) {
-                            const sidewaysHighs = highs.slice(-cfg.sidewaysDays);
-                            const sidewaysLows = lows.slice(-cfg.sidewaysDays);
-                            maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
-                            minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
-
-                            // 当前价格距离过去Z天内最高点到当前价格跌幅低于X%
-                            // dropFromMax = (MaxZ - Current) / MaxZ * 100 < X
-                            const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
-
-                            // 最低点到当前价格涨幅低于Y%
-                            // riseFromMin = (Current - MinZ) / MinZ * 100 < Y
-                            const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
-
-                            if (dropFromMax >= cfg.sidewaysMaxDrop || riseFromMin >= cfg.sidewaysMaxPump) {
-                                return;
-                            }
-                        }
-
-                        // Store sideways limits
-                        limitsMap[symbol] = { maxZ, minZ };
-
-                        // --- MARKET START TREND FILTER (Stage 1.8) ---
-                        let isStartTrendValid = true;
-                        
-                        const shouldCheckLong = isLongMatch && cfg.enableStartTrendLong;
-                        const shouldCheckShort = isShortMatch && cfg.enableStartTrendShort;
-
-                        if ((shouldCheckLong || shouldCheckShort) && cfg.startTrendGroups && cfg.startTrendGroups.some(g => g.enabled)) {
-                            try {
-                                const activeGroups = cfg.startTrendGroups.filter(g => g.enabled);
-                                const maxHours = Math.max(...activeGroups.map(g => g.hours), 24);
-                                const limit1h = maxHours + 5;
-                                const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=${limit1h}`;
-                                const res1h = await fetchWithFallback(url1h, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
-                                const klines1h = await res1h.json();
-
-                                if (!Array.isArray(klines1h) || klines1h.length === 0) {
-                                    isStartTrendValid = false;
-                                } else {
-                                    const currentPrice1h = parseFloat(klines1h[klines1h.length - 1][4]);
-                                    if (isNaN(currentPrice1h) || currentPrice1h <= 0) {
-                                        isStartTrendValid = false;
+                                        lastHCandles = klines1h.filter((k: any) => {
+                                            const openTime = parseFloat(k[0]);
+                                            return openTime >= t8am;
+                                        });
+                                        if (lastHCandles.length === 0 && klines1h.length > 0) {
+                                            lastHCandles = [klines1h[klines1h.length - 1]];
+                                        }
                                     } else {
-                                        for (const group of activeGroups) {
-                                            const h = group.hours;
-                                            if (klines1h.length < h) {
-                                                isStartTrendValid = false;
-                                                break;
-                                            }
+                                        const requiredCandles = group.hours; // hours
+
+                                        if (klines1h.length < requiredCandles) {
+                                            if (shouldCheckLong) isLongTrendValid = false;
+                                            if (shouldCheckShort) isShortTrendValid = false;
+                                            break;
+                                        }
+
+                                        lastHCandles = klines1h.slice(-requiredCandles);
+                                    }
+
+                                    if (shouldCheckLong && isLongTrendValid) {
+                                        const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                        const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                        if (periodLows.length === 0 || periodHighs.length === 0) {
+                                            isLongTrendValid = false;
+                                        } else {
+                                            const periodMinLow = Math.min(...periodLows);
+                                            const periodMaxHigh = Math.max(...periodHighs);
                                             
-                                            const lastHCandles = klines1h.slice(-h);
-                                            const periodOpen = parseFloat(lastHCandles[0][1]);
-
-                                            // --- 验证做多 (Long) ---
-                                            let isLongValid = true;
-                                            if (shouldCheckLong) {
-                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                                if (periodLows.length === 0 || periodHighs.length === 0) {
-                                                    isLongValid = false;
-                                                } else {
-                                                    const periodMinLow = Math.min(...periodLows);
-                                                    const periodMaxHigh = Math.max(...periodHighs);
-                                                    
-                                                    // 1. 最低点到当前价格的涨幅满足 [minLong, maxLong]%
-                                                    const changePct = ((currentPrice1h - periodMinLow) / periodMinLow) * 100;
-                                                    
-                                                    // 2. 当前价格到最高点的跌幅必须小于 maxPullbackLong%
-                                                    const declinePct = ((periodMaxHigh - currentPrice1h) / periodMaxHigh) * 100;
-                                                    const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 2;
-                                                    
-                                                    if (isNaN(changePct) || changePct < group.minLong || changePct > group.maxLong || isNaN(declinePct) || declinePct >= maxPullbackLong) {
-                                                        isLongValid = false;
-                                                    }
-                                                }
+                                            const changePct = ((currentPrice - periodMinLow) / periodMinLow) * 100;
+                                            const declinePct = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
+                                            const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
+                                            
+                                            if (isNaN(changePct) || changePct < group.minLong || changePct > group.maxLong || isNaN(declinePct) || declinePct >= maxPullbackLong) {
+                                                isLongTrendValid = false;
                                             }
+                                        }
+                                    }
 
-                                            // --- 验证做空 (Short) ---
-                                            let isShortValid = true;
-                                            if (shouldCheckShort) {
-                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                                if (periodHighs.length === 0 || periodLows.length === 0) {
-                                                    isShortValid = false;
-                                                } else {
-                                                    const periodMaxHigh = Math.max(...periodHighs);
-                                                    const periodMinLow = Math.min(...periodLows);
-                                                    
-                                                    // 1. 最高点到当前价格的跌幅满足 [minShort, maxShort]%
-                                                    const declinePct = ((periodMaxHigh - currentPrice1h) / periodMaxHigh) * 100;
-                                                    
-                                                    // 2. 当前价格到最低点的涨幅必须小于 maxPullbackShort%
-                                                    const increasePct = ((currentPrice1h - periodMinLow) / periodMinLow) * 100;
-                                                    const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 2;
-                                                    
-                                                    if (isNaN(declinePct) || declinePct < group.minShort || declinePct > group.maxShort || isNaN(increasePct) || increasePct >= maxPullbackShort) {
-                                                        isShortValid = false;
-                                                    }
-                                                }
-                                            }
-
-                                            // If checked Long and it failed, or checked Short and it failed
-                                            if ((shouldCheckLong && !isLongValid) || (shouldCheckShort && !isShortValid)) {
-                                                isStartTrendValid = false;
-                                                break;
+                                    if (shouldCheckShort && isShortTrendValid) {
+                                        const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                        const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                        if (periodHighs.length === 0 || periodLows.length === 0) {
+                                            isShortTrendValid = false;
+                                        } else {
+                                            const periodMaxHigh = Math.max(...periodHighs);
+                                            const periodMinLow = Math.min(...periodLows);
+                                            
+                                            const declinePct = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
+                                            const increasePct = ((currentPrice - periodMinLow) / periodMinLow) * 100;
+                                            const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
+                                            
+                                            if (isNaN(declinePct) || declinePct < group.minShort || declinePct > group.maxShort || isNaN(increasePct) || increasePct >= maxPullbackShort) {
+                                                isShortTrendValid = false;
                                             }
                                         }
                                     }
                                 }
-                            } catch (err) {
-                                console.error(`[StartTrend] Error checking ${symbol}:`, err);
-                                isStartTrendValid = false;
+                            } else {
+                                if (shouldCheckLong) isLongTrendValid = false;
+                                if (shouldCheckShort) isShortTrendValid = false;
                             }
+                        } else {
+                            if (shouldCheckLong) isLongTrendValid = false;
+                            if (shouldCheckShort) isShortTrendValid = false;
                         }
+                    } catch (err) {
+                        console.error(`[StartTrend] Error checking ${symbol}:`, err);
+                        if (shouldCheckLong) isLongTrendValid = false;
+                        if (shouldCheckShort) isShortTrendValid = false;
+                    }
+                }
 
-                        if (!isStartTrendValid) return;
+                const finalLongMatch = isLongMatch && isLongTrendValid;
+                const finalShortMatch = isShortMatch && isShortTrendValid;
 
-                        // --- NEW ADVANCED FILTERS ---
-                        if (cfg.filterEmaPeriod > 0) {
-                            if (prices.length < cfg.filterEmaPeriod) return;
-                            const ema = calculateEMA(prices, cfg.filterEmaPeriod);
-                            let crossCount = 0;
-                            let lastDirection: 'UP' | 'DOWN' | null = null;
-                            let lastCrossIndex = -1;
+                if (finalLongMatch) {
+                    validSymbols.add(`${symbol}_LONG`);
+                }
+                if (finalShortMatch) {
+                    validSymbols.add(`${symbol}_SHORT`);
+                }
 
-                            for (let i = cfg.filterEmaPeriod - 1; i < prices.length; i++) {
-                                const emaVal = ema[i - (cfg.filterEmaPeriod - 1)];
-                                const currentDirection = prices[i] > emaVal ? 'UP' : 'DOWN';
-                                if (lastDirection && currentDirection !== lastDirection) {
-                                    crossCount++;
-                                    lastCrossIndex = i;
-                                }
-                                lastDirection = currentDirection;
-                            }
-
-                            if (crossCount >= cfg.filterCrossingCount) return;
-
-                            // Check post-cross performance
-                            if (lastCrossIndex !== -1 && lastCrossIndex < prices.length - 1) {
-                                const crossPrice = prices[lastCrossIndex];
-                                const maxFuturePrice = Math.max(...prices.slice(lastCrossIndex + 1));
-                                const minFuturePrice = Math.min(...prices.slice(lastCrossIndex + 1));
-
-                                const maxPumpAfterCross = ((maxFuturePrice - crossPrice) / crossPrice) * 100;
-                                const maxDropAfterCross = ((minFuturePrice - crossPrice) / crossPrice) * 100;
-
-                                if (lastDirection === 'UP' && maxPumpAfterCross > cfg.filterLongMaxPump) return;
-                                if (lastDirection === 'DOWN' && maxDropAfterCross < cfg.filterShortMinDrop) return;
-                            }
-                        }
-                        // --- END ADVANCED FILTERS ---
-
-                        validSymbols.add(symbol);
-                    } catch (e) {}
+                setMajorProgress(prev => ({
+                    ...prev,
+                    current: prev.current + 1,
+                    group3Passed: validSymbols.size,
+                    currentSymbol: symbol
                 }));
-                // Short pause within batch
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
+            });
 
-            if (i + batchSize < targetSymbols.length) {
-                // Optimized wait: 4 seconds to respect weight while remaining fast
-                await new Promise(resolve => setTimeout(resolve, 4000));
-            }
+            await limitConcurrency(step3Tasks, 15);
+        } else {
+            passedStage2.forEach((item, i) => {
+                const { symbol, isLongMatch, isShortMatch } = item;
+                if (isLongMatch) {
+                    validSymbols.add(`${symbol}_LONG`);
+                }
+                if (isShortMatch) {
+                    validSymbols.add(`${symbol}_SHORT`);
+                }
+                setMajorProgress(prev => ({
+                    ...prev,
+                    current: i + 1,
+                    group3Passed: validSymbols.size,
+                    currentSymbol: symbol
+                }));
+            });
         }
 
         if (isMountedRef.current) {
@@ -926,6 +1133,8 @@ export const useScannerLogic = (
             setMajorTrendLimits(limitsMap);
             localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(validSymbols)));
             localStorage.setItem(majorTrendLimitsKey, JSON.stringify(limitsMap));
+            localStorage.setItem(`SCANNER_HAS_RUN_MAJOR${suffix}`, 'true');
+            setHasRunMajorTrend(true);
             setIsMajorScanning(false);
             setMajorProgress({ current: targetSymbols.length, total: targetSymbols.length });
             audioService.speak("大行情发现任务完成");
@@ -949,6 +1158,51 @@ export const useScannerLogic = (
         const timer = setInterval(() => runMajorTrendDiscovery(false), intervalMs);
         return () => clearInterval(timer);
     }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.updateIntervalHours, runMajorTrendDiscovery, strategyId]);
+
+
+    // 🔒 [SECURITY_LOCK]: AUTO-TRIGGER DISCOVERY. Detect config parameter changes with an 800ms debounce
+    // to auto-run the major trend discovery and ensure seamless real-time/backtest data matching.
+    const lastTriggeredConfigRef = useRef('');
+    useEffect(() => {
+        const cfg = initialConfig.majorTrend;
+        if (!cfg || !cfg.enabled) return;
+
+        // Serialize fields that require a new scan
+        const serialized = JSON.stringify({
+            lookbackDays: cfg.lookbackDays,
+            enableLong: cfg.enableLong,
+            enableShort: cfg.enableShort,
+            minHistoryDrop: cfg.minHistoryDrop,
+            minHistoryPump: cfg.minHistoryPump,
+            minExtremeDistanceLong: cfg.minExtremeDistanceLong,
+            minExtremeDistanceShort: cfg.minExtremeDistanceShort,
+            enableSideways: cfg.enableSideways,
+            sidewaysDays: cfg.sidewaysDays,
+            sidewaysMaxDrop: cfg.sidewaysMaxDrop,
+            sidewaysMaxPump: cfg.sidewaysMaxPump,
+            enableStartTrendLong: cfg.enableStartTrendLong,
+            enableStartTrendShort: cfg.enableStartTrendShort,
+            startTrendGroups: cfg.startTrendGroups?.map(g => ({ enabled: g.enabled, hours: g.hours, minLong: g.minLong, maxLong: g.maxLong, minShort: g.minShort, maxShort: g.maxShort, maxPullbackLong: g.maxPullbackLong, maxPullbackShort: g.maxPullbackShort }))
+        });
+
+        if (lastTriggeredConfigRef.current === '') {
+            // Store initial state but do not trigger on mount (as mount is already handled or handled by timer/manual)
+            lastTriggeredConfigRef.current = serialized;
+            return;
+        }
+
+        if (lastTriggeredConfigRef.current !== serialized) {
+            lastTriggeredConfigRef.current = serialized;
+            
+            // Debounce for 800ms
+            const delay = setTimeout(() => {
+                console.log("[useScannerLogic] Config parameter change detected. Auto-executing discovery...");
+                runMajorTrendDiscovery(true);
+            }, 800);
+            return () => clearTimeout(delay);
+        }
+    }, [initialConfig.majorTrend, runMajorTrendDiscovery]);
+    // 🔒 [END_SECURITY_LOCK]
 
 
     return {

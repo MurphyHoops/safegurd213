@@ -51,6 +51,7 @@ const List5_Live: React.FC<List5Props> = ({
     const [manualSide, setManualSide] = useState<PositionSide>(PositionSide.LONG);
     const [manualAmount, setManualAmount] = useState<number | undefined>(undefined);
     const [manualInputMode, setManualInputMode] = useState<'USDT' | 'QTY'>('USDT');
+    const [manualLeverage, setManualLeverage] = useState<number>(20);
     const [verifyStatus, setVerifyStatus] = useState<'unverified' | 'verifying' | 'verified' | 'failed'>('unverified');
     const [verifiedPrice, setVerifiedPrice] = useState<number | null>(null);
     const [matchedSymbols, setMatchedSymbols] = useState<{ symbol: string; price: number; base: string }[]>([]);
@@ -229,8 +230,8 @@ const List5_Live: React.FC<List5Props> = ({
         }
 
         if (typeof (window as any).openPositionManual === 'function') {
-            (window as any).openPositionManual(cleanSymbol, manualSide, quantity, price, amountUsdt);
-            alert(`已向模拟器发送手动极速开仓信号:\n代币: ${cleanSymbol}\n方向: ${manualSide === PositionSide.LONG ? '多 (LONG)' : '空 (SHORT)'}\n${manualInputMode === 'USDT' ? `名义价值: ${manualAmount} U` : `数量: ${manualAmount}`}\n服务器端将精确执行。`);
+            (window as any).openPositionManual(cleanSymbol, manualSide, quantity, price, amountUsdt, manualLeverage);
+            alert(`已向模拟器发送手动极速开仓信号:\n代币: ${cleanSymbol}\n方向: ${manualSide === PositionSide.LONG ? '多 (LONG)' : '空 (SHORT)'}\n杠杆: ${manualLeverage}x\n${manualInputMode === 'USDT' ? `名义价值: ${manualAmount} U` : `数量: ${manualAmount}`}\n服务器端将精确执行。`);
             
             // Clear panel inputs on success
             setManualSymbol('');
@@ -370,6 +371,24 @@ const List5_Live: React.FC<List5Props> = ({
                             </div>
                         </div>
                     )}
+
+                    {/* Leverage Selector Row */}
+                    <div className="flex items-center justify-between bg-slate-950/60 border border-slate-800 rounded px-2 py-1">
+                        <span className="text-[10px] font-bold text-slate-400">开仓杠杆倍数 (Leverage):</span>
+                        <select
+                            value={manualLeverage}
+                            onChange={(e) => setManualLeverage(parseInt(e.target.value) || 20)}
+                            className="bg-slate-900 text-xs font-bold text-emerald-400 outline-none rounded px-2 py-0.5 border border-slate-700 cursor-pointer"
+                        >
+                            <option value={5}>5x 杠杆</option>
+                            <option value={10}>10x 杠杆</option>
+                            <option value={20}>20x 杠杆 (推荐)</option>
+                            <option value={30}>30x 杠杆</option>
+                            <option value={50}>50x 杠杆</option>
+                            <option value={75}>75x 杠杆</option>
+                            <option value={100}>100x 杠杆</option>
+                        </select>
+                    </div>
 
                     {/* Side Toggle + Qty Input */}
                     <div className="flex gap-2 items-center">

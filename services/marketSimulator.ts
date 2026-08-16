@@ -794,6 +794,7 @@ export class MarketSimulator {
             signalTf: signalTf,
             signalCandle: finalSignalCandle,
             entryEmas: finalEntryEmas,
+            leverage: extraProps?.leverage || 20,
             ...extraProps
         };
         this.positions.push(newPos);
@@ -887,6 +888,11 @@ export class MarketSimulator {
 
         if (this.settings?.system?.realTrading && this.onRealHedge) {
             this.onRealHedge(mainPosition, side, exactUsdtAmount, reason || '自动防爆对冲', exactQty);
+            mainPosition.isHedged = true;
+            delete mainPosition.isUnshackled;
+            mainPosition.hedgeRetries = (mainPosition.hedgeRetries || 0) + 1;
+            this.emitUpdate(true);
+            return;
         }
 
         const entryId = 'HEDGE_' + Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
@@ -907,7 +913,8 @@ export class MarketSimulator {
             mainPositionId: mainPosition.entryId,
             triggerReason: reason,
             correlationId: mainPosition.correlationId,
-            reopenCount: mainPosition.reopenCount
+            reopenCount: mainPosition.reopenCount,
+            leverage: mainPosition.leverage || 20
         };
         
         mainPosition.isHedged = true;
@@ -1447,6 +1454,16 @@ export class MarketSimulator {
     }
 
     private recordTradeLog(p: Position, reason: string) {
+        // Change the original 'OPEN' log status to 'CLOSED_OPEN' to prevent matching/re-using it on new opens
+        this.tradeLogs.forEach(l => {
+            if (l.status === 'OPEN' && 
+                (l.entry_id === p.entryId || 
+                 (normalizeSymbol(l.symbol) === normalizeSymbol(p.symbol) && l.direction === p.side))
+            ) {
+                l.status = 'CLOSED_OPEN';
+            }
+        });
+
         // 真实扣除或增加账户余额 (Realize PnL)
         this.account.marginBalance += p.unrealizedPnL;
         this.account.totalBalance = this.account.marginBalance;
@@ -1528,6 +1545,16 @@ export class MarketSimulator {
     }
 
     public recordRealTradeLog(p: Position, reason: string) {
+        // Change the original 'OPEN' log status to 'CLOSED_OPEN' to prevent matching/re-using it on new opens
+        this.tradeLogs.forEach(l => {
+            if (l.status === 'OPEN' && 
+                (l.entry_id === p.entryId || 
+                 (normalizeSymbol(l.symbol) === normalizeSymbol(p.symbol) && l.direction === p.side))
+            ) {
+                l.status = 'CLOSED_OPEN';
+            }
+        });
+
         const now = Date.now();
         const isStopLoss = reason.includes('止损') || p.unrealizedPnL < 0;
 
@@ -1998,6 +2025,13 @@ export class MarketSimulator {
             }
 
             const pnlPercent = position.unrealizedPnLPercentage;
+
+            // 🔒 [SECURITY_LOCK]: ABSOLUTE LOSS SAFEGUARD
+            // We must absolutely block secondary fallback hedging if the position is in profit or breaking even (unrealizedPnLPercentage >= 0).
+            // This prevents counter-trend automatic hedging errors on winning trades under any circumstances.
+            if (pnlPercent >= 0) {
+                continue;
+            }
 
             // 🛡️ [Extreme Price/PnL Anomaly Safeguard]
             if (pnlPercent < -25) {

@@ -24,6 +24,7 @@ interface Props {
 const DEFAULT_CONFIG: List2Config = {
     timeframes: ['5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'],
     newModeRetention: 9,
+    lookbackBars: 5,
     volMultiplier: 1.0,
     squeezeThreshold: 0.5,
     maxAmplitude: 50,

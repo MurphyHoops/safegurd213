@@ -41,6 +41,15 @@ export function checkHedgingRules(
         return false;
     }
 
+    // 🔒 [SECURITY_LOCK]: ABSOLUTE LOSS SAFEGUARD
+    // A hedge position is STRICTLY a rescue operation to protect a losing position from liquidation/large drawdowns.
+    // Therefore, if the position is currently in profit or breaking even (unrealizedPnLPercentage >= 0),
+    // we must ABSOLUTELY block any automatic hedging to prevent false-positive counter-trend entry errors.
+    // DO NOT MODIFY OR REFACTOR THIS LOCK TO MAINTAIN PORTFOLIO INTEGRITY.
+    if (pnlPercent >= 0) {
+        return false;
+    }
+
     // 4. 熔断检查 (Fuse Check)
     const slSettings = settings.stopLoss;
     if (slSettings.fuseEnabled) {

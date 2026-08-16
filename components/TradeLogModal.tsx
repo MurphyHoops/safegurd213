@@ -1454,7 +1454,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             ) : <span className="text-slate-600">-</span>}
                                         </td>
                                         <td className="px-4 py-3 text-xs">
-                                            {log.status === 'OPEN' ? <span className="bg-emerald-900/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20">开仓</span> : (
+                                            {(log.status === 'OPEN' || log.status === 'CLOSED_OPEN') ? <span className="bg-emerald-900/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20">开仓</span> : (
                                                 <div className="flex items-center gap-1">
                                                     {isGrouped && <Link size={10} className="text-indigo-400" />}
                                                     {recoveryInfo !== null && (

@@ -596,6 +596,7 @@ const ScannerDashboardInner: React.FC<
         enableStartTrendLong: false,
         enableStartTrendShort: false,
         startTrendGroups: [
+          { enabled: false, hours: 8, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
           { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
           { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
           { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
@@ -652,6 +653,7 @@ const ScannerDashboardInner: React.FC<
         enableStartTrendLong: false,
         enableStartTrendShort: false,
         startTrendGroups: [
+          { enabled: false, hours: 8, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
           { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
           { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
           { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
@@ -1171,7 +1173,8 @@ const ScannerDashboardInner: React.FC<
         breakerConfig: userConfig.breakerConfig || DEFAULT_ACTION_CONFIG.breakerConfig,
       };
 
-      if (!config.enabled) {
+      const isManual = reason.includes("Manual");
+      if (!config.enabled && !isManual) {
         if (onLog)
           onLog(
             "WARNING",
@@ -1296,6 +1299,8 @@ const ScannerDashboardInner: React.FC<
 
       const mergedExtraProps = {
         strategyId: selectedStrategyId,
+        isManual: isManual,
+        reason: reason,
         ...extraProps,
       };
 

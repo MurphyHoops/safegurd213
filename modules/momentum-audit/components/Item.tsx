@@ -193,15 +193,18 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
     );
 };
 
-// PERFORMANCE OPTIMIZATION: Only re-render if critical status changes or price moves significantly
+// PERFORMANCE OPTIMIZATION: Only re-render if critical status changes, callback reference changes, or price moves significantly
 export const List4Item = React.memo(List4ItemComponent, (prev, next) => {
     // 1. If symbol/ID different, re-render
     if (prev.item.symbol !== next.item.symbol) return false;
     
     // 2. If status changed (PENDING -> TRIGGERED), re-render
     if (prev.item.momentum?.status !== next.item.momentum?.status) return false;
+
+    // 3. If executeTradeSafe callback changed, re-render to avoid stale closures
+    if (prev.executeTradeSafe !== next.executeTradeSafe) return false;
     
-    // 3. If price changed significantly (>0.1%), re-render to update "Distance to Trigger"
+    // 4. If price changed significantly (>0.1%), re-render to update "Distance to Trigger"
     // Otherwise, skip render to save CPU
     const priceDiff = Math.abs(prev.item.price - next.item.price);
     const pctDiff = (priceDiff / prev.item.price) * 100;

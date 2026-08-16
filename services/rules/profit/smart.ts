@@ -46,9 +46,14 @@ export function checkSmartProfit(
         }
 
         // C. 检查当前所属阶梯的常规回调
-        const activeTier = tiers.find(tier => 
-            maxPnl >= tier.threshold && maxPnl < tier.expiry
-        );
+        // 关键修复：当 maxPnl 已经超出最高阶梯的失效值时，最高阶梯仍应作为 activeTier 保持运行，以便根据最高阶梯的回调比例持续从最高点进行追踪止盈！
+        const maxTierExpiry = tiers.reduce((max, t) => Math.max(max, t.expiry), 0);
+        const activeTier = tiers.find(tier => {
+            if (tier.expiry === maxTierExpiry && maxPnl >= tier.threshold) {
+                return true;
+            }
+            return maxPnl >= tier.threshold && maxPnl < tier.expiry;
+        });
 
         if (activeTier) {
             const drawdown = maxPnl - currentPnl;
@@ -63,10 +68,10 @@ export function checkSmartProfit(
             }
         }
 
-        // 关键修复：当开启了阶梯保底锁定方案时，如果当前盈利在阶梯有效范围内 (未突破最高阶梯的失效值)，
+        // 关键修复：当开启了阶梯保底锁定方案时，只要已经激活了任一阶梯且未平仓，
         // 应当由阶梯规则完全接管。不应再往下执行指数衰减锁定模式（Step 2），防止两个模式冲突导致意外的提前平仓！
-        const maxTierExpiry = tiers.reduce((max, t) => Math.max(max, t.expiry), 0);
-        if (maxPnl < maxTierExpiry) {
+        const minTierThreshold = tiers.reduce((min, t) => Math.min(min, t.threshold), 999);
+        if (maxPnl >= minTierThreshold) {
             return false;
         }
     }

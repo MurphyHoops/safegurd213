@@ -1066,11 +1066,24 @@ export const useStructureAudit = (
     });
 
     let cleaned = false;
-    for (const key of cacheRef.current.keys()) {
-      if (!validSymbols.has(key)) {
-        cacheRef.current.delete(key);
-        structureHashRef.current.delete(key);
+    for (const [symbol, cached] of cacheRef.current.entries()) {
+      if (!validSymbols.has(symbol)) {
+        cacheRef.current.delete(symbol);
+        structureHashRef.current.delete(symbol);
         cleaned = true;
+      } else if (cached && cached.list3Results) {
+        const initialLen = cached.list3Results.length;
+        cached.list3Results = cached.list3Results.filter((r) => {
+          const uniqueId = `${symbol}-${r.tf}-${r.direction || 'LONG'}`;
+          return validUniqueIds.has(uniqueId);
+        });
+        if (cached.list3Results.length !== initialLen) {
+          cleaned = true;
+          if (cached.list3Results.length === 0) {
+            cacheRef.current.delete(symbol);
+            structureHashRef.current.delete(symbol);
+          }
+        }
       }
     }
 

@@ -119,6 +119,27 @@ export const useGrandCrossing = (
   const [activeScanTfs, setActiveScanTfs] = useState<Set<string>>(new Set());
   const [lastScanTime, setLastScanTime] = useState<number | null>(null);
 
+  const startScanTf = useCallback((tf: string) => {
+    setActiveScanTfs((prev) => {
+      const next = new Set(prev);
+      next.add(tf);
+      return next;
+    });
+    setStatus("SCANNING");
+    setLastScanTime(Date.now());
+  }, []);
+
+  const endScanTf = useCallback((tf: string) => {
+    setActiveScanTfs((prev) => {
+      const next = new Set(prev);
+      next.delete(tf);
+      if (next.size === 0) {
+        setStatus("IDLE");
+      }
+      return next;
+    });
+  }, []);
+
   // --- ROLLING SCAN REFS ---
   const indicesRef = useRef<Record<string, number>>({
     "1m": 0,
@@ -561,7 +582,7 @@ export const useGrandCrossing = (
 
         const updatedResults = [];
         for (const r of item.groupedResults) {
-          const tf = r.tf || "1m";
+          const tf = r.tf || "15m";
           
           // 如果该周期已从配置中移除，直接丢弃该信号进行清理，无需再发包计算
           if (!configRef.current.timeframes.includes(tf)) {
@@ -569,42 +590,23 @@ export const useGrandCrossing = (
             continue;
           }
 
-          const isSynth = tf === "1m" || tf === "3m" || tf === "5m";
           const safeSymbol = item.symbol.endsWith("USDT") ? item.symbol : `${item.symbol}USDT`;
           const now = Date.now();
 
           try {
             let klines: KLine[] = [];
-            if (isSynth) {
-              const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=499&_t=${now}`;
-              const res = await fetchWithFallback(url, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
-              if (res.ok) {
-                const raw = await res.json();
-                const baseKlines = raw.map((k: any) => ({
-                  time: Number(k[0]),
-                  open: parseFloat(k[1]),
-                  high: parseFloat(k[2]),
-                  low: parseFloat(k[3]),
-                  close: parseFloat(k[4]),
-                  volume: parseFloat(k[5]),
-                }));
-                const tfMins = getTfMinutes(tf);
-                klines = tf === "1m" ? baseKlines : KLineSynthesizer.synthesize(baseKlines, tfMins);
-              }
-            } else {
-              const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=200&_t=${now}`;
-              const res = await fetchWithFallback(url, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
-              if (res.ok) {
-                const raw = await res.json();
-                klines = raw.map((k: any) => ({
-                  time: Number(k[0]),
-                  open: parseFloat(k[1]),
-                  high: parseFloat(k[2]),
-                  low: parseFloat(k[3]),
-                  close: parseFloat(k[4]),
-                  volume: parseFloat(k[5]),
-                }));
-              }
+            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=200&_t=${now}`;
+            const res = await fetchWithFallback(url, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+            if (res.ok) {
+              const raw = await res.json();
+              klines = raw.map((k: any) => ({
+                time: Number(k[0]),
+                open: parseFloat(k[1]),
+                high: parseFloat(k[2]),
+                low: parseFloat(k[3]),
+                close: parseFloat(k[4]),
+                volume: parseFloat(k[5]),
+              }));
             }
 
             if (klines.length > 0) {
@@ -619,7 +621,7 @@ export const useGrandCrossing = (
                 klines.map((k) => k.volume),
                 klines.map((k) => k.time),
                 { ...configRef.current, maxLag: retention } as any,
-                isSynth ? 5 : 3,
+                3,
               );
 
               // Check if any of the fresh signals match duration & direction
@@ -735,19 +737,22 @@ export const useGrandCrossing = (
   useEffect(() => {
     candidatesRef.current = candidates;
 
-    const cacheItems = Array.from(cacheRef.current.values());
-    const combined = [...candidates];
     const candidateSymbols = new Set(candidates.map((c) => c.symbol));
 
-    cacheItems.forEach((item) => {
+    // Evict cached signals for symbols that are no longer in candidates (List 1)
+    const cacheKeysToDelete: string[] = [];
+    cacheRef.current.forEach((item, key) => {
       if (!candidateSymbols.has(item.symbol)) {
-        combined.push({
-          ...item,
-          // Ensure stale cached items don't have zeroed out prices if we can help it
-          price: item.price || 0,
-        });
+        cacheKeysToDelete.push(key);
       }
     });
+    if (cacheKeysToDelete.length > 0) {
+      cacheKeysToDelete.forEach((key) => {
+        cacheRef.current.delete(key);
+      });
+    }
+
+    const combined = [...candidates];
 
     if (combined.length > 0) {
       sortedCandidatesRef.current = combined.sort((a, b) => {
@@ -780,11 +785,10 @@ export const useGrandCrossing = (
     scheduleUpdate();
   }, [candidates, scheduleUpdate]);
 
-  // --- CORE: Scan Logic (Refactored to Rolling Scan) ---
+  // --- CORE: Scan Logic (Direct Fetching for all periods, no Synthesis) ---
   const processSymbol = async (
     symbol: string,
     tf: string,
-    isSynthesized: boolean = false,
   ) => {
     const cacheKey = `${symbol}-FULL`;
     const existingItem = cacheRef.current.get(cacheKey);
@@ -795,207 +799,103 @@ export const useGrandCrossing = (
     const item = candidateItem || existingItem;
     if (!item) return;
 
-    // Optimize: 10-second fetch cache throttle per symbol-timeframe to prevent redundant requests
+    // Throttle duplicate fetches to 2s to protect against race conditions under fast ticks
     const now = Date.now();
-    const fetchKey = isSynthesized ? `${symbol}-1m` : `${symbol}-${tf}`;
+    const fetchKey = `${symbol}-${tf}`;
     const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
-    if (now - lastFetch < 10000) {
-      return; // Skipped redundant fetch, already up-to-date
+    if (now - lastFetch < 2000) {
+      return;
     }
     symbolTfLastFetchRef.current.set(fetchKey, now);
 
     const retention = configRef.current.newModeRetention ?? 9;
 
     try {
-      const now = Date.now();
       let klines: KLine[] = [];
       let mergedResults = [...(existingItem?.groupedResults || [])];
 
-      if (isSynthesized && tf === "1m") {
-        // 1m 作为基础抓取
-        const safeSymbol = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
-        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=499&_t=${now}`;
-        const res = await fetchWithFallback(
-          url,
-          { cache: "no-store" },
-          (d) => Array.isArray(d),
-          directMode,
-        );
-        if (!res.ok) return;
-        const raw = await res.json();
-        klines = raw.map((k: any) => ({
-          time: Number(k[0]),
-          open: parseFloat(k[1]),
-          high: parseFloat(k[2]),
-          low: parseFloat(k[3]),
-          close: parseFloat(k[4]),
-          volume: parseFloat(k[5]),
-        }));
+      const safeSymbol = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
+      const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=200&_t=${now}`;
+      const res = await fetchWithFallback(
+        url,
+        { cache: "no-store" },
+        (d) => Array.isArray(d),
+        directMode,
+      );
+      if (!res.ok) return;
+      const raw = await res.json();
+      klines = raw.map((k: any) => ({
+        time: Number(k[0]),
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+      }));
 
-        // 合成本地周期 (3m, 5m)
-        const synthTfs = configRef.current.timeframes.filter(
-          (t) => t === "1m" || t === "3m" || t === "5m",
-        );
+      const results = analyzeList2Crossing(
+        symbol,
+        tf,
+        klines.map((k) => k.close),
+        klines.map((k) => k.high),
+        klines.map((k) => k.low),
+        klines.map((k) => k.open),
+        klines.map((k) => k.volume),
+        klines.map((k) => k.time),
+        { ...configRef.current, maxLag: retention } as any,
+        3,
+      );
 
-        for (const stf of synthTfs) {
-          const tfMins = getTfMinutes(stf);
-          const targetKlines =
-            stf === "1m" ? klines : KLineSynthesizer.synthesize(klines, tfMins);
+      if (results.length > 0) {
+        mergedResults = mergedResults.filter((r) => r.tf !== tf);
+        mergedResults.push(...results);
 
-          const results = analyzeList2Crossing(
-            symbol,
-            stf,
-            targetKlines.map((k) => k.close),
-            targetKlines.map((k) => k.high),
-            targetKlines.map((k) => k.low),
-            targetKlines.map((k) => k.open),
-            targetKlines.map((k) => k.volume),
-            targetKlines.map((k) => k.time),
-            { ...configRef.current, maxLag: retention } as any,
-            5, // Increased from 4 to 5 for ultra-safety against scan cycle latency
-          );
+        results.forEach((res) => {
+          const signalTime =
+            res.crossingTimes && res.crossingTimes.length > 0
+              ? Math.max(...res.crossingTimes)
+              : 0;
+          const id = `${symbol}-${tf}-${res.direction}-${signalTime}`;
 
-          if (results.length > 0) {
-            mergedResults = mergedResults.filter((r) => r.tf !== stf);
-            mergedResults.push(...results);
-
-            // 信号捕获 (修正 ID 生成逻辑)
-            results.forEach((res) => {
-              const signalTime =
-                res.crossingTimes && res.crossingTimes.length > 0
-                  ? Math.max(...res.crossingTimes)
-                  : 0;
-              const id = `${symbol}-${stf}-${res.direction}-${signalTime}`;
-
-              // [CLEANUP] Remove older captured signals for the same symbol-tf-direction
-              const prefix = `${symbol}-${stf}-${res.direction}-`;
-              Array.from(capturedSignalsRef.current).forEach((existingId) => {
-                if (existingId.startsWith(prefix) && existingId !== id) {
-                  capturedSignalsRef.current.delete(existingId);
-                }
-              });
-
-              if (!capturedSignalsRef.current.has(id)) {
-                capturedSignalsRef.current.add(id);
-                console.log(
-                  `[List2 Captured] ${symbol} ${stf} at ${new Date(signalTime).toLocaleTimeString()}`,
-                );
-                try {
-                  const cleanSym = symbol.replace('USDT', '');
-                  const patternName = res.isAligned ? '发散' : '穿越';
-                  const speechText = `${cleanSym}出现${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
-                  audioService.speak(speechText, true);
-                } catch (speechErr) {
-                  console.warn("Speech synthesis error inside List 2", speechErr);
-                }
-              }
-            });
-          } else {
-            // 如果没有发现新信号，检查旧信号是否到期。如果没到期，保留旧的，不要 filter 掉
-            const oldSignal = existingItem?.groupedResults?.find(
-              (r) => r.tf === stf,
-            );
-            if (oldSignal && oldSignal.lag < retention) {
-              // 保留旧信号，不执行 filter(r => r.tf !== stf)
-            } else {
-              mergedResults = mergedResults.filter((r) => r.tf !== stf);
-            }
-          }
-        }
-      } else if (!isSynthesized) {
-        // 大周期抓取
-        const safeSymbol = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
-        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=200&_t=${now}`;
-        const res = await fetchWithFallback(
-          url,
-          { cache: "no-store" },
-          (d) => Array.isArray(d),
-          directMode,
-        );
-        if (!res.ok) return;
-        const raw = await res.json();
-        klines = raw.map((k: any) => ({
-          time: Number(k[0]),
-          open: parseFloat(k[1]),
-          high: parseFloat(k[2]),
-          low: parseFloat(k[3]),
-          close: parseFloat(k[4]),
-          volume: parseFloat(k[5]),
-        }));
-
-        const results = analyzeList2Crossing(
-          symbol,
-          tf,
-          klines.map((k) => k.close),
-          klines.map((k) => k.high),
-          klines.map((k) => k.low),
-          klines.map((k) => k.open),
-          klines.map((k) => k.volume),
-          klines.map((k) => k.time),
-          { ...configRef.current, maxLag: retention } as any,
-          3, // RELAXED: Increased from 2 to 3 to accommodate scan cycle latency for high TFs
-        );
-
-        if (results.length > 0) {
-          mergedResults = mergedResults.filter((r) => r.tf !== tf);
-          mergedResults.push(...results);
-
-          // 大周期信号也加入捕获
-          results.forEach((res) => {
-            const signalTime =
-              res.crossingTimes && res.crossingTimes.length > 0
-                ? Math.max(...res.crossingTimes)
-                : 0;
-            const id = `${symbol}-${tf}-${res.direction}-${signalTime}`;
-
-            // [CLEANUP] Remove older captured signals
-            const prefix = `${symbol}-${tf}-${res.direction}-`;
-            Array.from(capturedSignalsRef.current).forEach((existingId) => {
-              if (existingId.startsWith(prefix) && existingId !== id) {
-                capturedSignalsRef.current.delete(existingId);
-              }
-            });
-
-            if (!capturedSignalsRef.current.has(id)) {
-              capturedSignalsRef.current.add(id);
-              try {
-                const cleanSym = symbol.replace('USDT', '');
-                const patternName = res.isAligned ? '发散' : '穿越';
-                const speechText = `${cleanSym}出现${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
-                audioService.speak(speechText, true);
-              } catch (speechErr) {
-                console.warn("Speech synthesis error inside List 2", speechErr);
-              }
+          const prefix = `${symbol}-${tf}-${res.direction}-`;
+          Array.from(capturedSignalsRef.current).forEach((existingId) => {
+            if (existingId.startsWith(prefix) && existingId !== id) {
+              capturedSignalsRef.current.delete(existingId);
             }
           });
-        } else {
-          // 如果没有发现新信号，检查旧信号是否到期
-          const oldSignal = existingItem?.groupedResults?.find(
-            (r) => r.tf === tf,
-          );
-          if (oldSignal && oldSignal.lag < retention) {
-            // 保留
-          } else {
-            mergedResults = mergedResults.filter((r) => r.tf !== tf);
+
+          if (!capturedSignalsRef.current.has(id)) {
+            capturedSignalsRef.current.add(id);
+            console.log(
+              `[List2 Captured] ${symbol} ${tf} at ${new Date(signalTime).toLocaleTimeString()}`,
+            );
+            try {
+              const cleanSym = symbol.replace('USDT', '');
+              const patternName = res.isAligned ? '发散' : '穿越';
+              const speechText = `${cleanSym}出现${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
+              audioService.speak(speechText, true);
+            } catch (speechErr) {
+              console.warn("Speech synthesis error inside List 2", speechErr);
+            }
           }
+        });
+      } else {
+        const oldSignal = existingItem?.groupedResults?.find(
+          (r) => r.tf === tf,
+        );
+        if (oldSignal && oldSignal.lag < retention) {
+          // Keep active old signals
+        } else {
+          mergedResults = mergedResults.filter((r) => r.tf !== tf);
         }
       }
 
-      // 更新缓存 (原子化读写防止竞态覆盖)
       const finalCacheKey = `${symbol}-FULL`;
       const latestItem = cacheRef.current.get(finalCacheKey) || item;
       let finalResults = mergedResults;
 
       if (latestItem && latestItem.groupedResults) {
-        // 将最新扫描结果与当前缓存中已有的其他周期结果合并
-        const otherTfResults = latestItem.groupedResults.filter((r) => {
-          if (isSynthesized && tf === "1m") {
-            return !["1m", "3m", "5m"].includes(r.tf || "");
-          }
-          return r.tf !== tf;
-        });
-
-        // 去重合并
+        const otherTfResults = latestItem.groupedResults.filter((r) => r.tf !== tf);
         const seenTfs = new Set(mergedResults.map((r) => r.tf));
         finalResults = [
           ...mergedResults,
@@ -1014,21 +914,15 @@ export const useGrandCrossing = (
           lastUpdated: Date.now(),
         });
       } else if (existingItem && existingItem.groupedResults) {
-        // 如果当前扫描周期的结果为空，但缓存中有其他周期的有效结果，则保留
         const stillValidSignals = existingItem.groupedResults.filter((r) => {
           const rTf = r.tf || "";
-          // 如果是当前扫描的周期，既然 results 为空，说明失效了
-          if (isSynthesized && tf === "1m") {
-            if (["1m", "3m", "5m"].includes(rTf)) return false;
-          } else if (rTf === tf) {
-            return false;
-          }
+          if (rTf === tf) return false;
 
           const isNotExpired = r.lag < retention;
           if (!isNotExpired) return false;
 
           if (configRef.current.strictFiltering) {
-            const ratio = r.bodyRatio ?? 0; // Set default to 0 to be strictly compliant and filter out malformed/legacy signals
+            const ratio = r.bodyRatio ?? 0;
             if (ratio < (configRef.current.minBodyRatio || 0)) return false;
           }
           return true;
@@ -1051,45 +945,55 @@ export const useGrandCrossing = (
 
   // --- WORKER FACTORY ---
   useEffect(() => {
+    const TF_SCAN_INTERVALS: Record<string, number> = {
+      "5m": 75 * 1000,
+      "15m": 90 * 1000,
+      "30m": 120 * 1000,
+      "1h": 180 * 1000,
+      "2h": 240 * 1000,
+      "4h": 360 * 1000,
+      "8h": 720 * 1000,
+      "1d": 1800 * 1000,
+    };
+
     const startWorker = (
       tf: string,
-      interval: number,
-      isBase: boolean = false,
+      tickRate: number,
     ) => {
       if (workersRef.current[tf]) return;
       workersRef.current[tf] = true;
 
       const run = async () => {
         // 检查该周期是否在配置中
-        const tfs = configRef.current.timeframes;
-        const isSelected = isBase
-          ? tfs.some((t) => ["1m", "3m", "5m"].includes(t))
-          : tfs.includes(tf);
+        const isSelected = configRef.current.timeframes.includes(tf);
 
         if (isSelected && sortedCandidatesRef.current.length > 0) {
-          const idxKey = isBase ? "1m" : tf;
-          let idx = indicesRef.current[idxKey] || 0;
-          const totalCandidates = sortedCandidatesRef.current.length;
-          
-          let foundIdx = -1;
-          for (let i = 0; i < totalCandidates; i++) {
-            const checkIdx = (idx + i) % totalCandidates;
-            const checkSymbol = sortedCandidatesRef.current[checkIdx].symbol;
-            const fetchKey = isBase ? `${checkSymbol}-1m` : `${checkSymbol}-${tf}`;
-            const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
-            if (Date.now() - lastFetch >= 10000) {
-              foundIdx = checkIdx;
-              break;
-            }
-          }
+          const now = Date.now();
+          const targetInterval = TF_SCAN_INTERVALS[tf] || 300000;
 
-          if (foundIdx !== -1) {
-            const symbol = sortedCandidatesRef.current[foundIdx].symbol;
-            await processSymbol(symbol, tf, isBase);
-            indicesRef.current[idxKey] = (foundIdx + 1) % totalCandidates;
-          } else {
-            // All symbols have been fetched in the last 10 seconds. Just move index forward slightly to keep moving
-            indicesRef.current[idxKey] = (idx + 1) % totalCandidates;
+          // Find candidates that are overdue for this timeframe
+          const overdueCandidates = sortedCandidatesRef.current.map((c) => {
+            const fetchKey = `${c.symbol}-${tf}`;
+            const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
+            return {
+              symbol: c.symbol,
+              lastFetch,
+              age: now - lastFetch,
+            };
+          }).filter((c) => c.age >= targetInterval);
+
+          if (overdueCandidates.length > 0) {
+            // Sort to process the oldest first
+            overdueCandidates.sort((a, b) => a.lastFetch - b.lastFetch);
+            const targetSymbol = overdueCandidates[0].symbol;
+
+            // Trigger active scanning indicator
+            startScanTf(tf);
+            try {
+              await processSymbol(targetSymbol, tf);
+            } finally {
+              endScanTf(tf);
+            }
           }
         }
 
@@ -1097,36 +1001,29 @@ export const useGrandCrossing = (
         if (workersRef.current[tf]) {
           const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
           const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
-          const finalInterval = isBg ? interval * 50 : interval;
-          setTimeout(run, finalInterval);
+          // Background mode multiplier to save resources when tab is inactive
+          const finalTickRate = isBg ? tickRate * 10 : tickRate;
+          setTimeout(run, finalTickRate);
         }
       };
 
       run();
     };
 
-    // 启动各组 Worker (加速高周期扫描频率，降低延迟)
-    // 组 1: 1m (涵盖 3m, 5m), 频率 6.6枚/秒
-    startWorker("1m", 150, true);
-    // 组 2: 15m, 频率 4枚/秒
-    startWorker("15m", 250);
-    // 组 3: 30m, 频率 2枚/秒
-    startWorker("30m", 500);
-    // 组 4: 1h, 频率 1.3枚/秒
-    startWorker("1h", 750);
-    // 组 5: 2h, 频率 1枚/秒
-    startWorker("2h", 1000);
-    // 组 6: 4h, 频率 1枚/1.5秒
-    startWorker("4h", 1500);
-    // 组 7: 8h, 频率 1枚/2秒
-    startWorker("8h", 2000);
-    // 组 8: 1d, 频率 1枚/3秒
-    startWorker("1d", 3000);
+    // 启动 8 大周期专属高频/低迟 Ticker 调度器
+    startWorker("5m", 100);
+    startWorker("15m", 150);
+    startWorker("30m", 200);
+    startWorker("1h", 300);
+    startWorker("2h", 400);
+    startWorker("4h", 500);
+    startWorker("8h", 1000);
+    startWorker("1d", 2000);
 
     return () => {
       workersRef.current = {}; // Stop all on unmount
     };
-  }, []);
+  }, [startScanTf, endScanTf, strategyId]);
 
   // 状态轮询更新 UI
   useEffect(() => {

@@ -90,9 +90,14 @@ export function checkGlobalRules(
             }
 
             // C3. 检查当前所属阶梯的常规回调
-            const activeTier = tiers.find(tier => 
-                maxPnl >= tier.threshold && maxPnl < tier.expiry
-            );
+            // 关键修复：当 maxPnl 已经超出最高阶梯的失效值时，最高阶梯仍应作为 activeTier 保持运行，以便根据最高阶梯的回调比例持续从最高点进行追踪止盈！
+            const maxTierExpiry = tiers.reduce((max, t) => Math.max(max, t.expiry), 0);
+            const activeTier = tiers.find(tier => {
+                if (tier.expiry === maxTierExpiry && maxPnl >= tier.threshold) {
+                    return true;
+                }
+                return maxPnl >= tier.threshold && maxPnl < tier.expiry;
+            });
 
             if (activeTier) {
                 const drawdown = maxPnl - currentPnl;

@@ -71,6 +71,12 @@ This prevents event loop starvation, browser freezes, and subsequent unhandled r
 - `/App.tsx` (Specifically the setup callbacks `sim.onRealClose`/`sim.onRealReopen`, real-trading position opening rules bypass logic `extraProps?.isReopened`, and delayed execution handlers `handleAutoReopen`) - **STRICTLY LOCKED**
 Do NOT modify this logic, timing delays, or synchronization rules unless explicitly requested with a specific confirmation directive.
 
+## 🔒 Strict Modification & Authorization Directive (绝对修改授权铁律)
+**CRITICAL USER DIRECTIVE**: 
+"这些功能的失效是从来都没有下指令的，以后在没特别下指令的时候，你绝对不能乱修改程序里的功能；【如果有特别原因需要涉及其它功能修改的，必须要在询问，等待我确认后再修改】，把这段话置入你的程序修改内容里，每次修改都要先看看这段指令"
+- WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES OR COMPONENT BEHAVIORS.
+- IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU **MUST** EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION BEFORE PROCEEDING!
+
 
 
 

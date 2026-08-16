@@ -106,47 +106,10 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     const { 
         list1, isScanning, scanStatusText, marketStats, nextScanTime, setNextScanTime, refreshList1Candidates, cancelScan,
         addToBlacklist, clearBlacklist,
-        majorTrendCandidates, isMajorScanning, majorProgress, runMajorTrendDiscovery
+        isMajorScanning, majorProgress, runMajorTrendDiscovery, majorTrendCandidates
     } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, mode, selectedStrategyId, isScanAllowed);
 
-    // --- EFFECT: Auto Transfer to Watchlist ---
-    useEffect(() => {
-        if (scanConfig.majorTrend?.enabled && scanConfig.majorTrend?.autoTransfer && majorTrendCandidates && majorTrendCandidates.size > 0) {
-            const candidatesList = Array.from(majorTrendCandidates).map(s => s.replace('USDT', ''));
-            const currentSymbols = (scanConfig.customSymbols || '').split(',').map(s => s.trim()).filter(Boolean);
-            const currentSet = new Set(currentSymbols);
-            
-            let addedCount = 0;
-            candidatesList.forEach(sym => {
-                if (!currentSet.has(sym) && !transferredSymbolsRef.current.has(sym)) {
-                    currentSet.add(sym);
-                    transferredSymbolsRef.current.add(sym);
-                    addedCount++;
-                }
-            });
-            
-            if (addedCount > 0) {
-                const updatedSymbols = Array.from(currentSet).join(', ');
-                setScanConfig(p => ({
-                    ...p,
-                    customSymbols: updatedSymbols
-                }));
-                console.log(`[Auto Transfer] Added ${addedCount} discovered symbols to Watchlist:`, candidatesList);
-            }
-        }
-    }, [majorTrendCandidates, scanConfig.majorTrend?.enabled, scanConfig.majorTrend?.autoTransfer]);
-
-    // --- EFFECT: Sync with Legacy System ---
-    const lastListStrRef = React.useRef<string>('');
-    useEffect(() => {
-        const str = JSON.stringify(list1);
-        if (str !== lastListStrRef.current) {
-            lastListStrRef.current = str;
-            setTimeout(() => {
-                onCandidatesUpdate(list1);
-            }, 0);
-        }
-    }, [list1, onCandidatesUpdate]);
+    // --- EFFECT: Sync with Legacy System (Removed because we use onFilteredUpdate now) ---
 
     // --- EFFECT: Trigger Scan When Allowed transitions to true ---
     const hasScannedOnMountRef = React.useRef(false);
@@ -275,10 +238,12 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             setChartData={setChartData}
             scannerMode={mode}
             setScannerMode={setMode}
-            majorTrendCandidates={majorTrendCandidates}
             isMajorScanning={isMajorScanning}
             majorProgress={majorProgress}
             runMajorTrendDiscovery={runMajorTrendDiscovery}
+            majorTrendCandidates={majorTrendCandidates}
+            onFilteredUpdate={onCandidatesUpdate}
+            directMode={directMode}
             backtestProps={backtestProps}
             strategies={strategies}
             selectedStrategyId={selectedStrategyId}

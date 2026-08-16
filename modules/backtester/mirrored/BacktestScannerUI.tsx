@@ -49,7 +49,9 @@ export const BacktestMarketScannerModule: React.FC<Props> = ({
         const str = JSON.stringify(list1);
         if (str !== lastListStrRef.current) {
             lastListStrRef.current = str;
-            onCandidatesUpdate(list1);
+            setTimeout(() => {
+                onCandidatesUpdate(list1);
+            }, 0);
         }
     }, [list1, onCandidatesUpdate]);
 

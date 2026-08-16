@@ -324,7 +324,7 @@ async function startServer() {
     }
 
     app.post("/api/binance/order", async (req, res) => {
-        const { apiKey, apiSecret, symbol, side, action, quantity, amountUsdt } = req.body;
+        const { apiKey, apiSecret, symbol, side, action, quantity, amountUsdt, leverage } = req.body;
         if (!apiKey || !apiSecret || !symbol || !side || !action) {
             return res.status(400).json({ success: false, error: "缺少必要参数 (apiKey, apiSecret, symbol, side, action)" });
         }
@@ -332,7 +332,44 @@ async function startServer() {
         const formattedSymbol = formatBinanceSymbol(symbol);
 
         try {
-            // 1. Get current ticker price to calculate quantity or validate notional value
+            // 1. Set leverage if action is OPEN
+            if (action === "OPEN") {
+                const targetLeverage = parseInt(leverage || "20");
+                try {
+                    console.log(`[Binance Order] Setting leverage to ${targetLeverage}x for ${formattedSymbol}...`);
+                    const levTimestamp = Date.now();
+                    const levQueryString = `leverage=${targetLeverage}&symbol=${formattedSymbol}&timestamp=${levTimestamp}&recvWindow=5000`;
+                    const levSignature = crypto
+                        .createHmac("sha256", apiSecret)
+                        .update(levQueryString)
+                        .digest("hex");
+                    
+                    const levResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverage?${levQueryString}&signature=${levSignature}`, {
+                        method: "POST",
+                        headers: { "X-MBX-APIKEY": apiKey }
+                    });
+                    
+                    if (levResponse.ok) {
+                        console.log(`[Binance Order] Successfully set leverage to ${targetLeverage}x`);
+                    } else {
+                        const levErrText = await levResponse.text();
+                        console.warn(`[Binance Order] Failed to set leverage: ${levErrText}`);
+                        try {
+                            const levErrJson = JSON.parse(levErrText);
+                            if (levErrJson.msg) {
+                                return res.status(400).json({
+                                    success: false,
+                                    error: `【杠杆设置失败】${levErrJson.msg}。币安限制了该币种的最大杠杆倍数，请在开仓面板中调低杠杆倍数（例如降至 10x 或 5x）后再试！`
+                                });
+                            }
+                        } catch {}
+                    }
+                } catch (e: any) {
+                    console.warn(`[Binance Order] Exception while setting leverage:`, e);
+                }
+            }
+
+            // 2. Get current ticker price to calculate quantity or validate notional value
             console.log(`[Binance Order] Fetching price for ${formattedSymbol} to calculate qty/validate notional...`);
             let priceResponse;
             try {
@@ -968,14 +1005,23 @@ async function startServer() {
           }
       }
   
-      // Rate limiter: 1 request per 150ms per target domain
+      // Rate limiter: Spaced out request reservation queue (atomic scheduler)
       const host = new URL(targetUrl).hostname;
       const now = Date.now();
-      const lastReq = lastRequestTime.get(host) || 0;
-      if (now - lastReq < 150) {
-          await new Promise(resolve => setTimeout(resolve, 150 - (now - lastReq)));
+      let lastReq = lastRequestTime.get(host) || 0;
+      
+      if (lastReq < now) {
+          lastReq = now;
       }
-      lastRequestTime.set(host, Date.now());
+      
+      // Schedule this request 60ms after the last scheduled one to prevent flooding and race conditions
+      const scheduledTime = lastReq + 60;
+      lastRequestTime.set(host, scheduledTime);
+      
+      const delay = scheduledTime - now;
+      if (delay > 0) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+      }
   
       const isHighPriority = (req.query.priority === "high") || targetUrl.includes("/klines");
       const maxRetries = targetUrl.includes("binance") ? 6 : (isHighPriority ? 6 : 2);
@@ -987,25 +1033,48 @@ async function startServer() {
           
           // Determine the URL to fetch for this attempt
           if (targetUrl.includes("binance")) {
-              if (attempt === 1) {
-                  urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
-              } else if (attempt === 2) {
-                  urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.me");
-              } else if (attempt === 3 && (targetUrl.includes("/ticker/price") || targetUrl.includes("/klines") || targetUrl.includes("/ticker/24hr"))) {
-                  urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)\/fapi\/v[12]\//, "api.binance.com/api/v3/");
-              } else {
-                  // Public proxies - always map to the standard fapi.binance.com domain
+              const isCloudRun = !!process.env.K_SERVICE || true; // Cloud Run environments are always geoblocked by Binance
+              
+              if (isCloudRun) {
+                  // Direct fetches to Binance are 100% blocked on Cloud Run. Route through high-speed proxies first.
                   const standardTargetUrl = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
                   const encodedOrig = encodeURIComponent(standardTargetUrl);
                   const cacheBuster = `cb=${Date.now()}`;
                   
-                  // Adjust attempt mapping because attempt 3 might be skipped if not supported
-                  if (attempt === 3 || attempt === 4) {
+                  if (attempt === 1) {
+                      urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
+                  } else if (attempt === 2) {
+                      urlToFetch = `https://proxy.corsfix.com/?${encodedOrig}`;
+                  } else if (attempt === 3) {
+                      urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`;
+                  } else if (attempt === 4) {
                       urlToFetch = `https://corsproxy.io/?${encodedOrig}&${cacheBuster}`;
                   } else if (attempt === 5) {
-                      urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`;
+                      urlToFetch = `https://thingproxy.freeboard.io/fetch/${standardTargetUrl}`;
                   } else {
-                      urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
+                      urlToFetch = standardTargetUrl;
+                  }
+              } else {
+                  if (attempt === 1) {
+                      urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
+                  } else if (attempt === 2) {
+                      urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.me");
+                  } else if (attempt === 3 && (targetUrl.includes("/ticker/price") || targetUrl.includes("/klines") || targetUrl.includes("/ticker/24hr"))) {
+                      urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)\/fapi\/v[12]\//, "api.binance.com/api/v3/");
+                  } else {
+                      // Public proxies - always map to the standard fapi.binance.com domain
+                      const standardTargetUrl = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
+                      const encodedOrig = encodeURIComponent(standardTargetUrl);
+                      const cacheBuster = `cb=${Date.now()}`;
+                      
+                      // Adjust attempt mapping because attempt 3 might be skipped if not supported
+                      if (attempt === 3 || attempt === 4) {
+                           urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
+                       } else if (attempt === 5) {
+                           urlToFetch = `https://proxy.corsfix.com/?${encodedOrig}`;
+                       } else {
+                           urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`;
+                       }
                   }
               }
           } else {
@@ -1023,9 +1092,11 @@ async function startServer() {
               const controller = new AbortController();
               const isPublicProxy = urlToFetch.includes("allorigins") || 
                                     urlToFetch.includes("corsproxy") || 
-                                    urlToFetch.includes("codetabs");
+                                    urlToFetch.includes("codetabs") ||
+                                    urlToFetch.includes("corsfix") ||
+                                    urlToFetch.includes("freeboard");
                                     
-              const timeoutMs = isPublicProxy ? 15000 : 3500;
+              const timeoutMs = isPublicProxy ? 4000 : 3500;
               const timeoutId = setTimeout(() => {
                   if (controller.signal.aborted) return;
                   controller.abort();
@@ -1112,19 +1183,34 @@ async function startServer() {
               }
               
               // Handle rate limiting specifically
-               if (response.status === 429 || response.status === 418) {
-                   const retryAfter = response.headers.get("Retry-After");
-                   const delayMs = retryAfter ? parseInt(retryAfter) * 1000 : (attempt * 5000); // 5s or Retry-After, increase delay
-                   console.warn(`[Proxy] Rate limited (${response.status}) on attempt ${attempt}. Waiting ${delayMs}ms before retry for ${urlToFetch}`);
-                   await new Promise(resolve => setTimeout(resolve, delayMs));
-                   continue;
-               }
+              if (response.status === 429 || response.status === 418) {
+                  const retryAfter = response.headers.get("Retry-After");
+                  // For public proxies, use a tiny delay (50ms) to immediately fail over to the next proxy instead of waiting 5+ seconds
+                  const delayMs = isPublicProxy ? 50 : (retryAfter ? parseInt(retryAfter) * 1000 : (attempt * 5000));
+                  console.warn(`[Proxy] Rate limited (${response.status}) on attempt ${attempt}. Waiting ${delayMs}ms before retry for ${urlToFetch}`);
+                  if (delayMs > 0) {
+                      await new Promise(resolve => setTimeout(resolve, delayMs));
+                  }
+                  continue;
+              }
 
-               throw new Error(`Response status ${response.status}`);
+              throw new Error(`Response status ${response.status}`);
           } catch (error: any) {
               console.error(`[Proxy] Attempt ${attempt} encountered error: ${error.message || error}`);
               if (attempt < maxRetries) {
-                  const delayMs = attempt * 500; // Exponential backoff delay
+                  const errMsg = String(error?.message || error || "").toLowerCase();
+                  const isProxySpecificError = errMsg.includes("403") || 
+                                               errMsg.includes("520") || 
+                                               errMsg.includes("502") || 
+                                               errMsg.includes("503") || 
+                                               errMsg.includes("504") || 
+                                               errMsg.includes("abort") || 
+                                               errMsg.includes("allorigins") || 
+                                               errMsg.includes("corsproxy") || 
+                                               errMsg.includes("codetabs") || 
+                                               errMsg.includes("corsfix") || 
+                                               errMsg.includes("freeboard");
+                  const delayMs = isProxySpecificError ? 0 : attempt * 500; // Zero delay for proxy blockages
                   await new Promise(resolve => setTimeout(resolve, delayMs));
               }
           }

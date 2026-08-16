@@ -10,7 +10,6 @@ interface Props {
     setScanConfig: React.Dispatch<React.SetStateAction<ScanConfig>>;
     marketStats: any;
     // Major Trend Props
-    majorTrendCandidates?: Set<string>;
     isMajorScanning?: boolean;
     majorProgress?: { current: number, total: number };
     runMajorTrendDiscovery?: () => void;
@@ -18,7 +17,7 @@ interface Props {
 
 export const FilterSection: React.FC<Props> = ({ 
     scanConfig, setScanConfig, marketStats, 
-    majorTrendCandidates, isMajorScanning, majorProgress, runMajorTrendDiscovery 
+    isMajorScanning, majorProgress, runMajorTrendDiscovery 
 }) => {
     return (
         <div className="space-y-3 animate-in fade-in slide-in-from-top-1 duration-300">
@@ -251,52 +250,9 @@ export const FilterSection: React.FC<Props> = ({
                         setConfig={(cfg) => setScanConfig(p => ({...p, majorTrend: cfg}))}
                         isMajorScanning={isMajorScanning}
                         majorProgress={majorProgress}
-                        candidateCount={majorTrendCandidates?.size || 0}
                         onRunDiscovery={runMajorTrendDiscovery}
                         isPrimaryMode={true}
                     />
-
-                    {/* Stage 1 Results Display (Bottom) */}
-                    <div className="pt-2 border-t border-slate-800 flex flex-col h-full min-h-0">
-                        <div className="flex items-center justify-between mb-1 gap-1">
-                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">Stage 1 锁定币种 ({majorTrendCandidates?.size || 0})</span>
-                            {majorTrendCandidates && majorTrendCandidates.size > 0 && (
-                                <button 
-                                    onClick={() => {
-                                        const candidatesList = Array.from(majorTrendCandidates).map(s => s.replace('USDT', ''));
-                                        const currentSymbols = (scanConfig.customSymbols || '').split(',').map(s => s.trim()).filter(Boolean);
-                                        const currentSet = new Set(currentSymbols);
-                                        candidatesList.forEach(sym => currentSet.add(sym));
-                                        setScanConfig(p => ({
-                                            ...p,
-                                            customSymbols: Array.from(currentSet).join(', ')
-                                        }));
-                                    }}
-                                    className="text-[8px] text-indigo-400 hover:text-indigo-300 font-bold px-1 py-0.5 rounded border border-indigo-500/20 bg-indigo-500/5 transition-all flex items-center shrink-0"
-                                    title="一键将大行情发现的所有币种追加移入监控列表"
-                                >
-                                    ➕ 移入全部
-                                </button>
-                            )}
-                            <div className="h-px flex-1 bg-slate-800" />
-                        </div>
-                        <div className="bg-black/40 rounded border border-slate-800/30 p-1.5 flex-1 min-h-[50px] max-h-[160px] overflow-y-auto custom-scrollbar">
-                            {majorTrendCandidates && majorTrendCandidates.size > 0 ? (
-                                <div className="grid grid-cols-4 gap-1">
-                                    {Array.from(majorTrendCandidates).sort().map((symbol, idx) => (
-                                        <div key={`${symbol}-${idx}`} className="px-1 py-0.5 bg-indigo-500/5 text-indigo-400 border border-indigo-500/10 rounded-[2px] text-[9px] font-mono text-center">
-                                            {symbol.replace('USDT', '')}
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <div className="h-full flex flex-col items-center justify-center py-4 text-center">
-                                    <div className="text-[9px] text-slate-600">暂无大行情币种</div>
-                                    <div className="text-[8px] text-slate-700 italic">请运行“大行情发现”</div>
-                                </div>
-                            )}
-                        </div>
-                    </div>
                 </div>
             )}
         </div>

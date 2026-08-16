@@ -55,3 +55,11 @@ Any development tool, agent, or developer MUST strictly respect the following co
 ## 3. Strict Safety Markers (在代码中保留的安全印记)
 When writing comments or documentation in code files, clearly mark them as:
 `// 🔒 [SECURITY_LOCK]: DO NOT MODIFY OR REFACTOR THIS BLOC OF CODE TO MAINTAIN REAL-TIME PIPELINE INTEGRITY.`
+
+---
+
+## 4. Strict Modification & Authorization Directive (绝对修改授权铁律)
+**CRITICAL USER DIRECTIVE**: 
+"这些功能的失效是从来都没有下指令的，以后在没特别下指令的时候，你绝对不能乱修改程序里的功能；【如果有特别原因需要涉及其它功能修改的，必须要在询问，等待我确认后再修改】，把这段话置入你的程序修改内容里，每次修改都要先看看这段指令"
+- WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES OR COMPONENT BEHAVIORS.
+- IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU **MUST** EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION BEFORE PROCEEDING!

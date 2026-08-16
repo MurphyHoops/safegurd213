@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Activity, Settings2, PlayCircle, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Activity, Settings2, PlayCircle, Loader2, CheckCircle2 } from 'lucide-react';
 import { MajorTrendConfig } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
 
@@ -8,8 +8,15 @@ interface Props {
     config?: MajorTrendConfig;
     setConfig: (cfg: MajorTrendConfig) => void;
     isMajorScanning?: boolean;
-    majorProgress?: { current: number, total: number };
-    candidateCount: number;
+    majorProgress?: { 
+        current: number, 
+        total: number, 
+        stage?: string, 
+        group1Passed?: number, 
+        group2Passed?: number, 
+        group3Passed?: number, 
+        currentSymbol?: string 
+    };
     onRunDiscovery?: (isManual?: boolean) => void;
     isPrimaryMode?: boolean;
 }
@@ -41,14 +48,15 @@ const DEFAULT_CONFIG: MajorTrendConfig = {
     enableStartTrendLong: false,
     enableStartTrendShort: false,
     startTrendGroups: [
-        { enabled: false, hours: 4, minLong: 1, maxLong: 5, minShort: 1, maxShort: 5 },
-        { enabled: false, hours: 12, minLong: 2, maxLong: 10, minShort: 2, maxShort: 10 },
-        { enabled: false, hours: 24, minLong: 4, maxLong: 20, minShort: 4, maxShort: 20 }
+        { enabled: false, hours: 8, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+        { enabled: false, hours: 4, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+        { enabled: false, hours: 12, minLong: 2, maxLong: 20, maxPullbackLong: 8, minShort: 2, maxShort: 20, maxPullbackShort: 8 },
+        { enabled: false, hours: 24, minLong: 4, maxLong: 30, maxPullbackLong: 10, minShort: 4, maxShort: 30, maxPullbackShort: 10 }
     ]
 };
 
 export const MajorTrendSection: React.FC<Props> = ({ 
-    config, setConfig, isMajorScanning, majorProgress, candidateCount, onRunDiscovery, isPrimaryMode 
+    config, setConfig, isMajorScanning, majorProgress, onRunDiscovery, isPrimaryMode 
 }) => {
     const [isExpanded, setIsExpanded] = useState(isPrimaryMode || false);
     const activeConfig = { ...DEFAULT_CONFIG, ...config };
@@ -80,7 +88,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                             {activeConfig.enabled && <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" />}
                         </div>
                         <div className="text-[9px] text-slate-500">
-                            候选池: {candidateCount} 个币种
+                            全周期大行情寻找与过滤
                         </div>
                     </div>
                 </div>
@@ -104,27 +112,6 @@ export const MajorTrendSection: React.FC<Props> = ({
                     <div className="grid grid-cols-2 gap-1.5">
                         <InputField label="更新频率(h)" value={activeConfig.updateIntervalHours} onChange={v => updateField('updateIntervalHours', v)} />
                         <InputField label="速率(币/分)" value={activeConfig.requestPerMinute} onChange={v => updateField('requestPerMinute', v)} />
-                    </div>
-
-                    {/* Transfer Mode Switch */}
-                    <div className="bg-black/20 p-1.5 rounded border border-slate-800/50">
-                        <div className="flex items-center justify-between">
-                            <span className="text-[8.5px] font-bold text-slate-400">移入监控列表方式</span>
-                            <div className="flex bg-slate-950 p-0.5 rounded border border-slate-800">
-                                <button 
-                                    onClick={() => updateField('autoTransfer', false)}
-                                    className={`px-2 py-0.5 text-[8.5px] rounded font-bold transition-all ${!activeConfig.autoTransfer ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-                                >
-                                    手动
-                                </button>
-                                <button 
-                                    onClick={() => updateField('autoTransfer', true)}
-                                    className={`px-2 py-0.5 text-[8.5px] rounded font-bold transition-all ${activeConfig.autoTransfer ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-                                >
-                                    自动
-                                </button>
-                            </div>
-                        </div>
                     </div>
 
                     {/* Core Discovery Args */}
@@ -419,37 +406,46 @@ export const MajorTrendSection: React.FC<Props> = ({
                         {(activeConfig.enableStartTrendLong || activeConfig.enableStartTrendShort) ? (
                             <div className="space-y-1.5">
                                 {(activeConfig.startTrendGroups || [
-                                    { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
-                                    { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
-                                    { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
+                                    { enabled: false, hours: 8, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+                                    { enabled: false, hours: 4, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+                                    { enabled: false, hours: 12, minLong: 2, maxLong: 20, maxPullbackLong: 8, minShort: 2, maxShort: 20, maxPullbackShort: 8 },
+                                    { enabled: false, hours: 24, minLong: 4, maxLong: 30, maxPullbackLong: 10, minShort: 4, maxShort: 30, maxPullbackShort: 10 }
                                 ]).map((group, idx) => (
                                     <div key={idx} className="bg-black/40 border border-slate-800/80 rounded p-1 space-y-1">
                                         <div className="flex items-center justify-between border-b border-slate-800/40 pb-1">
                                             <div className="flex items-center gap-1.5">
-                                                <span className="text-[11px] font-bold text-slate-200">组合 {idx + 1}</span>
+                                                <span className="text-[11px] font-bold text-slate-200">组合 {idx}</span>
                                                 {group.enabled && (
-                                                    <div className="flex items-center gap-1 bg-slate-950/60 px-1.5 py-0.5 rounded border border-slate-800/40 font-mono">
-                                                        <span className="text-[10px] text-slate-400">周期:</span>
-                                                        <SmartNumberInput 
-                                                            value={group.hours} 
-                                                            onChange={v => {
-                                                                const currentGroups = activeConfig.startTrendGroups || [];
-                                                                const updated = [...currentGroups];
-                                                                updated[idx] = { ...updated[idx], hours: v };
-                                                                updateField('startTrendGroups', updated);
-                                                            }}
-                                                            className="w-7 bg-transparent font-bold text-[11px] text-center outline-none text-indigo-400"
-                                                        />
-                                                        <span className="text-[10px] text-slate-400 font-bold">h</span>
-                                                    </div>
+                                                    idx === 0 ? (
+                                                        <div className="flex items-center gap-1 bg-slate-950/60 px-1.5 py-0.5 rounded border border-slate-800/40 font-mono">
+                                                            <span className="text-[10px] text-indigo-400 font-bold">从今日08:00起</span>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex items-center gap-1 bg-slate-950/60 px-1.5 py-0.5 rounded border border-slate-800/40 font-mono">
+                                                            <span className="text-[10px] text-slate-400">小时周期:</span>
+                                                            <SmartNumberInput 
+                                                                value={group.hours} 
+                                                                onChange={v => {
+                                                                    const currentGroups = activeConfig.startTrendGroups || [];
+                                                                    const updated = [...currentGroups];
+                                                                    updated[idx] = { ...updated[idx], hours: v };
+                                                                    updateField('startTrendGroups', updated);
+                                                                }}
+                                                                className="w-10 bg-transparent font-bold text-[11px] text-center outline-none text-indigo-400"
+                                                            />
+                                                            <span className="text-[10px] text-slate-400 font-bold">h</span>
+                                                        </div>
+                                                    )
                                                 )}
                                             </div>
                                             <button 
                                                 onClick={() => {
                                                     const currentGroups = activeConfig.startTrendGroups || [
-                                                        { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
-                                                        { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
-                                                        { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
+                                                        { enabled: false, hours: 8, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+                                     { enabled: false, hours: 8, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+                                     { enabled: false, hours: 4, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+                                                        { enabled: false, hours: 12, minLong: 2, maxLong: 20, maxPullbackLong: 8, minShort: 2, maxShort: 20, maxPullbackShort: 8 },
+                                                        { enabled: false, hours: 24, minLong: 4, maxLong: 30, maxPullbackLong: 10, minShort: 4, maxShort: 30, maxPullbackShort: 10 }
                                                     ];
                                                     const updated = [...currentGroups];
                                                     updated[idx] = { ...updated[idx], enabled: !updated[idx].enabled };
@@ -461,109 +457,95 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             </button>
                                         </div>
                                         {group.enabled ? (
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                                            <div className="space-y-1.5 pt-1.5 pb-0.5">
                                                 {/* 做多设置 (只在启用做多时显示) */}
                                                 {activeConfig.enableStartTrendLong && (
-                                                    <div className="bg-emerald-950/10 border border-emerald-900/10 px-1.5 py-1 rounded space-y-1">
-                                                        <div className="text-[10px] font-bold text-emerald-400">做多启动:</div>
-                                                        <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-                                                            <div className="bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/30">
-                                                                <div className="text-[9px] text-slate-400 mb-0.5">距最低点涨幅</div>
-                                                                <div className="flex items-center gap-0.5 font-mono">
-                                                                    <SmartNumberInput 
-                                                                        value={group.minLong} 
-                                                                        onChange={v => {
-                                                                            const currentGroups = activeConfig.startTrendGroups || [];
-                                                                            const updated = [...currentGroups];
-                                                                            updated[idx] = { ...updated[idx], minLong: v };
-                                                                            updateField('startTrendGroups', updated);
-                                                                        }}
-                                                                        className="w-8 bg-transparent text-left outline-none text-emerald-400 font-bold text-[11px]"
-                                                                    />
-                                                                    <span className="text-slate-600">~</span>
-                                                                    <SmartNumberInput 
-                                                                        value={group.maxLong} 
-                                                                        onChange={v => {
-                                                                            const currentGroups = activeConfig.startTrendGroups || [];
-                                                                            const updated = [...currentGroups];
-                                                                            updated[idx] = { ...updated[idx], maxLong: v };
-                                                                            updateField('startTrendGroups', updated);
-                                                                        }}
-                                                                        className="w-8 bg-transparent text-left outline-none text-emerald-400 font-bold text-[11px]"
-                                                                    />
-                                                                    <span className="text-[9px] text-slate-400">%</span>
-                                                                </div>
-                                                            </div>
-                                                            <div className="bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/30">
-                                                                <div className="text-[9px] text-slate-400 mb-0.5">距最高点跌幅</div>
-                                                                <div className="flex items-center gap-0.5 font-mono">
-                                                                    <span className="text-slate-500 text-[10px]">&lt;</span>
-                                                                    <SmartNumberInput 
-                                                                        value={group.maxPullbackLong !== undefined ? group.maxPullbackLong : 2} 
-                                                                        onChange={v => {
-                                                                            const currentGroups = activeConfig.startTrendGroups || [];
-                                                                            const updated = [...currentGroups];
-                                                                            updated[idx] = { ...updated[idx], maxPullbackLong: v };
-                                                                            updateField('startTrendGroups', updated);
-                                                                        }}
-                                                                        className="w-8 bg-transparent text-left outline-none text-emerald-400 font-bold text-[11px]"
-                                                                    />
-                                                                    <span className="text-[9px] text-slate-400">%</span>
-                                                                </div>
-                                                            </div>
+                                                    <div className="flex items-center gap-2 text-[10px]">
+                                                        <span className="text-emerald-400 font-bold shrink-0 w-[44px]">做多启动:</span>
+                                                        <div className="flex items-center gap-1 bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/40">
+                                                            <span className="text-slate-500 text-[9px]">最低涨幅</span>
+                                                            <SmartNumberInput 
+                                                                value={group.minLong} 
+                                                                onChange={v => {
+                                                                    const currentGroups = activeConfig.startTrendGroups || [];
+                                                                    const updated = [...currentGroups];
+                                                                    updated[idx] = { ...updated[idx], minLong: v };
+                                                                    updateField('startTrendGroups', updated);
+                                                                }}
+                                                                className="w-7 bg-transparent text-center outline-none text-emerald-400 font-bold"
+                                                            />
+                                                            <span className="text-slate-600 font-mono">~</span>
+                                                            <SmartNumberInput 
+                                                                value={group.maxLong} 
+                                                                onChange={v => {
+                                                                    const currentGroups = activeConfig.startTrendGroups || [];
+                                                                    const updated = [...currentGroups];
+                                                                    updated[idx] = { ...updated[idx], maxLong: v };
+                                                                    updateField('startTrendGroups', updated);
+                                                                }}
+                                                                className="w-7 bg-transparent text-center outline-none text-emerald-400 font-bold"
+                                                            />
+                                                            <span className="text-[9px] text-slate-500 font-mono">%</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-1 bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/40">
+                                                            <span className="text-slate-500 text-[9px]">且回撤 &lt;</span>
+                                                            <SmartNumberInput 
+                                                                value={group.maxPullbackLong !== undefined ? group.maxPullbackLong : 2} 
+                                                                onChange={v => {
+                                                                    const currentGroups = activeConfig.startTrendGroups || [];
+                                                                    const updated = [...currentGroups];
+                                                                    updated[idx] = { ...updated[idx], maxPullbackLong: v };
+                                                                    updateField('startTrendGroups', updated);
+                                                                }}
+                                                                className="w-7 bg-transparent text-center outline-none text-emerald-400 font-bold"
+                                                            />
+                                                            <span className="text-[9px] text-slate-500 font-mono">%</span>
                                                         </div>
                                                     </div>
                                                 )}
 
                                                 {/* 做空设置 (只在启用做空时显示) */}
                                                 {activeConfig.enableStartTrendShort && (
-                                                    <div className="bg-rose-950/10 border border-rose-900/10 px-1.5 py-1 rounded space-y-1">
-                                                        <div className="text-[10px] font-bold text-rose-400">做空启动:</div>
-                                                        <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-                                                            <div className="bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/30">
-                                                                <div className="text-[9px] text-slate-400 mb-0.5">距最高点跌幅</div>
-                                                                <div className="flex items-center gap-0.5 font-mono">
-                                                                    <SmartNumberInput 
-                                                                        value={group.minShort} 
-                                                                        onChange={v => {
-                                                                            const currentGroups = activeConfig.startTrendGroups || [];
-                                                                            const updated = [...currentGroups];
-                                                                            updated[idx] = { ...updated[idx], minShort: v };
-                                                                            updateField('startTrendGroups', updated);
-                                                                        }}
-                                                                        className="w-8 bg-transparent text-left outline-none text-rose-400 font-bold text-[11px]"
-                                                                    />
-                                                                    <span className="text-slate-600">~</span>
-                                                                    <SmartNumberInput 
-                                                                        value={group.maxShort} 
-                                                                        onChange={v => {
-                                                                            const currentGroups = activeConfig.startTrendGroups || [];
-                                                                            const updated = [...currentGroups];
-                                                                            updated[idx] = { ...updated[idx], maxShort: v };
-                                                                            updateField('startTrendGroups', updated);
-                                                                        }}
-                                                                        className="w-8 bg-transparent text-left outline-none text-rose-400 font-bold text-[11px]"
-                                                                    />
-                                                                    <span className="text-[9px] text-slate-400">%</span>
-                                                                </div>
-                                                            </div>
-                                                            <div className="bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/30">
-                                                                <div className="text-[9px] text-slate-400 mb-0.5">距最低点涨幅</div>
-                                                                <div className="flex items-center gap-0.5 font-mono">
-                                                                    <span className="text-slate-500 text-[10px]">&lt;</span>
-                                                                    <SmartNumberInput 
-                                                                        value={group.maxPullbackShort !== undefined ? group.maxPullbackShort : 2} 
-                                                                        onChange={v => {
-                                                                            const currentGroups = activeConfig.startTrendGroups || [];
-                                                                            const updated = [...currentGroups];
-                                                                            updated[idx] = { ...updated[idx], maxPullbackShort: v };
-                                                                            updateField('startTrendGroups', updated);
-                                                                        }}
-                                                                        className="w-8 bg-transparent text-left outline-none text-rose-400 font-bold text-[11px]"
-                                                                    />
-                                                                    <span className="text-[9px] text-slate-400">%</span>
-                                                                </div>
-                                                            </div>
+                                                    <div className="flex items-center gap-2 text-[10px]">
+                                                        <span className="text-rose-400 font-bold shrink-0 w-[44px]">做空启动:</span>
+                                                        <div className="flex items-center gap-1 bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/40">
+                                                            <span className="text-slate-500 text-[9px]">最高跌幅</span>
+                                                            <SmartNumberInput 
+                                                                value={group.minShort} 
+                                                                onChange={v => {
+                                                                    const currentGroups = activeConfig.startTrendGroups || [];
+                                                                    const updated = [...currentGroups];
+                                                                    updated[idx] = { ...updated[idx], minShort: v };
+                                                                    updateField('startTrendGroups', updated);
+                                                                }}
+                                                                className="w-7 bg-transparent text-center outline-none text-rose-400 font-bold"
+                                                            />
+                                                            <span className="text-slate-600 font-mono">~</span>
+                                                            <SmartNumberInput 
+                                                                value={group.maxShort} 
+                                                                onChange={v => {
+                                                                    const currentGroups = activeConfig.startTrendGroups || [];
+                                                                    const updated = [...currentGroups];
+                                                                    updated[idx] = { ...updated[idx], maxShort: v };
+                                                                    updateField('startTrendGroups', updated);
+                                                                }}
+                                                                className="w-7 bg-transparent text-center outline-none text-rose-400 font-bold"
+                                                            />
+                                                            <span className="text-[9px] text-slate-500 font-mono">%</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-1 bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800/40">
+                                                            <span className="text-slate-500 text-[9px]">且回撤 &lt;</span>
+                                                            <SmartNumberInput 
+                                                                value={group.maxPullbackShort !== undefined ? group.maxPullbackShort : 2} 
+                                                                onChange={v => {
+                                                                    const currentGroups = activeConfig.startTrendGroups || [];
+                                                                    const updated = [...currentGroups];
+                                                                    updated[idx] = { ...updated[idx], maxPullbackShort: v };
+                                                                    updateField('startTrendGroups', updated);
+                                                                }}
+                                                                className="w-7 bg-transparent text-center outline-none text-rose-400 font-bold"
+                                                            />
+                                                            <span className="text-[9px] text-slate-500 font-mono">%</span>
                                                         </div>
                                                     </div>
                                                 )}
@@ -582,6 +564,110 @@ export const MajorTrendSection: React.FC<Props> = ({
                             </div>
                         )}
                     </div>
+                    
+                    {/* Multi-Stage Pipeline Progress */}
+                    {isMajorScanning && majorProgress && (
+                        <div className="bg-slate-950/85 border border-slate-800/80 rounded p-2 space-y-1.5 text-[10px] text-slate-300 my-2">
+                            <div className="flex items-center justify-between border-b border-slate-800/60 pb-1 mb-1">
+                                <span className="font-bold text-slate-100 flex items-center gap-1">
+                                    <Activity size={10} className="text-indigo-400 animate-pulse shrink-0" />
+                                    <span>顺序过滤管道</span>
+                                </span>
+                                <span className="text-[9px] font-mono text-indigo-400 font-bold bg-indigo-950/40 px-1 py-0.2 rounded border border-indigo-900/30 max-w-[100px] truncate">
+                                    {majorProgress.currentSymbol ? `${majorProgress.currentSymbol}` : '正在准备...'}
+                                </span>
+                            </div>
+
+                            {/* Step 0: Volume Filter */}
+                            <div className="flex items-center justify-between py-0.5 text-[9px]">
+                                <div className="flex items-center gap-1 text-emerald-400">
+                                    <CheckCircle2 size={10} className="shrink-0" />
+                                    <span>交易额初筛 (Step 0)</span>
+                                </div>
+                                <span className="text-slate-400 font-mono">✅ 已完成</span>
+                            </div>
+
+                            {/* Step 1: Space Filter */}
+                            <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
+                                <div className="flex items-center gap-1">
+                                    {majorProgress.stage === 'group1' ? (
+                                        <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
+                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'group3') ? (
+                                        <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
+                                    ) : (
+                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
+                                    )}
+                                    <span className={majorProgress.stage === 'group1' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'group2' || majorProgress.stage === 'group3') ? 'text-slate-400' : 'text-slate-500'}>
+                                        第一组: 空间寻底/筑顶
+                                    </span>
+                                </div>
+                                <div className="font-mono text-right shrink-0">
+                                    {majorProgress.stage === 'group1' ? (
+                                        <span className="text-indigo-400">
+                                            ({majorProgress.current}/{majorProgress.total}) 
+                                            <span className="ml-1 text-emerald-400">过:{majorProgress.group1Passed || 0}</span>
+                                        </span>
+                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'group3') ? (
+                                        <span className="text-emerald-400">✅ 通过 {majorProgress.group1Passed || 0}</span>
+                                    ) : (
+                                        <span className="text-slate-600">⏳ 等待中</span>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Step 2: Sideways Filter */}
+                            <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
+                                <div className="flex items-center gap-1">
+                                    {majorProgress.stage === 'group2' ? (
+                                        <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
+                                    ) : majorProgress.stage === 'group3' ? (
+                                        <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
+                                    ) : (
+                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
+                                    )}
+                                    <span className={majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : majorProgress.stage === 'group3' ? 'text-slate-400' : 'text-slate-500'}>
+                                        第二组: 横盘蓄势过滤
+                                    </span>
+                                </div>
+                                <div className="font-mono text-right shrink-0">
+                                    {majorProgress.stage === 'group2' ? (
+                                        <span className="text-indigo-400">
+                                            ({majorProgress.current}/{majorProgress.total})
+                                            <span className="ml-1 text-emerald-400">过:{majorProgress.group2Passed || 0}</span>
+                                        </span>
+                                    ) : majorProgress.stage === 'group3' ? (
+                                        <span className="text-emerald-400">✅ 通过 {majorProgress.group2Passed || 0}</span>
+                                    ) : (
+                                        <span className="text-slate-600">⏳ 等待中</span>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Step 3: Start Trend Filter */}
+                            <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
+                                <div className="flex items-center gap-1">
+                                    {majorProgress.stage === 'group3' ? (
+                                        <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
+                                    ) : (
+                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
+                                    )}
+                                    <span className={majorProgress.stage === 'group3' ? 'text-indigo-300 font-bold' : 'text-slate-500'}>
+                                        第三组: 行情启动趋势
+                                    </span>
+                                </div>
+                                <div className="font-mono text-right shrink-0">
+                                    {majorProgress.stage === 'group3' ? (
+                                        <span className="text-indigo-400 flex items-center gap-1 justify-end">
+                                            <span>({majorProgress.current}/{majorProgress.total})</span>
+                                            <span className="text-emerald-400">选:{majorProgress.group3Passed || 0}</span>
+                                        </span>
+                                    ) : (
+                                        <span className="text-slate-600">⏳ 等待中</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Action Button */}
                     <button 

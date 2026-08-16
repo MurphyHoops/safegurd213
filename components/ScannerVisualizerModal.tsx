@@ -33,32 +33,45 @@ interface Props {
 }
 
 export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultTf = '15m', defaultLimit = 299, list2Config, watchlist, onAddToWatchlist, onClose }) => {
-  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(items[0]?.symbol || null);
+  const [selectedItem, setSelectedItem] = useState<VisualizerItem | null>(items[0] || null);
   const [searchTerm, setSearchTerm] = useState('');
 
   const filteredItems = useMemo(() => {
     return items.filter(i => i.symbol.toLowerCase().includes(searchTerm.toLowerCase()));
   }, [items, searchTerm]);
 
-  // Find the selected item's data
+  // Find the selected item's data (resolve from the latest items to keep real-time data up to date!)
   const currentItem = useMemo(() => {
-    return items.find(i => i.symbol === selectedSymbol);
-  }, [items, selectedSymbol]);
+    if (!selectedItem) return null;
+    return items.find(i => i.symbol === selectedItem.symbol && i.timeframe === selectedItem.timeframe) || selectedItem;
+  }, [items, selectedItem]);
+
+  const selectedSymbol = currentItem?.symbol || null;
 
   const currentIndex = useMemo(() => {
-    return items.findIndex(i => i.symbol === selectedSymbol);
-  }, [items, selectedSymbol]);
+    if (!selectedItem) return -1;
+    return filteredItems.findIndex(i => i.symbol === selectedItem.symbol && i.timeframe === selectedItem.timeframe);
+  }, [filteredItems, selectedItem]);
 
   const handlePrev = () => {
-    if (items.length === 0) return;
-    const nextIdx = (currentIndex - 1 + items.length) % items.length;
-    setSelectedSymbol(items[nextIdx].symbol);
+    if (filteredItems.length === 0) return;
+    const nextIdx = currentIndex >= 0 
+      ? (currentIndex - 1 + filteredItems.length) % filteredItems.length 
+      : filteredItems.length - 1;
+    setSelectedItem(filteredItems[nextIdx]);
   };
 
   const handleNext = () => {
-    if (items.length === 0) return;
-    const nextIdx = (currentIndex + 1) % items.length;
-    setSelectedSymbol(items[nextIdx].symbol);
+    if (filteredItems.length === 0) return;
+    const nextIdx = currentIndex >= 0 
+      ? (currentIndex + 1) % filteredItems.length 
+      : 0;
+    setSelectedItem(filteredItems[nextIdx]);
+  };
+
+  const isSelected = (item: VisualizerItem) => {
+    if (!selectedItem) return false;
+    return selectedItem.symbol === item.symbol && selectedItem.timeframe === item.timeframe;
   };
 
   return createPortal(
@@ -156,9 +169,9 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
               {filteredItems.map((item, idx) => (
                 <button
                   key={`${item.symbol}-${item.timeframe || 'no-tf'}-${idx}`}
-                  onClick={() => setSelectedSymbol(item.symbol)}
+                  onClick={() => setSelectedItem(item)}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded transition-all group ${
-                    selectedSymbol === item.symbol 
+                    isSelected(item) 
                       ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
                       : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                    }`}
@@ -166,17 +179,17 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   <div className="flex flex-col items-start translate-y-px">
                      <span className="text-[11px] font-bold font-mono tracking-wider">{item.symbol.replace('USDT', '')}</span>
                      {item.timeframe && (
-                        <span className={`text-[8px] font-bold opacity-60 ${selectedSymbol === item.symbol ? 'text-white' : 'text-indigo-400'}`}>
+                        <span className={`text-[8px] font-bold opacity-60 ${isSelected(item) ? 'text-white' : 'text-indigo-400'}`}>
                            SIGNAL: {item.timeframe}
                         </span>
                      )}
                   </div>
-                  <BarChart2 size={12} className={`transition-opacity ${selectedSymbol === item.symbol ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'}`} />
+                  <BarChart2 size={12} className={`transition-opacity ${isSelected(item) ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'}`} />
                 </button>
               ))}
               {filteredItems.length === 0 && (
                 <div className="text-center py-10 px-4">
-                  <div className="text-[10px] text-slate-600 italic">未找到匹配币种</div>
+                   <div className="text-[10px] text-slate-600 italic">未找到匹配币种</div>
                 </div>
               )}
             </div>
@@ -193,7 +206,7 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   limit={defaultLimit}
                   list2Config={list2Config}
                   disablePortal={true}
-                  onClose={() => setSelectedSymbol(null)}
+                  onClose={() => setSelectedItem(null)}
                   signals={currentItem?.signals || []}
                   entryPrice={currentItem?.entryPrice}
                   entryTime={currentItem?.entryTime}
