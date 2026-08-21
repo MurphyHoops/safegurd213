@@ -168,6 +168,16 @@ const AppContent: React.FC = () => {
     const logsPendingRef = useRef<LogEntry[]>([]);
     const lastLogUpdateRef = useRef<number>(0);
 
+    const updateLogsFromBuffer = useCallback(() => {
+        if (logsPendingRef.current.length === 0) return;
+        
+        const batch = [...logsPendingRef.current];
+        logsPendingRef.current = [];
+        lastLogUpdateRef.current = Date.now();
+
+        setLogs(prev => [...batch, ...prev].slice(0, 300));
+    }, []);
+
     const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => {
         const newEntry: LogEntry = {
             id: Date.now().toString() + Math.random(),
@@ -181,19 +191,11 @@ const AppContent: React.FC = () => {
         const now = Date.now();
         // 如果距离上次更新不足 500ms，则缓冲（List 2 高频扫描时非常有用）
         if (now - lastLogUpdateRef.current > 500) {
-            updateLogsFromBuffer();
+            setTimeout(() => {
+                updateLogsFromBuffer();
+            }, 0);
         }
-    }, []);
-
-    const updateLogsFromBuffer = useCallback(() => {
-        if (logsPendingRef.current.length === 0) return;
-        
-        const batch = [...logsPendingRef.current];
-        logsPendingRef.current = [];
-        lastLogUpdateRef.current = Date.now();
-
-        setLogs(prev => [...batch, ...prev].slice(0, 300));
-    }, []);
+    }, [updateLogsFromBuffer]);
 
     // 补偿定时器：确保即便没有新日志进入，最后的缓冲日志也能被刷新
     useEffect(() => {
@@ -1366,8 +1368,16 @@ const AppContent: React.FC = () => {
                 const resData = await response.json();
                 if (response.ok && resData.success) {
                     recentlyOpenedPositionsRef.current.set(cleanSymbol, Date.now());
+                    const finalLev = resData.leverage || extraProps?.leverage || 20;
                     if (simulatorRef.current) {
-                        simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动开仓成功: ${cleanSymbol} ${side} | 数量: ${resData.qty} | ID: ${resData.orderId}`);
+                        simulatorRef.current.registerPendingRealOpenProps(cleanSymbol, side, {
+                            signalTf,
+                            signalCandle,
+                            entryEmas,
+                            leverage: finalLev,
+                            ...extraProps
+                        });
+                        simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动开仓成功: ${cleanSymbol} ${side} | 杠杆: ${finalLev}x | 数量: ${resData.qty} | ID: ${resData.orderId}`);
                     }
                     speakOpenPosition();
 
@@ -1415,9 +1425,9 @@ const AppContent: React.FC = () => {
 
         // 🛡️ [Extreme Price/PnL Anomaly Safeguard]
         const pnlPercent = position.unrealizedPnLPercentage;
-        if (pnlPercent < -25) {
+        if (pnlPercent < -95) {
             if (simulatorRef.current) {
-                simulatorRef.current.addLog("DANGER", `🛡️ [对冲异常拦截] ${cleanSymbol} 亏损计算异常 (${pnlPercent.toFixed(2)}%)，超过跌幅25%安全红线，怀疑为价格源精度/异常抖动，拒绝向币安发送对冲订单！`);
+                simulatorRef.current.addLog("DANGER", `🛡️ [对冲异常拦截] ${cleanSymbol} 亏损计算异常 (${pnlPercent.toFixed(2)}%)，超过跌幅95%安全红线，怀疑为价格源精度/异常抖动，拒绝向币安发送对冲订单！`);
             }
             return;
         }
@@ -1565,6 +1575,13 @@ const AppContent: React.FC = () => {
                 const errMsg = resData.error || "未知交易所错误";
                 if (simulatorRef.current) {
                     simulatorRef.current.addLog("DANGER", `🚨 [对冲响应失败] 自动对冲开仓失败: ${errMsg}`);
+                    // Reset main position isHedged flag so future ticks/scans can retry
+                    const simPositions = simulatorRef.current.getPositions();
+                    const mainPos = simPositions.find(p => p.entryId === position.entryId || (normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side));
+                    if (mainPos && !simPositions.some(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side !== position.side)) {
+                        mainPos.isHedged = false;
+                    }
+                    simulatorRef.current.emitUpdate(true);
                 }
                 audioService.speak("警报，对冲开仓指令执行失败，请手动检查仓位", true);
                 // Wait/Sleep 3 seconds on failure before allowing retry
@@ -1573,6 +1590,13 @@ const AppContent: React.FC = () => {
         } catch (e: any) {
             if (simulatorRef.current) {
                 simulatorRef.current.addLog("DANGER", `🚨 [对冲响应异常] 自动对冲网络异常或未收到响应: ${e.message || e}`);
+                // Reset main position isHedged flag on network error so future ticks/scans can retry
+                const simPositions = simulatorRef.current.getPositions();
+                const mainPos = simPositions.find(p => p.entryId === position.entryId || (normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side));
+                if (mainPos && !simPositions.some(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side !== position.side)) {
+                    mainPos.isHedged = false;
+                }
+                simulatorRef.current.emitUpdate(true);
             }
             audioService.speak("警报，对冲网络异常，未收到回复指令，请立即手动核对仓位", true);
             // Wait/Sleep 3 seconds on timeout/exception before allowing retry
@@ -1661,9 +1685,16 @@ const AppContent: React.FC = () => {
                             reason,
                             realizedPnL
                         );
-                    } else {
-                        if (closeQty >= position.amount) {
+                        if (ratio >= 100 || (position.amount - customQty) <= 0.0001) {
                             simulatorRef.current.removePositionLocally(cleanSymbol, position.side);
+                            setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side)));
+                            setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side)));
+                        }
+                    } else {
+                        if (closeQty >= (position.amount * 0.999)) {
+                            simulatorRef.current.removePositionLocally(cleanSymbol, position.side);
+                            setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side)));
+                            setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side)));
                         }
                     }
                 }
@@ -1867,6 +1898,8 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         simulatorRef.current.recordRealTradeLog(posToClose, '手动平仓');
                         simulatorRef.current.removePositionLocally(cleanSymbol, side);
                     }
+                    setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
+                    setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
                     audioService.speak("实盘平仓执行成功");
 
                     // Sync real-time positions instantly after order placement to show it immediately
@@ -1941,6 +1974,8 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                             simulatorRef.current.recordRealTradeLog(pos, '一键全平');
                             simulatorRef.current.removePositionLocally(cleanSymbol, pos.side);
                         }
+                        setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === pos.side)));
+                        setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === pos.side)));
                     } else {
                         const errMsg = resData.error || "未知交易所错误";
                         if (simulatorRef.current) {
@@ -2426,6 +2461,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         <LogCenterModule 
                             logs={logs} 
                             onOpenChart={handleOpenChart}
+                            onClearLogs={() => setLogs([])}
                         />
                     </div>
                 )}

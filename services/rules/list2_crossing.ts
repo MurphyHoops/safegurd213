@@ -32,6 +32,8 @@ export function analyzeList2Crossing(
     const flatLookback = config.flatLookback !== undefined ? config.flatLookback : 50;
     const flatThreshold = config.flatThreshold !== undefined ? config.flatThreshold : 5;
     const strictFiltering = config.strictFiltering !== undefined ? config.strictFiltering : true;
+    const enableDivergenceCrossCheck = config.enableDivergenceCrossCheck !== undefined ? !!config.enableDivergenceCrossCheck : true;
+    const divergenceLookbackBars = (config.divergenceLookbackBars !== undefined && !Number.isNaN(config.divergenceLookbackBars)) ? Math.max(1, config.divergenceLookbackBars) : 20;
     const retentionThreshold = (config as any).maxLag !== undefined
         ? (config as any).maxLag
         : (config.lookbackBars ?? 5);
@@ -233,73 +235,72 @@ export function analyzeList2Crossing(
                     }
                 }
 
-                // [NEW FILTER] Check if EMA10 has crossed EMA20, EMA30, and EMA40 within the preceding 20 bars of the divergence formation
+                // Check if EMA10 has crossed EMA20, EMA30, and EMA40 within the preceding lookback bars of the divergence formation (Configurable)
                 let crossedAllL = true;
                 let crossedAllS = true;
 
-                // 2026-08-15: 用户指令关闭 && isFirstDivergenceL 要求，只要对齐就往前判断20根K线是否穿越
-                // 这些功能的失效是从来都没有下指令的，以后在没特别下指令的时候，你绝对不能乱修改程序里的功能；【如果有特别原因需要涉及其它功能修改的，必须要在询问，等待我确认后再修改】
-                if (isAlignedL /* && isFirstDivergenceL */) {
-                    let crossed20 = false;
-                    let crossed30 = false;
-                    let crossed40 = false;
-                    for (let b = 1; b <= 20; b++) {
-                        const bIdx = checkIdx - b;
-                        if (bIdx - 1 < 80) break;
+                if (enableDivergenceCrossCheck) {
+                    if (isAlignedL) {
+                        let crossed20 = false;
+                        let crossed30 = false;
+                        let crossed40 = false;
+                        for (let b = 1; b <= divergenceLookbackBars; b++) {
+                            const bIdx = checkIdx - b;
+                            if (bIdx - 1 < 80) break;
 
-                        const cur10 = getEmaVal(ema10, bIdx, 10);
-                        const cur20 = getEmaVal(ema20, bIdx, 20);
-                        const cur30 = getEmaVal(ema30, bIdx, 30);
-                        const cur40 = getEmaVal(ema40, bIdx, 40);
+                            const cur10 = getEmaVal(ema10, bIdx, 10);
+                            const cur20 = getEmaVal(ema20, bIdx, 20);
+                            const cur30 = getEmaVal(ema30, bIdx, 30);
+                            const cur40 = getEmaVal(ema40, bIdx, 40);
 
-                        const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                        const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                        const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                        const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+                            const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
 
-                        if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
-                            if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                            if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
+                                if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                            }
+                            if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
+                                if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
+                            }
+                            if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
+                                if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
+                            }
                         }
-                        if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
-                            if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
-                        }
-                        if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
-                            if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
-                        }
+                        crossedAllL = crossed20 && crossed30 && crossed40;
                     }
-                    crossedAllL = crossed20 && crossed30 && crossed40;
-                }
 
-                // 2026-08-15: 用户指令关闭 && isFirstDivergenceS 要求，只要对齐就往前判断20根K线是否穿越
-                if (isAlignedS /* && isFirstDivergenceS */) {
-                    let crossed20 = false;
-                    let crossed30 = false;
-                    let crossed40 = false;
-                    for (let b = 1; b <= 20; b++) {
-                        const bIdx = checkIdx - b;
-                        if (bIdx - 1 < 80) break;
+                    if (isAlignedS) {
+                        let crossed20 = false;
+                        let crossed30 = false;
+                        let crossed40 = false;
+                        for (let b = 1; b <= divergenceLookbackBars; b++) {
+                            const bIdx = checkIdx - b;
+                            if (bIdx - 1 < 80) break;
 
-                        const cur10 = getEmaVal(ema10, bIdx, 10);
-                        const cur20 = getEmaVal(ema20, bIdx, 20);
-                        const cur30 = getEmaVal(ema30, bIdx, 30);
-                        const cur40 = getEmaVal(ema40, bIdx, 40);
+                            const cur10 = getEmaVal(ema10, bIdx, 10);
+                            const cur20 = getEmaVal(ema20, bIdx, 20);
+                            const cur30 = getEmaVal(ema30, bIdx, 30);
+                            const cur40 = getEmaVal(ema40, bIdx, 40);
 
-                        const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                        const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                        const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                        const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+                            const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
 
-                        if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
-                            if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                            if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
+                                if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                            }
+                            if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
+                                if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
+                            }
+                            if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
+                                if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
+                            }
                         }
-                        if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
-                            if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
-                        }
-                        if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
-                            if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
-                        }
+                        crossedAllS = crossed20 && crossed30 && crossed40;
                     }
-                    crossedAllS = crossed20 && crossed30 && crossed40;
                 }
 
                 const candleRange = kHigh - kLow;

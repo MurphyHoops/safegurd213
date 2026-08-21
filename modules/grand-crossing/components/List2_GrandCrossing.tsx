@@ -39,13 +39,29 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
 
-    // Separate Lists (Defensive: ensure filteredList2 is an array)
+    // Separate Lists and filter groupedResults by direction for strict separation
     const { longs, shorts } = useMemo(() => {
         const l: ScannerItem[] = [];
         const s: ScannerItem[] = [];
         (filteredList2 || []).forEach(item => {
-            if (item && item.direction === 'LONG') l.push(item);
-            else if (item && item.direction === 'SHORT') s.push(item);
+            if (!item) return;
+            const longResults = (item.groupedResults || []).filter(r => r.direction === 'LONG');
+            const shortResults = (item.groupedResults || []).filter(r => r.direction === 'SHORT');
+
+            if (longResults.length > 0) {
+                l.push({
+                    ...item,
+                    direction: 'LONG',
+                    groupedResults: longResults
+                });
+            }
+            if (shortResults.length > 0) {
+                s.push({
+                    ...item,
+                    direction: 'SHORT',
+                    groupedResults: shortResults
+                });
+            }
         });
         return { longs: l, shorts: s };
     }, [filteredList2]);
@@ -207,15 +223,17 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar bg-slate-950/20">
                 {displayList.map((item, idx) => (
-                    <List2Item 
-                        key={`${item.symbol}-${item.direction}-${item.tf}-${idx}`} 
-                        item={item}
-                        config={config}
-                        activeFilterTf={activeFilterTf}
-                        setChartData={setChartData}
-                        onRemove={() => onRemoveItem(item.symbol)}
-                        idx={idx}
-                    />
+                    item ? (
+                        <List2Item 
+                            key={`${item.symbol}-${item.direction || 'ALL'}-${idx}`} 
+                            item={item}
+                            config={config}
+                            activeFilterTf={activeFilterTf}
+                            setChartData={setChartData}
+                            onRemove={() => onRemoveItem(item.symbol)}
+                            idx={idx}
+                        />
+                    ) : null
                 ))}
                 {displayList.length === 0 && (
                     <div className="flex flex-col items-center justify-center h-24 text-slate-600 opacity-50">

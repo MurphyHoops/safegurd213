@@ -52,20 +52,12 @@ export const useGrandCrossing = (
     configKey,
     initialConfig,
   );
-  // Ensure timeframes is sanitized & never empty
+  // Ensure timeframes is sanitized (filter out legacy 1m/3m) & never empty
   useEffect(() => {
     let modified = false;
     let newTfs = [...(config.timeframes || [])];
     if (newTfs.includes("1m") || newTfs.includes("3m")) {
       newTfs = newTfs.filter((t) => t !== "1m" && t !== "3m");
-      modified = true;
-    }
-    if (!newTfs.includes("8h")) {
-      newTfs.push("8h");
-      modified = true;
-    }
-    if (!newTfs.includes("1d")) {
-      newTfs.push("1d");
       modified = true;
     }
     if (modified || !config.timeframes || config.timeframes.length === 0) {

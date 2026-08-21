@@ -120,34 +120,68 @@ export const List6Control: React.FC<{
             <div className={`w-2 h-2 rounded-full ${config.autoExecute ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
         </div>
 
-        {/* Unified Risk Configuration Row */}
-        <div className="grid grid-cols-3 gap-2 items-center bg-slate-800/30 p-2 rounded border border-slate-700/50">
-            {/* Col 1: Max Symbols */}
-            <div className="flex flex-col gap-1">
-                <label className="text-[8px] text-slate-500 font-bold whitespace-nowrap text-center">最大持仓</label>
-                <input type="number" value={(config.maxOpenSymbols === undefined || Number.isNaN(config.maxOpenSymbols)) ? '' : config.maxOpenSymbols} onChange={e => setConfig(p => ({...p, maxOpenSymbols: parseInt(e.target.value)}))} className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-white text-center" />
+        {/* 开仓限制模块 */}
+        <div className="bg-slate-800/30 p-2 rounded border border-slate-700/50 space-y-1.5">
+            <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between border-b border-slate-700/40 pb-1">
+                <span>开仓限制模块</span>
             </div>
-            
-            {/* Col 2: Max Capital */}
-            <div className="flex flex-col gap-1">
-                <label className="text-[8px] text-slate-500 font-bold whitespace-nowrap text-center">总资金上限</label>
-                <input type="number" value={(config.maxTotalValue === undefined || Number.isNaN(config.maxTotalValue)) ? '' : config.maxTotalValue} onChange={e => setConfig(p => ({...p, maxTotalValue: parseFloat(e.target.value)}))} className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-white text-center" />
-            </div>
-
-            {/* Col 3: Exposure % (Arrow Adjust) */}
-            <div className="flex flex-col gap-1">
-                <label className="text-[8px] text-slate-500 font-bold whitespace-nowrap text-center">风险敞口%</label>
-                <div className="relative flex items-center">
+            <div className="grid grid-cols-2 gap-1.5">
+                {/* Col 1: Max Symbols */}
+                <div className="flex flex-col gap-0.5 bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                    <label className="text-[8px] text-slate-400 font-bold whitespace-nowrap text-center">最大持仓</label>
                     <input 
                         type="number" 
-                        value={(config.maxExposurePercent === undefined || Number.isNaN(config.maxExposurePercent)) ? '' : (config.maxExposurePercent ?? 50)} 
-                        onChange={e => setConfig(p => ({...p, maxExposurePercent: parseFloat(e.target.value)}))} 
-                        className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-1 text-xs text-orange-400 font-bold text-center pr-4 appearance-none" 
+                        value={(config.maxOpenSymbols === undefined || Number.isNaN(config.maxOpenSymbols)) ? '' : config.maxOpenSymbols} 
+                        onChange={e => setConfig(p => ({...p, maxOpenSymbols: parseInt(e.target.value)}))} 
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs text-white text-center font-mono" 
                     />
-                    {/* Custom Arrows Overlay */}
-                    <div className="absolute right-0 top-0 bottom-0 w-4 flex flex-col border-l border-slate-700">
-                        <button onClick={() => setConfig(p => ({...p, maxExposurePercent: Math.min(100, (p.maxExposurePercent || 50) + 5)}))} className="flex-1 hover:bg-slate-700 flex items-center justify-center text-slate-400"><ChevronUp size={8}/></button>
-                        <button onClick={() => setConfig(p => ({...p, maxExposurePercent: Math.max(0, (p.maxExposurePercent || 50) - 5)}))} className="flex-1 hover:bg-slate-700 flex items-center justify-center text-slate-400 border-t border-slate-700"><ChevronDown size={8}/></button>
+                </div>
+                
+                {/* Col 2: Max Capital */}
+                <div className="flex flex-col gap-0.5 bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                    <label className="text-[8px] text-slate-400 font-bold whitespace-nowrap text-center">总资金上限</label>
+                    <input 
+                        type="number" 
+                        value={(config.maxTotalValue === undefined || Number.isNaN(config.maxTotalValue)) ? '' : config.maxTotalValue} 
+                        onChange={e => setConfig(p => ({...p, maxTotalValue: parseFloat(e.target.value)}))} 
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs text-white text-center font-mono" 
+                    />
+                </div>
+
+                {/* Col 3: Exposure % (Arrow Adjust) */}
+                <div className="flex flex-col gap-0.5 bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                    <label className="text-[8px] text-slate-400 font-bold whitespace-nowrap text-center">风险敞口%</label>
+                    <div className="relative flex items-center">
+                        <input 
+                            type="number" 
+                            value={(config.maxExposurePercent === undefined || Number.isNaN(config.maxExposurePercent)) ? '' : (config.maxExposurePercent ?? 50)} 
+                            onChange={e => setConfig(p => ({...p, maxExposurePercent: parseFloat(e.target.value)}))} 
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs text-orange-400 font-bold text-center pr-4 appearance-none font-mono" 
+                        />
+                        {/* Custom Arrows Overlay */}
+                        <div className="absolute right-0 top-0 bottom-0 w-4 flex flex-col border-l border-slate-700">
+                            <button onClick={() => setConfig(p => ({...p, maxExposurePercent: Math.min(100, (p.maxExposurePercent || 50) + 5)}))} className="flex-1 hover:bg-slate-700 flex items-center justify-center text-slate-400"><ChevronUp size={8}/></button>
+                            <button onClick={() => setConfig(p => ({...p, maxExposurePercent: Math.max(0, (p.maxExposurePercent || 50) - 5)}))} className="flex-1 hover:bg-slate-700 flex items-center justify-center text-slate-400 border-t border-slate-700"><ChevronDown size={8}/></button>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Col 4: Health % Limit */}
+                <div className="flex flex-col gap-0.5 bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                    <label className="text-[8px] text-slate-400 font-bold whitespace-nowrap text-center">健康度限制%</label>
+                    <div className="relative flex items-center">
+                        <input 
+                            type="number" 
+                            placeholder="低于不开展"
+                            value={(config.minHealthPercent === undefined || Number.isNaN(config.minHealthPercent)) ? '' : (config.minHealthPercent === 0 ? '' : config.minHealthPercent)} 
+                            onChange={e => setConfig(p => ({...p, minHealthPercent: e.target.value === '' ? 0 : parseFloat(e.target.value)}))} 
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-xs text-emerald-400 font-bold text-center pr-4 appearance-none font-mono placeholder:text-slate-600 placeholder:text-[9px]" 
+                        />
+                        {/* Custom Arrows Overlay */}
+                        <div className="absolute right-0 top-0 bottom-0 w-4 flex flex-col border-l border-slate-700">
+                            <button onClick={() => setConfig(p => ({...p, minHealthPercent: Math.min(100, (p.minHealthPercent || 0) + 5)}))} className="flex-1 hover:bg-slate-700 flex items-center justify-center text-slate-400"><ChevronUp size={8}/></button>
+                            <button onClick={() => setConfig(p => ({...p, minHealthPercent: Math.max(0, (p.minHealthPercent || 0) - 5)}))} className="flex-1 hover:bg-slate-700 flex items-center justify-center text-slate-400 border-t border-slate-700"><ChevronDown size={8}/></button>
+                        </div>
                     </div>
                 </div>
             </div>

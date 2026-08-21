@@ -4,6 +4,9 @@ import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
 import cors from "cors";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { ZipArchive } from "archiver";
 
 // Maintain a registry of browser clients subscribing to active prices
 const priceSubscribers = new Set<WebSocket>();
@@ -330,39 +333,97 @@ async function startServer() {
         }
 
         const formattedSymbol = formatBinanceSymbol(symbol);
+        let appliedLeverage: number = parseInt(leverage || "20");
 
         try {
             // 1. Set leverage if action is OPEN
             if (action === "OPEN") {
                 const targetLeverage = parseInt(leverage || "20");
+                appliedLeverage = targetLeverage;
                 try {
                     console.log(`[Binance Order] Setting leverage to ${targetLeverage}x for ${formattedSymbol}...`);
-                    const levTimestamp = Date.now();
-                    const levQueryString = `leverage=${targetLeverage}&symbol=${formattedSymbol}&timestamp=${levTimestamp}&recvWindow=5000`;
-                    const levSignature = crypto
-                        .createHmac("sha256", apiSecret)
-                        .update(levQueryString)
-                        .digest("hex");
-                    
-                    const levResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverage?${levQueryString}&signature=${levSignature}`, {
-                        method: "POST",
-                        headers: { "X-MBX-APIKEY": apiKey }
-                    });
+                    const setLeverageFn = async (lev: number) => {
+                        const levTimestamp = Date.now();
+                        const levQueryString = `leverage=${lev}&symbol=${formattedSymbol}&timestamp=${levTimestamp}&recvWindow=5000`;
+                        const levSignature = crypto
+                            .createHmac("sha256", apiSecret)
+                            .update(levQueryString)
+                            .digest("hex");
+                        return await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverage?${levQueryString}&signature=${levSignature}`, {
+                            method: "POST",
+                            headers: { "X-MBX-APIKEY": apiKey }
+                        });
+                    };
+
+                    let levResponse = await setLeverageFn(targetLeverage);
                     
                     if (levResponse.ok) {
-                        console.log(`[Binance Order] Successfully set leverage to ${targetLeverage}x`);
+                        const levJson = await levResponse.json();
+                        appliedLeverage = levJson.leverage || targetLeverage;
+                        console.log(`[Binance Order] Successfully set leverage to ${appliedLeverage}x`);
                     } else {
                         const levErrText = await levResponse.text();
-                        console.warn(`[Binance Order] Failed to set leverage: ${levErrText}`);
+                        console.warn(`[Binance Order] Failed to set leverage to ${targetLeverage}x: ${levErrText}. Attempting auto-adaptive leverage fallback...`);
+                        
+                        // Auto-adaptive fallback: Try querying leverage brackets or stepping down (15, 10, 8, 5, 4, 3, 2, 1)
+                        let adaptiveSuccess = false;
+                        
+                        // Attempt 1: Fetch leverageBracket for exact max leverage
                         try {
-                            const levErrJson = JSON.parse(levErrText);
-                            if (levErrJson.msg) {
-                                return res.status(400).json({
-                                    success: false,
-                                    error: `【杠杆设置失败】${levErrJson.msg}。币安限制了该币种的最大杠杆倍数，请在开仓面板中调低杠杆倍数（例如降至 10x 或 5x）后再试！`
-                                });
+                            const bTimestamp = Date.now();
+                            const bQuery = `symbol=${formattedSymbol}&timestamp=${bTimestamp}&recvWindow=5000`;
+                            const bSig = crypto.createHmac("sha256", apiSecret).update(bQuery).digest("hex");
+                            const bRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverageBracket?${bQuery}&signature=${bSig}`, {
+                                headers: { "X-MBX-APIKEY": apiKey }
+                            });
+                            if (bRes.ok) {
+                                const bData = await bRes.json();
+                                const brackets = Array.isArray(bData) ? (bData[0]?.brackets || []) : (bData?.brackets || []);
+                                if (brackets.length > 0) {
+                                    // Find maximum allowed initial leverage
+                                    const maxAllowed = Math.max(...brackets.map((b: any) => parseInt(b.initialLeverage || "0")));
+                                    if (maxAllowed > 0 && maxAllowed < targetLeverage) {
+                                        console.log(`[Binance Order] Found symbol max leverage bracket: ${maxAllowed}x for ${formattedSymbol}. Retrying with ${maxAllowed}x...`);
+                                        const retryRes = await setLeverageFn(maxAllowed);
+                                        if (retryRes.ok) {
+                                            const rJson = await retryRes.json();
+                                            appliedLeverage = rJson.leverage || maxAllowed;
+                                            adaptiveSuccess = true;
+                                            console.log(`[Binance Order] Auto-adaptive leverage matched: ${appliedLeverage}x`);
+                                        }
+                                    }
+                                }
                             }
-                        } catch {}
+                        } catch (bracketErr) {
+                            console.warn(`[Binance Order] Error querying leverage bracket:`, bracketErr);
+                        }
+
+                        // Attempt 2: If bracket query didn't succeed, step down sequentially
+                        if (!adaptiveSuccess) {
+                            const stepLevels = [15, 12, 10, 8, 5, 4, 3, 2, 1].filter(l => l < targetLeverage);
+                            for (const stepLev of stepLevels) {
+                                const retryRes = await setLeverageFn(stepLev);
+                                if (retryRes.ok) {
+                                    const rJson = await retryRes.json();
+                                    appliedLeverage = rJson.leverage || stepLev;
+                                    adaptiveSuccess = true;
+                                    console.log(`[Binance Order] Auto-adaptive leverage step-down matched: ${appliedLeverage}x for ${formattedSymbol}`);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!adaptiveSuccess) {
+                            try {
+                                const levErrJson = JSON.parse(levErrText);
+                                if (levErrJson.msg) {
+                                    return res.status(400).json({
+                                        success: false,
+                                        error: `【杠杆设置失败】${levErrJson.msg}。币安限制了该币种的最大杠杆倍数，自动匹配未能成功，请检查币安账户权限或在设置中调低杠杆！`
+                                    });
+                                }
+                            } catch {}
+                        }
                     }
                 } catch (e: any) {
                     console.warn(`[Binance Order] Exception while setting leverage:`, e);
@@ -632,7 +693,8 @@ async function startServer() {
                     positionSide: binancePositionSide,
                     qty: finalQty,
                     price: currentPrice,
-                    message: `成功在币安下单: ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${finalQty} 手！`
+                    leverage: appliedLeverage,
+                    message: `成功在币安下单: ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${finalQty} 手（杠杆: ${appliedLeverage}x）！`
                 });
             } else {
                 const errorCode = orderData.code;
@@ -984,148 +1046,106 @@ async function startServer() {
       if (cached && Date.now() - cached.timestamp < cached.ttl) {
           return res.json(cached.data);
       }
-  
-      // Handle missing USDT suffix for binance kline/ticker queries
-      if (targetUrl.includes("binance")) {
-          try {
-              const parsedUrl = new URL(targetUrl);
-              const symbolParam = parsedUrl.searchParams.get("symbol");
-              if (symbolParam && !symbolParam.endsWith("USDT") && !symbolParam.includes("USDC")) {
-                  const updatedSymbol = `${symbolParam}USDT`;
-                  parsedUrl.searchParams.set("symbol", updatedSymbol);
-                  targetUrl = parsedUrl.toString();
-                  console.log(`[Proxy] Automatically appended USDT. New URL: ${targetUrl}`);
-              }
-              if (parsedUrl.searchParams.has("_t")) {
-                  parsedUrl.searchParams.delete("_t");
-                  targetUrl = parsedUrl.toString();
-              }
-          } catch (e) {
-              console.error(`[Proxy] Error parsing target URL for symbol check:`, e);
-          }
-      }
-  
-      // Rate limiter: Spaced out request reservation queue (atomic scheduler)
-      const host = new URL(targetUrl).hostname;
-      const now = Date.now();
-      let lastReq = lastRequestTime.get(host) || 0;
-      
-      if (lastReq < now) {
-          lastReq = now;
-      }
-      
-      // Schedule this request 60ms after the last scheduled one to prevent flooding and race conditions
-      const scheduledTime = lastReq + 60;
-      lastRequestTime.set(host, scheduledTime);
-      
-      const delay = scheduledTime - now;
-      if (delay > 0) {
-          await new Promise(resolve => setTimeout(resolve, delay));
-      }
-  
+
       const isHighPriority = (req.query.priority === "high") || targetUrl.includes("/klines");
-      const maxRetries = targetUrl.includes("binance") ? 6 : (isHighPriority ? 6 : 2);
-      let attempt = 0;
-      let urlToFetch = targetUrl;
-  
-      while (attempt < maxRetries) {
-          attempt++;
-          
-          // Determine the URL to fetch for this attempt
-          if (targetUrl.includes("binance")) {
-              const isCloudRun = !!process.env.K_SERVICE || true; // Cloud Run environments are always geoblocked by Binance
-              
-              if (isCloudRun) {
-                  // Direct fetches to Binance are 100% blocked on Cloud Run. Route through high-speed proxies first.
-                  const standardTargetUrl = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
-                  const encodedOrig = encodeURIComponent(standardTargetUrl);
-                  const cacheBuster = `cb=${Date.now()}`;
-                  
-                  if (attempt === 1) {
-                      urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
-                  } else if (attempt === 2) {
-                      urlToFetch = `https://proxy.corsfix.com/?${encodedOrig}`;
-                  } else if (attempt === 3) {
-                      urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`;
-                  } else if (attempt === 4) {
-                      urlToFetch = `https://corsproxy.io/?${encodedOrig}&${cacheBuster}`;
-                  } else if (attempt === 5) {
-                      urlToFetch = `https://thingproxy.freeboard.io/fetch/${standardTargetUrl}`;
-                  } else {
-                      urlToFetch = standardTargetUrl;
-                  }
-              } else {
-                  if (attempt === 1) {
-                      urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
-                  } else if (attempt === 2) {
-                      urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.me");
-                  } else if (attempt === 3 && (targetUrl.includes("/ticker/price") || targetUrl.includes("/klines") || targetUrl.includes("/ticker/24hr"))) {
-                      urlToFetch = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)\/fapi\/v[12]\//, "api.binance.com/api/v3/");
-                  } else {
-                      // Public proxies - always map to the standard fapi.binance.com domain
-                      const standardTargetUrl = targetUrl.replace(/fapi(?:-gcp|[0-9]*)\.binance\.(com|me|info)/, "fapi.binance.com");
-                      const encodedOrig = encodeURIComponent(standardTargetUrl);
-                      const cacheBuster = `cb=${Date.now()}`;
-                      
-                      // Adjust attempt mapping because attempt 3 might be skipped if not supported
-                      if (attempt === 3 || attempt === 4) {
-                           urlToFetch = `https://api.codetabs.com/v1/proxy?quest=${encodedOrig}`;
-                       } else if (attempt === 5) {
-                           urlToFetch = `https://proxy.corsfix.com/?${encodedOrig}`;
-                       } else {
-                           urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&${cacheBuster}`;
-                       }
-                  }
-              }
-          } else {
-              if (attempt === 1) {
-                  urlToFetch = targetUrl;
-              } else {
-                  const encodedOrig = encodeURIComponent(targetUrl);
-                  urlToFetch = `https://api.allorigins.win/raw?url=${encodedOrig}&cb=${Date.now()}`;
-              }
+      let parsedTarget: URL | null = null;
+      try {
+          parsedTarget = new URL(targetUrl);
+      } catch (e) {
+          return res.status(400).json({ error: "Invalid target URL" });
+      }
+
+      const rawSymbol = parsedTarget.searchParams.get("symbol") || "";
+      const is1000Symbol = rawSymbol.startsWith("1000") && rawSymbol.endsWith("USDT");
+      const spotSymbol = is1000Symbol ? rawSymbol.slice(4) : rawSymbol;
+      const isKlineReq = targetUrl.includes("/klines");
+      const isTickerPriceReq = targetUrl.includes("/ticker/price");
+      const isTicker24hrReq = targetUrl.includes("/ticker/24hr");
+
+      // Build prioritized candidate URL list
+      const fetchCandidates: { url: string; isPublicProxy: boolean; isSpotScale1000: boolean }[] = [];
+
+      if (targetUrl.includes("binance")) {
+          const queryParams = new URLSearchParams(parsedTarget.searchParams);
+          if (is1000Symbol) {
+              queryParams.set("symbol", spotSymbol);
           }
+          const spotQuery = queryParams.toString();
+          const rawQuery = parsedTarget.searchParams.toString();
+
+          if (isKlineReq) {
+              // Direct Futures endpoints first if target is fapi or symbol is futures, then spot fallbacks
+              if (targetUrl.includes("/fapi/") || is1000Symbol) {
+                  fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/klines?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+              fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api3.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              if (!targetUrl.includes("/fapi/")) {
+                  fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/klines?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+          } else if (isTickerPriceReq) {
+              if (targetUrl.includes("/fapi/") || is1000Symbol) {
+                  fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/ticker/price?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+              fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              if (!targetUrl.includes("/fapi/")) {
+                  fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/ticker/price?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+          } else if (isTicker24hrReq) {
+              if (targetUrl.includes("/fapi/") || is1000Symbol) {
+                  fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/ticker/24hr?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+              fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+          } else {
+              // Other generic Binance requests
+              if (targetUrl.includes("/fapi/")) {
+                  fetchCandidates.push({ url: `https://fapi.binance.com${parsedTarget.pathname}?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+              const spotPath = parsedTarget.pathname.replace(/^\/fapi\/v[12]/, "/api/v3");
+              fetchCandidates.push({ url: `https://data-api.binance.vision${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
+              fetchCandidates.push({ url: `https://api.binance.com${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
+          }
+      } else {
+          fetchCandidates.push({ url: targetUrl, isPublicProxy: false, isSpotScale1000: false });
+          fetchCandidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`, isPublicProxy: true, isSpotScale1000: false });
+      }
+
+      const maxRetries = fetchCandidates.length;
+      let attempt = 0;
+
+      for (const candidate of fetchCandidates) {
+          attempt++;
+          const urlToFetch = candidate.url;
 
           try {
-              console.log(`[Proxy] Attempt ${attempt} / ${maxRetries}: Fetching ${urlToFetch}`);
-              
               const controller = new AbortController();
-              const isPublicProxy = urlToFetch.includes("allorigins") || 
-                                    urlToFetch.includes("corsproxy") || 
-                                    urlToFetch.includes("codetabs") ||
-                                    urlToFetch.includes("corsfix") ||
-                                    urlToFetch.includes("freeboard");
-                                    
-              const timeoutMs = isPublicProxy ? 4000 : 3500;
+              const timeoutMs = candidate.isPublicProxy ? 5000 : 6000;
               const timeoutId = setTimeout(() => {
-                  if (controller.signal.aborted) return;
-                  controller.abort();
+                  if (!controller.signal.aborted) {
+                      controller.abort();
+                  }
               }, timeoutMs);
-  
-              // Distribute across different user agents to reduce blocking
-              const userAgents = [
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
-              ];
-  
+
               const headers: Record<string, string> = {
                   "Accept": "application/json"
               };
-              
-              // Only add scraper-like custom headers if we are hitting Binance directly
-              if (!isPublicProxy) {
-                  headers["User-Agent"] = userAgents[attempt % userAgents.length];
+              if (!candidate.isPublicProxy) {
+                  headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
                   headers["Cache-Control"] = "no-cache";
               }
-  
+
               const response = await fetch(urlToFetch, {
                   headers,
                   signal: controller.signal
               });
               clearTimeout(timeoutId);
-  
+
               if (response.ok) {
                   const text = await response.text();
                   if (!text || text.trim() === '') {
@@ -1134,9 +1154,32 @@ async function startServer() {
                   if (text.trim().startsWith('<') || text.toLowerCase().includes('doctype html')) {
                       throw new Error("Received HTML error page from proxy/upstream");
                   }
-                  const data = JSON.parse(text);
-                  console.log(`[Proxy] Success on attempt ${attempt} for ${urlToFetch}`);
-                  
+                  let data = JSON.parse(text);
+
+                  // Scale 1000-prefixed contracts if served from spot
+                  if (candidate.isSpotScale1000) {
+                      if (Array.isArray(data) && Array.isArray(data[0])) {
+                          // K-Line data array: [openTime, open, high, low, close, volume, closeTime, quoteAssetVolume, ...]
+                          data = data.map((k: any[]) => {
+                              const open = (parseFloat(k[1]) * 1000).toString();
+                              const high = (parseFloat(k[2]) * 1000).toString();
+                              const low = (parseFloat(k[3]) * 1000).toString();
+                              const close = (parseFloat(k[4]) * 1000).toString();
+                              return [k[0], open, high, low, close, k[5], k[6], k[7], k[8], k[9], k[10], k[11]];
+                          });
+                      } else if (data && typeof data === 'object' && 'price' in data) {
+                          data = { ...data, symbol: rawSymbol, price: (parseFloat(data.price) * 1000).toString() };
+                      } else if (data && typeof data === 'object' && 'lastPrice' in data) {
+                          data = { 
+                              ...data, 
+                              symbol: rawSymbol, 
+                              lastPrice: (parseFloat(data.lastPrice) * 1000).toString(),
+                              highPrice: (parseFloat(data.highPrice || "0") * 1000).toString(),
+                              lowPrice: (parseFloat(data.lowPrice || "0") * 1000).toString()
+                          };
+                      }
+                  }
+
                   // Cache successful responses
                   const ttl = getServerCacheTTL(targetUrl);
                   serverCache.set(cacheKey, {
@@ -1144,75 +1187,21 @@ async function startServer() {
                       timestamp: Date.now(),
                       ttl
                   });
-  
+
                   return res.json(data);
               }
-  
+
               if (response.status === 400 || response.status === 404) {
-                  console.log(`[Proxy] Attempt ${attempt} returned status ${response.status} (invalid symbol/resource) for ${urlToFetch}`);
-              } else {
-                  console.warn(`[Proxy] Attempt ${attempt} failed with status ${response.status} for ${urlToFetch}`);
+                  continue;
               }
-              
-              if (response.status === 400 || response.status === 404) {
-                  // If it's 400 Bad Request due to "Invalid symbol", check if appending USDT works
-                  if (response.status === 400 && urlToFetch.includes("binance") && !urlToFetch.includes("USDT")) {
-                      try {
-                          const parsedUrl = new URL(urlToFetch);
-                          const symbolParam = parsedUrl.searchParams.get("symbol");
-                          if (symbolParam) {
-                              parsedUrl.searchParams.set("symbol", `${symbolParam}USDT`);
-                              targetUrl = parsedUrl.toString();
-                              attempt--; // Retrying the same attempt index with USDT
-                              continue;
-                          }
-                      } catch (e) {}
-                  }
-                  
-                  // Otherwise, return 400/404 immediately to avoid wasting time with retries!
-                  console.log(`[Proxy] Immediately stopping on status ${response.status} for ${urlToFetch} (no retries for 400/404)`);
-                  if (targetUrl.includes("/klines")) {
-                      break;
-                  }
-                  const text = await response.text();
-                  try {
-                      return res.status(response.status).json(JSON.parse(text));
-                  } catch (e) {
-                      return res.status(response.status).send(text);
-                  }
-              }
-              
-              // Handle rate limiting specifically
+
               if (response.status === 429 || response.status === 418) {
-                  const retryAfter = response.headers.get("Retry-After");
-                  // For public proxies, use a tiny delay (50ms) to immediately fail over to the next proxy instead of waiting 5+ seconds
-                  const delayMs = isPublicProxy ? 50 : (retryAfter ? parseInt(retryAfter) * 1000 : (attempt * 5000));
-                  console.warn(`[Proxy] Rate limited (${response.status}) on attempt ${attempt}. Waiting ${delayMs}ms before retry for ${urlToFetch}`);
-                  if (delayMs > 0) {
-                      await new Promise(resolve => setTimeout(resolve, delayMs));
-                  }
                   continue;
               }
 
               throw new Error(`Response status ${response.status}`);
           } catch (error: any) {
-              console.error(`[Proxy] Attempt ${attempt} encountered error: ${error.message || error}`);
-              if (attempt < maxRetries) {
-                  const errMsg = String(error?.message || error || "").toLowerCase();
-                  const isProxySpecificError = errMsg.includes("403") || 
-                                               errMsg.includes("520") || 
-                                               errMsg.includes("502") || 
-                                               errMsg.includes("503") || 
-                                               errMsg.includes("504") || 
-                                               errMsg.includes("abort") || 
-                                               errMsg.includes("allorigins") || 
-                                               errMsg.includes("corsproxy") || 
-                                               errMsg.includes("codetabs") || 
-                                               errMsg.includes("corsfix") || 
-                                               errMsg.includes("freeboard");
-                  const delayMs = isProxySpecificError ? 0 : attempt * 500; // Zero delay for proxy blockages
-                  await new Promise(resolve => setTimeout(resolve, delayMs));
-              }
+              // Failover to next candidate in cluster
           }
       }
   
@@ -1247,6 +1236,100 @@ async function startServer() {
 
       return res.status(502).json({ error: "All backend proxy and rotation paths exhausted. Upstream is unreachable." });
     });
+
+  // 一键下载 PC 电脑安装版
+  app.get("/api/download-pc-installer", (req, res) => {
+    const pcFile = path.join(process.cwd(), "public", "0211自动找币防爆仓救世之星_PC电脑安装版.zip");
+    if (fs.existsSync(pcFile)) {
+      res.download(pcFile, "0211自动找币防爆仓救世之星_PC电脑安装版.zip");
+    } else {
+      res.redirect("/api/export-project");
+    }
+  });
+
+  // 一键下载 手机 APP 安装包
+  app.get("/api/download-mobile-app", (req, res) => {
+    const mobileFile = path.join(process.cwd(), "public", "0211自动找币防爆仓救世之星_手机APP安装包.zip");
+    if (fs.existsSync(mobileFile)) {
+      res.download(mobileFile, "0211自动找币防爆仓救世之星_手机APP安装包.zip");
+    } else {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>0211自动找币防爆仓救世之星 - 手机APP一键安装</title>
+</head>
+<body style="background:#0b0f19;color:#fff;text-align:center;padding:40px;font-family:sans-serif;">
+    <h2>📱 手机APP一键安装程序</h2>
+    <p>正在为您打开手机端应用并生成桌面图标...</p>
+    <a href="/" style="display:inline-block;background:#10b981;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin-top:20px;">点击立即打开</a>
+    <script>setTimeout(function(){ window.location.href = '/'; }, 800);</script>
+</body></html>`);
+    }
+  });
+
+  // Export Full Project Source Code as ZIP
+  app.get("/api/export-project", async (req, res) => {
+    const tempZipPath = path.join("/tmp", `CryptoScanner_FullSource_${Date.now()}.zip`);
+    try {
+      console.log("📦 [Server] Generating full project source ZIP download to disk...");
+      const output = fs.createWriteStream(tempZipPath);
+      const archive = new ZipArchive({
+        zlib: { level: 9 }
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        output.on("close", () => resolve());
+        output.on("error", (err) => reject(err));
+        archive.on("error", (err: any) => reject(err));
+
+        archive.pipe(output);
+
+        const rootDir = process.cwd();
+        archive.glob("**/*", {
+          cwd: rootDir,
+          ignore: [
+            "node_modules/**",
+            "dist/**",
+            ".git/**",
+            ".cache/**",
+            "release/**",
+            "*.log",
+            ".DS_Store"
+          ],
+          dot: true
+        });
+
+        archive.finalize();
+      });
+
+      const stats = fs.statSync(tempZipPath);
+      console.log(`✅ [Server] ZIP package generated successfully (${(stats.size / 1024 / 1024).toFixed(2)} MB, ${stats.size} bytes)`);
+
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Length", stats.size.toString());
+      res.setHeader("Content-Disposition", 'attachment; filename="CryptoScanner_FullSource.zip"');
+
+      const readStream = fs.createReadStream(tempZipPath);
+      readStream.pipe(res);
+
+      readStream.on("close", () => {
+        try {
+          fs.unlinkSync(tempZipPath);
+        } catch (e) {}
+      });
+    } catch (err: any) {
+      console.error("Failed to export project ZIP:", err);
+      try {
+        if (fs.existsSync(tempZipPath)) fs.unlinkSync(tempZipPath);
+      } catch (e) {}
+      if (!res.headersSent) {
+        res.status(500).json({ error: "导出源码失败: " + (err.message || err) });
+      }
+    }
+  });
 
   // API routes FIRST
   app.get("/api/health", (req, res) => {

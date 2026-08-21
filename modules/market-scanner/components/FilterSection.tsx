@@ -4,6 +4,9 @@ import { ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput, MarketSentimentWidget } from '../../../components/Scanner/ScannerUIHelpers';
 
 import { MajorTrendSection } from './MajorTrendSection';
+import { VolumePoolBox } from './VolumePoolBox';
+import { StartTrendSection } from './StartTrendSection';
+import { StartTrendPoolBox } from './StartTrendPoolBox';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -13,11 +16,12 @@ interface Props {
     isMajorScanning?: boolean;
     majorProgress?: { current: number, total: number };
     runMajorTrendDiscovery?: () => void;
+    cancelMajorScan?: () => void;
 }
 
 export const FilterSection: React.FC<Props> = ({ 
     scanConfig, setScanConfig, marketStats, 
-    isMajorScanning, majorProgress, runMajorTrendDiscovery 
+    isMajorScanning, majorProgress, runMajorTrendDiscovery, cancelMajorScan 
 }) => {
     return (
         <div className="space-y-3 animate-in fade-in slide-in-from-top-1 duration-300">
@@ -244,13 +248,33 @@ export const FilterSection: React.FC<Props> = ({
                         </div>
                     </div>
 
+                    {/* Volume Filter Pool Box - Placed directly above Start Trend */}
+                    <VolumePoolBox scanConfig={scanConfig} />
+
+                    {/* Start Trend Configuration (Extracted from Major Trend) */}
+                    <StartTrendSection 
+                        config={scanConfig.majorTrend}
+                        setConfig={(cfg) => setScanConfig(p => ({
+                            ...p, 
+                            majorTrend: cfg
+                        }))}
+                    />
+
+                    {/* Start Trend Pool Box - Directly reads from Volume Pool Box */}
+                    <StartTrendPoolBox scanConfig={scanConfig} />
+
                     {/* Major Trend Section - Primary Focus here */}
                     <MajorTrendSection 
                         config={scanConfig.majorTrend}
-                        setConfig={(cfg) => setScanConfig(p => ({...p, majorTrend: cfg}))}
+                        setConfig={(cfg) => setScanConfig(p => ({
+                            ...p, 
+                            majorTrend: cfg,
+                            instantOpenDirection: (cfg.enableLong !== false && cfg.enableShort === false) ? 'LONG' : (cfg.enableLong === false && cfg.enableShort !== false ? 'SHORT' : p.instantOpenDirection)
+                        }))}
                         isMajorScanning={isMajorScanning}
                         majorProgress={majorProgress}
                         onRunDiscovery={runMajorTrendDiscovery}
+                        onCancelDiscovery={cancelMajorScan}
                         isPrimaryMode={true}
                     />
                 </div>

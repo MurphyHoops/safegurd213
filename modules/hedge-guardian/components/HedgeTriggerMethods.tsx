@@ -128,6 +128,55 @@ export const HedgeTriggerMethods: React.FC<Props> = ({ settings, onChange }) => 
                     <span className="text-indigo-400 opacity-90 font-bold">例：多单，最低距开仓价差20%，设50%，即实际亏损10%（价位90）时触发对冲。</span>
                 </div>
             </div>
+
+            {/* Method 5: Short-term Extreme Ratio Hedge */}
+            <div className="flex flex-col bg-slate-900/50 p-2 rounded border border-slate-700/50 space-y-2">
+                <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-teal-400 font-bold flex items-center gap-1">
+                        5. 短期极值比例对冲
+                    </span>
+                    <div 
+                        onClick={() => onChange('shortTermExtremeEnabled', !settings.shortTermExtremeEnabled)} 
+                        className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.shortTermExtremeEnabled ? 'bg-teal-600' : 'bg-slate-700'}`}
+                    >
+                        <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.shortTermExtremeEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                    </div>
+                </div>
+                
+                {settings.shortTermExtremeEnabled && (
+                    <div className="flex flex-col gap-2 pt-1 border-t border-slate-800 animate-in fade-in">
+                        <div className="flex items-center gap-2">
+                            <div className="flex-1">
+                                <label className="text-[9px] text-slate-500 block mb-1">对冲亏损比例 (%)</label>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-teal-400 font-bold text-center font-mono" 
+                                        value={settings.shortTermExtremeRatio ?? 50} 
+                                        onChange={(e) => onChange('shortTermExtremeRatio', parseFloat(e.target.value))} 
+                                    />
+                                    <span className="absolute right-4 top-1 text-[9px] text-slate-500">%</span>
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-[9px] text-slate-500 block mb-1">短期极值天数 (N天)</label>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-white text-center font-mono" 
+                                        value={settings.shortTermExtremeDays ?? 7} 
+                                        onChange={(e) => onChange('shortTermExtremeDays', parseInt(e.target.value))} 
+                                    />
+                                    <span className="absolute right-3 top-1 text-[9px] text-slate-500">天</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="text-[9px] text-slate-500 leading-tight">
+                            规则：开仓后自动提取过去 <strong>{settings.shortTermExtremeDays ?? 7}天</strong> 极值点，当亏损额达到极值间距的 <strong>{settings.shortTermExtremeRatio ?? 50}%</strong> 时启动对冲（并联运行）。
+                        </div>
+                    </div>
+                )}
+            </div>
         </div>
     );
 };

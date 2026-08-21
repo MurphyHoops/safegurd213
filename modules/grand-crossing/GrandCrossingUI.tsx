@@ -36,6 +36,8 @@ const DEFAULT_CONFIG: List2Config = {
     sortMode: 'MOST',
     requireCrossing: true,
     requireAlignment: false,
+    enableDivergenceCrossCheck: true,
+    divergenceLookbackBars: 20,
     strictFiltering: true,
     viewMode: 'ALL',
     syncDirectionFilterToList3: false

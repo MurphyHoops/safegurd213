@@ -30,6 +30,7 @@ export const List1Control = React.memo<{
     isMajorScanning?: boolean;
     majorProgress?: { current: number, total: number };
     runMajorTrendDiscovery?: () => void;
+    cancelMajorScan?: () => void;
     backtestProps?: {
         speed: number;
         setSpeed: (s: number) => void;
@@ -54,7 +55,7 @@ export const List1Control = React.memo<{
         scanConfig, setScanConfig, isScanning, scanStatusText, isPaused, setIsPaused, onScan, 
         fixedModeView, setFixedModeView, onClearWatchlist, onClearBlacklist, 
         scanInterval, setScanInterval, marketStats, nextScanTime,
-        scannerMode, setScannerMode, isMajorScanning, majorProgress, runMajorTrendDiscovery, backtestProps
+        scannerMode, setScannerMode, isMajorScanning, majorProgress, runMajorTrendDiscovery, cancelMajorScan, backtestProps
     } = props;
     const [countdown, setCountdown] = useState('--:--');
     const [showRules, setShowRules] = useState(false);
@@ -119,6 +120,7 @@ export const List1Control = React.memo<{
                     isMajorScanning={isMajorScanning}
                     majorProgress={majorProgress}
                     runMajorTrendDiscovery={runMajorTrendDiscovery}
+                    cancelMajorScan={cancelMajorScan}
                 />
 
                 <ActionSection 

@@ -147,6 +147,11 @@ export const PositionItem: React.FC<Props> = ({
             candidates.push({ price, label: '破位防爆' });
         }
 
+        // 5. 短期极值比例对冲
+        if (globalHedgingSettings?.shortTermExtremeEnabled && p.shortTermExtremeTriggerPrice) {
+            candidates.push({ price: Number(p.shortTermExtremeTriggerPrice), label: '短期极值' });
+        }
+
         // Choose the closest trigger candidate
         if (candidates.length > 0) {
             if (p.side === PositionSide.LONG) {
@@ -184,6 +189,16 @@ export const PositionItem: React.FC<Props> = ({
                     <span className="font-black text-sm text-white tracking-tight">{p.symbol.replace('USDT','')}</span>
                     <span className={`text-[9px] px-1.5 rounded-sm font-bold ${p.side === PositionSide.LONG ? 'text-emerald-500 bg-emerald-500/10' : 'text-red-500 bg-red-500/10'}`}>
                         {p.side === PositionSide.LONG ? '多' : '空'}
+                    </span>
+                    <span 
+                        className={`text-[9px] px-1.5 py-0.2 rounded-sm font-black border ${
+                            p.leverage && p.leverage < 20 
+                                ? 'bg-amber-950/60 text-amber-300 border-amber-500/40 shadow-[0_0_6px_rgba(245,158,11,0.2)]' 
+                                : 'bg-slate-800/80 text-cyan-400 border-cyan-500/20'
+                        }`}
+                        title={p.leverage && p.leverage < 20 ? `该币种已自动匹配币安可用杠杆上限: ${p.leverage}x` : `当前持仓杠杆倍数: ${p.leverage || 20}x`}
+                    >
+                        {p.leverage || 20}x
                     </span>
                     {p.strategyId && (
                         <span className="text-[9px] px-1.5 rounded-sm font-bold bg-indigo-950 text-indigo-400 border border-indigo-500/20" title={p.strategyId}>

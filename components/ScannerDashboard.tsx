@@ -558,7 +558,7 @@ const ScannerDashboardInner: React.FC<
       customSymbols: "",
       useCustomOnly: false,
       batchSize: 40,
-      limit: 520,
+      limit: 2000,
       breakerConfig: {
         enabled: false,
         triggerMinutes: 15,
@@ -596,10 +596,10 @@ const ScannerDashboardInner: React.FC<
         enableStartTrendLong: false,
         enableStartTrendShort: false,
         startTrendGroups: [
-          { enabled: false, hours: 8, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
-          { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
-          { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
-          { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
+          { enabled: false, days: 1, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
+          { enabled: false, days: 2, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
+          { enabled: false, days: 3, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
+          { enabled: false, days: 7, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
         ]
       }
     },
@@ -615,7 +615,7 @@ const ScannerDashboardInner: React.FC<
       customSymbols: "",
       useCustomOnly: false,
       batchSize: 40,
-      limit: 520,
+      limit: 2000,
       breakerConfig: {
         enabled: false,
         triggerMinutes: 15,
@@ -653,10 +653,10 @@ const ScannerDashboardInner: React.FC<
         enableStartTrendLong: false,
         enableStartTrendShort: false,
         startTrendGroups: [
-          { enabled: false, hours: 8, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
-          { enabled: false, hours: 4, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
-          { enabled: false, hours: 12, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
-          { enabled: false, hours: 24, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
+          { enabled: false, days: 1, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
+          { enabled: false, days: 2, minLong: 1, maxLong: 5, maxPullbackLong: 2, minShort: 1, maxShort: 5, maxPullbackShort: 2 },
+          { enabled: false, days: 3, minLong: 2, maxLong: 10, maxPullbackLong: 4, minShort: 2, maxShort: 10, maxPullbackShort: 4 },
+          { enabled: false, days: 7, minLong: 4, maxLong: 20, maxPullbackLong: 6, minShort: 4, maxShort: 20, maxPullbackShort: 6 }
         ]
       }
     },
@@ -1115,6 +1115,7 @@ const ScannerDashboardInner: React.FC<
         breakoutBuffer: 0.2,
         autoExecute: true,
         maxExposurePercent: 95,
+        minHealthPercent: 0,
         positionSizeMode: "FIXED",
         variablePercentage: 2,
         variableMaxLimit: 200,
@@ -1160,6 +1161,10 @@ const ScannerDashboardInner: React.FC<
           userConfig.maxExposurePercent > 0
             ? userConfig.maxExposurePercent
             : DEFAULT_ACTION_CONFIG.maxExposurePercent,
+        minHealthPercent:
+          typeof userConfig.minHealthPercent === "number"
+            ? userConfig.minHealthPercent
+            : DEFAULT_ACTION_CONFIG.minHealthPercent,
         positionSizeMode:
           userConfig.positionSizeMode || DEFAULT_ACTION_CONFIG.positionSizeMode,
         variablePercentage:
@@ -1295,6 +1300,27 @@ const ScannerDashboardInner: React.FC<
           `[Trade Reject] Exposure limit reached: ${usagePct.toFixed(1)}% > ${exposureLimit}%`,
         );
         return false;
+      }
+
+      // Check Health % (List 6 Health Limit: 当健康度低于 minHealthPercent 时不开仓)
+      if (typeof config.minHealthPercent === "number" && config.minHealthPercent > 0) {
+        const CONTRACT_LEVERAGE = 20;
+        const currentTotalPnL = activePositions.reduce((sum, p) => sum + (p.unrealizedPnL || 0), 0);
+        const availableMarginWithLeverage = Math.max(0, (balance + currentTotalPnL) - (currentTotalValue / CONTRACT_LEVERAGE));
+        const currentHealthPct = balance > 0 ? (availableMarginWithLeverage / balance * 100) : 0;
+
+        if (currentHealthPct < config.minHealthPercent) {
+          if (onLog) {
+            onLog(
+              "DANGER",
+              `交易拦截 ${cleanSymbol}: 账户健康度低于设定阈值 (${currentHealthPct.toFixed(1)}% < ${config.minHealthPercent}%)`,
+            );
+          }
+          console.warn(
+            `[Trade Reject] Health limit reached: ${currentHealthPct.toFixed(1)}% < ${config.minHealthPercent}%`,
+          );
+          return false;
+        }
       }
 
       const mergedExtraProps = {
@@ -2066,7 +2092,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
       customSymbols: "",
       useCustomOnly: false,
       batchSize: 40,
-      limit: 520,
+      limit: 2000,
       breakerConfig: {
         enabled: false,
         triggerMinutes: 15,
@@ -2115,7 +2141,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
       customSymbols: "",
       useCustomOnly: false,
       batchSize: 40,
-      limit: 520,
+      limit: 2000,
       breakerConfig: {
         enabled: false,
         triggerMinutes: 15,

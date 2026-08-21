@@ -41,8 +41,8 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
   const [chartData, setChartData] = useState<any>(null);
 
   const [activeMode, setActiveMode] = usePersistedState<'24H' | '8AM'>('SCANNER_ACTIVE_MODE', '24H');
-  const [config24H, setConfig24H] = usePersistedState<ScanConfig>('SCANNER_CONFIG_24H', { timeBasis: '24H', source: 'BOTH', minVolume: 1, maxVolume: 0, minChange: 1, customSymbols: '', useCustomOnly: false, batchSize: 40, limit: 520 });
-  const [config8AM, setConfig8AM] = usePersistedState<ScanConfig>('SCANNER_CONFIG_8AM', { timeBasis: '8AM', source: 'GAINERS', minVolume: 1, maxVolume: 0, minChange: 1, customSymbols: '', useCustomOnly: false, batchSize: 40, limit: 520 });
+  const [config24H, setConfig24H] = usePersistedState<ScanConfig>('SCANNER_CONFIG_24H', { timeBasis: '24H', source: 'BOTH', minVolume: 1, maxVolume: 0, minChange: 1, customSymbols: '', useCustomOnly: false, batchSize: 40, limit: 2000 });
+  const [config8AM, setConfig8AM] = usePersistedState<ScanConfig>('SCANNER_CONFIG_8AM', { timeBasis: '8AM', source: 'GAINERS', minVolume: 1, maxVolume: 0, minChange: 1, customSymbols: '', useCustomOnly: false, batchSize: 40, limit: 2000 });
   
   const scanConfig = useMemo(() => activeMode === '24H' ? config24H : config8AM, [activeMode, config24H, config8AM]);
 
@@ -143,6 +143,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
           breakoutBuffer: typeof userConfig.breakoutBuffer === 'number' ? userConfig.breakoutBuffer : DEFAULT_ACTION_CONFIG.breakoutBuffer,
           autoExecute: typeof userConfig.autoExecute === 'boolean' ? userConfig.autoExecute : DEFAULT_ACTION_CONFIG.autoExecute,
           maxExposurePercent: typeof userConfig.maxExposurePercent === 'number' && userConfig.maxExposurePercent > 0 ? userConfig.maxExposurePercent : DEFAULT_ACTION_CONFIG.maxExposurePercent,
+          minHealthPercent: typeof userConfig.minHealthPercent === 'number' ? userConfig.minHealthPercent : 0,
           positionSizeMode: userConfig.positionSizeMode || DEFAULT_ACTION_CONFIG.positionSizeMode,
           variablePercentage: typeof userConfig.variablePercentage === 'number' ? userConfig.variablePercentage : DEFAULT_ACTION_CONFIG.variablePercentage,
           variableMaxLimit: typeof userConfig.variableMaxLimit === 'number' ? userConfig.variableMaxLimit : DEFAULT_ACTION_CONFIG.variableMaxLimit,

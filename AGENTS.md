@@ -43,12 +43,14 @@ Do NOT modify this logic or settings unless explicitly instructed to fix a criti
 - `/components/ScannerDashboard.tsx` (Specifically the `useEffect` instant open hook, refs, and closed-loop execution triggers) - **STRICTLY LOCKED**
 Do NOT modify this logic or settings unless explicitly instructed to fix a critical regression.
 
-## List 1 Big Market Trend Discovery - Modified
-**NOTE**: The core logic, parameters, and UI controls for the List 1 "大行情发现模式" (Big Market Trend Discovery Mode) were unlocked and modified on 2026-08-01 per user request to change the "Sideways Consolidation" (横盘蓄势) logic.
-- `/modules/market-scanner/useScannerLogic.ts` (Specifically `runMajorTrendDiscovery` filter logic) - **MODIFIED**
-- `/modules/market-scanner/components/MajorTrendSection.tsx` (Specifically the custom core and sideways UI switches) - **MODIFIED**
-- `/components/Scanner/scannerTypes.ts` (Specifically the `MajorTrendConfig` switches definition) - **UNLOCKED**
-Do NOT modify this logic or settings unless explicitly instructed to fix a critical regression.
+## List 1 Three-Tier Filter Pools & Pipeline Execution Engine - Code Lock
+**CRITICAL**: The core logic, interval speed controls (5m/3m/4m), (Manual/Auto) switches, candidate pool readers, and priority pipeline coordination for the List 1 Three-Tier Filter Pools are now strictly locked:
+- `/services/pipelineQueue.ts` (Priority Task Queue Coordinator: Step 1 Volume Pool -> Step 2 Start Trend -> Step 3 Major Trend) - **STRICTLY LOCKED**
+- `/modules/market-scanner/components/VolumePoolBox.tsx` (Volume Filter Pool & 5-min Binance Sync) - **STRICTLY LOCKED**
+- `/modules/market-scanner/components/StartTrendPoolBox.tsx` (Start Trend Pool & 3-min Volume Pool Sync) - **STRICTLY LOCKED**
+- `/modules/market-scanner/components/MajorTrendSection.tsx` (Major Trend Discovery UI & 4-min Start Trend Pool Sync) - **STRICTLY LOCKED**
+- `/modules/market-scanner/useScannerLogic.ts` (Major Trend Discovery Core & Candidate Pool Execution) - **STRICTLY LOCKED**
+Do NOT modify this logic, scheduling intervals, or priority queuing unless explicitly instructed by a special directive.
 
 ## Real-time Price Push & Position Sync Engine - Code Lock
 **CRITICAL**: The core real-time high-performance price push, Web-Worker-based WebSocket subscription, and DOM-bypass UI updates are now strictly locked to ensure 100% safety, security, and millisecond-level synchronization with the Binance exchange.
@@ -71,11 +73,38 @@ This prevents event loop starvation, browser freezes, and subsequent unhandled r
 - `/App.tsx` (Specifically the setup callbacks `sim.onRealClose`/`sim.onRealReopen`, real-trading position opening rules bypass logic `extraProps?.isReopened`, and delayed execution handlers `handleAutoReopen`) - **STRICTLY LOCKED**
 Do NOT modify this logic, timing delays, or synchronization rules unless explicitly requested with a specific confirmation directive.
 
+## 🔒 Universal Constraints (通用核心铁律)
+1. **不准改其他功能**: WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES, COMPONENT BEHAVIORS, OR LOCKED MODULES.
+2. **不准擅自重构**: DO NOT REFACTOR STABLE WORKING CODE OR RE-ARCHITECT MODULES WITHOUT EXPLICIT USER INSTRUCTION.
+3. **不准加依赖**: DO NOT INSTALL OR IMPORT UNREQUESTED NPM PACKAGES OR EXTERNAL DEPENDENCIES.
+4. **修改确认制**: IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU MUST EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION.
+
 ## 🔒 Strict Modification & Authorization Directive (绝对修改授权铁律)
 **CRITICAL USER DIRECTIVE**: 
 "这些功能的失效是从来都没有下指令的，以后在没特别下指令的时候，你绝对不能乱修改程序里的功能；【如果有特别原因需要涉及其它功能修改的，必须要在询问，等待我确认后再修改】，把这段话置入你的程序修改内容里，每次修改都要先看看这段指令"
 - WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES OR COMPONENT BEHAVIORS.
 - IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU **MUST** EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION BEFORE PROCEEDING!
+
+## 🔒 Atomic Module Locks (原子化结构全域锁定)
+- **Lists 1-6 (All-Domain Scanner Pipeline)**:
+  - List 1: 市场初筛 (`/modules/market-scanner/`)
+  - List 2: 均线穿越 (`/modules/grand-crossing/`)
+  - List 3: 结构审计 (`/modules/structure-audit/`)
+  - List 4: 动量审计与防追高熔断/动态方向锁 (`/modules/momentum-audit/`)
+  - List 5: 最终审计 (`/modules/final-audit/`)
+  - List 6: 战术面板与自动执行 (`/modules/terminal-dashboard/`)
+- **Modules 1-8 (Tactical Command & Operations)**:
+  - Mod 1: 实时战场 (`/modules/live-battlefield/`)
+  - Mod 2: 持仓管理 (`/modules/positions-list/`)
+  - Mod 3: 预警防线 (`/modules/warning-defense/`)
+  - Mod 4: 救世策略库 1-8 (`/modules/rescue-tactics/` & `/services/rules/rescue/`)
+  - Mod 5: 统计看板与财务汇总 (`/modules/analytics/` & `/components/StatsPanel.tsx`)
+  - Mod 6: 系统日志与历史记录 (`/modules/system-logs/` & `/components/TradeLogModal.tsx`)
+  - Mod 7: 网络核心与实盘连接 (`/services/apiService.ts`, `/services/binanceWs.ts`, `/services/priceRegistry.ts`)
+  - Mod 8: K线图表与分析 (`/components/KlineChartModal.tsx`)
+- **Pipeline Transition & State Boundaries**:
+  - All data bridges between List 1->2->3->4->5->6 are sealed and locked.
+  - No background mutations may bleed across module boundaries.
 
 
 

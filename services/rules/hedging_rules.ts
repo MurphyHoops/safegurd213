@@ -31,13 +31,12 @@ export function checkHedgingRules(
     }
 
     // 🛡️ [Extreme Price/PnL Anomaly Safeguard]
-    // Under 20x leverage, a raw price drop of >25% would require 500% margin loss, which is mathematically impossible
-    // for an active, unliquidated position on Binance. If unrealizedPnLPercentage is below -25% (e.g. -99.9%),
-    // it is 100% a pricing/precision mismatch (e.g. SHIB vs 1000SHIB). We must block automatic hedging to prevent
-    // disastrous false-positive trades in real-trading.
+    // Under 20x leverage or volatile market conditions, raw price drops can be significant. If unrealizedPnLPercentage is below -95%
+    // (e.g. -99.9%), it is likely a pricing/precision mismatch (e.g. SHIB vs 1000SHIB). We block automatic hedging beyond -95% to prevent
+    // disastrous false-positive trades while allowing normal deep altcoin drawdowns to be safely hedged.
     const pnlPercent = position.unrealizedPnLPercentage;
-    if (pnlPercent < -25) {
-        console.warn(`[Hedge Blocked] Anomaly detected for ${position.symbol}: Calculated loss is ${pnlPercent.toFixed(2)}%, which exceeds the -25% safety ceiling. Blocking auto-hedge.`);
+    if (pnlPercent < -95) {
+        console.warn(`[Hedge Blocked] Anomaly detected for ${position.symbol}: Calculated loss is ${pnlPercent.toFixed(2)}%, which exceeds the -95% safety ceiling. Blocking auto-hedge.`);
         return false;
     }
 
@@ -143,6 +142,21 @@ export function checkHedgingRules(
         }
     }
 
+    // E. 5:短期极值比例对冲 (Short-term Extreme Ratio Hedge)
+    let shortTermExtremeTriggered = false;
+    if (hedgeSettings.shortTermExtremeEnabled && position.shortTermExtremeTriggerPrice !== undefined) {
+        const stPrice = Number(position.shortTermExtremeTriggerPrice);
+        if (position.side === PositionSide.LONG) {
+            if (position.markPrice <= stPrice) {
+                 shortTermExtremeTriggered = true;
+            }
+        } else {
+            if (position.markPrice >= stPrice) {
+                 shortTermExtremeTriggered = true;
+            }
+        }
+    }
+
     // Compile triggers and construct transparent reason representation
     const triggeredReasonsList: string[] = [];
     if (lossHedgeTriggered) {
@@ -150,6 +164,9 @@ export function checkHedgingRules(
     }
     if (extremeHedgeTriggered && position.extremeHedgeTriggerPrice !== undefined) {
         triggeredReasonsList.push(`价格${position.side === PositionSide.LONG ? '跌破' : '突破'}300天极值对冲启动价 ${position.extremeHedgeTriggerPrice.toFixed(4)}`);
+    }
+    if (shortTermExtremeTriggered && position.shortTermExtremeTriggerPrice !== undefined) {
+        triggeredReasonsList.push(`价格${position.side === PositionSide.LONG ? '跌破' : '突破'}短期极值对冲启动价 ${position.shortTermExtremeTriggerPrice.toFixed(4)}`);
     }
     if (trendHedgeTriggered) {
         triggeredReasonsList.push(`价格${position.side === PositionSide.LONG ? '跌破' : '突破'} EMA${trendHedgePeriod} 防火墙`);
@@ -175,7 +192,7 @@ export function checkHedgingRules(
     let isWorseThanExtreme = true;
     
     // Skip historical extreme check if it's an extreme hedge trigger or if oscillationCheck is disabled
-    if (hedgeSettings.extremeHedgeEnabled && (triggerReason.includes('极值') || extremeHedgeTriggered)) {
+    if ((hedgeSettings.extremeHedgeEnabled || hedgeSettings.shortTermExtremeEnabled) && (triggerReason.includes('极值') || extremeHedgeTriggered || shortTermExtremeTriggered)) {
         isWorseThanExtreme = true;
     } else if (hedgeSettings.oscillationCheck !== true) {
         // If oscillation check is disabled, do not block hedging based on historical extreme price

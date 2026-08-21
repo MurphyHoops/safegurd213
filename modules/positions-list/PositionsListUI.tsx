@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { PositionsListProps } from './types';
 import { PositionSide, Position } from '../../types';
 import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
-import { ArrowUp, ArrowDown, List, Trash2, AlertCircle, AlertTriangle, Zap, RefreshCw, WifiOff, Activity, Brain, Settings, History, TrendingUp, BarChart2, ShieldCheck } from 'lucide-react';
+import { ArrowUp, ArrowDown, List, Trash2, AlertCircle, AlertTriangle, Zap, RefreshCw, WifiOff, Activity, Brain, Settings, History, TrendingUp, BarChart2, ShieldCheck, Lock, Unlock } from 'lucide-react';
 import { EmptyPositions } from './components/EmptyPositions';
 import { PositionItem } from './components/PositionItem';
 import { PositionSettingsModal } from './components/PositionSettingsModal';
@@ -38,8 +38,12 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const [confirmClear, setConfirmClear] = useState(false);
     const [confirmClearRecords, setConfirmClearRecords] = useState(false);
     const [settingsTargetPosition, setSettingsTargetPosition] = useState<Position | null>(null);
+    const [isHoveredOnList, setIsHoveredOnList] = useState(false);
+    const [isPinLocked, setIsPinLocked] = useState(false);
     const confirmTimeoutRef = React.useRef<any>(null);
     const confirmRecordsTimeoutRef = React.useRef<any>(null);
+
+    const isListOrderLocked = isHoveredOnList || isPinLocked;
 
     const handleBatchCloseWithConfirm = () => {
         if (!confirmClear) {
@@ -106,7 +110,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
         shortCount,
         hedgePairsCount,
         activeStrategies
-    } = usePositionsListLogic(activePositionsList, realPrices, sortKey, sortMode, settings);
+    } = usePositionsListLogic(activePositionsList, realPrices, sortKey, sortMode, settings, isListOrderLocked);
 
     const strategiesDisplay = activeStrategies.length > 0 ? `(${activeStrategies.join(', ')})` : '';
 
@@ -182,7 +186,11 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const isNetworkError = !isOnline || networkStatus !== 'healthy';
 
     return (
-        <div className="flex-1 overflow-y-auto rounded border border-slate-800 bg-[#0b0e11] custom-scrollbar flex flex-col relative">
+        <div 
+            className="flex-1 overflow-y-auto rounded border border-slate-800 bg-[#0b0e11] custom-scrollbar flex flex-col relative"
+            onMouseEnter={() => setIsHoveredOnList(true)}
+            onMouseLeave={() => setIsHoveredOnList(false)}
+        >
             
             {/* Top Tabs Bar */}
             <div className="flex items-center justify-between border-b border-slate-800 bg-[#0d1015] p-1.5 shrink-0 select-none">
@@ -307,6 +315,23 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                 {sortKey === 'PNL_AMOUNT' && (sortMode === 'DESC' ? <ArrowDown size={10}/> : <ArrowUp size={10}/>)}
                             </button>
                         </div>
+
+                        {/* Hover & Pin Lock Indicator / Toggle */}
+                        <button
+                            type="button"
+                            onClick={() => setIsPinLocked(!isPinLocked)}
+                            className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded transition-all border font-bold ${
+                                isPinLocked 
+                                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-[0_0_8px_rgba(245,158,11,0.2)]'
+                                    : isHoveredOnList 
+                                        ? 'bg-indigo-950/60 text-indigo-300 border-indigo-500/40' 
+                                        : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'
+                            }`}
+                            title={isPinLocked ? "已常驻固定持仓列表顺序（点击解锁）" : (isHoveredOnList ? "鼠标悬停中：已锁定列表顺序，防止价格跳动引起位置变化" : "点击可常驻锁定当前持仓顺序")}
+                        >
+                            {isListOrderLocked ? <Lock size={11} className={isPinLocked ? "text-amber-400" : "text-indigo-400"} /> : <Unlock size={11} className="text-slate-500" />}
+                            <span>{isPinLocked ? "已常驻锁定" : isHoveredOnList ? "悬停锁定中" : "悬停防跳"}</span>
+                        </button>
                         <button 
                             onClick={handleBatchCloseWithConfirm} 
                             className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded transition-colors border ${confirmClear ? 'bg-red-600 hover:bg-red-700 text-white border-red-400 animate-pulse' : 'bg-slate-800 hover:bg-red-900/50 text-slate-400 border-slate-700'}`}

@@ -100,6 +100,33 @@ export const BacktestGrandCrossingModule: React.FC<Props> = ({
     }
   }, [onRemoveSignalReady, removeSignal]);
 
+  const [activeFilterTf, setActiveFilterTf] = React.useState<string | null>(null);
+  const [isLocked, setIsLocked] = React.useState(false);
+
+  const handleTfInteraction = (tf: string, type: 'SINGLE' | 'LONG_2' | 'LONG_3' | 'RESET') => {
+    if (type === 'RESET') { 
+      setActiveFilterTf(null); 
+      setIsLocked(false); 
+    } else if (type === 'SINGLE') {
+      setConfig(p => ({
+        ...p, 
+        timeframes: p.timeframes.includes(tf) 
+          ? p.timeframes.filter(t => t !== tf) 
+          : [...p.timeframes, tf]
+      }));
+    } else if (type === 'LONG_3') { 
+      setActiveFilterTf(tf); 
+      setIsLocked(true); 
+    } else if (type === 'LONG_2') { 
+      setActiveFilterTf(activeFilterTf === tf ? null : tf); 
+      setIsLocked(false); 
+    }
+  };
+
+  const filteredList = activeFilterTf 
+    ? list2.filter(item => item.groupedResults?.some(r => r.tf === activeFilterTf))
+    : list2;
+
   return (
     <List2_GrandCrossing
       config={config}
@@ -108,10 +135,10 @@ export const BacktestGrandCrossingModule: React.FC<Props> = ({
       setScanConfig={setScanConfig}
       countdowns={countdowns}
       tfCounts={{}}
-      activeFilterTf={null}
-      isLocked={false}
-      onTfInteraction={() => {}}
-      filteredList2={list2}
+      activeFilterTf={activeFilterTf}
+      isLocked={isLocked}
+      onTfInteraction={handleTfInteraction}
+      filteredList2={filteredList}
       setChartData={setChartData}
       pollingStatus={status === "SCANNING" ? "正在扫描..." : "监控中"}
       onRemoveItem={removeItem}

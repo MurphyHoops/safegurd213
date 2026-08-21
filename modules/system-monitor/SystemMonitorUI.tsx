@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Terminal, Trash2, Settings, Activity, Clock, ShieldAlert, Cpu } from 'lucide-react';
 import { useMonitorStore } from '../../services/monitor/monitorService';
+import { cacheManager } from '../../services/cacheManager';
 
 const safeFormatTime = (timestamp: any) => {
     if (!timestamp) return '00:00:00';
@@ -198,6 +199,7 @@ export const SystemMonitorModule: React.FC = () => {
     };
 
     const performAutoRepair = () => {
+        cacheManager.clearCache('LIGHT');
         localStorage.removeItem('SAVIOR_LOGS');
         localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');
         localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');

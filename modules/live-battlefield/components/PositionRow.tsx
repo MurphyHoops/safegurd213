@@ -107,6 +107,9 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
                      <div className="flex items-center gap-2">
                          <span className="text-xs font-bold text-white" title={position.symbol}>{position.symbol || 'UNKNOWN'}</span>
                          <span className={`text-[9px] px-1 rounded font-bold ${isLong ? 'bg-emerald-900/30 text-emerald-400' : 'bg-red-900/30 text-red-400'}`}>{isLong ? '多' : '空'}</span>
+                         <span className={`text-[8px] px-1 py-0.2 rounded font-black border ${position.leverage && position.leverage < 20 ? 'bg-amber-950/60 text-amber-300 border-amber-500/40 shadow-[0_0_6px_rgba(245,158,11,0.2)]' : 'bg-slate-800 text-cyan-400 border-cyan-500/20'}`} title={`杠杆: ${position.leverage || 20}x`}>
+                             {position.leverage || 20}x
+                         </span>
                          {position.strategyId && (
                               <span className="text-[8px] px-1.5 rounded font-bold bg-indigo-900/40 text-indigo-400 border border-indigo-500/30">
                                   {getStrategyNameById(position.strategyId)}

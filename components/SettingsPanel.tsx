@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { AppSettings, SimulationSettings, StopLossSettings } from '../types';
-import { Target, Shield, AlertTriangle, RefreshCw, Settings, BookOpen, History } from 'lucide-react';
+import { Target, Shield, AlertTriangle, RefreshCw, Settings, BookOpen, History, Monitor, Smartphone, Download, Package } from 'lucide-react';
 import { audioService } from '../services/audioService';
 
 // --- ATOMIC MODULES ---
@@ -231,6 +231,28 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
                 toggleWakeLock={toggleWakeLock}
                 toggleBgMode={toggleBgMode}
             />
+
+            {/* 🌟 客户端程序一键下载快捷入口 (无论展开哪个模块都常驻可见) */}
+            <div className="p-2.5 bg-slate-950/90 border-b border-slate-800 shrink-0">
+                <div className="grid grid-cols-2 gap-2">
+                    <a
+                        href="/api/download-pc-installer"
+                        download="0211自动找币防爆仓救世之星_PC电脑安装版.zip"
+                        className="py-2 px-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded text-[11px] flex items-center justify-center gap-1.5 shadow-md shadow-blue-900/40 border border-blue-400/40 transition-all cursor-pointer text-center no-underline"
+                    >
+                        <Monitor size={14} />
+                        <span>💻 下载电脑安装版</span>
+                    </a>
+                    <a
+                        href="/api/download-mobile-app"
+                        download="0211自动找币防爆仓救世之星_手机APP安装包.zip"
+                        className="py-2 px-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded text-[11px] flex items-center justify-center gap-1.5 shadow-md shadow-emerald-900/40 border border-emerald-400/40 transition-all cursor-pointer text-center no-underline"
+                    >
+                        <Smartphone size={14} />
+                        <span>📱 下载手机 APP</span>
+                    </a>
+                </div>
+            </div>
 
             {/* MODULE 1: PROFIT MANAGER */}
             <ModuleHeader id={1} icon={Target} title="止盈止损" subtitle="Profit & Stop Loss" active={expandedModule === 1} colorClass="bg-emerald-900/50 text-emerald-400" onClick={toggleModule} />

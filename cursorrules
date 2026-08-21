@@ -1,31 +1,12 @@
-# Project Code Locks & Strict Architectural Rules
+# Project Universal Constraints & Code Locks
 
-## 🔒 Absolute Modification & Authorization Directive (绝对修改授权铁律)
-- **NO UNAUTHORIZED CHANGES**: WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES, COMPONENT BEHAVIORS, OR LOCKED MODULES.
-- **CONFIRMATION REQUIRED**: IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU **MUST** EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION BEFORE PROCEEDING!
-- **NO REFACTORING**: DO NOT REFACTOR STABLE WORKING CODE UNLESS EXPLICITLY REQUESTED.
-- **NO NEW DEPENDENCIES**: DO NOT INSTALL UNREQUESTED NPM PACKAGES.
+## 🔒 Universal Constraints (通用约束)
+1. **不准改其他功能**: WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES, COMPONENT BEHAVIORS, OR LOCKED MODULES.
+2. **不准擅自重构**: DO NOT REFACTOR STABLE WORKING CODE OR RE-ARCHITECT MODULES WITHOUT EXPLICIT USER INSTRUCTION.
+3. **不准加依赖**: DO NOT INSTALL OR IMPORT UNREQUESTED NPM PACKAGES OR EXTERNAL DEPENDENCIES.
+4. **修改确认制**: IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU MUST EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION.
 
-## 🔒 Locked Modules & Features
-1. **Real-time Mode Scanner (Lists 1-6)**:
-   - `/modules/market-scanner/` (List 1) - **LOCKED**
-   - `/modules/grand-crossing/` (List 2) - **STRICTLY LOCKED** (Includes 20-bar EMA cross back-check)
-   - `/modules/structure-audit/` (List 3)
-   - `/modules/momentum-audit/` (List 4) - **LOCKED** (Anti-Chase Fuse & Dynamic Direction Lock)
-   - `/modules/final-audit/` (List 5)
-   - `/modules/terminal-dashboard/` (List 6)
-   - `/services/rules/` (Core algorithmic files for L1-L6)
-2. **K-Line Data Fetching**:
-   - `/components/KlineChartModal.tsx` (`raceFetchKlines`) - **LOCKED**
-   - `/services/realtime/BinanceRealtimeService.ts` - **LOCKED**
-3. **Strategy 4 Amputation (Clear Hedge Only)**:
-   - `/services/rules/rescue/strategy4_amputation.ts` - **STRICTLY LOCKED**
-4. **List 1 Instant Open & Reopen**:
-   - `/modules/market-scanner/components/List1_Selection.tsx` - **STRICTLY LOCKED**
-5. **Real-time Price Push & Position Sync**:
-   - `/services/binanceWs.ts` - **STRICTLY LOCKED**
-   - `/services/priceRegistry.ts` - **STRICTLY LOCKED**
-6. **WebSocket Real-time Ticking Thread Safety**:
-   - `/App.tsx` (Throttled >= 150ms) - **STRICTLY LOCKED**
-7. **Real-trading Automated Execution & Anti-Repeat Hedge**:
-   - `/services/marketSimulator.ts` & `/App.tsx` (`handleAutoHedge`) - **STRICTLY LOCKED**
+## 🔒 Locked Modules & Atomic Structure Integrity
+- **Lists 1-6 (Global Scanner & Real-time Mode)**: Locked and synchronized.
+- **Modules 1-8 (Battlefield, Positions, Rescue Tactics, Terminal, etc.)**: Inter-module navigation and state flow are strictly locked.
+- **Supporting Components**: K-Line Charts (`KlineChartModal.tsx`), Position Lists (`PositionItem.tsx`, `PositionRow.tsx`), Trade Logs (`TradeLogModal.tsx`), Financial Statistics, and Network Core (`apiService.ts`, `binanceWs.ts`) are atomic-locked against regressions.

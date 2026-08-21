@@ -11,6 +11,7 @@ const DEFAULT_CONFIG: ActionConfig = {
     breakoutBuffer: 0.2, 
     autoExecute: true, 
     maxExposurePercent: 95, // Increased from 90
+    minHealthPercent: 0,
     positionSizeMode: 'FIXED', 
     variablePercentage: 2, 
     variableMaxLimit: 200,

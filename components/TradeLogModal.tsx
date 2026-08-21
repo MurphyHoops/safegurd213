@@ -515,6 +515,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
       
       // 1. Base Filter (Search Text & Time Range)
       let filtered = tradeLogs.filter(log => {
+          // Exclude internal CLOSED_OPEN status logs from general view
+          if (log.status === ('CLOSED_OPEN' as any)) return false;
+
           const matchesTerm = (log.symbol || '').toLowerCase().includes(term) ||
               String(log.entry_id || '').toLowerCase().includes(term);
           

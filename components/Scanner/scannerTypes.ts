@@ -174,6 +174,8 @@ export interface List2Config {
     sortMode: 'LATEST' | 'MOST';
     requireCrossing: boolean;
     requireAlignment: boolean;
+    enableDivergenceCrossCheck?: boolean; // 新增：发散前置穿越回溯开关
+    divergenceLookbackBars?: number;     // 新增：发散前置穿越回溯K线根数（可自由配置）
     strictFiltering: boolean;
     viewMode?: 'ALL' | 'LONG' | 'SHORT';
     syncDirectionFilterToList3?: boolean;
@@ -260,6 +262,7 @@ export interface ActionConfig {
     breakoutBuffer: number;
     autoExecute: boolean;
     maxExposurePercent: number; 
+    minHealthPercent?: number; // 健康度限制 (低于该百分比不开仓)
     positionSizeMode: 'FIXED' | 'VARIABLE';
     variablePercentage: number;
     variableMaxLimit: number;
@@ -287,7 +290,8 @@ export interface SmartScanConfig {
 
 export interface StartTrendGroup {
     enabled: boolean;
-    hours: number;
+    days?: number;
+    hours?: number;
     minLong: number;
     maxLong: number;
     maxPullbackLong?: number; // 做多：当前价格距最高点最大跌幅% (正数表示，需小于该值)
@@ -299,6 +303,7 @@ export interface StartTrendGroup {
 export interface MajorTrendConfig {
     enabled: boolean;
     updateIntervalHours: number; // 默认 4 小时
+    intervalMinutes?: number; // 访问行情启动底池速度(分钟)，默认 4
     requestPerMinute: number; // 默认 20
     lookbackDays: number; // 默认 300
     minHistoryDrop: number; // 默认 50%
@@ -308,6 +313,7 @@ export interface MajorTrendConfig {
     sidewaysMaxPump: number; // 涨跌幅小于 A%
     sidewaysMaxDrop: number; // 跌幅小于 B%
     autoTransfer?: boolean; // 自动移入监控列表
+    autoMode?: boolean; // 手动/自动读取运行开关 (true: 自动, false: 手动)
     
     // New switches
     enableLong?: boolean;   // "多"选项开关

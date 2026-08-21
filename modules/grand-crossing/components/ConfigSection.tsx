@@ -69,28 +69,63 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
             </div>
 
             {/* NEW: Decoupled Crossing & Divergence Triggers */}
-            <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
-                    <div className="flex flex-col gap-0.5">
-                        <div className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                            <TrendingUp size={10}/> K线穿越实体
+            <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                    <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
+                        <div className="flex flex-col gap-0.5">
+                            <div className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                                <TrendingUp size={10}/> K线穿越实体
+                            </div>
+                            <div className="text-[7px] text-slate-500 italic leading-none">实体穿越EMA10-40簇</div>
                         </div>
-                        <div className="text-[7px] text-slate-500 italic leading-none">实体穿越EMA10-40簇</div>
+                        <div onClick={() => setConfig(p => ({...p, requireCrossing: !p.requireCrossing}))} className={`w-8 h-4 rounded-full p-0.5 cursor-pointer transition-colors ${config.requireCrossing ? 'bg-emerald-600' : 'bg-slate-700'}`}>
+                            <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${config.requireCrossing ? 'translate-x-4' : ''}`} />
+                        </div>
                     </div>
-                    <div onClick={() => setConfig(p => ({...p, requireCrossing: !p.requireCrossing}))} className={`w-8 h-4 rounded-full p-0.5 cursor-pointer transition-colors ${config.requireCrossing ? 'bg-emerald-600' : 'bg-slate-700'}`}>
-                        <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${config.requireCrossing ? 'translate-x-4' : ''}`} />
+
+                    <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
+                        <div className="flex flex-col gap-0.5">
+                            <div className="text-[10px] text-cyan-400 font-bold flex items-center gap-1">
+                                <TrendingUp size={10}/> EMA均线发散
+                            </div>
+                            <div className="text-[7px] text-slate-500 italic leading-none">10-20-30-40完美排列</div>
+                        </div>
+                        <div onClick={() => setConfig(p => ({...p, requireAlignment: !p.requireAlignment}))} className={`w-8 h-4 rounded-full p-0.5 cursor-pointer transition-colors ${config.requireAlignment ? 'bg-cyan-600' : 'bg-slate-700'}`}>
+                            <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${config.requireAlignment ? 'translate-x-4' : ''}`} />
+                        </div>
                     </div>
                 </div>
 
-                <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
-                    <div className="flex flex-col gap-0.5">
-                        <div className="text-[10px] text-cyan-400 font-bold flex items-center gap-1">
-                            <TrendingUp size={10}/> EMA均线发散
+                {/* Sub-config for EMA Divergence: Cross Backtrack toggle and Bars input */}
+                <div className="bg-slate-800/40 p-2 rounded border border-slate-700/40 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1 text-[10px] text-cyan-400 font-bold whitespace-nowrap">
+                            <GitMerge size={10} className="text-cyan-500 shrink-0" /> 发散回溯穿越
                         </div>
-                        <div className="text-[7px] text-slate-500 italic leading-none">10-20-30-40完美排列</div>
+                        {(config.enableDivergenceCrossCheck ?? true) && (
+                            <div className="flex items-center gap-1 animate-in fade-in slide-in-from-left-2 ml-1">
+                                <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">数量</span>
+                                <div className="flex items-center gap-1 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/60">
+                                    <input 
+                                        type="number" 
+                                        min={1}
+                                        max={500}
+                                        value={Number.isNaN(config.divergenceLookbackBars) ? '' : (config.divergenceLookbackBars ?? 20)} 
+                                        onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, divergenceLookbackBars: parseInt(e.target.value) || 0})); }} 
+                                        className="w-12 bg-transparent text-right text-[11px] font-bold text-cyan-300 outline-none p-0 border-b border-cyan-500/40 focus:border-cyan-400" 
+                                    />
+                                    <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">根</span>
+                                </div>
+                            </div>
+                        )}
                     </div>
-                    <div onClick={() => setConfig(p => ({...p, requireAlignment: !p.requireAlignment}))} className={`w-8 h-4 rounded-full p-0.5 cursor-pointer transition-colors ${config.requireAlignment ? 'bg-cyan-600' : 'bg-slate-700'}`}>
-                        <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${config.requireAlignment ? 'translate-x-4' : ''}`} />
+
+                    <div 
+                        onClick={() => setConfig(p => ({...p, enableDivergenceCrossCheck: p.enableDivergenceCrossCheck !== undefined ? !p.enableDivergenceCrossCheck : false}))} 
+                        className={`w-7 h-3.5 rounded-full p-0.5 cursor-pointer transition-colors shrink-0 ${(config.enableDivergenceCrossCheck ?? true) ? 'bg-cyan-600' : 'bg-slate-700'}`}
+                        title="开启后发散前置需在过去N根K线内EMA10穿越过EMA20/30/40"
+                    >
+                        <div className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${(config.enableDivergenceCrossCheck ?? true) ? 'translate-x-3.5' : ''}`} />
                     </div>
                 </div>
             </div>

@@ -56,6 +56,11 @@ interface Props {
   onTimeframeChange?: (timeframe: string) => void;
   lookbackDays?: number;
   sidewaysDays?: number;
+  hasPrev?: boolean;
+  hasNext?: boolean;
+  currentIndexLabel?: string;
+  onPrev?: () => void;
+  onNext?: () => void;
 }
 
 interface KlineData {
@@ -241,10 +246,25 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
     return await fetchWithTimeout(futuresUrl, 'Final-Direct-Fallback');
 }
 
-const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays }) => {
+const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays, hasPrev, hasNext, currentIndexLabel, onPrev, onNext }) => {
   const backtest = useOptionalBacktest();
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
   const serializedConfig = JSON.stringify(list2Config);
+
+  // 🔒 [SECURITY_LOCK: KLINE_KEYBOARD_NAV]
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp' && hasPrev && onPrev) {
+        e.preventDefault();
+        onPrev();
+      } else if (e.key === 'ArrowDown' && hasNext && onNext) {
+        e.preventDefault();
+        onNext();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [hasPrev, hasNext, onPrev, onNext]);
   
   // Sync timeframe with initialTimeframe if it changes (e.g. when clicking a different row for same symbol)
   useEffect(() => {
@@ -1118,7 +1138,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                                   x1={x} 
                                   y1={padding.top} 
                                   x2={x} 
-                                  y2={chartHeight} 
+                                  y2={padding.top + 45} 
                                   stroke={isLong ? "#0ECB81" : "#F6465D"} 
                                   strokeWidth={1} 
                                   strokeDasharray="3 3" 
@@ -1248,14 +1268,14 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const x = getX(i) + candleWidth / 2;
               highlightLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={0} x2={x} y2={chartHeight} stroke="#A855F7" strokeWidth={1.5} strokeDasharray="4 2" />
+                      <line x1={x} y1={padding.top} x2={x} y2={padding.top + 45} stroke="#A855F7" strokeWidth={1.5} strokeDasharray="4 2" />
                       <text x={x} y={padding.top + 10} fill="#A855F7" fontSize="10" fontWeight="bold" textAnchor="middle" style={{textShadow: '0 0 3px black'}}>L4 ENTRY</text>
                   </g>
               );
           }
       }
 
-      // Appeared Line (出现)
+      // Appeared Line (发生)
       let appearedLine = null;
       if (appearedTime) {
           let hlIdx = fullData.findIndex(k => k.time === appearedTime);
@@ -1275,9 +1295,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const x = getX(i) + candleWidth / 2;
               appearedLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={0} x2={x} y2={chartHeight} stroke="#0ECB81" strokeWidth={1.5} strokeDasharray="3 3" />
+                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke="#0ECB81" strokeWidth={1.5} strokeDasharray="3 3" />
                       <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#0ECB81" rx={2} opacity={0.9} />
-                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">出现</text>
+                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">发生</text>
                   </g>
               );
           }
@@ -1303,9 +1323,26 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const x = getX(i) + candleWidth / 2;
               disappearedLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={0} x2={x} y2={chartHeight} stroke="#F6465D" strokeWidth={1.5} strokeDasharray="3 3" />
+                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke="#F6465D" strokeWidth={1.5} strokeDasharray="3 3" />
                       <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#F6465D" rx={2} opacity={0.9} />
                       <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">消失</text>
+                  </g>
+              );
+          }
+      }
+
+      // Waiting Line (等待 - for active coins in list)
+      let waitingLine = null;
+      if (!disappearedTime && fullData.length > 0) {
+          const lastIdx = fullData.length - 1;
+          if (lastIdx >= startIndex && lastIdx < startIndex + visibleCount) {
+              const i = lastIdx - startIndex;
+              const x = getX(i) + candleWidth / 2;
+              waitingLine = (
+                  <g pointerEvents="none">
+                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke="#FACC15" strokeWidth={1.5} strokeDasharray="2 2" />
+                      <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#FACC15" rx={2} opacity={0.9} />
+                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">等待</text>
                   </g>
               );
           }
@@ -1496,6 +1533,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               {highlightLine}
               {appearedLine}
               {disappearedLine}
+              {waitingLine}
               {entryVisuals}
               {extraVisuals}
               {measurementLines}

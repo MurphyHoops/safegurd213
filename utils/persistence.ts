@@ -124,6 +124,33 @@ const cleanPayloadForPersistence = (key: string, data: any): any => {
  * Saves data to localStorage with a safety check for quota and size.
  * If quota is exceeded, it attempts to clear non-critical caches.
  */
+export const autoHealLocalStorage = () => {
+    try {
+        if (typeof window === 'undefined') return;
+        const CURRENT_APP_VERSION = '2026.08.16.v2';
+        const storedVersion = localStorage.getItem('SAVIOR_APP_VERSION');
+        if (storedVersion !== CURRENT_APP_VERSION) {
+            console.warn(`[AutoHeal] Version change detected (${storedVersion} -> ${CURRENT_APP_VERSION}). Purging stale caches to prevent upgrade crashes...`);
+            const keysToRemove: string[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && (k.includes('SCANNER_CACHE') || k.includes('CACHE_MAP') || k.includes('EXPIRED') || k.includes('CAPTURED') || k.includes('SAVIOR_LOGS'))) {
+                    keysToRemove.push(k);
+                }
+            }
+            keysToRemove.forEach(k => {
+                try { localStorage.removeItem(k); } catch (e) {}
+            });
+            localStorage.setItem('SAVIOR_APP_VERSION', CURRENT_APP_VERSION);
+        }
+    } catch (e) {
+        console.error('[AutoHeal] Failed during autoHealLocalStorage:', e);
+    }
+};
+
+// Run auto-heal immediately on module load
+autoHealLocalStorage();
+
 export const saveState = (key: string, data: any, maxSizeRows: number = 800): boolean => {
     let payload = cleanPayloadForPersistence(key, data);
     try {

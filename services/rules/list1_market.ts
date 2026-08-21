@@ -50,7 +50,7 @@ export function processMarketData(
         if (t.symbol === 'BTCUSDT') btcChange = change;
 
         // Optimization: Pre-filter zero volume or very small volume
-        if (volume <= 0) return;
+        if (volume <= 0 && config.minVolume > 0) return;
 
         allCandidates.push({
             symbol: t.symbol,
@@ -96,11 +96,21 @@ export function processMarketData(
         });
     } else {
         filtered = allCandidates.filter(i => {
-            // Basic Volume filter usually applies to everyone for safety (unless explicitly disabled)
+            // Basic Volume filter (both 24H volume and 8AM volume)
             const check24h = config.enableVol24h !== false;
+            const check8am = !!config.enableVol8am;
+
             if (check24h) {
-                if ((i.volume24h || 0) < config.minVolume) return false;
+                if (config.minVolume > 0 && (i.volume24h || 0) < config.minVolume) return false;
                 if (config.maxVolume > 0 && (i.volume24h || 0) > config.maxVolume) return false;
+            }
+
+            if (check8am) {
+                const min8am = config.minVolume8am ?? 1;
+                const max8am = config.maxVolume8am ?? 0;
+                const volVal = i.volume8am !== undefined ? i.volume8am : (i.volume24h || 0);
+                if (min8am > 0 && volVal < min8am) return false;
+                if (max8am > 0 && volVal > max8am) return false;
             }
 
             if (config.majorTrend?.enabled) {
@@ -112,7 +122,7 @@ export function processMarketData(
             // Regular filters for Config A / Standard Mode
             if (config.source === 'GAINERS' && (i.change || 0) <= 0) return false;
             if (config.source === 'LOSERS' && (i.change || 0) >= 0) return false;
-            if (Math.abs(i.change || 0) < config.minChange) return false;
+            if (config.minChange > 0 && Math.abs(i.change || 0) < config.minChange) return false;
 
             return true;
         });

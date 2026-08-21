@@ -106,7 +106,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     const { 
         list1, isScanning, scanStatusText, marketStats, nextScanTime, setNextScanTime, refreshList1Candidates, cancelScan,
         addToBlacklist, clearBlacklist,
-        isMajorScanning, majorProgress, runMajorTrendDiscovery, majorTrendCandidates
+        isMajorScanning, majorProgress, runMajorTrendDiscovery, majorTrendCandidates, cancelMajorScan
     } = useScannerLogic(scanConfig, customSymbolSet, fixedModeView, directMode, mode, selectedStrategyId, isScanAllowed);
 
     // --- EFFECT: Sync with Legacy System (Removed because we use onFilteredUpdate now) ---
@@ -241,6 +241,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             isMajorScanning={isMajorScanning}
             majorProgress={majorProgress}
             runMajorTrendDiscovery={runMajorTrendDiscovery}
+            cancelMajorScan={cancelMajorScan}
             majorTrendCandidates={majorTrendCandidates}
             onFilteredUpdate={onCandidatesUpdate}
             directMode={directMode}

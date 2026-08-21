@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { X, Copy, Check, FileCode, Activity, Music, Database, Layout } from 'lucide-react';
+import { X, Copy, Check, FileCode, Activity, Music, Database, Layout, Download, Package } from 'lucide-react';
 import { SOURCE_VAULT } from '../utils/sourceCodeData';
 
 interface Props {
@@ -10,6 +10,7 @@ interface Props {
 const SourceCodeModal: React.FC<Props> = ({ onClose }) => {
     const [activeTab, setActiveTab] = useState('TYPES');
     const [copied, setCopied] = useState(false);
+    const [downloading, setDownloading] = useState(false);
 
     // Pull real code from the Vault
     const SOURCE_FILES: Record<string, { name: string, icon: any, code: string }> = {
@@ -41,24 +42,67 @@ const SourceCodeModal: React.FC<Props> = ({ onClose }) => {
         setTimeout(() => setCopied(false), 2000);
     };
 
+    const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
+
+    const handleDownloadFullZip = async () => {
+        setDownloading(true);
+        setDownloadStatus('正在打包所有源码中...');
+        try {
+            const response = await fetch('/api/export-project');
+            if (!response.ok) {
+                throw new Error(`服务器响应失败 (${response.status})`);
+            }
+            setDownloadStatus('正在传输压缩包...');
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'CryptoScanner_FullSource.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            setDownloadStatus(`下载成功 (${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
+            setTimeout(() => setDownloadStatus(null), 4000);
+        } catch (err: any) {
+            console.error('下载源码失败:', err);
+            setDownloadStatus(`下载失败: ${err.message || '网络异常'}`);
+            setTimeout(() => setDownloadStatus(null), 5000);
+        } finally {
+            setDownloading(false);
+        }
+    };
+
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
             <div className="bg-slate-900 border border-slate-700 rounded-lg shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col">
                 <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-950 rounded-t-lg shrink-0">
                     <div className="flex items-center gap-3">
-                        <div className="p-2 bg-blue-900/30 rounded-full text-blue-400 border border-blue-500/30">
-                            <FileCode size={20} />
+                        <div className="p-2 bg-emerald-900/30 rounded-full text-emerald-400 border border-emerald-500/30">
+                            <Package size={20} />
                         </div>
                         <div>
-                            <h2 className="text-lg font-bold text-white">源码查看器 (实时)</h2>
-                            <p className="text-xs text-slate-500">
-                                包含模块 4.2 及所有功能的完整逻辑快照
+                            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                                源码与项目导出中心
+                            </h2>
+                            <p className="text-xs text-slate-400">
+                                支持直接一键下载完整工程压缩包，或查看各模块源码
                             </p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full text-slate-400 hover:text-white">
-                        <X size={20} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={handleDownloadFullZip}
+                            disabled={downloading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold transition-all shadow-lg hover:shadow-emerald-900/50"
+                        >
+                            <Download size={14} className={downloading ? 'animate-bounce' : ''} />
+                            {downloadStatus || (downloading ? '正在准备下载...' : '📦 一键下载项目源码 (ZIP)')}
+                        </button>
+                        <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full text-slate-400 hover:text-white">
+                            <X size={20} />
+                        </button>
+                    </div>
                 </div>
 
                 <div className="flex-1 flex min-h-0">

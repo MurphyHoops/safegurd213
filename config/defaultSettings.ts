@@ -75,7 +75,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
         breakKLineRatio: 20,
         extremeHedgeEnabled: false,
         extremeHedgeDays: 300,
-        extremeHedgeTriggerRatio: 50
+        extremeHedgeTriggerRatio: 50,
+        shortTermExtremeEnabled: false,
+        shortTermExtremeDays: 7,
+        shortTermExtremeRatio: 50
     },
     stopLoss: {
         hedgeProfitClear: false,

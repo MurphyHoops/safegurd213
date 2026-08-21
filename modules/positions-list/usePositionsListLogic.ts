@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { Position, PositionSide } from '../../types';
 
 export function usePositionsListLogic(
@@ -6,9 +6,45 @@ export function usePositionsListLogic(
     realPrices: Record<string, number>, 
     sortKey: 'PNL_PCT' | 'AMOUNT' | 'PNL_AMOUNT',
     sortMode: 'DESC' | 'ASC', 
-    settings: any
+    settings: any,
+    isHoverLocked: boolean = false
 ) {
+    const lockedPositionsOrderRef = useRef<Position[]>([]);
+
     const sortedPositions = useMemo(() => {
+        // If hover is locked and we already have a locked order of positions, maintain the previous order
+        // while allowing their data (PnL, markPrice, status) to update seamlessly without changing rows
+        if (isHoverLocked && lockedPositionsOrderRef.current.length > 0) {
+            const posMap = new Map<string, Position>();
+            positions.forEach(p => {
+                const key = `${p.entryId || ''}_${p.symbol}_${p.side}`;
+                posMap.set(key, p);
+            });
+
+            const preservedList: Position[] = [];
+            const seenKeys = new Set<string>();
+
+            // 1. First keep all positions in their exact frozen row order
+            lockedPositionsOrderRef.current.forEach(oldP => {
+                const key = `${oldP.entryId || ''}_${oldP.symbol}_${oldP.side}`;
+                const updatedP = posMap.get(key);
+                if (updatedP) {
+                    preservedList.push(updatedP);
+                    seenKeys.add(key);
+                }
+            });
+
+            // 2. Append any newly opened positions at the bottom so they don't shift existing rows
+            positions.forEach(p => {
+                const key = `${p.entryId || ''}_${p.symbol}_${p.side}`;
+                if (!seenKeys.has(key)) {
+                    preservedList.push(p);
+                }
+            });
+
+            return preservedList;
+        }
+
         const getLivePnLPercent = (p: Position) => {
             return p.unrealizedPnLPercentage || 0;
         };
@@ -60,7 +96,7 @@ export function usePositionsListLogic(
         });
 
         // Sort logic
-        return [...positions].sort((a, b) => {
+        const sorted = [...positions].sort((a, b) => {
             const statsA = symbolStats[a.symbol];
             const statsB = symbolStats[b.symbol];
 
@@ -108,7 +144,11 @@ export function usePositionsListLogic(
 
             return 0;
         });
-    }, [positions, sortKey, sortMode, realPrices]);
+
+        // Update locked positions reference with the latest calculated sorted order
+        lockedPositionsOrderRef.current = sorted;
+        return sorted;
+    }, [positions, sortKey, sortMode, realPrices, isHoverLocked]);
 
     const longCount = positions.filter(p => p.side === PositionSide.LONG).length;
     const shortCount = positions.filter(p => p.side === PositionSide.SHORT).length;

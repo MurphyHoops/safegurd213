@@ -40,6 +40,7 @@ interface Props {
     isMajorScanning?: boolean;
     majorProgress?: { current: number, total: number };
     runMajorTrendDiscovery?: () => void;
+    cancelMajorScan?: () => void;
     backtestProps?: {
         speed: number;
         setSpeed: (s: number) => void;
@@ -84,7 +85,7 @@ const List1_Selection: React.FC<Props> = ({
     fixedModeView, setFixedModeView, scanInterval, setScanInterval, customSymbolSet,
     onToggleSymbol, onSelectAll, onDeselectAll, onDeleteSymbol, onClearBlacklist, marketStats, nextScanTime, setChartData,
     mode = 'LIVE', downloadProgressMap = {}, onDownload,
-    scannerMode, setScannerMode, isMajorScanning, majorProgress, runMajorTrendDiscovery, backtestProps,
+    scannerMode, setScannerMode, isMajorScanning, majorProgress, runMajorTrendDiscovery, cancelMajorScan, backtestProps,
     strategies = [], selectedStrategyId = '', activeStrategyId = '', onSelectStrategy = () => {}, onAddStrategy = () => {}, onDeleteStrategy = () => {}, onRenameStrategy = () => {}, onExportStrategy, onImportStrategy,
     isRotationEnabled = false,
     rotationIntervalMinutes = 5,
@@ -130,8 +131,45 @@ const List1_Selection: React.FC<Props> = ({
         maxPeriodHigh?: number;
     }>>({});
 
+    // 🌊 行情启动底池数据监听 (用于当未开启大行情发现时，市场初筛列表直接展示行情启动底池里的币)
+    const [startTrendPool, setStartTrendPool] = useState<any[]>(() => {
+        try {
+            const raw = localStorage.getItem('SCANNER_START_TREND_POOL');
+            return raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            return [];
+        }
+    });
+
+    useEffect(() => {
+        const handleUpdate = () => {
+            try {
+                const raw = localStorage.getItem('SCANNER_START_TREND_POOL');
+                setStartTrendPool(raw ? JSON.parse(raw) : []);
+            } catch (_) {}
+        };
+        window.addEventListener('storage', handleUpdate);
+        window.addEventListener('scanner_start_trend_pool_updated', handleUpdate);
+        const timer = setInterval(handleUpdate, 2000);
+        return () => {
+            window.removeEventListener('storage', handleUpdate);
+            window.removeEventListener('scanner_start_trend_pool_updated', handleUpdate);
+            clearInterval(timer);
+        };
+    }, []);
+
     const lookbackDays = scanConfig.majorTrend?.lookbackDays || 300;
-    const isLong = (scanConfig.instantOpenDirection || 'LONG') === 'LONG';
+    const enableLong = scanConfig.majorTrend?.enableLong !== false;
+    const enableShort = scanConfig.majorTrend?.enableShort !== false;
+
+    let isLong = (scanConfig.instantOpenDirection || 'LONG') === 'LONG';
+    if (scanConfig.majorTrend?.enabled) {
+        if (enableLong && !enableShort) {
+            isLong = true;
+        } else if (!enableLong && enableShort) {
+            isLong = false;
+        }
+    }
 
     const list1Ref = useRef(list1);
     useEffect(() => {
@@ -191,7 +229,7 @@ const List1_Selection: React.FC<Props> = ({
                 if (!symbol) return false;
 
                 // Optimize: If majorTrend is enabled and candidates exist, only fetch metrics for coins that are in majorTrendCandidates
-                if (scanConfig.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0) {
+                if (scanConfig.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0 && !isMajorScanning) {
                     const keySuffix = isLong ? '_LONG' : '_SHORT';
                     const key = `${symbol}${keySuffix}`;
                     if (!majorTrendCandidates.has(key)) {
@@ -307,7 +345,7 @@ const List1_Selection: React.FC<Props> = ({
 
                         if ((enableStartTrendLong || enableStartTrendShort) && hasActiveGroups) {
                             try {
-                                const activeGroups = startTrendGroups.filter(g => g.enabled);
+                                const activeGroups = startTrendGroups.map((g, idx) => ({ ...g, idx })).filter(g => g.enabled);
                                 // 🔒 [SECURITY_LOCK]: KEEP LIMIT1H FIXED AT 100 TO MAXIMIZE CACHE HIT-RATES ACROSS DIFFERENT TIME COMBINATIONS
                                 const limit1h = 100; // Fixed large limit to maximize cache hits
                                 // 🔒 [END_SECURITY_LOCK]
@@ -334,54 +372,57 @@ const List1_Selection: React.FC<Props> = ({
                                 if (Array.isArray(klines1h) && klines1h.length > 0) {
                                     const last1hPrice = parseFloat(klines1h[klines1h.length - 1][4]);
                                     if (!isNaN(last1hPrice) && last1hPrice > 0) {
-                                        let isLongTrendValid = true;
-                                        let isShortTrendValid = true;
+                                        let isLongTrendValid = false;
+                                        let isShortTrendValid = false;
 
                                         for (const group of activeGroups) {
-                                            const requiredCandles = group.hours; // hours
+                                            const groupDays = group.days !== undefined ? group.days : (group.idx === 0 ? 1 : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7)));
+                                            const requiredHours = groupDays * 24;
 
-                                            if (klines1h.length < requiredCandles) {
-                                                isLongTrendValid = false;
-                                                isShortTrendValid = false;
-                                                break;
+                                            if (klines1h.length < requiredHours) {
+                                                continue;
                                             }
 
-                                            const lastHCandles = klines1h.slice(-requiredCandles);
+                                            const lastHCandles = klines1h.slice(-requiredHours);
 
-                                            if (isLongTrendValid) {
+                                            if (enableStartTrendLong) {
                                                 const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
                                                 const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                                if (periodLows.length === 0 || periodHighs.length === 0) {
-                                                    isLongTrendValid = false;
-                                                } else {
+                                                if (periodLows.length > 0 && periodHighs.length > 0) {
                                                     const periodMinLow = Math.min(...periodLows);
                                                     const periodMaxHigh = Math.max(...periodHighs);
+                                                    const baseOpen = parseFloat(lastHCandles[0][1]);
                                                     
-                                                    const changePct = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
-                                                    const declinePct = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
+                                                    const changePct = ((last1hPrice - baseOpen) / baseOpen) * 100;
+                                                    const changePctFromLow = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
+                                                    const effectiveChange = Math.max(changePct, changePctFromLow);
+                                                    
+                                                    const pullbackPct = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
                                                     const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
                                                     
-                                                    if (isNaN(changePct) || changePct < group.minLong || changePct > group.maxLong || isNaN(declinePct) || declinePct >= maxPullbackLong) {
-                                                        isLongTrendValid = false;
+                                                    if (!isNaN(effectiveChange) && effectiveChange >= group.minLong && effectiveChange <= group.maxLong && !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
+                                                        isLongTrendValid = true;
                                                     }
                                                 }
                                             }
 
-                                            if (isShortTrendValid) {
+                                            if (enableStartTrendShort) {
                                                 const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
                                                 const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                                if (periodHighs.length === 0 || periodLows.length === 0) {
-                                                    isShortTrendValid = false;
-                                                } else {
+                                                if (periodHighs.length > 0 && periodLows.length > 0) {
                                                     const periodMaxHigh = Math.max(...periodHighs);
                                                     const periodMinLow = Math.min(...periodLows);
+                                                    const baseOpen = parseFloat(lastHCandles[0][1]);
                                                     
-                                                    const declinePct = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
-                                                    const increasePct = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
+                                                    const dropPct = ((baseOpen - last1hPrice) / baseOpen) * 100;
+                                                    const dropPctFromHigh = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
+                                                    const effectiveDrop = Math.max(dropPct, dropPctFromHigh);
+                                                    
+                                                    const bouncePct = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
                                                     const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
                                                     
-                                                    if (isNaN(declinePct) || declinePct < group.minShort || declinePct > group.maxShort || isNaN(increasePct) || increasePct >= maxPullbackShort) {
-                                                        isShortTrendValid = false;
+                                                    if (!isNaN(effectiveDrop) && effectiveDrop >= group.minShort && effectiveDrop <= group.maxShort && !isNaN(bouncePct) && bouncePct <= maxPullbackShort) {
+                                                        isShortTrendValid = true;
                                                     }
                                                 }
                                             }
@@ -390,17 +431,17 @@ const List1_Selection: React.FC<Props> = ({
                                         startTrendValidLong = enableStartTrendLong ? isLongTrendValid : true;
                                         startTrendValidShort = enableStartTrendShort ? isShortTrendValid : true;
                                     } else {
-                                        startTrendValidLong = false;
-                                        startTrendValidShort = false;
+                                        startTrendValidLong = !enableStartTrendLong;
+                                        startTrendValidShort = !enableStartTrendShort;
                                     }
                                 } else {
-                                    startTrendValidLong = false;
-                                    startTrendValidShort = false;
+                                    startTrendValidLong = !enableStartTrendLong;
+                                    startTrendValidShort = !enableStartTrendShort;
                                 }
                             } catch (err1h) {
                                 console.error("[StartTrend list views] Fetch 1h error: ", err1h);
-                                startTrendValidLong = false;
-                                startTrendValidShort = false;
+                                startTrendValidLong = true;
+                                startTrendValidShort = true;
                             }
                         }
 
@@ -490,8 +531,12 @@ const List1_Selection: React.FC<Props> = ({
     });
 
     const filteredList = useMemo(() => {
-        if (!scanConfig.majorTrend?.enabled) return sortedList1;
+        // CASE 1: 没开“大行情发现”时（即配置A常规模式），市场初筛列表直接由 sortedList1（已应用 涨幅榜/跌幅榜/全部、成交额范围、涨跌幅阈值）决定
+        if (!scanConfig.majorTrend?.enabled) {
+            return sortedList1;
+        }
 
+        // CASE 2: 开启了“大行情发现”过滤规则时，市场初筛列表显示“大行情发现”过滤筛选过的币
         const cfg = (scanConfig.majorTrend || {}) as any;
         const enableLong = cfg.enableLong !== false;
         const enableShort = cfg.enableShort !== false;
@@ -593,7 +638,7 @@ const List1_Selection: React.FC<Props> = ({
 
             return true;
         });
-    }, [sortedList1, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates]);
+    }, [sortedList1, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates, startTrendPool]);
 
     const lastFilteredStrRef = useRef('');
 
@@ -795,6 +840,7 @@ const List1_Selection: React.FC<Props> = ({
                 isMajorScanning={isMajorScanning}
                 majorProgress={majorProgress}
                 runMajorTrendDiscovery={runMajorTrendDiscovery}
+                cancelMajorScan={cancelMajorScan}
                 backtestProps={backtestProps}
             />
             <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-y-2 sticky top-0 z-10">
@@ -987,8 +1033,12 @@ const List1_Selection: React.FC<Props> = ({
                             </>
                         ) : list1.length > 0 ? (
                             <div className="text-center p-4">
-                                <span className="text-xs font-bold block text-slate-400">大行情筛选：无匹配项</span>
-                                <span className="text-[10px] opacity-60 block mt-1">当前没有满足大行情发现条件的币</span>
+                                <span className="text-xs font-bold block text-slate-400">
+                                    {!scanConfig.majorTrend?.enabled ? '行情启动底池：暂无匹配币种' : '大行情筛选：无匹配项'}
+                                </span>
+                                <span className="text-[10px] opacity-60 block mt-1">
+                                    {!scanConfig.majorTrend?.enabled ? '请在左侧“行情启动底池”中点击启动扫描或开启大行情发现' : '当前没有满足大行情发现条件的币'}
+                                </span>
                             </div>
                         ) : (
                             <>

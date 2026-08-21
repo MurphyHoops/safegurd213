@@ -43,7 +43,7 @@ export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
     const [error, setError] = useState<string | null>(null);
     const [showUniverse, setShowUniverse] = useState(false);
     const [klinesMap, setKlinesMap] = useState<Record<string, Record<string, KLine[]>>>({});
-    const [discoveryConfig, setDiscoveryConfig] = useState<ScanConfig>({ timeBasis: '24H', source: 'BOTH', minVolume: 1, maxVolume: 0, minChange: 1, customSymbols: '', useCustomOnly: false, batchSize: 40, limit: 520 });
+    const [discoveryConfig, setDiscoveryConfig] = useState<ScanConfig>({ timeBasis: '24H', source: 'BOTH', minVolume: 1, maxVolume: 0, minChange: 1, customSymbols: '', useCustomOnly: false, batchSize: 40, limit: 2000 });
     const [reports, setReports] = useState<any[]>([]);
     const [expandedGuideSection, setExpandedGuideSection] = useState<number | null>(0);
 
