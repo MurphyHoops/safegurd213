@@ -457,31 +457,66 @@ async function startServer() {
                 return res.status(400).json({ success: false, error: "无法确定合法的交易数量 (quantity 必须大于0)" });
             }
 
-            // 2. Adjust quantity according to exchangeInfo LOT_SIZE stepSize and precision
+            // 2. Adjust quantity according to exchangeInfo LOT_SIZE stepSize, precision and MIN_NOTIONAL
+            let minNotional = 20.0; // Default minimum notional for Binance Futures USDⓈ-M contracts
+            let stepSize = 0.0001;
+            let qtyPrecision = 4;
+            let minQty = 0.0001;
+
             const exchangeInfo = await getExchangeInfo();
             if (exchangeInfo && exchangeInfo.symbols) {
                 const symInfo = exchangeInfo.symbols.find((s: any) => s.symbol === formattedSymbol);
                 if (symInfo) {
+                    qtyPrecision = parseInt(symInfo.quantityPrecision || "4");
                     const lotFilter = symInfo.filters?.find((f: any) => f.filterType === "LOT_SIZE");
                     if (lotFilter) {
-                        const stepSize = parseFloat(lotFilter.stepSize || "0.0001");
-                        const qtyPrecision = parseInt(symInfo.quantityPrecision || "4");
-                        
-                        // Round down to stepSize
-                        let roundedQty = Math.floor(finalQty / stepSize) * stepSize;
-                        
-                        // Fix floating point errors
-                        finalQty = parseFloat(roundedQty.toFixed(qtyPrecision));
-                        
-                        // Ensure it is not less than minQty
-                        const minQty = parseFloat(lotFilter.minQty || "0.0001");
-                        if (finalQty < minQty) {
-                            return res.status(400).json({ 
-                                success: false, 
-                                error: `交易数量 ${finalQty} 低于该币种的最小下单量限制 (${minQty})。请增加开仓金额。` 
-                            });
+                        stepSize = parseFloat(lotFilter.stepSize || "0.0001");
+                        minQty = parseFloat(lotFilter.minQty || "0.0001");
+                    }
+                    const notionalFilter = symInfo.filters?.find((f: any) => f.filterType === "MIN_NOTIONAL" || f.filterType === "NOTIONAL");
+                    if (notionalFilter) {
+                        const parsedNotional = parseFloat(notionalFilter.notional || notionalFilter.minNotional || "20");
+                        if (!isNaN(parsedNotional) && parsedNotional > 0) {
+                            minNotional = parsedNotional;
                         }
                     }
+                }
+            }
+
+            // Round down to stepSize initially
+            let roundedQty = Math.floor(finalQty / stepSize) * stepSize;
+            finalQty = parseFloat(roundedQty.toFixed(qtyPrecision));
+
+            // Ensure notional requirement (MIN_NOTIONAL) for OPEN orders
+            if (action === "OPEN" && currentPrice > 0) {
+                const notionalValue = finalQty * currentPrice;
+                if (notionalValue < minNotional) {
+                    // Check if rounding or input was slightly under minNotional (e.g. 19.8 USDT instead of 20 USDT)
+                    const minNeededQty = Math.ceil((minNotional / currentPrice) / stepSize) * stepSize;
+                    const adjustedQty = parseFloat(minNeededQty.toFixed(qtyPrecision));
+                    
+                    // If user passed an amount or requested opening and it's close to minNotional, auto-align upward to satisfy minNotional
+                    if (amountUsdt && amountUsdt >= minNotional * 0.75) {
+                        console.log(`[Binance Order] Auto-adjusting quantity for ${formattedSymbol} from ${finalQty} to ${adjustedQty} (${(adjustedQty * currentPrice).toFixed(2)} USDT) to satisfy Binance MIN_NOTIONAL (${minNotional} USDT)`);
+                        finalQty = adjustedQty;
+                    } else if (finalQty * currentPrice < minNotional) {
+                        return res.status(400).json({ 
+                            success: false, 
+                            error: `订单名义价值 (Notional Value) 为 ${(finalQty * currentPrice).toFixed(2)} USDT，低于币安该币种的最低下单限制 (${minNotional} USDT)。请将开仓金额设置为至少 ${minNotional} USDT。` 
+                        });
+                    }
+                }
+            }
+
+            // Ensure it is not less than minQty
+            if (finalQty < minQty) {
+                if (action === "OPEN") {
+                    finalQty = minQty;
+                } else {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: `交易数量 ${finalQty} 低于该币种的最小下单量限制 (${minQty})。请增加开仓金额。` 
+                    });
                 }
             }
 
@@ -511,105 +546,53 @@ async function startServer() {
                 console.warn(`[Binance Order] Exception while fetching position mode: ${err.message || err}. Defaulting to One-way Mode`);
             }
 
-            // 3.5 Handle CLOSE action safety checks, auto-cancel open orders, and size synchronization
+            // 3.5 Handle CLOSE action safety checks (Optimized for lightning-fast execution & zero slippage delay)
             if (action === "CLOSE") {
-                // A. Cancel all open orders for this symbol first to release reserved position limits (SL/TP)
-                try {
-                    console.log(`[Binance Order] [Auto-Cancel] Cancelling all open orders for ${formattedSymbol} before closing...`);
-                    const cancelTimestamp = Date.now();
-                    const cancelQueryString = `symbol=${formattedSymbol}&timestamp=${cancelTimestamp}&recvWindow=5000`;
-                    const cancelSignature = crypto
-                        .createHmac("sha256", apiSecret)
-                        .update(cancelQueryString)
-                        .digest("hex");
-                    
-                    const cancelResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQueryString}&signature=${cancelSignature}`, {
+                const cancelTimestamp = Date.now();
+                const cancelQueryString = `symbol=${formattedSymbol}&timestamp=${cancelTimestamp}&recvWindow=5000`;
+                const cancelSignature = crypto
+                    .createHmac("sha256", apiSecret)
+                    .update(cancelQueryString)
+                    .digest("hex");
+
+                const posTimestamp = Date.now();
+                const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=5000`;
+                const posSignature = crypto
+                    .createHmac("sha256", apiSecret)
+                    .update(posQueryString)
+                    .digest("hex");
+
+                await Promise.all([
+                    fetchWithFallback(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQueryString}&signature=${cancelSignature}`, {
                         method: "DELETE",
                         headers: { "X-MBX-APIKEY": apiKey }
-                    });
-                    
-                    if (cancelResponse.ok) {
-                        console.log(`[Binance Order] [Auto-Cancel] Successfully cancelled all open orders for ${formattedSymbol}`);
-                    } else {
-                        const cancelErr = await cancelResponse.text();
-                        console.warn(`[Binance Order] [Auto-Cancel] Failed to cancel open orders: ${cancelErr}`);
-                    }
-                } catch (err) {
-                    console.error(`[Binance Order] [Auto-Cancel] Exception during cancel:`, err);
-                }
+                    }).catch(err => console.warn(`[Binance Order] [Fast-Close] Open orders cancel warning:`, err)),
 
-                // B. Fetch actual position risk on the exchange to adjust quantity or handle already-closed positions
-                try {
-                    console.log(`[Binance Order] [Sync Qty] Fetching active position size for ${formattedSymbol} from Binance...`);
-                    const posTimestamp = Date.now();
-                    const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=5000`;
-                    const posSignature = crypto
-                        .createHmac("sha256", apiSecret)
-                        .update(posQueryString)
-                        .digest("hex");
-                    
-                    const posResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${posQueryString}&signature=${posSignature}`, {
+                    fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${posQueryString}&signature=${posSignature}`, {
                         headers: { "X-MBX-APIKEY": apiKey }
-                    });
-                    
-                    if (posResponse.ok) {
-                        const positionsData = await posResponse.json();
-                        if (Array.isArray(positionsData)) {
-                            let targetAmt = 0;
-                            if (isHedgeMode) {
-                                const targetSide = side === "LONG" ? "LONG" : "SHORT";
-                                const matched = positionsData.find((p: any) => p.positionSide === targetSide);
-                                if (matched) {
-                                    targetAmt = Math.abs(parseFloat(matched.positionAmt));
+                    }).then(async posRes => {
+                        if (posRes.ok) {
+                            const positionsData = await posRes.json();
+                            if (Array.isArray(positionsData)) {
+                                let targetAmt = 0;
+                                if (isHedgeMode) {
+                                    const targetSide = side === "LONG" ? "LONG" : "SHORT";
+                                    const matched = positionsData.find((p: any) => p.positionSide === targetSide);
+                                    if (matched) targetAmt = Math.abs(parseFloat(matched.positionAmt));
+                                } else {
+                                    const matched = positionsData.find((p: any) => p.positionSide === "BOTH");
+                                    if (matched) targetAmt = Math.abs(parseFloat(matched.positionAmt));
                                 }
-                            } else {
-                                const matched = positionsData.find((p: any) => p.positionSide === "BOTH");
-                                if (matched) {
-                                    targetAmt = Math.abs(parseFloat(matched.positionAmt));
+                                if (targetAmt > 0 && targetAmt < finalQty) {
+                                    finalQty = targetAmt;
                                 }
-                            }
-                            
-                            console.log(`[Binance Order] [Sync Qty] Requested to close: ${finalQty}, actual position size on exchange: ${targetAmt}`);
-                            
-                            if (targetAmt === 0) {
-                                console.log(`[Binance Order] Position is already closed or 0 on Binance. Returning successful mock response.`);
-                                return res.json({
-                                    success: true,
-                                    orderId: "ALREADY_CLOSED_ON_EXCHANGE",
-                                    clientOrderId: "ALREADY_CLOSED_ON_EXCHANGE",
-                                    symbol: formattedSymbol,
-                                    side: side === "LONG" ? "SELL" : "BUY",
-                                    qty: finalQty,
-                                    message: `该仓位在币安交易所已处于平仓或0持仓状态，无需重复平仓。`
-                                });
-                            }
-                            
-                            if (targetAmt < finalQty) {
-                                console.log(`[Binance Order] [Sync Qty] Corrected quantity from ${finalQty} to actual position size ${targetAmt}`);
-                                finalQty = targetAmt;
                             }
                         }
-                    } else {
-                        const posErr = await posResponse.text();
-                        console.warn(`[Binance Order] [Sync Qty] Failed to fetch position risk: ${posErr}`);
-                    }
-                } catch (err) {
-                    console.error(`[Binance Order] [Sync Qty] Exception during position risk fetch:`, err);
-                }
+                    }).catch(err => console.warn(`[Binance Order] [Fast-Close] Position risk fetch warning:`, err))
+                ]);
             }
 
-            // 4. Check notional value limit (>= 5 USDT) - Only for OPEN orders
-            if (action === "OPEN" && currentPrice > 0) {
-                const notionalValue = finalQty * currentPrice;
-                if (notionalValue < 5.0) {
-                    return res.status(400).json({ 
-                        success: false, 
-                        error: `订单名义价值 (Notional Value) 为 ${notionalValue.toFixed(2)} USDT，低于币安最小限制 (5 USDT)。请增加开仓金额或数量。注：部分币种/账户要求单笔订单名义价值不低于 20 USDT。` 
-                    });
-                }
-            }
-
-            // 5. Map Action & Side to Binance Futures parameters
+            // 4. Map Action & Side to Binance Futures parameters
             // Side in request: "LONG" or "SHORT"
             // Action in request: "OPEN" or "CLOSE"
             let binanceSide: "BUY" | "SELL";

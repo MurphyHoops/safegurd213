@@ -187,13 +187,13 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
 
     return (
         <div 
-            className="flex-1 overflow-y-auto rounded border border-slate-800 bg-[#0b0e11] custom-scrollbar flex flex-col relative"
+            className="flex-1 rounded border border-slate-800 bg-[#0b0e11] flex flex-col relative overflow-hidden"
             onMouseEnter={() => setIsHoveredOnList(true)}
             onMouseLeave={() => setIsHoveredOnList(false)}
         >
             
             {/* Top Tabs Bar */}
-            <div className="flex items-center justify-between border-b border-slate-800 bg-[#0d1015] p-1.5 shrink-0 select-none">
+            <div className="flex items-center justify-between border-b border-slate-800 bg-[#0d1015] p-1.5 shrink-0 select-none z-20">
                 <div className="flex gap-1.5">
                     <button 
                         onClick={() => setActiveTab('LIVE')}
@@ -226,7 +226,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                 )}
             </div>
 
-            <div className="sticky top-0 z-10 bg-[#0b0e11]/95 backdrop-blur-md border-b border-slate-800 flex flex-col shrink-0">
+            <div className="bg-[#0b0e11] border-b border-slate-800 flex flex-col shrink-0 z-20">
                 <div className="px-4 py-2 flex justify-between items-center">
                     <div className="flex flex-col gap-1.5">
                         {/* 实盘交易 (Live Trading) 绿灯高亮指示器 */}
@@ -392,181 +392,184 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                 </div>
             </div>
             
-            {sortedPositions.length === 0 ? (
-                activeTab === 'BACKTEST' ? (
-                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-slate-400 space-y-4">
-                        <div className="p-3 bg-indigo-500/10 rounded-full text-indigo-400">
-                            <History size={36} />
-                        </div>
-                        <div className="text-center max-w-sm">
-                            <h3 className="text-sm font-bold text-slate-200">无当前活跃的回测仿真持仓</h3>
-                            <p className="text-xs text-slate-500 mt-1">进入 [回测模式] 并启动 [交互式仿真沙盒] 以查看回测状态下的实时仿真持仓。</p>
-                        </div>
-                        
-                        {latestReport && (
-                            <div className="w-full max-w-md bg-slate-900/40 border border-slate-800/80 rounded-xl p-4 mt-4 space-y-3">
-                                <div className="flex items-center justify-between border-b border-slate-800/50 pb-2">
-                                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">最近一次回测报告汇总 (LATEST REPORT)</span>
-                                    <span className="text-[9px] font-mono text-indigo-400 bg-indigo-950 px-2 py-0.5 rounded border border-indigo-500/20">
-                                        {new Date(latestReport.runTime).toLocaleDateString()}
-                                    </span>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
-                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总净值盈亏</div>
-                                        <div className={`text-base font-mono font-bold mt-1 ${latestReport.stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                            {latestReport.stats.totalPnl >= 0 ? '+' : ''}{latestReport.stats.totalPnl.toFixed(2)} USDT
+            {/* Scrollable Position Items Container */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col relative">
+                {sortedPositions.length === 0 ? (
+                    activeTab === 'BACKTEST' ? (
+                        <div className="flex-1 flex flex-col items-center justify-center p-6 text-slate-400 space-y-4">
+                            <div className="p-3 bg-indigo-500/10 rounded-full text-indigo-400">
+                                <History size={36} />
+                            </div>
+                            <div className="text-center max-w-sm">
+                                <h3 className="text-sm font-bold text-slate-200">无当前活跃的回测仿真持仓</h3>
+                                <p className="text-xs text-slate-500 mt-1">进入 [回测模式] 并启动 [交互式仿真沙盒] 以查看回测状态下的实时仿真持仓。</p>
+                            </div>
+                            
+                            {latestReport && (
+                                <div className="w-full max-w-md bg-slate-900/40 border border-slate-800/80 rounded-xl p-4 mt-4 space-y-3">
+                                    <div className="flex items-center justify-between border-b border-slate-800/50 pb-2">
+                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">最近一次回测报告汇总 (LATEST REPORT)</span>
+                                        <span className="text-[9px] font-mono text-indigo-400 bg-indigo-950 px-2 py-0.5 rounded border border-indigo-500/20">
+                                            {new Date(latestReport.runTime).toLocaleDateString()}
+                                        </span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                            <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总净值盈亏</div>
+                                            <div className={`text-base font-mono font-bold mt-1 ${latestReport.stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                {latestReport.stats.totalPnl >= 0 ? '+' : ''}{latestReport.stats.totalPnl.toFixed(2)} USDT
+                                            </div>
+                                        </div>
+                                        <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                            <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总交易次数</div>
+                                            <div className="text-base font-mono font-bold mt-1 text-slate-200">{latestReport.stats.totalTrades} 次</div>
+                                        </div>
+                                        <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                            <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">胜率 (Win Rate)</div>
+                                            <div className="text-base font-mono font-bold mt-1 text-emerald-400">{latestReport.stats.winRate.toFixed(1)}%</div>
+                                        </div>
+                                        <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
+                                            <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">盈亏比 (PF)</div>
+                                            <div className="text-base font-mono font-bold mt-1 text-amber-400">{latestReport.stats.profitFactor.toFixed(2)}</div>
                                         </div>
                                     </div>
-                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
-                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总交易次数</div>
-                                        <div className="text-base font-mono font-bold mt-1 text-slate-200">{latestReport.stats.totalTrades} 次</div>
-                                    </div>
-                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
-                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">胜率 (Win Rate)</div>
-                                        <div className="text-base font-mono font-bold mt-1 text-emerald-400">{latestReport.stats.winRate.toFixed(1)}%</div>
-                                    </div>
-                                    <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
-                                        <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">盈亏比 (PF)</div>
-                                        <div className="text-base font-mono font-bold mt-1 text-amber-400">{latestReport.stats.profitFactor.toFixed(2)}</div>
+                                    <div className="text-center pt-2 border-t border-slate-800/30">
+                                        <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">
+                                            币种: {latestReport.symbols.slice(0, 4).join(', ')}{latestReport.symbols.length > 4 ? ` 等 ${latestReport.symbols.length}个` : ''}
+                                        </span>
                                     </div>
                                 </div>
-                                <div className="text-center pt-2 border-t border-slate-800/30">
-                                    <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">
-                                        币种: {latestReport.symbols.slice(0, 4).join(', ')}{latestReport.symbols.length > 4 ? ` 等 ${latestReport.symbols.length}个` : ''}
-                                    </span>
-                                </div>
-                            </div>
-                        )}
+                            )}
+                        </div>
+                    ) : (
+                        <EmptyPositions onOpenScanner={onOpenScanner} />
+                    )
+                ) : filteredPositions.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center p-8 text-slate-500 space-y-2">
+                        <div className="text-xs font-bold text-slate-400">当前分类筛选下暂无匹配的持仓币种</div>
+                        <button 
+                            onClick={() => setPositionFilter('ALL')}
+                            className="text-[10px] bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-1 rounded border border-slate-700 transition-colors"
+                        >
+                            查看全部持仓 ({sortedPositions.length})
+                        </button>
                     </div>
                 ) : (
-                    <EmptyPositions onOpenScanner={onOpenScanner} />
-                )
-            ) : filteredPositions.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center p-8 text-slate-500 space-y-2">
-                    <div className="text-xs font-bold text-slate-400">当前分类筛选下暂无匹配的持仓币种</div>
-                    <button 
-                        onClick={() => setPositionFilter('ALL')}
-                        className="text-[10px] bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-1 rounded border border-slate-700 transition-colors"
-                    >
-                        查看全部持仓 ({sortedPositions.length})
-                    </button>
-                </div>
-            ) : (
-                filteredPositions.map((p, idx) => {
-                    const livePrice = p.isBacktestRecord 
-                        ? (p.markPrice || p.entryPrice) 
-                        : resolvePrice(p.symbol, realPrices, p.markPrice || p.entryPrice);
-                    
-                    // RE-CALCULATE Live PnL in UI for instant feedback (Simulator tick handles logic, but UI shows real-time)
-                    let calcLivePrice = livePrice;
-                    if (p.entryPrice > 0 && livePrice > 0) {
-                        const ratio = livePrice / p.entryPrice;
-                        if (ratio > 500) calcLivePrice = livePrice / 1000;
-                        else if (ratio < 0.002) calcLivePrice = livePrice * 1000;
-                    }
-
-                    const priceDiff = p.side === PositionSide.LONG ? calcLivePrice - p.entryPrice : p.entryPrice - calcLivePrice;
-                    const currentPnl = priceDiff * p.amount;
-                    const currentPnlPct = p.entryPrice > 0 ? (priceDiff / p.entryPrice) * 100 : 0;
-                    
-                    const hasAmmo = (p.cumulativeHedgeProfit || 0) > 0;
-                    const hasHedgingHistory = 
-                        (p.cumulativeHedgeLoss || 0) > 0 || 
-                        (p.cumulativeHedgeProfit || 0) > 0 || 
-                        (p.cumulativeAmputationLoss || 0) > 0;
-                    const isHedgedMode = (p.isHedged || !!p.mainPositionId || hasHedgingHistory) && !p.isUnshackled;
-                    const isModule1Active = settings.profit?.enabled || settings.profit?.stopLoss?.enabled;
-                    
-                    let totalDebt = 0;
-                    let showHedgeStats = false;
-                    
-                    if (isHedgedMode) {
-                        showHedgeStats = true;
-                        let mainPos: Position | undefined;
-                        let hedgePos: Position | undefined;
+                    filteredPositions.map((p, idx) => {
+                        const livePrice = p.isBacktestRecord 
+                            ? (p.markPrice || p.entryPrice) 
+                            : resolvePrice(p.symbol, realPrices, p.markPrice || p.entryPrice);
                         
-                        if (p.mainPositionId) {
-                            hedgePos = p;
-                            mainPos = positions.find(x => x.entryId === p.mainPositionId);
-                        } else {
-                            mainPos = p;
-                            hedgePos = positions.find(x => x.mainPositionId === p.entryId);
+                        // RE-CALCULATE Live PnL in UI for instant feedback (Simulator tick handles logic, but UI shows real-time)
+                        let calcLivePrice = livePrice;
+                        if (p.entryPrice > 0 && livePrice > 0) {
+                            const ratio = livePrice / p.entryPrice;
+                            if (ratio > 500) calcLivePrice = livePrice / 1000;
+                            else if (ratio < 0.002) calcLivePrice = livePrice * 1000;
                         }
+
+                        const priceDiff = p.side === PositionSide.LONG ? calcLivePrice - p.entryPrice : p.entryPrice - calcLivePrice;
+                        const currentPnl = priceDiff * p.amount;
+                        const currentPnlPct = p.entryPrice > 0 ? (priceDiff / p.entryPrice) * 100 : 0;
                         
-                        if (mainPos) {
-                            const mLivePrice = mainPos.isBacktestRecord 
-                                ? (mainPos.markPrice || mainPos.entryPrice) 
-                                : resolvePrice(mainPos.symbol, realPrices, mainPos.markPrice || mainPos.entryPrice);
-                            const mDiff = mainPos.side === PositionSide.LONG ? mLivePrice - mainPos.entryPrice : mainPos.entryPrice - mLivePrice;
-                            const mPnl = mDiff * mainPos.amount;
+                        const hasAmmo = (p.cumulativeHedgeProfit || 0) > 0;
+                        const hasHedgingHistory = 
+                            (p.cumulativeHedgeLoss || 0) > 0 || 
+                            (p.cumulativeHedgeProfit || 0) > 0 || 
+                            (p.cumulativeAmputationLoss || 0) > 0;
+                        const isHedgedMode = (p.isHedged || !!p.mainPositionId || hasHedgingHistory) && !p.isUnshackled;
+                        const isModule1Active = settings.profit?.enabled || settings.profit?.stopLoss?.enabled;
+                        
+                        let totalDebt = 0;
+                        let showHedgeStats = false;
+                        
+                        if (isHedgedMode) {
+                            showHedgeStats = true;
+                            let mainPos: Position | undefined;
+                            let hedgePos: Position | undefined;
                             
-                            let hPnl = 0;
-                            if (hedgePos) {
-                                const hLivePrice = hedgePos.isBacktestRecord 
-                                    ? (hedgePos.markPrice || hedgePos.entryPrice) 
-                                    : resolvePrice(hedgePos.symbol, realPrices, hedgePos.markPrice || hedgePos.entryPrice);
-                                const hDiff = hedgePos.side === PositionSide.LONG ? hLivePrice - hedgePos.entryPrice : hedgePos.entryPrice - hLivePrice;
-                                hPnl = hDiff * hedgePos.amount;
-                            }
-
-                            const cumulativeLoss = 
-                                (mainPos.cumulativeHedgeLoss || 0) + 
-                                (mainPos.cumulativeAmputationLoss || 0) + 
-                                (hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0);
-
-                            // Strategy 3: Callback Profit Clear (蚂蚁搬家)
-                            if (settings.stopLoss?.callbackProfitClear) {
-                                let currentFloatingLoss = 0;
-
-                                if (mPnl < 0) currentFloatingLoss += Math.abs(mPnl);
-                                if (hedgePos && hPnl < 0) currentFloatingLoss += Math.abs(hPnl);
-
-                                totalDebt = currentFloatingLoss + cumulativeLoss;
-                            } 
-                            // Strategy 2: Hedge Profit Clear (将错就错)
-                            else if (settings.stopLoss?.hedgeProfitClear) {
-                                let currentFloatingLoss = 0;
-
-                                if (mPnl < 0) currentFloatingLoss += Math.abs(mPnl);
-                                if (hedgePos && hPnl < 0) currentFloatingLoss += Math.abs(hPnl);
-
-                                totalDebt = cumulativeLoss + currentFloatingLoss;
+                            if (p.mainPositionId) {
+                                hedgePos = p;
+                                mainPos = positions.find(x => x.entryId === p.mainPositionId);
                             } else {
-                                // Default display if no specific strategy is selected
-                                totalDebt = (mPnl < 0 ? Math.abs(mPnl) : 0) + (hPnl < 0 ? Math.abs(hPnl) : 0) + cumulativeLoss;
+                                mainPos = p;
+                                hedgePos = positions.find(x => x.mainPositionId === p.entryId);
+                            }
+                            
+                            if (mainPos) {
+                                const mLivePrice = mainPos.isBacktestRecord 
+                                    ? (mainPos.markPrice || mainPos.entryPrice) 
+                                    : resolvePrice(mainPos.symbol, realPrices, mainPos.markPrice || mainPos.entryPrice);
+                                const mDiff = mainPos.side === PositionSide.LONG ? mLivePrice - mainPos.entryPrice : mainPos.entryPrice - mLivePrice;
+                                const mPnl = mDiff * mainPos.amount;
+                                
+                                let hPnl = 0;
+                                if (hedgePos) {
+                                    const hLivePrice = hedgePos.isBacktestRecord 
+                                        ? (hedgePos.markPrice || hedgePos.entryPrice) 
+                                        : resolvePrice(hedgePos.symbol, realPrices, hedgePos.markPrice || hedgePos.entryPrice);
+                                    const hDiff = hedgePos.side === PositionSide.LONG ? hLivePrice - hedgePos.entryPrice : hedgePos.entryPrice - hLivePrice;
+                                    hPnl = hDiff * hedgePos.amount;
+                                }
+
+                                const cumulativeLoss = 
+                                    (mainPos.cumulativeHedgeLoss || 0) + 
+                                    (mainPos.cumulativeAmputationLoss || 0) + 
+                                    (hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0);
+
+                                // Strategy 3: Callback Profit Clear (蚂蚁搬家)
+                                if (settings.stopLoss?.callbackProfitClear) {
+                                    let currentFloatingLoss = 0;
+
+                                    if (mPnl < 0) currentFloatingLoss += Math.abs(mPnl);
+                                    if (hedgePos && hPnl < 0) currentFloatingLoss += Math.abs(hPnl);
+
+                                    totalDebt = currentFloatingLoss + cumulativeLoss;
+                                } 
+                                // Strategy 2: Hedge Profit Clear (将错就错)
+                                else if (settings.stopLoss?.hedgeProfitClear) {
+                                    let currentFloatingLoss = 0;
+
+                                    if (mPnl < 0) currentFloatingLoss += Math.abs(mPnl);
+                                    if (hedgePos && hPnl < 0) currentFloatingLoss += Math.abs(hPnl);
+
+                                    totalDebt = cumulativeLoss + currentFloatingLoss;
+                                } else {
+                                    // Default display if no specific strategy is selected
+                                    totalDebt = (mPnl < 0 ? Math.abs(mPnl) : 0) + (hPnl < 0 ? Math.abs(hPnl) : 0) + cumulativeLoss;
+                                }
                             }
                         }
-                    }
 
-                    return (
-                        <PositionItem 
-                            key={`${p.symbol}-${p.side}-${p.entryId}-${idx}`}
-                            p={p}
-                            idx={idx}
-                            livePrice={livePrice}
-                            currentPnl={currentPnl}
-                            currentPnlPct={currentPnlPct}
-                            showHedgeStats={showHedgeStats}
-                            totalDebt={totalDebt}
-                            isHedgedMode={isHedgedMode}
-                            isModule1Active={isModule1Active}
-                            hasAmmo={hasAmmo}
-                            onOpenChart={onOpenChart}
-                            onShowHistory={onShowHistory}
-                            onClosePosition={onClosePosition}
-                            onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
-                            onVerifyPosition={onVerifyPosition}
-                            onManualHedge={onManualHedge}
-                            aiSmartMasterEnabled={settings?.profit?.aiSmartMasterEnabled}
-                            globalProfitSettings={settings?.profit}
-                            globalHedgingSettings={settings?.hedging}
-                            isManuallyClosed={manuallyClosedSymbols.has(p.symbol)}
-                            hasCustomSettings={!!p.customProfitSettings}
-                        />
-                    );
-                })
-            )}
+                        return (
+                            <PositionItem 
+                                key={`${p.symbol}-${p.side}-${p.entryId}-${idx}`}
+                                p={p}
+                                idx={idx}
+                                livePrice={livePrice}
+                                currentPnl={currentPnl}
+                                currentPnlPct={currentPnlPct}
+                                showHedgeStats={showHedgeStats}
+                                totalDebt={totalDebt}
+                                isHedgedMode={isHedgedMode}
+                                isModule1Active={isModule1Active}
+                                hasAmmo={hasAmmo}
+                                onOpenChart={onOpenChart}
+                                onShowHistory={onShowHistory}
+                                onClosePosition={onClosePosition}
+                                onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
+                                onVerifyPosition={onVerifyPosition}
+                                onManualHedge={onManualHedge}
+                                aiSmartMasterEnabled={settings?.profit?.aiSmartMasterEnabled}
+                                globalProfitSettings={settings?.profit}
+                                globalHedgingSettings={settings?.hedging}
+                                isManuallyClosed={manuallyClosedSymbols.has(p.symbol)}
+                                hasCustomSettings={!!p.customProfitSettings}
+                            />
+                        );
+                    })
+                )}
+            </div>
 
             {settingsTargetPosition && (
                 <PositionSettingsModal 

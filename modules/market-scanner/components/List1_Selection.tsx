@@ -214,7 +214,24 @@ const List1_Selection: React.FC<Props> = ({
 
     const fetchingSymbolsRef = useRef<Set<string>>(new Set());
 
-    const list1SymbolsStr = list1.map(item => item.symbol).join(',');
+    const baseList = useMemo(() => {
+        if (!scanConfig.majorTrend?.enabled) {
+            return startTrendPool.map(p => {
+                const existing = list1.find(item => item.symbol === p.symbol);
+                return {
+                    symbol: p.symbol,
+                    price: p.price || existing?.price || 0,
+                    change: p.changePct !== undefined ? p.changePct : (existing?.change || 0),
+                    volume24h: existing?.volume24h,
+                    volume: existing?.volume,
+                    ...existing
+                };
+            });
+        }
+        return list1;
+    }, [scanConfig.majorTrend?.enabled, startTrendPool, list1]);
+
+    const list1SymbolsStr = baseList.map(item => item.symbol).join(',');
 
     useEffect(() => {
         let active = true;
@@ -511,7 +528,7 @@ const List1_Selection: React.FC<Props> = ({
         return 0;
     };
 
-    const sortedList1 = [...list1].sort((a, b) => {
+    const sortedList1 = [...baseList].sort((a, b) => {
         if (activeSorts.length === 0) return 0;
 
         for (const sortId of activeSorts) {

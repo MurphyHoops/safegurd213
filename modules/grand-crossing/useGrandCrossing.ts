@@ -17,6 +17,8 @@ import { KLineSynthesizer } from "../../services/klineSynthesizer";
 import { KLine } from "../../types";
 import { saveState } from "../../utils/persistence";
 import { audioService } from "../../services/audioService";
+import { priceRegistry } from "../../services/priceRegistry";
+import { normalizeSymbol } from "../../services/symbolUtils";
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
@@ -107,16 +109,21 @@ export const useGrandCrossing = (
   const [countdowns, setCountdowns] = useState<Record<string, string>>({});
   const [tfCounts, setTfCounts] = useState<Record<string, number>>({});
 
-  // Track individual scanning timeframes for UI feedback
+  // Track individual scanning timeframes and current symbol for UI feedback
   const [activeScanTfs, setActiveScanTfs] = useState<Set<string>>(new Set());
+  const [scanningSymbols, setScanningSymbols] = useState<Record<string, string>>({});
   const [lastScanTime, setLastScanTime] = useState<number | null>(null);
 
-  const startScanTf = useCallback((tf: string) => {
+  const startScanTf = useCallback((tf: string, symbol?: string) => {
     setActiveScanTfs((prev) => {
       const next = new Set(prev);
       next.add(tf);
       return next;
     });
+    if (symbol) {
+      const cleanSym = symbol.replace(/USDT$/i, "");
+      setScanningSymbols((prev) => ({ ...prev, [tf]: cleanSym }));
+    }
     setStatus("SCANNING");
     setLastScanTime(Date.now());
   }, []);
@@ -333,6 +340,9 @@ export const useGrandCrossing = (
         const id = `${item.symbol}-${r.tf}-${r.direction}-${signalTime}`;
         if (capturedSignalsRef.current.has(id)) return true;
 
+        // 4. 在有效滞后容忍根数内且满足触发规则的信号持续有效留存
+        if ((r.lag || 0) <= retention) return true;
+
         return false;
       });
 
@@ -370,30 +380,65 @@ export const useGrandCrossing = (
     const sortMode = cfg.sortMode;
     const currentCandidates = candidatesRef.current;
 
-    // --- 0. UPDATE PRICES (Lightweight pointer lookup) ---
+    // --- 0. UPDATE PRICES (Lightweight pointer lookup + priceRegistry fallback) ---
     const priceMap = new Map(currentCandidates.map((c) => [c.symbol, c]));
+    const realPrices = priceRegistry.getAllPrices();
 
     items = items.map((item) => {
       const candidate = priceMap.get(item.symbol);
+      const regPrice = realPrices[normalizeSymbol(item.symbol)];
+      const updatedPrice = candidate
+        ? Number(candidate.price) || item.price
+        : regPrice !== undefined && regPrice > 0
+          ? Number(regPrice)
+          : item.price;
+
+      // 实时K线价格动态校验：当价格不满足阳线(多)/阴线(空)关系时，动态切换为灰色待定态
+      let updatedGroupedResults = item.groupedResults;
+      if (updatedGroupedResults && updatedPrice > 0) {
+        updatedGroupedResults = updatedGroupedResults.map((r) => {
+          if (r.lag !== undefined && r.lag < 1.0 && r.kOpen !== undefined && r.kOpen > 0) {
+            let isPendingGray = false;
+            if (r.direction === "LONG") {
+              isPendingGray = !(updatedPrice > r.kOpen);
+            } else if (r.direction === "SHORT") {
+              isPendingGray = !(updatedPrice < r.kOpen);
+            }
+            if (r.isPendingGray !== isPendingGray) {
+              return { ...r, isPendingGray };
+            }
+          }
+          return r;
+        });
+      }
+
       if (candidate) {
         return {
           ...item,
-          price: candidate.price,
+          price: updatedPrice,
           change: candidate.change,
           volume: candidate.volume,
+          groupedResults: updatedGroupedResults,
+        };
+      } else if (regPrice !== undefined && regPrice > 0) {
+        return {
+          ...item,
+          price: updatedPrice,
+          groupedResults: updatedGroupedResults,
         };
       }
-      return item;
+      return {
+        ...item,
+        groupedResults: updatedGroupedResults,
+      };
     });
 
-    // No second mapping needed, items are already correct
-
     // --- 2. FAST HASH CHECK (Avoid JSON.stringify on huge data) ---
-    // Include price/change in hash to ensure UI updates when List 1 prices move
+    // Include price/change and pending gray state in hash to ensure UI updates when prices move
     const currentSignalsHash = items
       .map(
         (i) =>
-          `${i.symbol}-${i.groupedResults?.length}-${i.lastUpdated}-${i.price}-${i.change}`,
+          `${i.symbol}-${i.groupedResults?.length}-${i.groupedResults?.map((r) => `${r.tf}-${r.direction}-${Math.floor(r.lag || 0)}-${r.isPendingGray ? 1 : 0}`).join(",")}-${i.lastUpdated}-${i.price}-${i.change}`,
       )
       .join("|");
     const hasStructuralChange =
@@ -602,7 +647,6 @@ export const useGrandCrossing = (
             }
 
             if (klines.length > 0) {
-              const retention = configRef.current.newModeRetention ?? 9;
               const freshSignals = analyzeList2Crossing(
                 item.symbol,
                 tf,
@@ -612,8 +656,8 @@ export const useGrandCrossing = (
                 klines.map((k) => k.open),
                 klines.map((k) => k.volume),
                 klines.map((k) => k.time),
-                { ...configRef.current, maxLag: retention } as any,
-                3,
+                configRef.current,
+                configRef.current.lookbackBars ?? 5,
               );
 
               // Check if any of the fresh signals match duration & direction
@@ -729,22 +773,17 @@ export const useGrandCrossing = (
   useEffect(() => {
     candidatesRef.current = candidates;
 
-    const candidateSymbols = new Set(candidates.map((c) => c.symbol));
-
-    // Evict cached signals for symbols that are no longer in candidates (List 1)
-    const cacheKeysToDelete: string[] = [];
-    cacheRef.current.forEach((item, key) => {
-      if (!candidateSymbols.has(item.symbol)) {
-        cacheKeysToDelete.push(key);
+    // 🔒 [ATOMIC CODE LOCK - 列表2独立生命周期与列表1物理级切断]
+    // 列表1市场初筛里的币一旦进入列表2，立即切断与列表1的上下级关联。
+    // 即使该币在列表1中因条件变化而退出，绝对不连带从列表2退出！
+    // 列表2币的存留完全由【信号存续】寿命根数(retention)以及列表3/4的反向清除指令唯一决定。
+    const combined = [...candidates];
+    const existingSymbols = new Set(candidates.map((c) => c.symbol));
+    cacheRef.current.forEach((item) => {
+      if (item && item.symbol && !existingSymbols.has(item.symbol)) {
+        combined.push(item);
       }
     });
-    if (cacheKeysToDelete.length > 0) {
-      cacheKeysToDelete.forEach((key) => {
-        cacheRef.current.delete(key);
-      });
-    }
-
-    const combined = [...candidates];
 
     if (combined.length > 0) {
       sortedCandidatesRef.current = combined.sort((a, b) => {
@@ -754,7 +793,7 @@ export const useGrandCrossing = (
       });
     }
 
-    // Rapid response for new candidates
+    // Rapid response for candidates
     performUpdate();
   }, [candidates, performUpdate]);
 
@@ -834,8 +873,8 @@ export const useGrandCrossing = (
         klines.map((k) => k.open),
         klines.map((k) => k.volume),
         klines.map((k) => k.time),
-        { ...configRef.current, maxLag: retention } as any,
-        3,
+        configRef.current,
+        configRef.current.lookbackBars ?? 5,
       );
 
       if (results.length > 0) {
@@ -897,14 +936,16 @@ export const useGrandCrossing = (
 
       if (finalResults.length > 0) {
         finalResults.sort((a, b) => (a.lag || 0) - (b.lag || 0));
+        const livePrice = priceRegistry.getAllPrices()[normalizeSymbol(symbol)];
         cacheRef.current.set(finalCacheKey, {
           ...item,
           groupedResults: finalResults,
           direction: finalResults[0].direction,
           tf: finalResults[0].tf,
-          price: item.price,
+          price: livePrice !== undefined && livePrice > 0 ? Number(livePrice) : Number(item.price),
           lastUpdated: Date.now(),
         });
+        scheduleUpdate();
       } else if (existingItem && existingItem.groupedResults) {
         const stillValidSignals = existingItem.groupedResults.filter((r) => {
           const rTf = r.tf || "";
@@ -929,6 +970,7 @@ export const useGrandCrossing = (
         } else {
           cacheRef.current.delete(finalCacheKey);
         }
+        scheduleUpdate();
       }
     } catch (e: any) {
       console.warn(`[Rolling] Skip ${symbol} ${tf}:`, e.message);
@@ -937,17 +979,6 @@ export const useGrandCrossing = (
 
   // --- WORKER FACTORY ---
   useEffect(() => {
-    const TF_SCAN_INTERVALS: Record<string, number> = {
-      "5m": 75 * 1000,
-      "15m": 90 * 1000,
-      "30m": 120 * 1000,
-      "1h": 180 * 1000,
-      "2h": 240 * 1000,
-      "4h": 360 * 1000,
-      "8h": 720 * 1000,
-      "1d": 1800 * 1000,
-    };
-
     const startWorker = (
       tf: string,
       tickRate: number,
@@ -961,10 +992,10 @@ export const useGrandCrossing = (
 
         if (isSelected && sortedCandidatesRef.current.length > 0) {
           const now = Date.now();
-          const targetInterval = TF_SCAN_INTERVALS[tf] || 300000;
+          const candidates = sortedCandidatesRef.current;
 
-          // Find candidates that are overdue for this timeframe
-          const overdueCandidates = sortedCandidatesRef.current.map((c) => {
+          // Find candidate pool with age since last scan for this timeframe
+          const candidatePool = candidates.map((c) => {
             const fetchKey = `${c.symbol}-${tf}`;
             const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
             return {
@@ -972,17 +1003,18 @@ export const useGrandCrossing = (
               lastFetch,
               age: now - lastFetch,
             };
-          }).filter((c) => c.age >= targetInterval);
+          });
 
-          if (overdueCandidates.length > 0) {
-            // Sort to process the oldest first
-            overdueCandidates.sort((a, b) => a.lastFetch - b.lastFetch);
-            const targetSymbol = overdueCandidates[0].symbol;
+          // Sort so un-scanned (lastFetch === 0) or oldest fetched coins are processed first
+          candidatePool.sort((a, b) => a.lastFetch - b.lastFetch);
 
-            // Trigger active scanning indicator
-            startScanTf(tf);
+          const target = candidatePool[0];
+          // As long as the oldest candidate has passed minimal anti-burst cooldown (2500ms), process it immediately
+          if (target && (target.lastFetch === 0 || target.age >= 2500)) {
+            // Trigger active scanning indicator with specific symbol name
+            startScanTf(tf, target.symbol);
             try {
-              await processSymbol(targetSymbol, tf);
+              await processSymbol(target.symbol, tf);
             } finally {
               endScanTf(tf);
             }
@@ -994,7 +1026,7 @@ export const useGrandCrossing = (
           const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
           const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
           // Background mode multiplier to save resources when tab is inactive
-          const finalTickRate = isBg ? tickRate * 10 : tickRate;
+          const finalTickRate = isBg ? tickRate * 8 : tickRate;
           setTimeout(run, finalTickRate);
         }
       };
@@ -1003,14 +1035,14 @@ export const useGrandCrossing = (
     };
 
     // 启动 8 大周期专属高频/低迟 Ticker 调度器
-    startWorker("5m", 100);
-    startWorker("15m", 150);
-    startWorker("30m", 200);
+    startWorker("5m", 150);
+    startWorker("15m", 200);
+    startWorker("30m", 250);
     startWorker("1h", 300);
     startWorker("2h", 400);
     startWorker("4h", 500);
-    startWorker("8h", 1000);
-    startWorker("1d", 2000);
+    startWorker("8h", 800);
+    startWorker("1d", 1200);
 
     return () => {
       workersRef.current = {}; // Stop all on unmount
@@ -1075,6 +1107,7 @@ export const useGrandCrossing = (
     countdowns,
     tfCounts,
     activeScanTfs,
+    scanningSymbols,
     lastScanTime,
     removeItem,
     clearItems,

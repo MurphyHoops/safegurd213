@@ -176,21 +176,44 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
         }
     };
 
-    // --- BACKUP & RESTORE LOGIC ---
+    // --- BACKUP & RESTORE LOGIC (PC Client Persistent Upgrade Support) ---
     const handleExportSettings = (name: string) => {
-        const dataStr = JSON.stringify(settings, null, 2);
-        const blob = new Blob([dataStr], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const sanitized = name ? name.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '').trim() : '';
-        const fileName = sanitized ? `${sanitized}_${new Date().toISOString().slice(0,10)}.json` : `savior_settings_${new Date().toISOString().slice(0,10)}.json`;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        audioService.speak('配置已备份导出');
+        try {
+            const localData: Record<string, string> = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && (key.startsWith('SCANNER_') || key.startsWith('SAVIOR_') || key.startsWith('GRID_') || key.startsWith('MOMENTUM_') || key.startsWith('LIST') || key.startsWith('BACKTEST_'))) {
+                    const val = localStorage.getItem(key);
+                    if (val !== null) {
+                        localData[key] = val;
+                    }
+                }
+            }
+
+            const backupPayload = {
+                version: "2.0",
+                timestamp: Date.now(),
+                settings: settings,
+                localStorageSnapshot: localData
+            };
+
+            const dataStr = JSON.stringify(backupPayload, null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const sanitized = name ? name.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '').trim() : '';
+            const fileName = sanitized ? `${sanitized}_${new Date().toISOString().slice(0,10)}.json` : `savior_pc_backup_${new Date().toISOString().slice(0,10)}.json`;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            audioService.speak('全量配置与本地缓存已成功导出备份');
+        } catch (err) {
+            console.error('Export failed:', err);
+            audioService.speak('导出备份失败', true);
+        }
     };
 
     const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -200,10 +223,26 @@ const SettingsPanel: React.FC<Props> = React.memo(({ settings, handleChange, onF
         reader.onload = (event) => {
             try {
                 const json = JSON.parse(event.target?.result as string);
-                // Basic validation: check for core sections
-                if (json && typeof json === 'object' && (json.profit || json.hedging || json.stopLoss)) {
-                    onRestoreSettings(json);
-                    audioService.speak("配置已成功导入");
+                if (json && typeof json === 'object') {
+                    const appSettings = json.settings || json;
+                    const localStorageSnapshot = json.localStorageSnapshot;
+
+                    if (appSettings && (appSettings.profit || appSettings.hedging || appSettings.stopLoss || appSettings.system)) {
+                        onRestoreSettings(appSettings);
+                    }
+
+                    if (localStorageSnapshot && typeof localStorageSnapshot === 'object') {
+                        Object.entries(localStorageSnapshot).forEach(([k, v]) => {
+                            if (typeof v === 'string') {
+                                localStorage.setItem(k, v);
+                            }
+                        });
+                    }
+
+                    audioService.speak("全部配置与参数已成功恢复！系统将自动刷新");
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1500);
                 } else {
                     audioService.speak("配置文件格式错误", true);
                 }

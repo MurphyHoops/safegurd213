@@ -34,16 +34,30 @@ export function analyzeList2Crossing(
     const strictFiltering = config.strictFiltering !== undefined ? config.strictFiltering : true;
     const enableDivergenceCrossCheck = config.enableDivergenceCrossCheck !== undefined ? !!config.enableDivergenceCrossCheck : true;
     const divergenceLookbackBars = (config.divergenceLookbackBars !== undefined && !Number.isNaN(config.divergenceLookbackBars)) ? Math.max(1, config.divergenceLookbackBars) : 20;
-    const retentionThreshold = (config as any).maxLag !== undefined
-        ? (config as any).maxLag
-        : (config.lookbackBars ?? 5);
+    const enableSignalDeviationFilter = !!config.enableSignalDeviationFilter;
+    const maxSignalDeviationPercent = (config.maxSignalDeviationPercent !== undefined && !Number.isNaN(config.maxSignalDeviationPercent)) ? Math.max(0, config.maxSignalDeviationPercent) : 50;
+    const currentPrice = closes[idx];
+    
+    // 🔒 [USER MANDATORY RULE - 信号存续 (Retention & Lookback)]
+    // 1. 访问过去 (Lookback): 寻找过去设定值 K 线根数内符合穿越/发散的币，并以该符合条件的K线标记为信号K线
+    const lookbackLimit = (config.lookbackBars !== undefined && !Number.isNaN(config.lookbackBars))
+        ? Math.max(1, config.lookbackBars)
+        : 5;
+    const scanLookbackLimit = (maxNewLag !== undefined && maxNewLag > lookbackLimit) 
+        ? maxNewLag 
+        : lookbackLimit;
+
+    // 2. 寿命根数 (Retention): 信号K线生成后存留有效根数
+    const retentionThreshold = (config.newModeRetention !== undefined && !Number.isNaN(config.newModeRetention))
+        ? Math.max(1, config.newModeRetention)
+        : ((config as any).maxLag !== undefined ? (config as any).maxLag : 9);
     
     // We scan deeper to correctly identify the START of continuous signals (like alignment)
     // so we can expire them after 'retentionThreshold' bars.
     const effectiveScanRange = 120; 
 
-    // 1. Flat Filter (Zombie Coin Check)
-    if (enableFlatFilter) {
+    // 1. Flat Filter (Zombie Coin Check) - Only when Crossing is enabled
+    if (enableFlatFilter && config.requireCrossing) {
         let flatCount = 0;
         const checkStart = Math.max(0, idx - flatLookback);
         
@@ -101,6 +115,12 @@ export function analyzeList2Crossing(
         ampValid: boolean;
         volValid: boolean;
         bodyValid: boolean;
+        isClosed: boolean;
+        isPendingGray: boolean;
+        kHigh: number;
+        kLow: number;
+        kClose: number;
+        kOpen: number;
     }[] = [];
     const shortSignals: { 
         lag: number; 
@@ -112,6 +132,12 @@ export function analyzeList2Crossing(
         ampValid: boolean;
         volValid: boolean;
         bodyValid: boolean;
+        isClosed: boolean;
+        isPendingGray: boolean;
+        kHigh: number;
+        kLow: number;
+        kClose: number;
+        kOpen: number;
     }[] = [];
 
     // 3. Loop through Lag Window (Scanning backwards from current candle)
@@ -311,38 +337,6 @@ export function analyzeList2Crossing(
                 const volValid = volumes[checkIdx] >= (avgVol * Math.max(0.1, volMultiplier));
                 const ampValid = amp >= squeezeThreshold && amp <= maxAmplitude;
 
-                // LONG Check
-                let satisfiesTriggersL = false;
-                if (config.requireCrossing && config.requireAlignment) {
-                    const satisfiesCrossing = isCrossing && (kClose >= kOpen); // Green crossing
-                    // 2026-08-15: 用户指令关闭 isFirstDivergenceL 和 alignmentValidByCrossingL ("一穿四") 过滤
-                    const satisfiesAlignment = isAlignedL && crossedAllL; // && isFirstDivergenceL && alignmentValidByCrossingL;
-                    if (satisfiesCrossing && satisfiesAlignment) satisfiesTriggersL = true;
-                } else if (config.requireCrossing) {
-                    if (isCrossing && (kClose >= kOpen)) satisfiesTriggersL = true;
-                } else if (config.requireAlignment) {
-                    // 2026-08-15: 用户指令关闭 isFirstDivergenceL 和 alignmentValidByCrossingL ("一穿四") 过滤
-                    if (isAlignedL && crossedAllL /* && isFirstDivergenceL && alignmentValidByCrossingL */) satisfiesTriggersL = true;
-                } else {
-                    if (kClose >= kOpen) satisfiesTriggersL = true; // Squeeze green candle
-                }
-
-                // SHORT Check
-                let satisfiesTriggersS = false;
-                if (config.requireCrossing && config.requireAlignment) {
-                    const satisfiesCrossing = isCrossing && (kClose < kOpen); // Red crossing
-                    // 2026-08-15: 用户指令关闭 isFirstDivergenceS 和 alignmentValidByCrossingS ("一穿四") 过滤
-                    const satisfiesAlignment = isAlignedS && crossedAllS; // && isFirstDivergenceS && alignmentValidByCrossingS;
-                    if (satisfiesCrossing && satisfiesAlignment) satisfiesTriggersS = true;
-                } else if (config.requireCrossing) {
-                    if (isCrossing && (kClose < kOpen)) satisfiesTriggersS = true;
-                } else if (config.requireAlignment) {
-                    // 2026-08-15: 用户指令关闭 isFirstDivergenceS 和 alignmentValidByCrossingS ("一穿四") 过滤
-                    if (isAlignedS && crossedAllS /* && isFirstDivergenceS && alignmentValidByCrossingS */) satisfiesTriggersS = true;
-                } else {
-                    if (kClose < kOpen) satisfiesTriggersS = true; // Squeeze red candle
-                }
-
                 // Calculate body ratio for crossingIdxL and crossingIdxS
                 const cHighL = highs[crossingIdxL];
                 const cLowL = lows[crossingIdxL];
@@ -379,29 +373,72 @@ export function analyzeList2Crossing(
                 const finalBodyRatioS = Math.min(bodyRatioS, currentBodyRatio);
                 const bodyValidS = finalBodyRatioS >= minBodyRatio;
 
-                let isValidL = false;
-                if (satisfiesTriggersL) {
-                    if (strictFiltering) {
-                        if (ampValid && volValid && bodyValidL) isValidL = true;
+                // Crossing Rules & Divergence Rules Evaluation with AND/OR Logic
+                const crossingStrictOkL = !strictFiltering || (ampValid && volValid && bodyValidL);
+                const crossingStrictOkS = !strictFiltering || (ampValid && volValid && bodyValidS);
+                const crossingValidL = isCrossing && crossingStrictOkL;
+                const crossingValidS = isCrossing && crossingStrictOkS;
+
+                const divergenceValidL = isAlignedL && crossedAllL;
+                const divergenceValidS = isAlignedS && crossedAllS;
+
+                let patternMatchedL = false;
+                let patternMatchedS = false;
+                const logicMode = config.crossingDivergenceLogic || 'AND';
+
+                if (config.requireCrossing && config.requireAlignment) {
+                    if (logicMode === 'OR') {
+                        patternMatchedL = crossingValidL || divergenceValidL;
+                        patternMatchedS = crossingValidS || divergenceValidS;
                     } else {
-                        if (!config.requireCrossing && !config.requireAlignment) {
-                            if (ampValid && volValid && bodyValidL) isValidL = true;
-                        } else {
+                        // AND
+                        patternMatchedL = crossingValidL && divergenceValidL;
+                        patternMatchedS = crossingValidS && divergenceValidS;
+                    }
+                } else if (config.requireCrossing) {
+                    patternMatchedL = crossingValidL;
+                    patternMatchedS = crossingValidS;
+                } else if (config.requireAlignment) {
+                    patternMatchedL = divergenceValidL;
+                    patternMatchedS = divergenceValidS;
+                } else {
+                    // Squeeze fallback
+                    patternMatchedL = crossingStrictOkL;
+                    patternMatchedS = crossingStrictOkS;
+                }
+
+                // [CRITICAL MANDATORY RULE - USER DEFINITION]:
+                // 1. 历史已收盘K线 (lag > 0):
+                //    - 多头: 收盘价必须严格大于开盘价 (kClose > kOpen，阳线)
+                //    - 空头: 收盘价必须严格小于开盘价 (kClose < kOpen，阴线)
+                // 2. 当前正在走动K线 (lag === 0):
+                //    - 多头形态: 当前价 > 开盘价 为正常多；当前价 <= 开盘价 显示为灰色待定态 (isPendingGray = true)
+                //    - 空头形态: 当前价 < 开盘价 为正常空；当前价 >= 开盘价 显示为灰色待定态 (isPendingGray = true)
+                let isValidL = false;
+                let isPendingGrayL = false;
+                if (patternMatchedL) {
+                    if (lag > 0) {
+                        if (kClose > kOpen) {
                             isValidL = true;
+                            isPendingGrayL = false;
                         }
+                    } else {
+                        isValidL = true;
+                        isPendingGrayL = !(kClose > kOpen);
                     }
                 }
 
                 let isValidS = false;
-                if (satisfiesTriggersS) {
-                    if (strictFiltering) {
-                        if (ampValid && volValid && bodyValidS) isValidS = true;
-                    } else {
-                        if (!config.requireCrossing && !config.requireAlignment) {
-                            if (ampValid && volValid && bodyValidS) isValidS = true;
-                        } else {
+                let isPendingGrayS = false;
+                if (patternMatchedS) {
+                    if (lag > 0) {
+                        if (kClose < kOpen) {
                             isValidS = true;
+                            isPendingGrayS = false;
                         }
+                    } else {
+                        isValidS = true;
+                        isPendingGrayS = !(kClose < kOpen);
                     }
                 }
 
@@ -415,7 +452,13 @@ export function analyzeList2Crossing(
                         isAligned: isAlignedLong,
                         ampValid,
                         volValid,
-                        bodyValid: bodyValidL
+                        bodyValid: bodyValidL,
+                        isClosed: lag > 0,
+                        isPendingGray: isPendingGrayL,
+                        kHigh,
+                        kLow,
+                        kClose,
+                        kOpen
                     });
                 }
 
@@ -429,7 +472,13 @@ export function analyzeList2Crossing(
                         isAligned: isAlignedShort,
                         ampValid,
                         volValid,
-                        bodyValid: bodyValidS
+                        bodyValid: bodyValidS,
+                        isClosed: lag > 0,
+                        isPendingGray: isPendingGrayS,
+                        kHigh,
+                        kLow,
+                        kClose,
+                        kOpen
                     });
                 }
             }
@@ -445,7 +494,21 @@ export function analyzeList2Crossing(
     shortSignals.sort((a, b) => a.lag - b.lag);
 
     // Helper to get ALL clusters of signals
-    const getAllClusters = (signals: {lag: number, direction: string, amp: number, time: number, bodyRatio: number, isAligned: boolean}[]) => {
+    const getAllClusters = (signals: {
+        lag: number;
+        direction: string;
+        amp: number;
+        time: number;
+        bodyRatio: number;
+        isAligned: boolean;
+        ampValid: boolean;
+        volValid: boolean;
+        bodyValid: boolean;
+        kHigh: number;
+        kLow: number;
+        kClose: number;
+        kOpen: number;
+    }[]) => {
         if (signals.length === 0) return [];
         const clusters = [];
         let currentCluster = [signals[0]];
@@ -474,7 +537,7 @@ export function analyzeList2Crossing(
         // - Crossing Mode: Recognized by the LAST occurrence (Timer resets)
         // - Alignment/Squeeze Mode: Recognized by the FIRST occurrence (Timer starts at beginning)
         const validClusters = longClusters.filter(cluster => {
-            const hasRecentMember = cluster.some(s => s.lag <= maxNewLag);
+            const hasRecentMember = cluster.some(s => s.lag <= scanLookbackLimit);
             
             const checkLag = config.requireCrossing 
                 ? cluster[0].lag  // Use most recent lag for Crossing (Resets)
@@ -497,37 +560,54 @@ export function analyzeList2Crossing(
                 ? cluster[cluster.length - 1] // Oldest (First divergence/squeeze)
                 : cluster[0]; // Newest (Last crossing)
 
-            // For Alignment/Squeeze modes, we only want to mark the STARTING candle on the chart.
-            // For Crossing mode, we usually want to show all crossing points in the cluster.
-            const reportLags = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment)) 
-                ? [targetMember.lag]
-                : cluster.map(s => s.lag);
-                
-            const reportTimes = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment))
-                ? [targetMember.time]
-                : cluster.map(s => s.time);
+            // 方式 A (振幅偏离限制 - LONG): 当前价格高于信号K线最高价超过其振幅的 X% 时，不进入列表2
+            let passDeviationFilterL = true;
+            if (enableSignalDeviationFilter) {
+                const signalCandleRange = Math.max(0, targetMember.kHigh - targetMember.kLow);
+                const maxAllowedPriceL = targetMember.kHigh + (signalCandleRange * (maxSignalDeviationPercent / 100));
+                if (currentPrice > maxAllowedPriceL) {
+                    passDeviationFilterL = false;
+                }
+            }
 
-            results.push({
-                tf,
-                lag: targetMember.lag, 
-                crossingCount: cluster.length,
-                isSqueeze: !config.requireCrossing && !config.requireAlignment, 
-                squeezeVal: targetMember.amp,
-                direction: 'LONG',
-                crossingLags: reportLags,
-                crossingTimes: reportTimes,
-                bodyRatio: targetMember.bodyRatio,
-                ampValid: targetMember.ampValid,
-                volValid: targetMember.volValid,
-                bodyValid: targetMember.bodyValid,
-                isAligned: targetMember.isAligned
-            });
+            if (passDeviationFilterL) {
+                // For Alignment/Squeeze modes, we only want to mark the STARTING candle on the chart.
+                // For Crossing mode, we usually want to show all crossing points in the cluster.
+                const reportLags = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment)) 
+                    ? [targetMember.lag]
+                    : cluster.map(s => s.lag);
+                    
+                const reportTimes = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment))
+                    ? [targetMember.time]
+                    : cluster.map(s => s.time);
+
+                results.push({
+                    tf,
+                    lag: targetMember.lag, 
+                    crossingCount: cluster.length,
+                    isSqueeze: !config.requireCrossing && !config.requireAlignment, 
+                    squeezeVal: targetMember.amp,
+                    direction: 'LONG',
+                    crossingLags: reportLags,
+                    crossingTimes: reportTimes,
+                    bodyRatio: targetMember.bodyRatio,
+                    ampValid: targetMember.ampValid,
+                    volValid: targetMember.volValid,
+                    bodyValid: targetMember.bodyValid,
+                    isAligned: targetMember.isAligned,
+                    isClosed: targetMember.isClosed,
+                    isPendingGray: targetMember.isPendingGray,
+                    kOpen: targetMember.kOpen,
+                    kClose: targetMember.kClose,
+                    signalTime: targetMember.time
+                });
+            }
         }
     }
 
     if (shortClusters.length > 0) {
         const validClusters = shortClusters.filter(cluster => {
-            const hasRecentMember = cluster.some(s => s.lag <= maxNewLag);
+            const hasRecentMember = cluster.some(s => s.lag <= scanLookbackLimit);
 
             const checkLag = config.requireCrossing 
                 ? cluster[0].lag  // Use most recent lag for Crossing (Resets)
@@ -547,29 +627,46 @@ export function analyzeList2Crossing(
                 ? cluster[cluster.length - 1] // Oldest (First divergence/squeeze)
                 : cluster[0]; // Newest (Last crossing)
 
-            const reportLags = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment)) 
-                ? [targetMember.lag]
-                : cluster.map(s => s.lag);
+            // 方式 A (振幅偏离限制 - SHORT): 当前价格低于信号K线最低价超过其振幅的 X% 时，不进入列表2
+            let passDeviationFilterS = true;
+            if (enableSignalDeviationFilter) {
+                const signalCandleRange = Math.max(0, targetMember.kHigh - targetMember.kLow);
+                const minAllowedPriceS = targetMember.kLow - (signalCandleRange * (maxSignalDeviationPercent / 100));
+                if (currentPrice < minAllowedPriceS) {
+                    passDeviationFilterS = false;
+                }
+            }
 
-            const reportTimes = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment))
-                ? [targetMember.time]
-                : cluster.map(s => s.time);
+            if (passDeviationFilterS) {
+                const reportLags = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment)) 
+                    ? [targetMember.lag]
+                    : cluster.map(s => s.lag);
 
-            results.push({
-                tf,
-                lag: targetMember.lag,
-                crossingCount: cluster.length,
-                isSqueeze: !config.requireCrossing && !config.requireAlignment, 
-                squeezeVal: targetMember.amp,
-                direction: 'SHORT',
-                crossingLags: reportLags,
-                crossingTimes: reportTimes,
-                bodyRatio: targetMember.bodyRatio,
-                ampValid: targetMember.ampValid,
-                volValid: targetMember.volValid,
-                bodyValid: targetMember.bodyValid,
-                isAligned: targetMember.isAligned
-            });
+                const reportTimes = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment))
+                    ? [targetMember.time]
+                    : cluster.map(s => s.time);
+
+                results.push({
+                    tf,
+                    lag: targetMember.lag,
+                    crossingCount: cluster.length,
+                    isSqueeze: !config.requireCrossing && !config.requireAlignment, 
+                    squeezeVal: targetMember.amp,
+                    direction: 'SHORT',
+                    crossingLags: reportLags,
+                    crossingTimes: reportTimes,
+                    bodyRatio: targetMember.bodyRatio,
+                    ampValid: targetMember.ampValid,
+                    volValid: targetMember.volValid,
+                    bodyValid: targetMember.bodyValid,
+                    isAligned: targetMember.isAligned,
+                    isClosed: targetMember.isClosed,
+                    isPendingGray: targetMember.isPendingGray,
+                    kOpen: targetMember.kOpen,
+                    kClose: targetMember.kClose,
+                    signalTime: targetMember.time
+                });
+            }
         }
     }
 

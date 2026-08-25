@@ -65,6 +65,54 @@ export const FilterSection: React.FC<Props> = ({
                     </div>
                     
                     <div className="grid grid-cols-2 gap-2">
+                        {/* 币安排序 A~Z 分片截取 (Alphabetical Range Filter) */}
+                        <div className="col-span-2 bg-[#1e2329] border border-cyan-500/30 shadow-[0_0_10px_rgba(6,182,212,0.08)] rounded p-2 flex flex-col gap-2">
+                            <div className="text-[9px] text-cyan-400 font-bold border-b border-slate-800 pb-1 flex justify-between items-center">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
+                                    <span>币安排序 A~Z 分片截取</span>
+                                </div>
+                                <span className="text-[8px] text-slate-500 font-normal">多账户分片监控专属</span>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-3 bg-black/20 p-1.5 rounded border border-slate-800/60">
+                                <div className="flex items-center gap-1.5">
+                                    <button 
+                                        onClick={() => setScanConfig(p => ({...p, enableAlphabeticalFilter: !p.enableAlphabeticalFilter}))}
+                                        className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${scanConfig.enableAlphabeticalFilter ? 'bg-cyan-600' : 'bg-slate-700'}`}
+                                        title="开启/关闭币安 A~Z 字母排序分片切片"
+                                    >
+                                        <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform duration-200 ${scanConfig.enableAlphabeticalFilter ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
+                                    </button>
+                                    <span className={`text-[10px] font-bold ${scanConfig.enableAlphabeticalFilter ? 'text-cyan-300' : 'text-slate-400'}`}>
+                                        取第 ( ? ) ~ ( ? ) 个币
+                                    </span>
+                                </div>
+
+                                <div className="flex items-center gap-1 bg-slate-950 px-2 py-0.5 rounded border border-slate-800 w-36 justify-center">
+                                    <span className="text-slate-500 text-[9px]">第</span>
+                                    <SmartNumberInput
+                                        value={scanConfig.alphabeticalRangeStart ?? 1}
+                                        onChange={val => {
+                                            const startVal = Math.max(1, val || 1);
+                                            setScanConfig(p => ({...p, alphabeticalRangeStart: startVal}));
+                                        }}
+                                        className={`w-9 bg-transparent text-center font-mono text-[10px] font-bold outline-none transition-colors ${!scanConfig.enableAlphabeticalFilter ? 'text-slate-600 cursor-not-allowed opacity-50' : 'text-cyan-400'}`}
+                                    />
+                                    <span className="text-slate-500 text-[9px]">~</span>
+                                    <SmartNumberInput
+                                        value={scanConfig.alphabeticalRangeEnd ?? 70}
+                                        onChange={val => {
+                                            const endVal = Math.max(1, val || 1);
+                                            setScanConfig(p => ({...p, alphabeticalRangeEnd: endVal}));
+                                        }}
+                                        className={`w-9 bg-transparent text-center font-mono text-[10px] font-bold outline-none transition-colors ${!scanConfig.enableAlphabeticalFilter ? 'text-slate-600 cursor-not-allowed opacity-50' : 'text-cyan-400'}`}
+                                    />
+                                    <span className="text-slate-500 text-[9px]">个币</span>
+                                </div>
+                            </div>
+                        </div>
+
                         {/* Dual Volume Range Selector */}
                         <div className="col-span-2 bg-[#1e2329] border border-slate-700 rounded p-2 flex flex-col gap-2">
                             <div className="text-[9px] text-slate-500 font-bold border-b border-slate-800 pb-1 flex justify-between items-center">
@@ -162,6 +210,54 @@ export const FilterSection: React.FC<Props> = ({
                 <div className="space-y-3 animate-in fade-in slide-in-from-right-2 duration-300">
                     {/* Simplified Filters for Major Trend Mode (Stage 2) */}
                     <div className="grid grid-cols-2 gap-2">
+                        {/* 币安排序 A~Z 分片截取 (Alphabetical Range Filter) - 大行情发现模式同步 */}
+                        <div className="col-span-2 bg-[#1e2329] border border-cyan-500/30 shadow-[0_0_10px_rgba(6,182,212,0.08)] rounded p-2 flex flex-col gap-2">
+                            <div className="text-[9px] text-cyan-400 font-bold border-b border-slate-800 pb-1 flex justify-between items-center">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
+                                    <span>币安排序 A~Z 分片截取</span>
+                                </div>
+                                <span className="text-[8px] text-slate-500 font-normal">多账户分片监控专属</span>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-3 bg-black/20 p-1.5 rounded border border-slate-800/60">
+                                <div className="flex items-center gap-1.5">
+                                    <button 
+                                        onClick={() => setScanConfig(p => ({...p, enableAlphabeticalFilter: !p.enableAlphabeticalFilter}))}
+                                        className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${scanConfig.enableAlphabeticalFilter ? 'bg-cyan-600' : 'bg-slate-700'}`}
+                                        title="开启/关闭币安 A~Z 字母排序分片切片"
+                                    >
+                                        <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform duration-200 ${scanConfig.enableAlphabeticalFilter ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
+                                    </button>
+                                    <span className={`text-[10px] font-bold ${scanConfig.enableAlphabeticalFilter ? 'text-cyan-300' : 'text-slate-400'}`}>
+                                        取第 ( ? ) ~ ( ? ) 个币
+                                    </span>
+                                </div>
+
+                                <div className="flex items-center gap-1 bg-slate-950 px-2 py-0.5 rounded border border-slate-800 w-36 justify-center">
+                                    <span className="text-slate-500 text-[9px]">第</span>
+                                    <SmartNumberInput
+                                        value={scanConfig.alphabeticalRangeStart ?? 1}
+                                        onChange={val => {
+                                            const startVal = Math.max(1, val || 1);
+                                            setScanConfig(p => ({...p, alphabeticalRangeStart: startVal}));
+                                        }}
+                                        className={`w-9 bg-transparent text-center font-mono text-[10px] font-bold outline-none transition-colors ${!scanConfig.enableAlphabeticalFilter ? 'text-slate-600 cursor-not-allowed opacity-50' : 'text-cyan-400'}`}
+                                    />
+                                    <span className="text-slate-500 text-[9px]">~</span>
+                                    <SmartNumberInput
+                                        value={scanConfig.alphabeticalRangeEnd ?? 70}
+                                        onChange={val => {
+                                            const endVal = Math.max(1, val || 1);
+                                            setScanConfig(p => ({...p, alphabeticalRangeEnd: endVal}));
+                                        }}
+                                        className={`w-9 bg-transparent text-center font-mono text-[10px] font-bold outline-none transition-colors ${!scanConfig.enableAlphabeticalFilter ? 'text-slate-600 cursor-not-allowed opacity-50' : 'text-cyan-400'}`}
+                                    />
+                                    <span className="text-slate-500 text-[9px]">个币</span>
+                                </div>
+                            </div>
+                        </div>
+
                         {/* Dual Volume Range Selector */}
                         <div className="col-span-2 bg-[#1e2329] border border-slate-700 rounded p-2 flex flex-col gap-2">
                             <div className="text-[9px] text-slate-500 font-bold border-b border-slate-800 pb-1 flex justify-between items-center">

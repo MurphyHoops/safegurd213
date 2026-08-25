@@ -38,9 +38,14 @@ export interface Position {
     maxPnLPercentAfterAmputationTrigger?: number;
     maxPnLPercent?: number;
     isHedged?: boolean;
+    lastHedgeClosedAt?: number;
+    hedgeSignalTriggered?: boolean;
+    hedgeOrderInFlight?: boolean;
+    hedgeOrderInFlightTime?: number;
     extremePrice?: number;
     cumulativeHedgeProfit?: number;
     cumulativeHedgeLoss?: number;
+    isAmputated?: boolean;
     amputatedAmount?: number;
     cumulativeAmputationLoss?: number;
     cumulativeAmputationProfit?: number;
@@ -194,10 +199,14 @@ export interface SmartProfitTier {
 }
 
 export interface SmartSettings {
+    enabled?: boolean;
+    decayEnabled?: boolean;
     minPosition: number;
     activationProfit: number;
     conventionalEnabled: boolean;
     tiers: SmartProfitTier[];
+    stepBasedLockEnabled?: boolean;
+    steps?: ProfitStep[];
 }
 
 export interface GlobalSettings {

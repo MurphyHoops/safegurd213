@@ -42,7 +42,7 @@ const DashboardHeader: React.FC<Props> = ({
     const walletBalance = typeof account?.marginBalance === 'number' ? account.marginBalance : 0; 
     const equity = walletBalance + totalPnL;   
     const totalPnLPercentage = walletBalance > 0 ? (totalPnL / walletBalance) * 100 : 0;
-    const totalDebt = Array.isArray(positions) ? positions.reduce((s,p)=>s+(p.cumulativeHedgeLoss||0), 0) : 0;
+    const totalDebt = Array.isArray(positions) ? positions.reduce((s,p)=>s+(p.cumulativeHedgeLoss||0)+(p.cumulativeAmputationLoss||0), 0) : 0;
 
     // 标准币安合约可用保证金算法：(钱包余额 + 浮动盈亏) - (总持仓 / 杠杆倍数)
     const CONTRACT_LEVERAGE = 20;

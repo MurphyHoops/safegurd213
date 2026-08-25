@@ -34,25 +34,41 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     console.error(`[Savior Guard] Crash caught in ${this.props.moduleName || 'Root'}:`, error);
     
     try {
-        // Automatically purge cache keys and reload on any critical crash
+        const crashKey = 'SAVIOR_CRASH_COUNT';
+        const lastCrashTime = Number(localStorage.getItem('SAVIOR_LAST_CRASH_TIME') || '0');
+        const now = Date.now();
+        let count = Number(localStorage.getItem(crashKey) || '0');
+
+        if (now - lastCrashTime < 20000) {
+            count += 1;
+        } else {
+            count = 1;
+        }
+
+        localStorage.setItem(crashKey, String(count));
+        localStorage.setItem('SAVIOR_LAST_CRASH_TIME', String(now));
+
+        // Automatically purge scanner and config cache keys on crash
         const keysToRemove: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
             const k = localStorage.key(i);
-            if (k && (k.includes('SCANNER_') || k.includes('CACHE') || k.includes('LOGS') || k.includes('MAP'))) {
-                if (!k.includes('SETTINGS') && !k.includes('POSITIONS') && !k.includes('ACCOUNT')) {
-                    keysToRemove.push(k);
-                }
+            if (k && (k.includes('SCANNER_') || k.includes('CACHE') || k.includes('LOGS') || k.includes('MAP') || k.includes('GRAND_') || k.includes('SETTINGS'))) {
+                keysToRemove.push(k);
             }
         }
         keysToRemove.forEach(k => {
             try { localStorage.removeItem(k); } catch (e) {}
         });
 
-        setTimeout(() => {
-            window.location.reload();
-        }, 800);
+        if (count <= 4) {
+            console.warn('[ErrorBoundary] Auto-healing: clearing corrupted cache & reloading instantly...');
+            setTimeout(() => {
+                window.location.reload();
+            }, 300);
+            return;
+        }
     } catch (e) {
-        console.error('[ErrorBoundary] Auto-heal reload failed:', e);
+        console.error('[ErrorBoundary] Auto-heal cache cleanup failed:', e);
     }
 
     // Log component rendering crash directly inside persistent local storage
@@ -74,7 +90,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
             timestamp: Date.now(),
             level: isRootModule ? 'ERROR' : 'WARN',
             module: this.props.moduleName || 'ROOT',
-            message: `【自动自愈拦截】捕获异常并已清理缓存准备热重启: ${error?.message || '未知渲染错误'}`,
+            message: `【异常拦截】捕获组件渲染异常: ${error?.message || '未知渲染错误'}`,
             details: { 
                 stack: error?.stack, 
                 componentStack: errorInfo?.componentStack,
@@ -94,29 +110,42 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   render() {
     if (this.state.hasError) {
       return (
-        <div className="fixed inset-0 z-[9999] w-screen h-screen flex flex-col items-center justify-center p-6 bg-[#0b0e11] text-center">
-          <div className="max-w-md w-full flex flex-col items-center p-6 bg-slate-900/80 rounded-2xl border border-indigo-500/30 shadow-2xl backdrop-blur-md">
-            <div className="w-12 h-12 rounded-full bg-indigo-600/20 flex items-center justify-center mb-4 text-indigo-400 animate-spin border-2 border-indigo-500/50 border-t-transparent">
-              <RefreshCw size={24} />
+        <div className="fixed inset-0 z-[9999] w-screen h-screen flex flex-col items-center justify-center p-6 bg-[#0b0e11] text-center font-mono">
+          <div className="max-w-md w-full flex flex-col items-center p-6 bg-slate-900/90 rounded-2xl border border-rose-500/30 shadow-2xl backdrop-blur-md">
+            <div className="w-12 h-12 rounded-full bg-rose-600/20 flex items-center justify-center mb-4 text-rose-400 border border-rose-500/40">
+              <ShieldAlert size={24} />
             </div>
             
-            <h2 className="font-bold text-white mb-2 text-lg">
-              系统正在自动自愈并重载...
+            <h2 className="font-bold text-white mb-2 text-base">
+              系统捕获到渲染异常 (已拦截)
             </h2>
             
-            <p className="text-slate-400 text-xs mb-6 leading-relaxed">
-              检测到版本升级或环境瞬时异常。系统已自动启动安全自愈协议，清除残留缓存并准备就绪。
+            <p className="text-slate-400 text-xs mb-4 leading-relaxed">
+              {this.state.error?.message || '未知错误'}
             </p>
 
-            <button
-              onClick={() => {
-                  localStorage.clear();
-                  window.location.reload();
-              }}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-all shadow-lg"
-            >
-              立即手动刷新
-            </button>
+            <div className="flex flex-col gap-2 w-full">
+              <button
+                onClick={() => {
+                    window.location.reload();
+                }}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-all shadow-lg flex items-center justify-center gap-2"
+              >
+                <RefreshCw size={14} />
+                <span>重新加载页面 (保留设置)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                    localStorage.clear();
+                    window.location.reload();
+                }}
+                className="w-full bg-rose-600/80 hover:bg-rose-600 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-all shadow-lg flex items-center justify-center gap-2"
+              >
+                <Trash2 size={14} />
+                <span>强制清除全部缓存并全新重置</span>
+              </button>
+            </div>
           </div>
         </div>
       );

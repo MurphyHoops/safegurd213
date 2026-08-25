@@ -24,7 +24,7 @@ export function useFinanceMonitorLogic(account: any, positions: Position[], real
 
     const calculatedMarginRatio = walletBalance > 0 ? (availableMarginWithLeverage / walletBalance * 100) : 0;
     
-    const totalHedgeSLAmount = positions.reduce((s, p) => s + (p.cumulativeHedgeLoss || 0), 0);
+    const totalHedgeSLAmount = positions.reduce((s, p) => s + (p.cumulativeHedgeLoss || 0) + (p.cumulativeAmputationLoss || 0), 0);
 
     return {
         totalPnL,

@@ -463,7 +463,7 @@ const _fetchWithFallbackInner = async (
             let timeoutId: any;
             try {
                 const controller = new AbortController();
-                const proxyTimeout = Math.min(TIMEOUT_MS, (isHeavyPayload || isKlinePayload) ? 45000 : 20000);
+                const proxyTimeout = Math.min(TIMEOUT_MS, isKlinePayload ? 3000 : (isHeavyPayload ? 45000 : 20000));
                 timeoutId = setTimeout(() => {
                     if (!controller.signal.aborted) controller.abort();
                 }, proxyTimeout);
@@ -542,19 +542,21 @@ const _fetchWithFallbackInner = async (
             ? proxies.filter(p => p !== proxyLocalServer && p !== proxyCorsProxyIO && p !== proxyCodeTabs)
             : proxies;
 
-        for (const proxy of remainingProxies) {
+        for (let idx = 0; idx < remainingProxies.length; idx++) {
+            const proxy = remainingProxies[idx];
             try {
                 const response = await fetchProxy(proxy);
                 continuousFailures = 0;
                 return response;
             } catch (e: any) {
                 lastError = e;
+                if (url.includes('/klines')) {
+                    // For klines, don't waste time trying all slow proxies; fail fast to local helper
+                    break;
+                }
                 if (e.message && (e.message.includes('HTTP 404') || e.message.includes('HTTP 400'))) {
                     console.warn(`[API] Early abort proxy loop due to ${e.message} for ${url}`);
-                    if (url.includes('/klines')) {
-                        break;
-                    }
-                    throw e;
+                    break;
                 }
             }
         }

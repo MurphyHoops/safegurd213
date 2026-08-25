@@ -34,6 +34,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
       if (!Array.isArray(rawTradeLogs)) return [];
       return rawTradeLogs.map((l, index) => ({
           ...l,
+          status: l.status === ('CLOSED_OPEN' as any) ? 'OPEN' : l.status,
           entry_id: l.entry_id ? String(l.entry_id) : `manual_fallback_${l.symbol || 'coin'}_${index}_${l.exit_timestamp || l.entry_timestamp || Date.now()}`
       }));
   }, [rawTradeLogs]);
@@ -115,7 +116,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               ids.add(p.mainPositionId);
               ids.add(p.entryId);
           }
-          if (p.isHedged) {
+          if (p.isHedged || (p.cumulativeHedgeLoss || 0) > 0 || (p.cumulativeAmputationLoss || 0) > 0) {
               ids.add(p.entryId);
           }
       });
@@ -515,16 +516,13 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
       
       // 1. Base Filter (Search Text & Time Range)
       let filtered = tradeLogs.filter(log => {
-          // Exclude internal CLOSED_OPEN status logs from general view
-          if (log.status === ('CLOSED_OPEN' as any)) return false;
-
           const matchesTerm = (log.symbol || '').toLowerCase().includes(term) ||
               String(log.entry_id || '').toLowerCase().includes(term);
           
           if (!matchesTerm) return false;
           
           // Use exit_timestamp if available (for closed trades), else use entry_timestamp
-          const logTime = log.exit_timestamp || log.entry_timestamp;
+          const logTime = log.status === 'CLOSED' ? (log.exit_timestamp || log.entry_timestamp) : log.entry_timestamp;
           return logTime >= startMs && logTime <= endMs;
       });
 
@@ -849,7 +847,8 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
             <div className="flex flex-wrap items-center gap-3">
                 <div className="flex flex-wrap items-center gap-2">
                     <FilterChip type="ALL" label="全部" icon={Layers} colorClass="bg-slate-700 text-white border-slate-500" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
-                    <FilterChip type="NEW_OPEN" label="新开仓" icon={Activity} colorClass="bg-blue-900/40 text-blue-400 border-blue-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="OPEN" label="全部开仓" icon={Activity} colorClass="bg-blue-900/40 text-blue-400 border-blue-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="NEW_OPEN" label="持仓中" icon={Activity} colorClass="bg-indigo-900/40 text-indigo-400 border-indigo-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="UNHEDGED_WIN" label="未对冲盈利" icon={TrendingUp} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="UNHEDGED_LOSS" label="未对冲亏损" icon={TrendingDown} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="NORMAL_WIN" label="常规止盈" icon={Banknote} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
@@ -1295,26 +1294,88 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         );
                                     }
 
+                                const isClosed = log.status === 'CLOSED';
+                                const hasActivePosition = positions.some(p => p.entryId === log.entry_id);
+                                const hasClosedLog = tradeLogs.some(l => l.entry_id === log.entry_id && l.status === 'CLOSED');
+                                const isCompletedCycle = isClosed || (!hasActivePosition && hasClosedLog);
+
+                                const isHedgeCut = !!log.parent_entry_id && (log.entry_id?.includes('_cut_') || log.exit_reason?.includes('减仓') || log.exit_reason?.includes('砍仓'));
+                                const isRefill = log.entry_id?.includes('_refill_') || (log.events && log.events.some(e => e.action.includes('补')));
+                                const isHedgeClear = log.exit_reason?.includes('解套') || log.exit_reason?.includes('断臂') || log.exit_reason?.includes('对冲清仓') || log.exit_reason?.includes('防爆安全') || log.exit_reason?.includes('断臂全清');
+                                const isHedge = log.is_hedge || !!log.main_entry_id;
+
+                                let actionLabel = '开仓';
+                                let actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
+
+                                if (isClosed) {
+                                    if (isHedgeCut) {
+                                        actionLabel = '防爆对冲砍仓';
+                                        actionBadgeClass = 'bg-orange-900/40 text-orange-400 border-orange-500/20';
+                                    } else if (isHedgeClear) {
+                                        actionLabel = '防爆对冲清仓';
+                                        actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
+                                    } else if (isHedge) {
+                                        actionLabel = '对冲平仓';
+                                        actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
+                                    } else if (log.profit_usdt && log.profit_usdt >= 0) {
+                                        actionLabel = '盈利平仓';
+                                        actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
+                                    } else {
+                                        actionLabel = '止损平仓';
+                                        actionBadgeClass = 'bg-red-900/40 text-red-400 border-red-500/20';
+                                    }
+                                } else {
+                                    if (isHedge) {
+                                        actionLabel = '防爆对冲开仓';
+                                        actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
+                                    } else if (isRefill) {
+                                        actionLabel = '防爆对冲补仓';
+                                        actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                    } else {
+                                        actionLabel = '原仓位开仓';
+                                        actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
+                                    }
+                                }
+
                                 return (
                                     <tr key={uniqueKey} className={`transition-colors ${selectedLog === log ? 'bg-indigo-900/30' : 'hover:bg-slate-800/30'} ${isGrouped ? 'bg-indigo-900/10' : ''} ${!!log.main_entry_id ? 'bg-blue-900/10' : ''} ${!!log.parent_entry_id ? 'bg-purple-900/10' : ''}`}>
                                         <td className="px-4 py-3 text-xs whitespace-nowrap text-slate-300 relative">
                                             {isGrouped && <div className="absolute left-0 top-0 bottom-0 w-1 bg-indigo-500/50"></div>}
                                             {!!log.main_entry_id && <div className="absolute left-1 top-0 bottom-0 w-1 bg-blue-500/50"></div>}
                                             {!!log.parent_entry_id && <div className="absolute left-2 top-0 bottom-0 w-1 bg-purple-500/50"></div>}
-                                            {log.status === 'CLOSED' ? (
-                                                <div className="flex flex-col">
+                                            {isClosed ? (
+                                                <div className="flex flex-col gap-1">
                                                     <span className="font-bold text-red-300">{new Date(log.exit_timestamp || Date.now()).toLocaleString()}</span>
-                                                    <div className="flex items-center gap-1.5 mt-0.5">
-                                                        <span className="text-[9px] bg-red-900/40 text-red-400 px-1 rounded border border-red-500/20 font-bold">平仓</span>
+                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${actionBadgeClass}`}>{actionLabel}</span>
                                                         <span className="text-[9px] text-slate-500">持仓: {getDuration(log.entry_timestamp, log.exit_timestamp)}</span>
                                                     </div>
+                                                    {isCompletedCycle && (
+                                                        <div className="mt-0.5">
+                                                            <span className="text-[9px] text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-1.5 py-0.5 rounded font-medium inline-block whitespace-normal">
+                                                                【已完结仓位，和以后再次开仓无任何关系】
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             ) : (
-                                                <div className="flex flex-col">
+                                                <div className="flex flex-col gap-1">
                                                     <span className="font-bold text-emerald-300">{new Date(log.entry_timestamp).toLocaleString()}</span>
-                                                    <div className="flex items-center gap-1.5 mt-0.5">
-                                                        <span className="text-[9px] bg-emerald-900/40 text-emerald-400 px-1 rounded border border-emerald-500/20 font-bold">开仓</span>
+                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                        <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${actionBadgeClass}`}>{actionLabel}</span>
+                                                        {!hasActivePosition && isCompletedCycle ? (
+                                                            <span className="text-[9px] text-slate-400 bg-slate-800 px-1 py-0.5 rounded border border-slate-700">已完结·历史记录</span>
+                                                        ) : (
+                                                            <span className="text-[9px] text-emerald-400 bg-emerald-950/60 px-1 py-0.5 rounded border border-emerald-500/30">当前进行中</span>
+                                                        )}
                                                     </div>
+                                                    {isCompletedCycle && (
+                                                        <div className="mt-0.5">
+                                                            <span className="text-[9px] text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-1.5 py-0.5 rounded font-medium inline-block whitespace-normal">
+                                                                【已完结仓位，和以后再次开仓无任何关系】
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             )}
                                         </td>
@@ -1457,15 +1518,33 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             ) : <span className="text-slate-600">-</span>}
                                         </td>
                                         <td className="px-4 py-3 text-xs">
-                                            {(log.status === 'OPEN' || log.status === 'CLOSED_OPEN') ? <span className="bg-emerald-900/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20">开仓</span> : (
-                                                <div className="flex items-center gap-1">
-                                                    {isGrouped && <Link size={10} className="text-indigo-400" />}
-                                                    {recoveryInfo !== null && (
-                                                        <span className="text-[10px] bg-amber-900/40 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap font-bold">
-                                                            最终解套盈利: {recoveryInfo.netProfit.toFixed(2)} U
+                                            {isClosed ? (
+                                                <div className="flex flex-col gap-1">
+                                                    <div className="flex items-center gap-1">
+                                                        {isGrouped && <Link size={10} className="text-indigo-400" />}
+                                                        {recoveryInfo !== null && (
+                                                            <span className="text-[10px] bg-amber-900/40 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap font-bold">
+                                                                最终解套盈利: {recoveryInfo.netProfit.toFixed(2)} U
+                                                            </span>
+                                                        )}
+                                                        <span className="text-slate-300 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50" title={log.exit_reason}>
+                                                            {log.exit_reason ? (log.exit_reason.length > 15 ? log.exit_reason.substring(0, 15) + '...' : log.exit_reason) : '-'}
                                                         </span>
-                                                    )}
-                                                    <span className="text-slate-300 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50" title={log.exit_reason}>{log.exit_reason ? (log.exit_reason.length > 15 ? log.exit_reason.substring(0, 15) + '...' : log.exit_reason) : '-'}</span>
+                                                    </div>
+                                                    <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
+                                                </div>
+                                            ) : hasActivePosition ? (
+                                                <div className="flex items-center gap-1">
+                                                    <span className="bg-emerald-900/30 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/30 font-bold text-[10px] animate-pulse">
+                                                        运行中
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex flex-col gap-1">
+                                                    <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700 text-[10px]">
+                                                        历史开仓 (已结案)
+                                                    </span>
+                                                    <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
                                                 </div>
                                             )}
                                         </td>

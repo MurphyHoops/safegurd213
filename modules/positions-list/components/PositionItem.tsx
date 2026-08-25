@@ -359,7 +359,7 @@ export const PositionItem: React.FC<Props> = ({
                                 {!isHedgedActive && (
                                     <button 
                                         onClick={(e) => { e.stopPropagation(); onManualHedge?.(p); }} 
-                                        className="px-1.5 py-0.5 bg-indigo-950/40 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded text-[9px] font-bold border border-indigo-800/60 hover:border-indigo-500 transition-all z-10 relative whitespace-nowrap"
+                                        className="px-1.5 py-0.5 bg-indigo-950/40 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded text-[9px] font-bold border border-indigo-800/60 hover:border-indigo-500 transition-all relative whitespace-nowrap"
                                         title="手动立即开启对冲保护"
                                     >
                                         手动对冲
@@ -369,7 +369,7 @@ export const PositionItem: React.FC<Props> = ({
                         );
                     })()
                 )}
-                <div className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity z-10 relative">
+                <div className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity relative">
                     <button 
                         onClick={(e) => { e.stopPropagation(); onVerifyPosition(p); }} 
                         className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-emerald-400 transition-colors" 
@@ -401,7 +401,7 @@ export const PositionItem: React.FC<Props> = ({
                                         text: isAiActivated ? '🤖 AI智能逃顶中' : '🧠 AI智能逃顶 (单币)',
                                         classes: isAiActivated 
                                             ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/35 border border-emerald-500/40 shadow-[0_0_10px_rgba(16,185,129,0.2)] animate-pulse'
-                                            : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30',
+                                             : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30',
                                         title: `单币AI智能自适应托管中 (最高浮盈: ${maxPnl.toFixed(2)}% / 启动阈值: ${actThreshold}%)(点击修改)`,
                                         iconColor: 'text-emerald-400'
                                     };
@@ -474,7 +474,7 @@ export const PositionItem: React.FC<Props> = ({
                     <button onClick={(e) => { e.stopPropagation(); onOpenChart(p.symbol, p.entryPrice, p.entryTime); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="K线图"><BarChart2 size={12}/></button>
                     <button 
                         onClick={(e) => { e.stopPropagation(); onClosePosition(p.symbol, p.side); }} 
-                        className="px-2 py-0.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white rounded text-[10px] font-bold border border-slate-600 hover:border-red-500 transition-all z-10 relative"
+                        className="px-2 py-0.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white rounded text-[10px] font-bold border border-slate-600 hover:border-red-500 transition-all relative"
                     >
                         平仓
                     </button>

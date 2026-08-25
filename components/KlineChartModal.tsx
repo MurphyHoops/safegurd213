@@ -284,6 +284,31 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   // Computed Signals State (Full History)
   const [computedSignals, setComputedSignals] = useState<Signal[]>([]);
 
+  // Analyze whether the current coin/timeframe signal is Crossing (穿越) or Divergence/Spread (发散)
+  const signalPattern = useMemo(() => {
+      if (fullData.length === 0 || !list2Config) return null;
+      try {
+          const closes = fullData.map(k => k.close);
+          const highs = fullData.map(k => k.high);
+          const lows = fullData.map(k => k.low);
+          const opens = fullData.map(k => k.open);
+          const volumes = fullData.map(k => k.volume);
+          const timestamps = fullData.map(k => k.time);
+          const scanConfig = { ...list2Config, maxLag: 9 };
+          const results = analyzeList2Crossing(symbol, timeframe, closes, highs, lows, opens, volumes, timestamps, scanConfig);
+          if (results && results.length > 0) {
+              const hasAligned = results.some(r => r.isAligned);
+              const hasCrossing = results.some(r => !r.isAligned && r.crossingTimes && r.crossingTimes.length > 0);
+              if (hasAligned && hasCrossing) return '穿越/发散';
+              if (hasAligned) return '发散';
+              return '穿越';
+          }
+      } catch (e) {
+          // fallback
+      }
+      return null;
+  }, [fullData, serializedConfig, symbol, timeframe]);
+
   // Memoize signal statistics calculation to prevent heavy re-calculation on every mouse move
   const computedSignalsWithStats = useMemo<ComputedSignal[]>(() => {
       if (computedSignals.length === 0 || fullData.length === 0) return [];
@@ -574,14 +599,18 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       const volumes = fullData.map(k => k.volume);
       const timestamps = fullData.map(k => k.time);
 
-      // Force 'ALL' trigger mode to show any existing signals within the window
-      // BUT keep 'maxLag' exactly as configured by user (e.g. 9)
-      const scanConfig: any = {
-          ...list2Config,
-          maxLag: 9 // Fallback to 9
-      };
-
-      const results = analyzeList2Crossing(symbol, timeframe, closes, highs, lows, opens, volumes, timestamps, scanConfig);
+      const results = analyzeList2Crossing(
+          symbol, 
+          timeframe, 
+          closes, 
+          highs, 
+          lows, 
+          opens, 
+          volumes, 
+          timestamps, 
+          list2Config,
+          list2Config.lookbackBars ?? 5
+      );
       
       const allSignals: Signal[] = [];
       results.forEach(res => {
@@ -904,26 +933,60 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       if (!tradeLogs) return markers;
 
       tradeLogs.filter(l => l.symbol === symbol).forEach(l => {
+          const dirLabel = ((l.direction as any) === PositionSide.LONG || (l.direction as any) === 'LONG' || (l.direction as any) === 'BUY' || (l.direction as any) === '多') ? '多' : '空';
+          const isHedge = l.is_hedge || !!l.main_entry_id;
+          const isCut = !!l.parent_entry_id && (l.entry_id?.includes('_cut_') || l.exit_reason?.includes('减仓') || l.exit_reason?.includes('砍仓'));
+          const isRefill = l.entry_id?.includes('_refill_');
+          const isClear = l.exit_reason?.includes('解套') || l.exit_reason?.includes('断臂') || l.exit_reason?.includes('对冲清仓') || l.exit_reason?.includes('防爆安全') || l.exit_reason?.includes('断臂全清');
+
           if (l.entry_timestamp) {
-              const dirLabel = l.direction === PositionSide.LONG ? '多' : '空';
-              markers.push({ time: l.entry_timestamp, type: 'OPEN', label: `开仓${dirLabel}`, price: l.entry_price });
+              if (isHedge) {
+                  markers.push({ time: l.entry_timestamp, type: 'HEDGE_OPEN', label: `防爆对冲(${dirLabel})`, price: l.entry_price });
+              } else if (isRefill) {
+                  markers.push({ time: l.entry_timestamp, type: 'HEDGE_REFILL', label: `防爆对冲补仓(${dirLabel})`, price: l.entry_price });
+              } else {
+                  markers.push({ time: l.entry_timestamp, type: 'OPEN', label: `开仓(${dirLabel})`, price: l.entry_price });
+              }
           }
-          if (l.exit_timestamp) {
-              const dirLabel = l.direction === PositionSide.LONG ? '多' : '空';
-              markers.push({ time: l.exit_timestamp, type: 'CLOSE', label: `平仓${dirLabel}`, price: l.exit_price || 0 });
+          if (l.exit_timestamp && l.status === 'CLOSED') {
+              if (isCut) {
+                  markers.push({ time: l.exit_timestamp, type: 'HEDGE_CUT', label: `砍仓(${dirLabel})`, price: l.exit_price || l.entry_price });
+              } else if (isClear) {
+                  markers.push({ time: l.exit_timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${dirLabel})`, price: l.exit_price || 0 });
+              } else if (isHedge) {
+                  markers.push({ time: l.exit_timestamp, type: 'HEDGE_CLOSE', label: `对冲平仓(${dirLabel})`, price: l.exit_price || 0 });
+              } else if (l.profit_usdt !== undefined && l.profit_usdt >= 0) {
+                  markers.push({ time: l.exit_timestamp, type: 'PROFIT_CLOSE', label: `盈利平仓(${dirLabel})`, price: l.exit_price || 0 });
+              } else {
+                  markers.push({ time: l.exit_timestamp, type: 'LOSS_CLOSE', label: `止损平仓(${dirLabel})`, price: l.exit_price || 0 });
+              }
           }
           
           if (l.signal_details && l.signal_details.timestamp) {
-               markers.push({ time: l.signal_details.timestamp, type: 'SIGNAL', label: '信号' });
+                markers.push({ time: l.signal_details.timestamp, type: 'SIGNAL', label: '信号' });
           }
           
           l.events?.forEach(e => {
-             if (e.action.includes('HEDGE')) {
-                 markers.push({ time: e.timestamp, type: 'HEDGE', label: '对冲', price: e.price });
+             const eventDir = (e.action.includes('LONG') || e.action.includes('(多)') || e.action.includes('多')) ? '多' : ((e.action.includes('SHORT') || e.action.includes('(空)') || e.action.includes('空')) ? '空' : dirLabel);
+             if (e.action.includes('对冲开') || e.action.includes('HEDGE_OPEN') || e.action.includes('对冲开启')) {
+                 markers.push({ time: e.timestamp, type: 'HEDGE_OPEN', label: `防爆对冲(${eventDir})`, price: e.price });
+             } else if (e.action.includes('砍仓') || e.action.includes('减仓')) {
+                 markers.push({ time: e.timestamp, type: 'HEDGE_CUT', label: `砍仓(${eventDir})`, price: e.price });
+             } else if (e.action.includes('补仓') || e.action.includes('补回')) {
+                 markers.push({ time: e.timestamp, type: 'HEDGE_REFILL', label: `防爆对冲补仓(${eventDir})`, price: e.price });
+             } else if (e.action.includes('清仓')) {
+                 markers.push({ time: e.timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${eventDir})`, price: e.price });
              }
           });
       });
-      return markers;
+
+      // Deduplicate markers by time and label
+      const unique = new Map<string, { time: number; type: string; label: string; price?: number }>();
+      markers.forEach(m => {
+          const key = `${m.time}-${m.label}`;
+          if (!unique.has(key)) unique.set(key, m);
+      });
+      return Array.from(unique.values());
   }, [tradeLogs, symbol]);
   
   const getCandleIdx = (time: number) => {
@@ -1228,16 +1291,60 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const price = m.price || fullData[mIdx].close;
               const y = getY(price);
               
-              let color = '#FFF';
-              if (m.type === 'OPEN') color = '#22d3ee';
-              else if (m.type === 'CLOSE') color = '#fbbf24';
-              else if (m.type === 'HEDGE') color = '#a855f7';
-              else if (m.type === 'SIGNAL') color = '#34d399';
+              let color = '#22d3ee';
+              let badgeBg = '#083344';
+              let isTop = false;
+
+              if (m.type === 'OPEN') {
+                  color = '#22d3ee'; // cyan
+                  badgeBg = '#083344';
+                  isTop = false;
+              } else if (m.type === 'PROFIT_CLOSE') {
+                  color = '#10b981'; // emerald
+                  badgeBg = '#064e3b';
+                  isTop = true;
+              } else if (m.type === 'LOSS_CLOSE') {
+                  color = '#ef4444'; // red
+                  badgeBg = '#450a0a';
+                  isTop = true;
+              } else if (m.type === 'HEDGE_OPEN') {
+                  color = '#a855f7'; // purple
+                  badgeBg = '#3b0764';
+                  isTop = false;
+              } else if (m.type === 'HEDGE_CUT') {
+                  color = '#f97316'; // orange
+                  badgeBg = '#431407';
+                  isTop = true;
+              } else if (m.type === 'HEDGE_REFILL') {
+                  color = '#3b82f6'; // blue
+                  badgeBg = '#172554';
+                  isTop = false;
+              } else if (m.type === 'HEDGE_CLEAR') {
+                  color = '#34d399'; // green/teal
+                  badgeBg = '#064e3b';
+                  isTop = true;
+              } else if (m.type === 'HEDGE_CLOSE') {
+                  color = '#c084fc'; // purple
+                  badgeBg = '#3b0764';
+                  isTop = true;
+              } else if (m.type === 'CLOSE') {
+                  color = '#fbbf24'; // amber
+                  badgeBg = '#451a03';
+                  isTop = true;
+              } else if (m.type === 'SIGNAL') {
+                  color = '#34d399';
+                  badgeBg = '#064e3b';
+                  isTop = false;
+              }
+
+              const labelY = isTop ? y + 22 : y - 14;
+              const textWidth = Math.max(52, m.label.length * 9.5 + 10);
 
               signalMarkers.push(
                   <g key={`trade-${m.type}-${m.time}-${idx}`} pointerEvents="none">
-                      <circle cx={x} cy={y} r={4} stroke={color} strokeWidth={2} fill="none"/>
-                      <text x={x} y={m.type === 'CLOSE' ? y + 20 : y - 10} fill={color} fontSize="9" fontWeight="bold" textAnchor="middle">
+                      <circle cx={x} cy={y} r={4.5} stroke={color} strokeWidth={2} fill={badgeBg}/>
+                      <rect x={x - textWidth/2} y={labelY - 10} width={textWidth} height={16} rx={3} fill={badgeBg} stroke={color} strokeWidth={1} opacity={0.92}/>
+                      <text x={x} y={labelY + 2} fill={color} fontSize="9" fontWeight="bold" textAnchor="middle">
                           {m.label}
                       </text>
                   </g>
@@ -1551,6 +1658,11 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
            <div className="flex items-center gap-4">
                <div className="flex items-center gap-2">
                    <h2 className="text-lg font-bold text-slate-100">{symbol}</h2>
+                    {signalPattern && (
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shadow-sm ${signalPattern === "发散" ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40" : signalPattern === "穿越" ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"}`}>
+                            🎯 信号源: {signalPattern}
+                        </span>
+                    )}
                    <button 
                        onClick={() => {
                            setIsMeasuring(!isMeasuring);

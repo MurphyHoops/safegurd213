@@ -1462,11 +1462,22 @@ const AppContent: React.FC = () => {
             return;
         }
 
-        // 4. Replication Lag Protection (10 seconds after successful hedge)
+        // 4. Replication Lag Protection (60 seconds after hedge trigger to prevent duplicate firing during transit)
         const lastHedgeTime = recentlyOpenedHedgesRef.current.get(lockKey);
-        if (lastHedgeTime && Date.now() - lastHedgeTime < 10000) {
+        if (lastHedgeTime && Date.now() - lastHedgeTime < 60000) {
             if (simulatorRef.current) {
-                simulatorRef.current.addLog("WARNING", `🛡️ [对冲延迟拦截] ${cleanSymbol} ${side} 的自动对冲指令于 ${((Date.now() - lastHedgeTime)/1000).toFixed(1)} 秒前执行成功，仍在等待币安持仓同步，拦截本次重复触发。`);
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲在途拦截] ${cleanSymbol} ${side} 的自动对冲指令于 ${((Date.now() - lastHedgeTime)/1000).toFixed(1)} 秒前已发送，处于单次对冲保护期中，拦截本次重复触发。`);
+            }
+            return;
+        }
+
+        // 5. Post-Close Cooldown Protection (30 seconds after close/amputation of any position for this symbol)
+        // 🔒 [平仓-开对冲交叉锁] 检查该币种的平仓记录，若 30 秒内刚平仓/砍仓过对冲单，严禁立即重新向币安发送对冲开仓指令
+        const lastCloseTime = recentlyClosedPositionsRef.current.get(lockKey) || recentlyClosedPositionsRef.current.get(`${cleanSymbol}_${position.side}`);
+        if (lastCloseTime && Date.now() - lastCloseTime < 30000) {
+            const remainingSec = ((30000 - (Date.now() - lastCloseTime)) / 1000).toFixed(1);
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [对冲平仓冷却拦截] ${cleanSymbol} ${side} 在 ${((Date.now() - lastCloseTime)/1000).toFixed(1)} 秒前刚执行过平仓/砍仓，处于 30 秒防重开冷却保护期中（剩余 ${remainingSec}s），拒绝向币安重开对冲单！`);
             }
             return;
         }
@@ -1538,18 +1549,20 @@ const AppContent: React.FC = () => {
                         reopenCount: position.reopenCount,
                         leverage: position.leverage || 20
                     };
-                    simPositions.push(newHedge);
-                    simulatorRef.current.setPositions(simPositions);
 
+                    // Add single unified TradeLog for the hedge position BEFORE setPositions to prevent duplicate creation
                     simulatorRef.current.tradeLogs.unshift({
                         symbol: cleanSymbol,
-                        entry_id: resData.orderId || `H_AUTO_${Date.now()}`,
+                        entry_id: entryId,
                         status: 'OPEN',
                         is_hedge: true,
+                        main_entry_id: position.entryId,
                         entry_timestamp: Date.now(),
                         direction: side,
                         cost_usdt: amountUsdt,
                         entry_price: hedgePrice,
+                        correlationId: position.correlationId,
+                        reopenCount: position.reopenCount,
                         events: [{
                             timestamp: Date.now(),
                             action: '自动对冲开仓',
@@ -1558,6 +1571,22 @@ const AppContent: React.FC = () => {
                             reason: reason || '自动防爆对冲'
                         }]
                     });
+
+                    // Add sub-event to main position log if it exists
+                    const mainLog = simulatorRef.current.tradeLogs.find(l => l.entry_id === position.entryId);
+                    if (mainLog) {
+                        if (!mainLog.events) mainLog.events = [];
+                        mainLog.events.push({
+                            timestamp: Date.now(),
+                            action: `对冲开启 (${side})`,
+                            price: hedgePrice,
+                            amount: hedgeQty,
+                            reason: reason || '自动防爆对冲'
+                        });
+                    }
+
+                    simPositions.push(newHedge);
+                    simulatorRef.current.setPositions(simPositions);
                     simulatorRef.current.emitUpdate(true);
                     setPositions([...simPositions]);
                 }
@@ -1675,8 +1704,14 @@ const AppContent: React.FC = () => {
                 if (simulatorRef.current) {
                     simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动平仓成功: ${cleanSymbol} ${position.side} | ID: ${resData.orderId}`);
                     if (customQty !== undefined && ratio !== undefined) {
-                        // 🔒 [断臂求生实盘成功回调]
-                        const realizedPnL = (position.unrealizedPnL || 0) * (ratio / 100);
+                        // 🔒 [断臂求生实盘成功回调] 精确计算砍仓亏损金额并100%计入单币独立负债
+                        const currentMark = position.markPrice || position.entryPrice;
+                        const priceDiff = position.side === 'LONG' ? currentMark - position.entryPrice : position.entryPrice - currentMark;
+                        const currentTotalPnl = priceDiff * position.amount;
+                        const effectivePnl = (position.unrealizedPnL !== undefined && position.unrealizedPnL !== 0) ? position.unrealizedPnL : currentTotalPnl;
+                        const realizedPnL = effectivePnl * (ratio / 100);
+                        const isLoss = realizedPnL < 0;
+                        const lossAmount = isLoss ? Math.abs(realizedPnL) : 0;
                         simulatorRef.current.handleRealAmputationSuccess(
                             cleanSymbol,
                             position.side,
@@ -1689,6 +1724,19 @@ const AppContent: React.FC = () => {
                             simulatorRef.current.removePositionLocally(cleanSymbol, position.side);
                             setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side)));
                             setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side)));
+                        } else {
+                            setPositions(prev => prev.map(p => {
+                                if (normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side) {
+                                    return {
+                                        ...p,
+                                        isAmputated: true,
+                                        amputatedAmount: (p.amputatedAmount || 0) + customQty,
+                                        cumulativeAmputationLoss: (p.cumulativeAmputationLoss || 0) + lossAmount,
+                                        amount: Math.max(0, p.amount - customQty)
+                                    };
+                                }
+                                return p;
+                            }));
                         }
                     } else {
                         if (closeQty >= (position.amount * 0.999)) {
@@ -1877,6 +1925,14 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 simulatorRef.current.addLog("INFO", `[实盘平仓] 正在向币安发送市价平仓请求: ${cleanSymbol} ${side} | 数量: ${posToClose.amount}`);
             }
 
+            // OPTIMISTIC UI UPDATE: Instantly remove position from local state for immediate 0-ms response
+            setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
+            setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
+            if (simulatorRef.current) {
+                simulatorRef.current.removePositionLocally(cleanSymbol, side);
+            }
+            audioService.speak("平仓指令已发送");
+
             try {
                 const response = await fetch("/api/binance/order", {
                     method: "POST",
@@ -1896,13 +1952,10 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     if (simulatorRef.current) {
                         simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 平仓成功: ${cleanSymbol} ${side} | ID: ${resData.orderId}`);
                         simulatorRef.current.recordRealTradeLog(posToClose, '手动平仓');
-                        simulatorRef.current.removePositionLocally(cleanSymbol, side);
                     }
-                    setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
-                    setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
                     audioService.speak("实盘平仓执行成功");
 
-                    // Sync real-time positions instantly after order placement to show it immediately
+                    // Sync real-time positions instantly after order placement
                     if (typeof (window as any).triggerApiSync === "function") {
                         (window as any).triggerApiSync();
                     }
@@ -1911,6 +1964,8 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     if (simulatorRef.current) {
                         simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓失败: ${errMsg}`);
                     }
+                    // Restore position if failed
+                    setBinanceRealPositions(prev => [...prev, posToClose]);
                     alert(`币安实盘平仓失败:\n${errMsg}`);
                     audioService.speak("实盘平仓失败");
                 }
@@ -1918,6 +1973,8 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 if (simulatorRef.current) {
                     simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络异常: ${e.message || e}`);
                 }
+                // Restore position if network error
+                setBinanceRealPositions(prev => [...prev, posToClose]);
                 alert(`币安实盘平仓网络异常:\n${e.message || e}`);
             }
         } else {
@@ -1944,15 +2001,15 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             }
 
             if (simulatorRef.current) {
-                simulatorRef.current.addLog("INFO", `[实盘一键清仓] 正在向币安发送批量平仓指令，共 ${activePositionsToClose.length} 个仓位...`);
+                simulatorRef.current.addLog("INFO", `[实盘一键清仓] 正在并发向币安发送批量平仓指令，共 ${activePositionsToClose.length} 个仓位...`);
             }
 
-            // Loop and close each position on Binance
-            for (const pos of activePositionsToClose) {
+            // Execute all position closing requests in parallel simultaneously for lightning-fast execution speed
+            const closePromises = activePositionsToClose.map(async (pos) => {
+                const cleanSymbol = normalizeSymbol(pos.symbol);
                 try {
-                    const cleanSymbol = normalizeSymbol(pos.symbol);
                     if (simulatorRef.current) {
-                        simulatorRef.current.addLog("INFO", `[实盘一键清仓] 正在平仓: ${cleanSymbol} ${pos.side} | 数量: ${pos.amount}`);
+                        simulatorRef.current.addLog("INFO", `[实盘一键清仓] 正在极速平仓: ${cleanSymbol} ${pos.side} | 数量: ${pos.amount}`);
                     }
                     const response = await fetch("/api/binance/order", {
                         method: "POST",
@@ -1987,7 +2044,9 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络异常: ${pos.symbol} | 原因: ${e.message || e}`);
                     }
                 }
-            }
+            });
+
+            await Promise.all(closePromises);
 
             audioService.speak("实盘批量平仓完成");
             
@@ -2092,8 +2151,8 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         }
         
         const livePrice = resolvePrice(position.symbol, realPrices, position.markPrice || position.entryPrice);
-        const positionValue = position.amount * livePrice;
-        const hedgeAmountUsdt = positionValue * (activeHedgeRatio / 100);
+        const originalQty = position.initialAmount !== undefined ? position.initialAmount : position.amount;
+        const hedgeAmountUsdt = originalQty * livePrice * (activeHedgeRatio / 100);
 
         if (settings.system.realTrading) {
             const apiKey = settings.system.binanceApiKey;
@@ -2146,13 +2205,15 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         }
                         
                         const entryId = 'HEDGE_' + Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
+                        const hedgePrice = resData.price || livePrice;
+                        const hedgeQty = resData.qty || (hedgeAmountUsdt / hedgePrice);
                         const newHedge: Position = {
                             symbol: position.symbol,
                             side: hedgeSide,
-                            amount: resData.qty || (hedgeAmountUsdt / (resData.price || livePrice)),
-                            entryPrice: resData.price || livePrice,
-                            markPrice: resData.price || livePrice,
-                            liquidationPrice: hedgeSide === PositionSide.LONG ? (resData.price || livePrice) * 0.5 : (resData.price || livePrice) * 1.5,
+                            amount: hedgeQty,
+                            entryPrice: hedgePrice,
+                            markPrice: hedgePrice,
+                            liquidationPrice: hedgeSide === PositionSide.LONG ? hedgePrice * 0.5 : hedgePrice * 1.5,
                             unrealizedPnL: 0,
                             unrealizedPnLPercentage: 0,
                             entryId,
@@ -2163,26 +2224,44 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                             correlationId: position.correlationId,
                             reopenCount: position.reopenCount
                         };
-                        simPositions.push(newHedge);
-                        simulatorRef.current.setPositions(simPositions);
                         
+                        // Add single unified TradeLog for the hedge position BEFORE setPositions to prevent duplicate creation
                         simulatorRef.current.tradeLogs.unshift({
                             symbol: cleanSymbol,
-                            entry_id: resData.orderId || `H_MANUAL_${Date.now()}`,
+                            entry_id: entryId,
                             status: 'OPEN',
                             is_hedge: true,
+                            main_entry_id: position.entryId,
                             entry_timestamp: Date.now(),
                             direction: hedgeSide,
                             cost_usdt: hedgeAmountUsdt,
-                            entry_price: resData.price || livePrice,
+                            entry_price: hedgePrice,
+                            correlationId: position.correlationId,
+                            reopenCount: position.reopenCount,
                             events: [{
                                 timestamp: Date.now(),
                                 action: '对冲开仓',
-                                price: resData.price || livePrice,
-                                amount: resData.qty || (hedgeAmountUsdt / (resData.price || livePrice)),
+                                price: hedgePrice,
+                                amount: hedgeQty,
                                 reason: '手动对冲开仓'
                             }]
                         });
+
+                        // Add sub-event to main position log if it exists
+                        const mainLog = simulatorRef.current.tradeLogs.find(l => l.entry_id === position.entryId);
+                        if (mainLog) {
+                            if (!mainLog.events) mainLog.events = [];
+                            mainLog.events.push({
+                                timestamp: Date.now(),
+                                action: `对冲开启 (${hedgeSide})`,
+                                price: hedgePrice,
+                                amount: hedgeQty,
+                                reason: '手动对冲开仓'
+                            });
+                        }
+
+                        simPositions.push(newHedge);
+                        simulatorRef.current.setPositions(simPositions);
                         simulatorRef.current.emitUpdate(true);
                     }
                 } else {

@@ -36,8 +36,11 @@ const DEFAULT_CONFIG: List2Config = {
     sortMode: 'MOST',
     requireCrossing: true,
     requireAlignment: false,
+    crossingDivergenceLogic: 'AND',
     enableDivergenceCrossCheck: true,
     divergenceLookbackBars: 20,
+    enableSignalDeviationFilter: false,
+    maxSignalDeviationPercent: 50,
     strictFiltering: true,
     viewMode: 'ALL',
     syncDirectionFilterToList3: false
@@ -66,7 +69,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
 
     // --- LOGIC HOOK ---
     const { 
-        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, lastScanTime, removeItem, clearItems, removeSignal
+        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, scanningSymbols, lastScanTime, removeItem, clearItems, removeSignal
     } = useGrandCrossing(effectiveCandidates, initialConfig || DEFAULT_CONFIG, directMode, onLog, strategyId);
 
     // Expose removeSignal to parent
@@ -76,16 +79,27 @@ export const GrandCrossingModule: React.FC<Props> = ({
         }
     }, [onRemoveSignalReady, removeSignal]);
 
-    // --- SYNC OUTPUT ---
+    // --- SYNC OUTPUT (Only closed K-line signals pass to List 3) ---
     const lastListStrRef = React.useRef<string>('');
     useEffect(() => {
         let outputList = list2 || [];
+
+        // 🔒 [USER MANDATORY RULE] 列表3在读取列表2的数据必须是K线已收盘的币种 (lag >= 1 且 非灰色待定态)
+        outputList = outputList.filter(item => {
+            if (!item || !item.groupedResults || item.groupedResults.length === 0) return false;
+            return item.groupedResults.some(r => {
+                const isClosed = r.isClosed === true || (r.lag !== undefined && r.lag >= 1.0);
+                const notGray = !r.isPendingGray;
+                return isClosed && notGray;
+            });
+        });
+
         if (config?.syncDirectionFilterToList3) {
             const dir = config.viewMode || 'ALL';
             if (dir === 'LONG') {
-                outputList = list2.filter(item => item && item.direction === 'LONG');
+                outputList = outputList.filter(item => item && item.direction === 'LONG');
             } else if (dir === 'SHORT') {
-                outputList = list2.filter(item => item && item.direction === 'SHORT');
+                outputList = outputList.filter(item => item && item.direction === 'SHORT');
             }
         }
         const str = JSON.stringify(outputList);
@@ -124,9 +138,30 @@ export const GrandCrossingModule: React.FC<Props> = ({
     };
 
     // Filter list for display
-    const filteredList = activeFilterTf 
+    let filteredList = activeFilterTf 
         ? list2.filter(item => item.groupedResults?.some(r => r.tf === activeFilterTf))
         : list2;
+
+    const viewMode = config?.viewMode || 'ALL';
+    if (viewMode === 'LONG') {
+        filteredList = filteredList.map(item => {
+            const longResults = (item.groupedResults || []).filter(r => r.direction === 'LONG');
+            return {
+                ...item,
+                direction: 'LONG' as const,
+                groupedResults: longResults
+            };
+        }).filter(item => item.groupedResults && item.groupedResults.length > 0);
+    } else if (viewMode === 'SHORT') {
+        filteredList = filteredList.map(item => {
+            const shortResults = (item.groupedResults || []).filter(r => r.direction === 'SHORT');
+            return {
+                ...item,
+                direction: 'SHORT' as const,
+                groupedResults: shortResults
+            };
+        }).filter(item => item.groupedResults && item.groupedResults.length > 0);
+    }
 
     if (isBackground) {
         return null;
@@ -141,9 +176,11 @@ export const GrandCrossingModule: React.FC<Props> = ({
             activeFilterTf={activeFilterTf} isLocked={isLocked}
             onTfInteraction={handleTfInteraction}
             filteredList2={filteredList}
+            allList2={list2}
             setChartData={setChartData}
             pollingStatus={status === 'SCANNING' ? scanText : (lastScanTime ? `最后扫描: ${new Date(lastScanTime).toLocaleTimeString()}` : undefined)}
             activeScanTfs={activeScanTfs}
+            scanningSymbols={scanningSymbols}
             onRemoveItem={removeItem}
             onClearItems={clearItems}
         />

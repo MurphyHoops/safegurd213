@@ -3,6 +3,7 @@ import { ScanConfig, StartTrendGroup } from '../../../components/Scanner/scanner
 import { Play, ChevronDown, ChevronUp, Copy, Check, RefreshCw, Search, Flame, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { pipelineCoordinator } from '../../../services/pipelineQueue';
+import { fetchWithFallback } from '../../../services/apiService';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -107,100 +108,101 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         const matchedItems: StartTrendPoolItem[] = [];
 
         try {
-            // Process candidates in batches for high performance
-            const batchSize = 10;
-            for (let i = 0; i < candidates.length; i += batchSize) {
+            // Steady sequential 1.2s-per-coin cadence for absolute zero rate limiting and smooth real-time progress
+            for (let i = 0; i < candidates.length; i++) {
                 if (!isMountedRef.current) break;
-                const batch = candidates.slice(i, i + batchSize);
+                const symbol = candidates[i];
 
-                await Promise.all(batch.map(async (symbol) => {
-                    try {
-                        const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=100`;
-                        const res = await fetch(url1h);
-                        if (!res.ok) return;
+                try {
+                    const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=100`;
+                    const res = await fetchWithFallback(url1h);
+                    if (res && res.ok) {
                         const klines = await res.json();
-                        if (!Array.isArray(klines) || klines.length === 0) return;
+                        if (Array.isArray(klines) && klines.length > 0) {
+                            const currentPrice = parseFloat(klines[klines.length - 1][4]);
+                            if (!isNaN(currentPrice) && currentPrice > 0) {
+                                for (const group of activeGroups) {
+                                    const groupDays = group.days !== undefined ? group.days : (group.idx === 0 ? 1 : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7)));
+                                    const requiredHours = Math.max(groupDays * 24, 1);
+                                    if (klines.length < requiredHours) continue;
 
-                        const currentPrice = parseFloat(klines[klines.length - 1][4]);
-                        if (isNaN(currentPrice) || currentPrice <= 0) return;
+                                    const lastHCandles = klines.slice(-requiredHours);
 
-                        for (const group of activeGroups) {
-                            const groupDays = group.days !== undefined ? group.days : (group.idx === 0 ? 1 : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7)));
-                            const requiredHours = Math.max(groupDays * 24, 1);
-                            if (klines.length < requiredHours) continue;
+                                    // Check Long Start Trend
+                                    if (enableLong) {
+                                        const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                        const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                        if (periodLows.length > 0 && periodHighs.length > 0) {
+                                            const periodMinLow = Math.min(...periodLows);
+                                            const periodMaxHigh = Math.max(...periodHighs);
+                                            const baseOpen = parseFloat(lastHCandles[0][1]);
 
-                            const lastHCandles = klines.slice(-requiredHours);
+                                            const changePct = ((currentPrice - baseOpen) / baseOpen) * 100;
+                                            const changePctFromLow = ((currentPrice - periodMinLow) / periodMinLow) * 100;
+                                            const effectiveChange = Math.max(changePct, changePctFromLow);
 
-                            // Check Long Start Trend
-                            if (enableLong) {
-                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                if (periodLows.length > 0 && periodHighs.length > 0) {
-                                    const periodMinLow = Math.min(...periodLows);
-                                    const periodMaxHigh = Math.max(...periodHighs);
-                                    const baseOpen = parseFloat(lastHCandles[0][1]);
+                                            const pullbackPct = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
+                                            const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
 
-                                    const changePct = ((currentPrice - baseOpen) / baseOpen) * 100;
-                                    const changePctFromLow = ((currentPrice - periodMinLow) / periodMinLow) * 100;
-                                    const effectiveChange = Math.max(changePct, changePctFromLow);
-
-                                    const pullbackPct = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
-                                    const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
-
-                                    if (!isNaN(effectiveChange) && effectiveChange >= group.minLong && effectiveChange <= group.maxLong &&
-                                        !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
-                                        matchedItems.push({
-                                            symbol,
-                                            direction: 'LONG',
-                                            changePct: +effectiveChange.toFixed(2),
-                                            pullbackPct: +pullbackPct.toFixed(2),
-                                            matchedGroup: group.idx,
-                                            price: currentPrice
-                                        });
-                                        return;
+                                            if (!isNaN(effectiveChange) && effectiveChange >= group.minLong && effectiveChange <= group.maxLong &&
+                                                !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
+                                                matchedItems.push({
+                                                    symbol,
+                                                    direction: 'LONG',
+                                                    changePct: +effectiveChange.toFixed(2),
+                                                    pullbackPct: +pullbackPct.toFixed(2),
+                                                    matchedGroup: group.idx,
+                                                    price: currentPrice
+                                                });
+                                                break;
+                                            }
+                                        }
                                     }
-                                }
-                            }
 
-                            // Check Short Start Trend
-                            if (enableShort) {
-                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                if (periodHighs.length > 0 && periodLows.length > 0) {
-                                    const periodMaxHigh = Math.max(...periodHighs);
-                                    const periodMinLow = Math.min(...periodLows);
-                                    const baseOpen = parseFloat(lastHCandles[0][1]);
+                                    // Check Short Start Trend
+                                    if (enableShort) {
+                                        const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                        const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                        if (periodHighs.length > 0 && periodLows.length > 0) {
+                                            const periodMaxHigh = Math.max(...periodHighs);
+                                            const periodMinLow = Math.min(...periodLows);
+                                            const baseOpen = parseFloat(lastHCandles[0][1]);
 
-                                    const dropPct = ((baseOpen - currentPrice) / baseOpen) * 100;
-                                    const dropPctFromHigh = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
-                                    const effectiveDrop = Math.max(dropPct, dropPctFromHigh);
+                                            const dropPct = ((baseOpen - currentPrice) / baseOpen) * 100;
+                                            const dropPctFromHigh = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
+                                            const effectiveDrop = Math.max(dropPct, dropPctFromHigh);
 
-                                    const pullbackPct = ((currentPrice - periodMinLow) / periodMinLow) * 100;
-                                    const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
+                                            const pullbackPct = ((currentPrice - periodMinLow) / periodMinLow) * 100;
+                                            const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
 
-                                    if (!isNaN(effectiveDrop) && effectiveDrop >= group.minShort && effectiveDrop <= group.maxShort &&
-                                        !isNaN(pullbackPct) && pullbackPct <= maxPullbackShort) {
-                                        matchedItems.push({
-                                            symbol,
-                                            direction: 'SHORT',
-                                            changePct: -Math.abs(+effectiveDrop.toFixed(2)),
-                                            pullbackPct: +pullbackPct.toFixed(2),
-                                            matchedGroup: group.idx,
-                                            price: currentPrice
-                                        });
-                                        return;
+                                            if (!isNaN(effectiveDrop) && effectiveDrop >= group.minShort && effectiveDrop <= group.maxShort &&
+                                                !isNaN(pullbackPct) && pullbackPct <= maxPullbackShort) {
+                                                matchedItems.push({
+                                                    symbol,
+                                                    direction: 'SHORT',
+                                                    changePct: -Math.abs(+effectiveDrop.toFixed(2)),
+                                                    pullbackPct: +pullbackPct.toFixed(2),
+                                                    matchedGroup: group.idx,
+                                                    price: currentPrice
+                                                });
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                    } catch (err) {
-                        console.error(`[StartTrendPool] Error analyzing ${symbol}:`, err);
                     }
-                }));
+                } catch (err) {
+                    console.warn(`[StartTrendPool] Skipping ${symbol} due to timeout/error:`, err);
+                }
 
                 if (isMountedRef.current) {
-                    setProgress({ current: Math.min(i + batchSize, candidates.length), total: candidates.length });
+                    setProgress({ current: i + 1, total: candidates.length });
                 }
+
+                // Exactly 1 second delay per coin as requested
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
 
             if (isMountedRef.current) {

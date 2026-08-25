@@ -26,7 +26,10 @@ interface Props {
 
 export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setChartData, onRemove, idx }) => {
     const defaultTf = activeFilterTf || item.groupedResults?.[0]?.tf || '15m';
-    const isLong = item.direction === 'LONG';
+    const primarySignal = item.groupedResults?.[0];
+    const isGray = primarySignal?.isPendingGray ?? false;
+    const isLong = !isGray && item.direction === 'LONG';
+    const isShort = !isGray && item.direction === 'SHORT';
 
     useEffect(() => {
         verifyAndFixSymbolPrice(item.symbol);
@@ -45,7 +48,13 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
     };
 
     return (
-        <div onClick={handleItemClick} className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${isLong ? 'border-emerald-500/20 hover:border-emerald-500/40' : 'border-red-500/20 hover:border-red-500/40'}`}>
+        <div onClick={handleItemClick} className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${
+            isGray 
+                ? 'border-slate-600/40 hover:border-slate-500/60' 
+                : isLong 
+                    ? 'border-emerald-500/20 hover:border-emerald-500/40' 
+                    : 'border-red-500/20 hover:border-red-500/40'
+        }`}>
             <div className="flex justify-between font-bold text-slate-300 mb-1 border-b border-slate-700/50 pb-1">
                 <span className="flex items-center gap-1">
                     {idx !== undefined && (
@@ -54,12 +63,22 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                     <span>{item.symbol.replace('USDT', '')}</span>
                 </span>
                 <div className="flex items-center gap-2">
-                    <span className="text-slate-500">{item.price.toFixed(8)}</span>
+                    <span className="text-slate-500">{Number(item.price || 0).toFixed(8)}</span>
                 </div>
             </div>
             <div className="flex justify-between items-center mb-1">
                 <div className="flex items-center gap-1">
-                    {isLong ? <span className="text-[9px] text-emerald-400 font-bold">T↑</span> : item.direction === 'SHORT' ? <span className="text-[9px] text-red-400 font-bold">T↓</span> : <span className="text-[9px] text-slate-500 font-bold">T-</span>}
+                    {isGray ? (
+                        <span className="text-[9px] text-slate-400 font-bold bg-slate-700/60 px-1 py-0.2 rounded border border-slate-600/50" title="实时价格暂不符阳/阴线关系，待K线收盘终审">
+                            待定(变灰)
+                        </span>
+                    ) : isLong ? (
+                        <span className="text-[9px] text-emerald-400 font-bold">T↑</span>
+                    ) : isShort ? (
+                        <span className="text-[9px] text-red-400 font-bold">T↓</span>
+                    ) : (
+                        <span className="text-[9px] text-slate-500 font-bold">T-</span>
+                    )}
                 </div>
                 <button 
                     onClick={(e) => {
@@ -95,7 +114,13 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                     let Icon = Shield;
                     let containerClass = "border-slate-700 bg-slate-900/60";
 
-                    if (lag <= 1) {
+                    if (res.isPendingGray) {
+                        statusText = '待定(变灰)';
+                        textColor = 'text-slate-400 font-bold';
+                        barColor = 'bg-slate-500';
+                        Icon = Hourglass;
+                        containerClass = "border-slate-600/70 bg-slate-800/90";
+                    } else if (lag <= 1) {
                         statusText = 'NEW';
                         textColor = 'text-white font-bold';
                         barColor = 'bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]'; 
@@ -141,7 +166,7 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                                     </div>
                                     {res.bodyRatio !== undefined && (
                                         <span className={`text-[7px] font-mono ${res.bodyRatio < (config.minBodyRatio || 0) ? 'text-red-400' : 'text-emerald-400/80'}`}>
-                                            B:{res.bodyRatio.toFixed(0)}%
+                                            B:{Number(res.bodyRatio || 0).toFixed(0)}%
                                         </span>
                                     )}
                                 </div>

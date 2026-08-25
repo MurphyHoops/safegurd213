@@ -45,6 +45,37 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                 </div>
             </div>
 
+            {/* ROW 1.5: 信号K线振幅偏离限制 (Price Deviation Filter from Signal Candle) */}
+            <div className="bg-slate-800/50 p-2 rounded border border-slate-700/50 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1 text-[10px] text-amber-400 font-bold whitespace-nowrap">
+                        <TrendingUp size={10} className="text-amber-500 shrink-0" /> 振幅偏离限制
+                    </div>
+                    {(config.enableSignalDeviationFilter ?? false) && (
+                        <div className="flex items-center gap-1 animate-in fade-in slide-in-from-left-2 ml-1">
+                            <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">阈值</span>
+                            <div className="flex items-center gap-1 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/60">
+                                <input 
+                                    type="number" 
+                                    min={0}
+                                    max={1000}
+                                    value={Number.isNaN(config.maxSignalDeviationPercent) ? '' : (config.maxSignalDeviationPercent ?? 50)} 
+                                    onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, maxSignalDeviationPercent: parseInt(e.target.value) || 0})); }} 
+                                    className="w-10 bg-transparent text-right text-[11px] font-bold text-amber-300 outline-none p-0 border-b border-amber-500/40 focus:border-amber-400" 
+                                />
+                                <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">%</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+                <div 
+                    onClick={() => setConfig(p => ({...p, enableSignalDeviationFilter: !p.enableSignalDeviationFilter}))} 
+                    className={`w-7 h-3.5 rounded-full p-0.5 cursor-pointer transition-colors shrink-0 ml-2 ${config.enableSignalDeviationFilter ? 'bg-amber-600' : 'bg-slate-700'}`}
+                >
+                    <div className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${config.enableSignalDeviationFilter ? 'translate-x-3.5' : ''}`} />
+                </div>
+            </div>
+
             {/* ROW 2: EMA80 Trend & Sort Mode */}
             <div className="grid grid-cols-2 gap-2">
                 <div className="flex items-center justify-between bg-slate-800/50 p-1.5 rounded border border-slate-700/50">
@@ -93,6 +124,25 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                         <div onClick={() => setConfig(p => ({...p, requireAlignment: !p.requireAlignment}))} className={`w-8 h-4 rounded-full p-0.5 cursor-pointer transition-colors ${config.requireAlignment ? 'bg-cyan-600' : 'bg-slate-700'}`}>
                             <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${config.requireAlignment ? 'translate-x-4' : ''}`} />
                         </div>
+                    </div>
+                </div>
+
+                {/* AND / OR Logic Selector */}
+                <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
+                    <span className="text-[10px] text-slate-300 font-bold">条件组合关系 (Logic)</span>
+                    <div className="flex bg-slate-900 rounded p-0.5 border border-slate-700 items-center">
+                        <button 
+                            onClick={() => setConfig(p => ({...p, crossingDivergenceLogic: 'AND'}))}
+                            className={`px-3 py-1 text-[9px] font-bold rounded transition-all ${(config.crossingDivergenceLogic || 'AND') === 'AND' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                        >
+                            且 (AND)
+                        </button>
+                        <button 
+                            onClick={() => setConfig(p => ({...p, crossingDivergenceLogic: 'OR'}))}
+                            className={`px-3 py-1 text-[9px] font-bold rounded transition-all ${(config.crossingDivergenceLogic || 'AND') === 'OR' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                        >
+                            或 (OR)
+                        </button>
                     </div>
                 </div>
 

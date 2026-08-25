@@ -19,17 +19,19 @@ interface Props {
     isLocked: boolean;
     onTfInteraction: (tf: string, type: 'SINGLE' | 'LONG_2' | 'LONG_3' | 'RESET') => void;
     filteredList2: ScannerItem[];
+    allList2?: ScannerItem[];
     setChartData: (data: any) => void;
     pollingStatus?: string; 
     activeScanTfs?: Set<string>; // New prop
+    scanningSymbols?: Record<string, string>;
     onRemoveItem: (symbol: string) => void;
     onClearItems: () => void;
 }
 
-const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, setChartData, pollingStatus, activeScanTfs, onRemoveItem, onClearItems }) => {
+const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, allList2, setChartData, pollingStatus, activeScanTfs, scanningSymbols, onRemoveItem, onClearItems }) => {
     
-    // Auto History Logger for List 2 (Grand Crossing)
-    useAutoHistoryLogger('LIST2', filteredList2 || []);
+    // Auto History Logger for List 2 (Grand Crossing) - track all active signals across all timeframes
+    useAutoHistoryLogger('LIST2', allList2 || filteredList2 || []);
 
     // View Mode State: ALL | LONG | SHORT (synced with config, fallback to 'ALL')
     const viewMode = config?.viewMode || 'ALL';
@@ -90,6 +92,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                 countdowns={countdowns} tfCounts={tfCounts} 
                 activeFilterTf={activeFilterTf} isLocked={isLocked} onTfInteraction={onTfInteraction}
                 activeScanTfs={activeScanTfs}
+                scanningSymbols={scanningSymbols}
                 pollingStatus={pollingStatus}
             />
             

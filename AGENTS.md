@@ -1,111 +1,68 @@
-# Project-Specific Instructions
+# Project Universal Constraints & Atomic Code Locks
 
-## Global Scanner (List 1-6) - Real-time Mode Code Lock
-**CRITICAL**: The core logic and UI for the All-Domain Scanner (Lists 1-6) in **Real-time Mode** are now locked. 
-Do NOT modify any code in the following directories/files unless explicitly instructed to fix a critical regression:
-- `/modules/market-scanner/` (List 1) - **LOCKED**
-- `/modules/grand-crossing/` (List 2) - **STRICTLY LOCKED** (Do not modify rules without explicit instruction)
-- `/modules/structure-audit/` (List 3)
-- `/modules/momentum-audit/` (List 4)
-- `/modules/final-audit/` (List 5)
-- `/modules/terminal-dashboard/` (List 6)
-- `/components/Scanner/` (Scanner-related components)
-- `/services/rules/` (Core algorithmic files for L1-L6)
-- `/services/scanner/` (Scanner orchestration logic)
-- `/services/apiService.ts` (Network core)
+## 🔒 通用约束与核心铁律 (Universal Constraints)
+1. **只修改提及的地方或功能 (Strict Scope Discipline)**: 没有特别下指令提及要修改的地方，绝对不准擅自修改现有功能或组件行为。只改单点、绝不动面！
+2. **不准改其他功能 (Zero Side-Effects)**: 任何修改必须严格限制在指定范围内，绝不允许波及或修改未提及的其他功能。
+3. **不准擅自重构 (No Unsolicited Refactoring)**: 绝对禁止擅自重构已稳定运行的代码结构或重写系统架构。
+4. **不准加依赖 (No Unsolicited Dependencies)**: 严禁擅自安装或引入未经明确指令许可的外部 npm 包或依赖库。
+5. **只改单点、绝不动面 (Single-Point Mutation Only)**: 严禁顺带修整、严禁联想式补全修改周边代码。
+6. **修改确认制 (Mandatory Authorization Check)**: 如果有特别原因确实需要涉及或调整其他功能/核心模块，**必须先在对话中明确询问并等待用户确认授权后方可修改**。
 
-This lock ensures stability while development shifts to the **Backtest Mode (Simulation Terminal)**.
+---
 
-## Momentum Audit (List 4) - Special Rule Lock
-**CRITICAL**: The core running rules, logic, and configuration for the following features in List 4 (Momentum Audit) are now locked and **MUST NOT** be modified unless explicitly instructed by a special directive:
-1. **防追高熔断 (Anti-Chase Fuse)**: Features that prevent chasing extreme price movements away from reference baseline lows/highs.
-2. **动态方向锁 (Dynamic Direction Lock)**: Features that dynamically restrict trade directions (e.g., locking Long/Short) to prevent entering trades against dominant momentum trends.
+## 🔒 绝对修改授权铁律 (User Golden Directive)
+> **"这些功能的失效是从来都没有下指令的，以后在没特别下指令的时候，你绝对不能乱修改程序里的功能；【如果有特别原因需要涉及其它功能修改的，必须要在询问，等待我确认后再修改】，把这段话置入你的程序修改内容里，每次修改都要先看看这段指令"**
 
-## K-Line Data Fetching - Code Lock
-**CRITICAL**: The core K-line data fetching mechanism, including the tiered proxy fallback strategy in `raceFetchKlines`, is now locked to maintain stability.
-- `/components/KlineChartModal.tsx` (Specifically `raceFetchKlines` function) - **LOCKED**
-- `/services/realtime/BinanceRealtimeService.ts` - **LOCKED**
-- `/components/ScannerDashboard.tsx` (Specifically real-time price handling logic) - **LOCKED**
-- `/components/TradeLogModal.tsx` (Specifically logic for transaction log navigation and filtering) - **LOCKED**
-Do NOT modify this logic unless explicitly instructed to fix a critical regression.
+---
 
-## Strategy 4 Amputation (Only Clear Hedge) - Code Lock
-**CRITICAL**: The core logic, interface settings, and rules for Strategy 4 "断臂求生" (including the "只清对冲、主仓续航" feature and switch) are now locked to maintain stability.
-- `/services/rules/rescue/strategy4_amputation.ts` - **STRICTLY LOCKED**
-- `/services/rules/rescue_rules.ts` (specifically Strategy 4 invocations) - **STRICTLY LOCKED**
-- `/components/Settings/RescueStrategies/Strategy4_Amputation.tsx` - **LOCKED**
-- `/modules/rescue-tactics/strategies/Strategy4_Amputation.tsx` - **LOCKED**
-Do NOT modify this logic or settings unless explicitly instructed to fix a critical regression.
+## 🔒 原子化全域代码锁定清单 (Atomic Module & Pipeline Locks)
 
-## List 1 Instant Open & Reopen - Code Lock
-**CRITICAL**: The core automation logic and UI controls for List 1 "立即开仓" (Instant Open) and "平仓后立即开仓" (Instant Reopen) are now locked to maintain stability.
-- `/modules/market-scanner/components/List1_Selection.tsx` (Specifically the inline header switch controls) - **STRICTLY LOCKED**
-- `/components/ScannerDashboard.tsx` (Specifically the `useEffect` instant open hook, refs, and closed-loop execution triggers) - **STRICTLY LOCKED**
-Do NOT modify this logic or settings unless explicitly instructed to fix a critical regression.
+### 1. 全域初筛流水线 (Lists 1-6 Pipeline) - 【全域严格锁定 🔒】
+- **List 1: 市场初筛 (`/modules/market-scanner/`, `/services/rules/list1_market.ts`)**: 
+  - 三级过滤池 (成交量池 5m / 启动趋势池 3m / 宏观趋势池 4m) 队列协同与任务调度 (`/services/pipelineQueue.ts`)
+  - 立即开仓 / 平仓后立即开仓闭环状态机 (`/modules/market-scanner/components/List1_Selection.tsx`)
+  - 单币紧凑行与详情折叠极值/多周期面板 (`/modules/market-scanner/components/Item.tsx`)
+- **List 2: 均线穿越 (`/modules/grand-crossing/`, `/services/rules/list2_crossing.ts`)**: 
+  - 【特别绝对锁定 🔒】**列表2独立生命周期机制与访问过去信号K线锚定**：列表1币种进入列表2后立即物理切断与列表1依附关系，不受列表1退出连带清除；严格按【信号存续】“访问过去”设定根数回溯扫描，在回溯K线上符合穿越/发散规则即保留并精确标记该K线为信号K线；存留严格且仅由【信号存续】寿命根数及列表3/4反向清除指令唯一控制
+  - 多周期 EMA/SMA 交叉判定、穿透率与多重验证缓冲引擎
+- **List 3: 结构审计 (`/modules/structure-audit/`, `/services/rules/list3_structure.ts`)**: 
+  - K线实体形态、支撑阻力位、布林带挤压、ATR突破审计、7K推进力
+- **List 4: 动量审计 (`/modules/momentum-audit/`, `/services/rules/list4_momentum.ts`)**: 
+  - 【特别锁定】防追高熔断 (Anti-Chase Fuse)
+  - 【特别锁定】动态方向锁 (Dynamic Direction Lock)
+  - 【特别锁定】高级过滤限制与震荡相交审计
+- **List 5: 最终审计与实时战场 (`/modules/final-audit/`, `/modules/live-battlefield/`)**: 
+  - 多维信号汇聚、风控过滤、最终开仓仲裁
+- **List 6: 战术面板与自动执行 (`/modules/terminal-dashboard/`, `/modules/tactical-command/`)**: 
+  - 战术指令下发、执行参数校验与自动开仓
 
-## List 1 Three-Tier Filter Pools & Pipeline Execution Engine - Code Lock
-**CRITICAL**: The core logic, interval speed controls (5m/3m/4m), (Manual/Auto) switches, candidate pool readers, and priority pipeline coordination for the List 1 Three-Tier Filter Pools are now strictly locked:
-- `/services/pipelineQueue.ts` (Priority Task Queue Coordinator: Step 1 Volume Pool -> Step 2 Start Trend -> Step 3 Major Trend) - **STRICTLY LOCKED**
-- `/modules/market-scanner/components/VolumePoolBox.tsx` (Volume Filter Pool & 5-min Binance Sync) - **STRICTLY LOCKED**
-- `/modules/market-scanner/components/StartTrendPoolBox.tsx` (Start Trend Pool & 3-min Volume Pool Sync) - **STRICTLY LOCKED**
-- `/modules/market-scanner/components/MajorTrendSection.tsx` (Major Trend Discovery UI & 4-min Start Trend Pool Sync) - **STRICTLY LOCKED**
-- `/modules/market-scanner/useScannerLogic.ts` (Major Trend Discovery Core & Candidate Pool Execution) - **STRICTLY LOCKED**
-Do NOT modify this logic, scheduling intervals, or priority queuing unless explicitly instructed by a special directive.
+---
 
-## Real-time Price Push & Position Sync Engine - Code Lock
-**CRITICAL**: The core real-time high-performance price push, Web-Worker-based WebSocket subscription, and DOM-bypass UI updates are now strictly locked to ensure 100% safety, security, and millisecond-level synchronization with the Binance exchange.
-- `/services/binanceWs.ts` - **STRICTLY LOCKED**
-- `/services/priceRegistry.ts` - **STRICTLY LOCKED**
-- `/components/RealtimePriceSpan.tsx` - **LOCKED**
-- `/components/RealtimePnlSpan.tsx` - **LOCKED**
-- `/modules/live-battlefield/components/PositionRow.tsx` - **LOCKED**
-- `/modules/positions-list/components/PositionItem.tsx` - **LOCKED**
-Do NOT modify this logic, subscriptions, or rendering pipelines unless explicitly instructed to fix a critical regression.
+### 2. 八大核心功能模块 (Modules 1-8) - 【全域严格锁定 🔒】
+- **Mod 1: 实时战场 (`/modules/live-battlefield/`)**: 
+  - 毫秒级实时持仓行情联动与主从面板
+- **Mod 2: 持仓管理 (`/modules/positions-list/`)**: 
+  - 持仓明细、单币独立止盈止损、AI智能逃顶自适应托管
+  - 【特别锁定】极速平仓响应通道 (`server.ts` `/api/binance/order` 并行取消挂单与持仓同步、前端批量清仓加速)
+- **Mod 3: 预警防线 (`/modules/warning-defense/`, `/modules/hedge-guardian/`, `/services/rules/hedging_rules.ts`)**: 
+  - 爆仓距离监控、强平防护网、对冲触发防线
+- **Mod 4: 救世策略库 1-8 (`/modules/rescue-tactics/`, `/services/rules/rescue/`)**: 
+  - 【特别绝对锁定】**防爆对冲盈利出局所有代码** (Strategy 2 对冲解套、Strategy 3 回调盈利、Strategy 4 断臂求生、Strategy 5 震荡防守等全套解套与单币负债闭环系统)
+  - 策略 1-8 阶梯式解套与回撤修复
+- **Mod 5: 统计看板与财务监控 (`/modules/analytics/`, `/modules/finance-monitor/`, `/components/StatsPanel.tsx`)**: 
+  - 保证金率、钱包余额、杠杆可用额、总盈亏统计
+- **Mod 6: 系统日志与历史审计 (`/modules/system-logs/`, `/modules/log-center/`, `/components/TradeLogModal.tsx`)**: 
+  - 开平仓日志流、执行记录、事件回放、高信噪比静默巡检
+- **Mod 7: 网络核心与实盘连接 (`/services/apiService.ts`, `/services/binanceWs.ts`, `/services/priceRegistry.ts`)**: 
+  - Binance WebSocket 高频推送与 Web Worker 解耦
+  - DOM-Bypass 价格极速注册表与 150ms 节流防假死机制
+- **Mod 8: 专业K线分析图表 (`/components/KlineChartModal.tsx`)**: 
+  - 多通道竞速与代理降级数据获取 (`raceFetchKlines`)
+  - 多周期 K 线图表与指标实时渲染
 
-## WebSocket Real-time Ticking Thread Safety - Code Lock
-**CRITICAL**: The high-frequency WebSocket tick throttling mechanism in `App.tsx` is strictly locked. 
-- In `/App.tsx` (Specifically the `binanceWs.subscribe` callback logic and `lastInstantTickTimeRef` checks) - **STRICTLY LOCKED**
-This prevents event loop starvation, browser freezes, and subsequent unhandled rendering crashes ("blue/white screens"). The tick frequency MUST remain throttled to >= 150ms. Do NOT remove this throttling layer!
+---
 
-## Real-trading Automated Execution & Auto-Reopen - Code Lock
-**CRITICAL**: The core logic, callbacks, and safety parameters for the Binance real-trading automated execution, partial amputation callbacks, and automatic reopening mechanisms are now strictly locked.
-- `/services/marketSimulator.ts` (Specifically real-trading execution hooks `onRealClose`, `onRealReopen`, `handleRealAmputationSuccess`, and reopen limit checks in `reopenPosition`) - **STRICTLY LOCKED**
-- `/App.tsx` (Specifically the setup callbacks `sim.onRealClose`/`sim.onRealReopen`, real-trading position opening rules bypass logic `extraProps?.isReopened`, and delayed execution handlers `handleAutoReopen`) - **STRICTLY LOCKED**
-Do NOT modify this logic, timing delays, or synchronization rules unless explicitly requested with a specific confirmation directive.
-
-## 🔒 Universal Constraints (通用核心铁律)
-1. **不准改其他功能**: WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES, COMPONENT BEHAVIORS, OR LOCKED MODULES.
-2. **不准擅自重构**: DO NOT REFACTOR STABLE WORKING CODE OR RE-ARCHITECT MODULES WITHOUT EXPLICIT USER INSTRUCTION.
-3. **不准加依赖**: DO NOT INSTALL OR IMPORT UNREQUESTED NPM PACKAGES OR EXTERNAL DEPENDENCIES.
-4. **修改确认制**: IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU MUST EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION.
-
-## 🔒 Strict Modification & Authorization Directive (绝对修改授权铁律)
-**CRITICAL USER DIRECTIVE**: 
-"这些功能的失效是从来都没有下指令的，以后在没特别下指令的时候，你绝对不能乱修改程序里的功能；【如果有特别原因需要涉及其它功能修改的，必须要在询问，等待我确认后再修改】，把这段话置入你的程序修改内容里，每次修改都要先看看这段指令"
-- WITHOUT EXPLICIT ORDERS, YOU MUST ABSOLUTELY NOT MODIFY EXISTING FEATURES OR COMPONENT BEHAVIORS.
-- IF A PROPOSAL REQUIRES REWRITING OR MODIFYING OTHER CORES/FUNCTIONS, YOU **MUST** EXPLICITLY ASK AND WAIT FOR USER CONFIRMATION BEFORE PROCEEDING!
-
-## 🔒 Atomic Module Locks (原子化结构全域锁定)
-- **Lists 1-6 (All-Domain Scanner Pipeline)**:
-  - List 1: 市场初筛 (`/modules/market-scanner/`)
-  - List 2: 均线穿越 (`/modules/grand-crossing/`)
-  - List 3: 结构审计 (`/modules/structure-audit/`)
-  - List 4: 动量审计与防追高熔断/动态方向锁 (`/modules/momentum-audit/`)
-  - List 5: 最终审计 (`/modules/final-audit/`)
-  - List 6: 战术面板与自动执行 (`/modules/terminal-dashboard/`)
-- **Modules 1-8 (Tactical Command & Operations)**:
-  - Mod 1: 实时战场 (`/modules/live-battlefield/`)
-  - Mod 2: 持仓管理 (`/modules/positions-list/`)
-  - Mod 3: 预警防线 (`/modules/warning-defense/`)
-  - Mod 4: 救世策略库 1-8 (`/modules/rescue-tactics/` & `/services/rules/rescue/`)
-  - Mod 5: 统计看板与财务汇总 (`/modules/analytics/` & `/components/StatsPanel.tsx`)
-  - Mod 6: 系统日志与历史记录 (`/modules/system-logs/` & `/components/TradeLogModal.tsx`)
-  - Mod 7: 网络核心与实盘连接 (`/services/apiService.ts`, `/services/binanceWs.ts`, `/services/priceRegistry.ts`)
-  - Mod 8: K线图表与分析 (`/components/KlineChartModal.tsx`)
-- **Pipeline Transition & State Boundaries**:
-  - All data bridges between List 1->2->3->4->5->6 are sealed and locked.
-  - No background mutations may bleed across module boundaries.
-
-
-
-
+### 3. 数据流边界与原子化隔离约束 (State & Data Bridge Boundaries)
+- 模块间数据流只通过明确定义的只读 Props、Context 或独立事件流传递。
+- 严禁模块跨边界直接篡改或污染其他模块的私有状态。
+- 每个模块与子组件独立封包，任何单一改动均处于隔离原子容器内，绝不影响系统其他部分的稳定运行。

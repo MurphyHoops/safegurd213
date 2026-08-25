@@ -1378,23 +1378,38 @@ const ScannerDashboardInner: React.FC<
     [scannerMode, setPositions, onLog, onOpenPosition, selectedStrategyId],
   );
 
-  // --- LIST 1 INSTANT OPEN AUTOMATION ---
+  // --- LIST 1 INSTANT OPEN & REOPEN AUTOMATION ---
   const list1OpenedSymbolsRef = useRef<Set<string>>(new Set());
+  const list1ClosedSymbolsRef = useRef<Set<string>>(new Set());
   const list1LastTriggerTimeRef = useRef<Record<string, number>>({});
+  const prevPositionsRef = useRef<Position[]>([]);
+  const list1ClosedTimeRef = useRef<Record<string, number>>({});
 
+  // Real-time detection of closed positions
   useEffect(() => {
-    const instantOpen = scanConfig?.instantOpenEnabled;
-    const instantOpenAfterClose = scanConfig?.instantReopenEnabled;
-    const openDirection = scanConfig?.instantOpenDirection || "LONG";
+    const prevPosMap = new Map(prevPositionsRef.current.map(p => [normalizeSymbol(p.symbol), p]));
+    const currentPosMap = new Map(filteredPositions.map(p => [normalizeSymbol(p.symbol), p]));
 
-    // 1. Clean up symbols that are no longer in list1Candidates to allow reopening if they drop out and come back
-    const currentList1Symbols = new Set(list1Candidates.map(c => normalizeSymbol(c.symbol)));
-    list1OpenedSymbolsRef.current.forEach(sym => {
-      if (!currentList1Symbols.has(sym)) {
-        list1OpenedSymbolsRef.current.delete(sym);
-        delete list1LastTriggerTimeRef.current[sym];
+    prevPosMap.forEach((pos, sym) => {
+      if (!currentPosMap.has(sym)) {
+        list1ClosedSymbolsRef.current.add(sym);
+        list1ClosedTimeRef.current[sym] = Date.now();
       }
     });
+
+    // If active in positions, ensure opened tracking is set and remove from closed set
+    currentPosMap.forEach((pos, sym) => {
+      list1OpenedSymbolsRef.current.add(sym);
+      list1ClosedSymbolsRef.current.delete(sym);
+    });
+
+    prevPositionsRef.current = filteredPositions;
+  }, [filteredPositions]);
+
+  useEffect(() => {
+    const instantOpen = !!scanConfig?.instantOpenEnabled;
+    const instantOpenAfterClose = !!scanConfig?.instantReopenEnabled;
+    const openDirection = scanConfig?.instantOpenDirection || "LONG";
 
     if (!instantOpen && !instantOpenAfterClose) {
       return;
@@ -1407,8 +1422,8 @@ const ScannerDashboardInner: React.FC<
       const hasActivePosition = filteredPositions.some(p => normalizeSymbol(p.symbol) === symbol);
 
       if (hasActivePosition) {
-        // If it currently has a position, mark it as opened so if instantOpen is true, we don't duplicate/re-open
         list1OpenedSymbolsRef.current.add(symbol);
+        list1ClosedSymbolsRef.current.delete(symbol);
         return;
       }
 
@@ -1418,23 +1433,58 @@ const ScannerDashboardInner: React.FC<
         return;
       }
 
-      // If it does not have an active position:
-      // Case A: instantOpenAfterClose is true -> always open if it is in list1
-      // Case B: instantOpen is true AND we haven't opened it yet during its stay in list1 -> open
-      const shouldOpen = instantOpenAfterClose || (instantOpen && !list1OpenedSymbolsRef.current.has(symbol));
+      const wasClosed = list1ClosedSymbolsRef.current.has(symbol) || ((list1ClosedTimeRef.current[symbol] || 0) > 0);
 
-      if (shouldOpen) {
+      // Branch 1: The position for this symbol was previously closed
+      if (wasClosed) {
+        // STRICT LOCK: In closed state, if instantReopenEnabled is false/disabled, NEVER reopen!
+        if (!instantOpenAfterClose) {
+          return;
+        }
+
+        // If instantReopenEnabled is strictly ON, require at least 30 seconds cooldown after position close
+        const lastClosedTime = list1ClosedTimeRef.current[symbol] || 0;
+        if (now - lastClosedTime < 30000) {
+          return;
+        }
+
         const price = resolvePrice(item.symbol, currentPrices, item.price);
         if (price > 0) {
           list1OpenedSymbolsRef.current.add(symbol);
-          list1LastTriggerTimeRef.current[symbol] = now; // Set cooldown immediately to block immediate race conditions
+          list1LastTriggerTimeRef.current[symbol] = now;
+          delete list1ClosedTimeRef.current[symbol];
+          list1ClosedSymbolsRef.current.delete(symbol);
+
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
-          console.log(`[List 1 Auto Open] Triggering trade for ${symbol} @ ${price} (${side})`);
+          console.log(`[List 1 Reopen After Close] Triggering trade for ${symbol} @ ${price} (${side})`);
           executeTradeSafe(
             symbol,
             side,
             price,
-            `[List1 Auto] ${instantOpenAfterClose ? 'ReopenAfterClose' : 'InstantOpen'}`
+            `[List1 Auto] ReopenAfterClose`
+          );
+        }
+        return;
+      }
+
+      // Branch 2: Brand new candidate in List 1 that was NEVER opened and NEVER closed
+      if (instantOpen) {
+        if (list1OpenedSymbolsRef.current.has(symbol)) {
+          return;
+        }
+
+        const price = resolvePrice(item.symbol, currentPrices, item.price);
+        if (price > 0) {
+          list1OpenedSymbolsRef.current.add(symbol);
+          list1LastTriggerTimeRef.current[symbol] = now;
+
+          const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
+          console.log(`[List 1 Instant Open] Triggering trade for ${symbol} @ ${price} (${side})`);
+          executeTradeSafe(
+            symbol,
+            side,
+            price,
+            `[List1 Auto] InstantOpen`
           );
         }
       }
@@ -1443,6 +1493,9 @@ const ScannerDashboardInner: React.FC<
 
   const handleClosePositionInternal = useCallback(
     (symbol: string, side: PositionSide) => {
+      const normSym = normalizeSymbol(symbol);
+      list1ClosedSymbolsRef.current.add(normSym);
+      list1ClosedTimeRef.current[normSym] = Date.now();
       if (scannerMode === "BACKTEST") {
         setPositions((prev) => {
           const pos = prev.find((p) => p.symbol === symbol && p.side === side);

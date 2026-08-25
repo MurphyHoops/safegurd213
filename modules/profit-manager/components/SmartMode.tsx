@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { ProfitSettings, SmartProfitTier } from '../../../types';
-import { Plus, Trash2, Zap } from 'lucide-react';
+import { Plus, Trash2, Zap, Sparkles } from 'lucide-react';
 
 interface Props {
     settings: ProfitSettings;
@@ -10,6 +10,8 @@ interface Props {
 
 export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
     const config = settings.smart;
+    const isSmartEnabled = config.enabled ?? false;
+    const isDecayEnabled = config.decayEnabled ?? true;
     const tiers = Array.isArray(config.tiers) ? config.tiers : [];
 
     const addTier = () => {
@@ -34,15 +36,59 @@ export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
 
     return (
         <div className="space-y-4 animate-in fade-in slide-in-from-top-1 duration-300">
-            {/* AI Optimization Mode */}
-            <div className="bg-emerald-950/20 border border-emerald-500/30 rounded p-3 relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-2 opacity-10 group-hover:opacity-30 transition-opacity">
+            {/* 智能止盈总开关 (Smart Master Switch) */}
+            <div className={`p-2.5 rounded border transition-colors flex items-center justify-between ${
+                isSmartEnabled 
+                    ? 'bg-emerald-950/30 border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.15)]' 
+                    : 'bg-slate-800/30 border-slate-700/60'
+            }`}>
+                <div className="flex items-center gap-2">
+                    <div className={`p-1 rounded ${isSmartEnabled ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700/40 text-slate-500'}`}>
+                        <Sparkles size={13} />
+                    </div>
+                    <div className="flex flex-col">
+                        <span className={`text-[11px] font-bold ${isSmartEnabled ? 'text-emerald-300' : 'text-slate-400'}`}>
+                            智能止盈总开关
+                        </span>
+                        <span className="text-[8px] text-slate-500">
+                            {isSmartEnabled ? '已开启：智能平仓规则将正式参与计算' : '未开启：仅浏览/配置参数，系统绝不触发智能平仓'}
+                        </span>
+                    </div>
+                </div>
+                <div 
+                    onClick={() => updateNested('smart', 'enabled', !isSmartEnabled)} 
+                    className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${isSmartEnabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                    title={isSmartEnabled ? '点击关闭智能止盈' : '点击开启智能止盈'}
+                >
+                    <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${isSmartEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                </div>
+            </div>
+
+            {/* AI Optimization Mode - 指数衰减锁定模式 */}
+            <div className={`border rounded p-3 relative overflow-hidden group transition-colors ${
+                isDecayEnabled && isSmartEnabled
+                    ? 'bg-emerald-950/20 border-emerald-500/30' 
+                    : 'bg-slate-800/20 border-slate-700/40 opacity-75'
+            }`}>
+                <div className="absolute top-0 right-0 p-2 opacity-10 group-hover:opacity-30 transition-opacity pointer-events-none">
                     <Zap size={40} className="text-emerald-400" />
                 </div>
                 <div className="flex items-center justify-between mb-3 relative z-10">
                     <div className="flex flex-col">
-                        <span className="text-[10px] font-bold text-emerald-400">指数衰减锁定模式</span>
-                        <span className="text-[8px] text-emerald-600/80">根据盈利倍数动态调整回撤容忍度</span>
+                        <div className="flex items-center gap-1.5">
+                            <span className={`text-[10px] font-bold ${isDecayEnabled && isSmartEnabled ? 'text-emerald-400' : 'text-slate-400'}`}>
+                                指数衰减锁定模式
+                            </span>
+                        </div>
+                        <span className="text-[8px] text-slate-500">根据盈利倍数动态调整回撤容忍度</span>
+                    </div>
+                    {/* 指数衰减锁定模式单独开关 */}
+                    <div 
+                        onClick={() => updateNested('smart', 'decayEnabled', !isDecayEnabled)}
+                        className={`w-7 h-3.5 rounded-full p-0.5 cursor-pointer transition-colors ${isDecayEnabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                        title={isDecayEnabled ? '点击关闭指数衰减锁定模式' : '点击开启指数衰减锁定模式'}
+                    >
+                        <div className={`w-2.5 h-2.5 bg-white rounded-full transition-transform ${isDecayEnabled ? 'translate-x-3.5' : 'translate-x-0'}`} />
                     </div>
                 </div>
                 
@@ -60,11 +106,14 @@ export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
                 </div>
             </div>
 
-            {/* Step-by-Step Recovery Mode */}
+            {/* Step-by-Step Recovery Mode - 阶梯保底锁定方案 */}
             <div className="space-y-2">
                 <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
-                        <div onClick={() => updateNested('smart', 'conventionalEnabled', !config.conventionalEnabled)} className={`w-3 h-3 rounded border flex items-center justify-center cursor-pointer transition-colors ${config.conventionalEnabled ? 'bg-indigo-600 border-indigo-500' : 'border-slate-600'}`}>
+                        <div 
+                            onClick={() => updateNested('smart', 'conventionalEnabled', !config.conventionalEnabled)} 
+                            className={`w-3 h-3 rounded border flex items-center justify-center cursor-pointer transition-colors ${config.conventionalEnabled ? 'bg-indigo-600 border-indigo-500' : 'border-slate-600'}`}
+                        >
                             {config.conventionalEnabled && <div className="w-1.5 h-1.5 bg-white rounded-full shadow-sm" />}
                         </div>
                         <span className="text-[10px] text-slate-300 font-bold">阶梯保底锁定方案</span>

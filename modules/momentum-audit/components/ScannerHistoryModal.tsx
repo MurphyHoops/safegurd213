@@ -29,25 +29,47 @@ const cacheLoaded: Record<string, boolean> = {};
 export const getMemoryCache = (listType: string, uid: string): HistoryRecord[] => {
     const activeUid = uid || 'default';
     const key = `${listType}_${activeUid}`;
-    if (memoryCache[key]) {
+    if (memoryCache[key] && memoryCache[key].length > 0) {
         return memoryCache[key];
     }
+    
+    // Check specific user cache first
     try {
         const cached = localStorage.getItem(`scanner_history_${listType}_${activeUid}`);
         if (cached) {
             const parsed = JSON.parse(cached);
-            memoryCache[key] = parsed;
-            cacheLoaded[key] = true;
-            return parsed;
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                memoryCache[key] = parsed;
+                cacheLoaded[key] = true;
+                return parsed;
+            }
         }
     } catch (e) {
         console.error('Failed to parse history cache from localStorage', e);
     }
+
+    // Fallback: If logged in or switching uid and user cache is empty, check default or any existing local history
+    if (activeUid !== 'default') {
+        try {
+            const defaultCached = localStorage.getItem(`scanner_history_${listType}_default`);
+            if (defaultCached) {
+                const parsedDefault = JSON.parse(defaultCached);
+                if (Array.isArray(parsedDefault) && parsedDefault.length > 0) {
+                    memoryCache[key] = parsedDefault;
+                    cacheLoaded[key] = true;
+                    return parsedDefault;
+                }
+            }
+        } catch (e) {
+            console.error('Failed to parse default history fallback', e);
+        }
+    }
+
     if (activeUid === 'default') {
         cacheLoaded[key] = true;
     }
-    memoryCache[key] = [];
-    return [];
+    memoryCache[key] = memoryCache[key] || [];
+    return memoryCache[key];
 };
 
 export const setMemoryCache = (listType: string, uid: string, records: HistoryRecord[]) => {
@@ -58,13 +80,17 @@ export const setMemoryCache = (listType: string, uid: string, records: HistoryRe
     
     try {
         localStorage.setItem(`scanner_history_${listType}_${activeUid}`, JSON.stringify(records));
+        // Also keep default cache updated as backup
+        if (activeUid !== 'default') {
+            localStorage.setItem(`scanner_history_${listType}_default`, JSON.stringify(records));
+        }
     } catch (e) {
-        console.warn(`[History Cache] Failed to save 100% of history to localStorage for ${key}, trying with 25 records limit...`, e);
+        console.warn(`[History Cache] Failed to save 100% of history to localStorage for ${key}, trying with 50 records limit...`, e);
         try {
-            const smallerRecords = records.slice(0, 25);
+            const smallerRecords = records.slice(0, 50);
             localStorage.setItem(`scanner_history_${listType}_${activeUid}`, JSON.stringify(smallerRecords));
         } catch (innerErr) {
-            console.error(`[History Cache] Failed to write even 25 records to localStorage for ${key}. Relying on in-memory cache only.`, innerErr);
+            console.error(`[History Cache] Failed to write records to localStorage for ${key}. Relying on in-memory cache only.`, innerErr);
         }
     }
     
@@ -410,11 +436,38 @@ export const useAutoHistoryLogger = (
             prevFullItemsRef.current[uniqueId] = sig.originalItem;
         });
         
-        // 3. On the very first run (mount/load), initialize prevItemsRef with all current signals
-        // to prevent double-logging cached items on page refresh.
+        // 3. On the very first run, record any current signals into history if not already recorded,
+        // so that refresh or newly appearing signals are always recorded and tracked.
+        const prevRecorded = getMemoryCache(listType, userId);
         if (isFirstRunRef.current) {
-            prevItemsRef.current = currentIds;
             isFirstRunRef.current = false;
+            // Check which current signals are not in history yet and log them
+            flatSignals.forEach(sig => {
+                const alreadyHasRecord = prevRecorded.some(r => {
+                    const rTf = r.itemData?.tf || r.itemData?.timeframe || '';
+                    return r.symbol === sig.symbol && r.direction === sig.direction && rTf === sig.tf && !r.disappearedAt;
+                });
+                if (!alreadyHasRecord) {
+                    let reason = `列表初始加载记录 [周期: ${sig.tf}, 方向: ${sig.direction}]`;
+                    if (listType === 'LIST2') {
+                        reason = `均线交叉对齐触发 [周期: ${sig.tf}, 进入列表2]`;
+                    } else if (listType === 'LIST3') {
+                        reason = `结构审计通过 [周期: ${sig.tf}, 方向: ${sig.direction}, 进入列表3]`;
+                    } else if (listType === 'LIST4') {
+                        reason = `动能审计确认 [周期: ${sig.tf}, 方向: ${sig.direction}, 进入列表4]`;
+                    }
+                    const pseudoItem = {
+                        symbol: sig.symbol,
+                        price: sig.price,
+                        tf: sig.tf,
+                        timeframe: sig.tf,
+                        direction: sig.direction,
+                        signalTime: sig.signalTime
+                    };
+                    logSignalToHistory(listType, pseudoItem, reason, userId);
+                }
+            });
+            prevItemsRef.current = currentIds;
             return;
         }
         
@@ -588,11 +641,34 @@ export const ScannerHistoryModal: React.FC<HistoryModalProps> = ({ onClose, list
                 const snapshot = await getDocs(q);
                 if (!isMounted) return;
 
-                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as HistoryRecord));
+                const cloudData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as HistoryRecord));
                 
+                // Merge cloud records with local records to prevent losing immediate local updates
+                const localRecords = getMemoryCache(listType, activeUid);
+                const mergedMap = new Map<string, HistoryRecord>();
+                
+                // 1. Add cloud records
+                cloudData.forEach(r => {
+                    const key = r.id || `${r.symbol}_${r.timestamp}_${r.direction}`;
+                    mergedMap.set(key, r);
+                });
+                
+                // 2. Add local records (overwriting cloud if more recent or temp)
+                localRecords.forEach(r => {
+                    const key = r.id || `${r.symbol}_${r.timestamp}_${r.direction}`;
+                    const existing = mergedMap.get(key);
+                    if (!existing || (r.disappearedAt && !existing.disappearedAt)) {
+                        mergedMap.set(key, { ...(existing || {}), ...r });
+                    }
+                });
+                
+                const mergedRecords = Array.from(mergedMap.values())
+                    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+                    .slice(0, 100);
+
                 // Update memory cache and state
-                setMemoryCache(listType, activeUid, data);
-                setRecords(data);
+                setMemoryCache(listType, activeUid, mergedRecords);
+                setRecords(mergedRecords);
             } catch (e) {
                 console.error('Failed to fetch history in background:', e);
             } finally {

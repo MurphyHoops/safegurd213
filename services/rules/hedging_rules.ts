@@ -15,8 +15,14 @@ export function checkHedgingRules(
     // 1. 基础开关检查
     if (!hedgeSettings.enabled) return false;
     
-    // 2. 已对冲检查
-    if (position.isHedged) return false;
+    // 2. 已对冲检查与单次信号锁
+    if (position.isHedged || position.hedgeSignalTriggered || position.hedgeOrderInFlight) return false;
+
+    // 🔒 [对冲平仓冷却保护 (Post-Hedge-Close Cooldown)]
+    // 当对冲单刚被平仓（如止盈、止损、回调收割、断臂求生）后，强制保护 30 秒冷却，严禁下一秒立即重开
+    if (position.lastHedgeClosedAt && (Date.now() - position.lastHedgeClosedAt) < 30000) {
+        return false;
+    }
     
     // Define positionValue and entryValue for later use in hedging calculations
     const positionValue = position.amount * position.markPrice;
@@ -224,7 +230,8 @@ export function checkHedgingRules(
             activeHedgeRatio = slSettings.callbackHedgeRatio; // Strategy 3 Override
         }
 
-        const hedgeAmount = positionValue * (activeHedgeRatio / 100);
+        const originalQty = position.initialAmount !== undefined ? position.initialAmount : position.amount;
+        const hedgeAmount = originalQty * position.markPrice * (activeHedgeRatio / 100);
         
         openHedge(
             position.symbol,

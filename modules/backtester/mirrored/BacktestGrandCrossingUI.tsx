@@ -74,15 +74,27 @@ export const BacktestGrandCrossingModule: React.FC<Props> = ({
     removeSignal,
   } = useBacktestGrandCrossing(effectiveCandidates, DEFAULT_CONFIG, onLog);
 
+  // --- SYNC OUTPUT (Only closed K-line signals pass to List 3) ---
   const lastResultsStrRef = useRef<string>("");
   useEffect(() => {
     let outputList = list2 || [];
+
+    // 🔒 [USER MANDATORY RULE] 列表3在读取列表2的数据必须是K线已收盘的币种 (lag >= 1 且 非灰色待定态)
+    outputList = outputList.filter(item => {
+      if (!item || !item.groupedResults || item.groupedResults.length === 0) return false;
+      return item.groupedResults.some(r => {
+        const isClosed = r.isClosed === true || (r.lag !== undefined && r.lag >= 1.0);
+        const notGray = !r.isPendingGray;
+        return isClosed && notGray;
+      });
+    });
+
     if (config?.syncDirectionFilterToList3) {
       const dir = config.viewMode || 'ALL';
       if (dir === 'LONG') {
-        outputList = list2.filter(item => item && item.direction === 'LONG');
+        outputList = outputList.filter(item => item && item.direction === 'LONG');
       } else if (dir === 'SHORT') {
-        outputList = list2.filter(item => item && item.direction === 'SHORT');
+        outputList = outputList.filter(item => item && item.direction === 'SHORT');
       }
     }
     const resultsStr = JSON.stringify(outputList);

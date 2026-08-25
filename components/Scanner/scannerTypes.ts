@@ -16,6 +16,11 @@ export interface List2GroupedResult {
     bodyValid?: boolean;
     isAligned?: boolean;
     failedVerifyCount?: number;
+    isClosed?: boolean; // 是否为已收盘K线
+    isPendingGray?: boolean; // 正在走动的实时K线是否因价格不符变为灰色待定态
+    kOpen?: number; // 信号K线开盘价
+    kClose?: number; // 信号K线收盘价/当前价
+    signalTime?: number; // 信号K线时间戳
 }
 
 export interface List3SignalResult {
@@ -174,8 +179,11 @@ export interface List2Config {
     sortMode: 'LATEST' | 'MOST';
     requireCrossing: boolean;
     requireAlignment: boolean;
+    crossingDivergenceLogic?: 'AND' | 'OR';
     enableDivergenceCrossCheck?: boolean; // 新增：发散前置穿越回溯开关
     divergenceLookbackBars?: number;     // 新增：发散前置穿越回溯K线根数（可自由配置）
+    enableSignalDeviationFilter?: boolean; // 新增：信号K线振幅偏离限制开关
+    maxSignalDeviationPercent?: number;    // 新增：允许偏离信号K线振幅的百分比（%）
     strictFiltering: boolean;
     viewMode?: 'ALL' | 'LONG' | 'SHORT';
     syncDirectionFilterToList3?: boolean;
@@ -362,6 +370,9 @@ export interface ScanConfig {
     list2Config?: List2Config;
     smartMode?: SmartScanConfig;
     majorTrend?: MajorTrendConfig;
+    enableAlphabeticalFilter?: boolean; // 币安排序 A~Z 分片开关
+    alphabeticalRangeStart?: number;    // 起始币种序号 (如 1)
+    alphabeticalRangeEnd?: number;      // 结束币种序号 (如 70)
     breakerConfig?: {
         enabled: boolean;
         triggerMinutes: number;

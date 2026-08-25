@@ -130,14 +130,22 @@ export const useBacktestGrandCrossing = (
         const tfsToScan = Array.from(pendingTfsRef.current);
         pendingTfsRef.current.clear();
 
+        const candidateSymbols = new Set(candidates.map((c) => c.symbol));
+        const allScanItems = [...candidates];
+        Array.from(cacheRef.current.values()).forEach((cached) => {
+          if (!candidateSymbols.has(cached.symbol)) {
+            allScanItems.push(cached);
+          }
+        });
+
         onLog?.(
           "INFO",
-          `[回测-列表2] 触发扫描, 周期: ${tfsToScan.join(", ")}, 币种数: ${candidates.length}`,
+          `[回测-列表2] 触发扫描, 周期: ${tfsToScan.join(", ")}, 币种数: ${allScanItems.length}`,
         );
 
         for (const tf of tfsToScan) {
           onLog?.("INFO", `[回测-列表2] 正在扫描 ${tf} 周期...`);
-          for (const item of candidates) {
+          for (const item of allScanItems) {
             try {
               const klines = await fetchVirtualKlines(item.symbol, tf, 150);
               if (klines.length > 0) {

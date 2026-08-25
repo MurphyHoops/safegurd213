@@ -3,6 +3,7 @@ import { ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { Layers, ChevronDown, ChevronUp, Copy, Check, RefreshCw, Search, Database, Clock } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { pipelineCoordinator } from '../../../services/pipelineQueue';
+import { fetchWithFallback } from '../../../services/apiService';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -76,7 +77,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         if (!isMountedRef.current) return;
         setIsFetching(true);
         try {
-            const res = await fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?_t=${Date.now()}`);
+            const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/24hr?_t=${Date.now()}`);
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data) && isMountedRef.current) {
@@ -97,7 +98,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                 }
             }
         } catch (err) {
-            console.error('[VolumePoolBox] Fetch tickers error:', err);
+            console.warn('[VolumePoolBox] Fetch tickers warning:', err);
         } finally {
             if (isMountedRef.current) {
                 setIsFetching(false);
@@ -136,6 +137,15 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     const filteredPool = useMemo(() => {
         if (!rawPool || rawPool.length === 0) return [];
 
+        // 1. 币安排序 A~Z 分片截取 (Alphabetical Range Slicing)
+        let sourceList = rawPool;
+        if (scanConfig.enableAlphabeticalFilter) {
+            const sortedByAlphabet = [...rawPool].sort((a, b) => a.symbol.localeCompare(b.symbol));
+            const startIdx = Math.max(0, (scanConfig.alphabeticalRangeStart ?? 1) - 1);
+            const endIdx = Math.max(startIdx + 1, scanConfig.alphabeticalRangeEnd ?? 70);
+            sourceList = sortedByAlphabet.slice(startIdx, endIdx);
+        }
+
         const enable24h = scanConfig.enableVol24h !== false;
         const minVol24h = scanConfig.minVolume || 0;
         const maxVol24h = scanConfig.maxVolume || 0;
@@ -144,12 +154,12 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         const minVol8am = scanConfig.minVolume8am ?? 1;
         const maxVol8am = scanConfig.maxVolume8am ?? 0;
 
-        // If neither volume filter is enabled, return all rawPool items
+        // If neither volume filter is enabled, return sourceList directly
         if (!enable24h && !enable8am) {
-            return rawPool;
+            return sourceList;
         }
 
-        return rawPool.filter(item => {
+        return sourceList.filter(item => {
             // Check 24H Volume if enabled
             if (enable24h) {
                 if (minVol24h > 0 && item.volume24h < minVol24h) return false;

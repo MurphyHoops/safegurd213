@@ -10,8 +10,19 @@ export function usePositionsListLogic(
     isHoverLocked: boolean = false
 ) {
     const lockedPositionsOrderRef = useRef<Position[]>([]);
+    const prevSortKeyRef = useRef(sortKey);
+    const prevSortModeRef = useRef(sortMode);
 
     const sortedPositions = useMemo(() => {
+        const sortKeyChanged = prevSortKeyRef.current !== sortKey;
+        const sortModeChanged = prevSortModeRef.current !== sortMode;
+
+        if (sortKeyChanged || sortModeChanged) {
+            prevSortKeyRef.current = sortKey;
+            prevSortModeRef.current = sortMode;
+            lockedPositionsOrderRef.current = [];
+        }
+
         // If hover is locked and we already have a locked order of positions, maintain the previous order
         // while allowing their data (PnL, markPrice, status) to update seamlessly without changing rows
         if (isHoverLocked && lockedPositionsOrderRef.current.length > 0) {

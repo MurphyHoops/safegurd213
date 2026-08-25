@@ -73,6 +73,9 @@ export const List1Item: React.FC<Props> = ({
         '168h': { klines: [], loading: false },
     });
 
+    const [isIntervalsFetched, setIsIntervalsFetched] = useState(false);
+    const [showDetails, setShowDetails] = useState(false);
+
     const intervalMap = [
         { key: '1h', interval: '1h' },
         { key: '4h', interval: '4h' },
@@ -81,78 +84,59 @@ export const List1Item: React.FC<Props> = ({
         { key: '168h', interval: '1w' }
     ];
 
-    useEffect(() => {
-        if (mode === 'BACKTEST') {
-            // Completely disable multi-interval live fetching in BACKTEST mode to maximize performance
-            return;
-        }
+    const fetchAllIntervals = async () => {
+        setIsIntervalsFetched(true);
+        if (mode === 'BACKTEST') return;
 
-        let active = true;
+        const limit = 30;
+        const now = Date.now();
 
-        // Introduce a 1200ms debounce/delay timer before fetching auxiliary intervals.
-        // This ensures rapid layout/candidate refreshes do not spam standard Binance API endpoints.
-        const delayTimer = setTimeout(() => {
-            const fetchAllIntervals = async () => {
-                const limit = 30;
-                const now = Date.now();
+        setIntervalsData(prev => {
+            const updated = { ...prev };
+            for (const cfg of intervalMap) {
+                updated[cfg.key] = { ...updated[cfg.key], loading: true };
+            }
+            return updated;
+        });
 
-                setIntervalsData(prev => {
-                    const updated = { ...prev };
-                    for (const cfg of intervalMap) {
-                        updated[cfg.key] = { ...updated[cfg.key], loading: true };
-                    }
-                    return updated;
-                });
+        const promises = intervalMap.map(async (cfg) => {
+            const KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE || {};
+            if (!KLINE_INTERVAL_CACHE[item.symbol]) {
+                KLINE_INTERVAL_CACHE[item.symbol] = {};
+            }
 
-                const promises = intervalMap.map(async (cfg) => {
-                    const KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE = (window as any).KLINE_INTERVAL_CACHE || {};
-                    if (!KLINE_INTERVAL_CACHE[item.symbol]) {
-                        KLINE_INTERVAL_CACHE[item.symbol] = {};
-                    }
+            const cached = KLINE_INTERVAL_CACHE[item.symbol][cfg.interval];
+            if (cached && now - cached.timestamp < 5 * 60 * 1000) { // 5 mins cache
+                return { key: cfg.key, klines: cached.klines };
+            }
 
-                    const cached = KLINE_INTERVAL_CACHE[item.symbol][cfg.interval];
-                    if (cached && now - cached.timestamp < 5 * 60 * 1000) { // 5 mins cache
-                        return { key: cfg.key, klines: cached.klines };
-                    }
-
-                    try {
-                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${cfg.interval}&limit=${limit}`;
-                        const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d));
-                        const data = await res.json();
-                        if (Array.isArray(data)) {
-                            KLINE_INTERVAL_CACHE[item.symbol][cfg.interval] = {
-                                timestamp: now,
-                                klines: data
-                            };
-                            return { key: cfg.key, klines: data };
-                        }
-                    } catch (err) {
-                        console.error(`Failed to fetch ${cfg.interval} klines for ${item.symbol}`, err);
-                    }
-                    return { key: cfg.key, klines: [] };
-                });
-
-                const results = await Promise.all(promises);
-
-                if (active) {
-                    setIntervalsData(prev => {
-                        const updated = { ...prev };
-                        for (const res of results) {
-                            updated[res.key] = { klines: res.klines, loading: false };
-                        }
-                        return updated;
-                    });
+            try {
+                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=${cfg.interval}&limit=${limit}`;
+                const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d));
+                const data = await res.json();
+                if (Array.isArray(data)) {
+                    KLINE_INTERVAL_CACHE[item.symbol][cfg.interval] = {
+                        timestamp: now,
+                        klines: data
+                    };
+                    return { key: cfg.key, klines: data };
                 }
-            };
+            } catch (err) {
+                console.error(`Failed to fetch ${cfg.interval} klines for ${item.symbol}`, err);
+            }
+            return { key: cfg.key, klines: [] };
+        });
 
-            fetchAllIntervals();
-        }, 1200);
+        const results = await Promise.all(promises);
 
-        return () => {
-            active = false;
-            clearTimeout(delayTimer);
-        };
-    }, [item.symbol, mode]);
+        setIntervalsData(prev => {
+            const updated = { ...prev };
+            for (const res of results) {
+                updated[res.key] = { klines: res.klines, loading: false };
+            }
+            return updated;
+        });
+    };
 
     const currentPrice = item.price;
 
@@ -373,11 +357,11 @@ export const List1Item: React.FC<Props> = ({
                 </div>
             )}
 
-            {/* Premium 3-Column Layout Matching Handwritten Blueprint */}
-            <div className="flex flex-row justify-between items-stretch gap-1.5 font-mono">
-                {/* Column 1: Basic Info */}
-                <div className="flex flex-col gap-0.5 min-w-[54px] max-w-[62px] shrink-0 justify-center">
-                    <div className="flex items-center gap-0.5">
+            {/* Premium Horizontal Layout */}
+            <div className="flex flex-row items-center justify-between gap-2 font-mono py-1 px-1">
+                {/* Basic Info Row */}
+                <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-1 shrink-0">
                         {showCheckbox && (
                             <button 
                                 onClick={(e) => { e.stopPropagation(); onToggleSymbol(item.symbol); }}
@@ -390,123 +374,159 @@ export const List1Item: React.FC<Props> = ({
                         <span className="text-[9.5px] text-slate-300 font-extrabold" title={`回溯天数: ${lookbackDays}天`}>{lookbackDays}d</span>
                         {item.isNew && <span className="text-[6.5px] bg-indigo-600 text-white px-0.5 rounded font-bold animate-pulse shrink-0">N</span>}
                         {isSmart && <span className="text-[6.5px] bg-purple-600 text-white px-0.5 rounded font-bold shrink-0">S</span>}
-                        
-                        {mode === 'BACKTEST' && (
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); onDownload?.(item.symbol); }}
-                                className={`p-0.5 rounded transition-all shrink-0 ${downloadProgress !== undefined ? 'text-amber-500' : 'text-slate-500 hover:text-amber-400'}`}
-                                title="下载历史数据"
-                            >
-                                {downloadProgress !== undefined ? (
-                                    <div className="relative w-3.5 h-3.5 flex items-center justify-center">
-                                        <Loader2 size={10} className="animate-spin" />
-                                        <span className="absolute text-[5.5px] font-bold">{Math.round(downloadProgress)}</span>
-                                    </div>
-                                ) : <Download size={10} />}
-                            </button>
-                        )}
                     </div>
-                    
-                    <div className="text-[11.5px] font-black text-slate-100 truncate leading-none mt-0.5" title={item.symbol}>
+
+                    <div className="text-[11.5px] font-black text-slate-100 shrink-0" title={item.symbol}>
                         {item.symbol.replace('USDT','')}
                     </div>
-                    
-                    <div className="text-[11px] font-extrabold text-slate-100 leading-none mt-0.5">
-                        ${item.price.toFixed(item.price < 1 ? (item.price < 0.001 ? 6 : 4) : 2)}
+
+                    {(() => {
+                        const rawChange = item.change !== undefined && item.change !== null ? item.change : (item.change8am !== undefined && item.change8am !== null ? item.change8am : 0);
+                        const changeVal = Number(rawChange) || 0;
+                        const vol24h = Number(item.volume24h) || 0;
+                        const vol8am = item.volume8am !== undefined && item.volume8am !== null ? Number(item.volume8am) : undefined;
+
+                        return (
+                            <>
+                                <div className={`text-[10.5px] font-extrabold shrink-0 px-1.5 py-0.5 rounded ${changeVal >= 0 ? 'text-emerald-400 bg-emerald-950/40 border border-emerald-500/20' : 'text-rose-400 bg-rose-950/40 border border-rose-500/20'}`}>
+                                    {(changeVal >= 0 ? '+' : '') + changeVal.toFixed(2)}%
+                                </div>
+
+                                <div className="text-[9px] text-slate-400 font-semibold shrink-0">
+                                    24H额: <span className="text-slate-200 font-bold">{vol24h > 0 ? `${vol24h.toFixed(1)}M` : '-'}</span>
+                                </div>
+
+                                {vol8am !== undefined && !isNaN(vol8am) && (
+                                    <div className="text-[9px] text-slate-400 font-semibold shrink-0 hidden sm:block">
+                                        8AM额: <span className="text-blue-400 font-bold">{`${vol8am.toFixed(1)}M`}</span>
+                                    </div>
+                                )}
+                            </>
+                        );
+                    })()}
+                </div>
+
+                {/* Details Switch Button */}
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        const next = !showDetails;
+                        setShowDetails(next);
+                        if (next && !isIntervalsFetched) {
+                            fetchAllIntervals();
+                        }
+                    }}
+                    className={`px-2 py-1 rounded text-[9px] font-bold border transition-all flex items-center gap-1 shrink-0 ${showDetails ? 'bg-indigo-600 border-indigo-500 text-white shadow' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'}`}
+                    title="点击展开/收起极值信息与多周期K线数据大图面板"
+                >
+                    <span>{showDetails ? '收起详情' : '详情'}</span>
+                </button>
+            </div>
+
+            {showDetails && (
+                <div className="flex flex-row justify-between items-stretch gap-1.5 font-mono mt-1.5 pt-1.5 border-t border-slate-800 animate-in fade-in duration-200">
+                    {/* Column 2: Extreme Audit Stats (极值审计) */}
+                    <div className="flex flex-col gap-[1px] text-[10px] shrink-0 min-w-[110px] max-w-[114px] pr-1 border-r border-slate-800/80 pl-1 justify-center">
+                        <div className="flex justify-between items-center gap-0.5">
+                            <span className="text-slate-500 font-bold">极低点时间</span>
+                            <span className="text-cyan-400 font-extrabold">
+                                {loadingHistory ? '...' : `${lowDaysAgo}d`}
+                            </span>
+                        </div>
+                        <div className="flex justify-between items-center gap-0.5">
+                            <span className="text-slate-500 font-bold">极高点时间</span>
+                            <span className="text-pink-400 font-extrabold">
+                                {loadingHistory ? '...' : `${highDaysAgo}d`}
+                            </span>
+                        </div>
+                        <div className="flex justify-between items-center gap-0.5">
+                            <span className="text-slate-500 font-bold">极值最大跌幅</span>
+                            <span className="text-red-400 font-extrabold">
+                                {loadingHistory ? '...' : `${maxDeclinePct.toFixed(1)}%`}
+                            </span>
+                        </div>
+                        <div className="flex justify-between items-center gap-0.5">
+                            <span className="text-slate-500 font-bold">极值当前涨幅</span>
+                            <span className="text-emerald-400 font-extrabold">
+                                {loadingHistory ? '...' : `+${lowToCurrentIncreasePct.toFixed(1)}%`}
+                            </span>
+                        </div>
+                        <div className="flex justify-between items-center gap-0.5">
+                            <span className="text-slate-500 font-bold">极值最大涨幅</span>
+                            <span className="text-emerald-400 font-extrabold">
+                                {loadingHistory ? '...' : `+${maxIncreasePct.toFixed(1)}%`}
+                            </span>
+                        </div>
+                        <div className="flex justify-between items-center gap-0.5">
+                            <span className="text-slate-500 font-bold">极值当前跌幅</span>
+                            <span className="text-rose-400 font-extrabold">
+                                {loadingHistory ? '...' : `${highToCurrentDeclinePct.toFixed(1)}%`}
+                            </span>
+                        </div>
                     </div>
-                    
-                    <div className="text-[8px] text-slate-500 font-semibold leading-none mt-1 flex flex-col gap-[2px]">
-                        <div>24H额: <span className="text-slate-300 font-bold">{item.volume24h ? `${item.volume24h.toFixed(1)}M` : '-'}</span></div>
-                        {item.volume8am !== undefined && (
-                            <div>8AM额: <span className="text-blue-400 font-bold">{`${item.volume8am.toFixed(1)}M`}</span></div>
+
+                    {/* Column 3: Multi-interval Stats & Volume Ratios */}
+                    <div className="flex-1 flex flex-col gap-[1px] text-[10px] font-mono justify-center pl-1">
+                        {/* Header */}
+                        <div className="flex justify-between items-center gap-0.5 text-[8.5px] text-slate-500 font-black border-b border-slate-800 pb-0.5 mb-[1px]">
+                            <span className="w-[24px]">周期</span>
+                            <span className="w-[32px] text-right">涨跌</span>
+                            <span className="w-[38px] text-right" title="量比1 (最后1根) / 量比2 (最后4根平均)">量1/2</span>
+                            <span className="w-[44px] text-right" title="买单成交占比 (最后1根 / 最后4根平均)">买%</span>
+                        </div>
+                        
+                        {/* Rows or Load Button */}
+                        {!isIntervalsFetched ? (
+                            <div className="flex flex-col items-center justify-center py-3 text-center">
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetchAllIntervals();
+                                    }}
+                                    className="px-2 py-1 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded text-[9px] font-bold border border-indigo-500/30 transition-all flex items-center gap-1 shadow"
+                                    title="点击手动按需计算该币种的 1h/4h/24h/72h/168h 多周期数据"
+                                >
+                                    <Sparkles size={9} />
+                                    <span>按需计算多周期</span>
+                                </button>
+                                <span className="text-[7.5px] text-slate-500 mt-1">默认关闭以节省网络流量</span>
+                            </div>
+                        ) : (
+                            intervalMap.map((cfg) => {
+                                const stats = getStatsForInterval(cfg.key);
+                                const isLoading = intervalsData[cfg.key]?.loading;
+
+                                return (
+                                    <div key={cfg.key} className="flex justify-between items-center gap-0.5 py-[1px] hover:bg-slate-800/30 rounded px-0.5">
+                                        <span className="w-[24px] text-slate-400 font-bold">{cfg.key}</span>
+                                        <span className="w-[32px] text-right">
+                                            {isLoading ? (
+                                                <span className="text-[8.5px] text-slate-600 animate-pulse">...</span>
+                                            ) : (
+                                                renderPercent(stats.changePct)
+                                            )}
+                                        </span>
+                                        <span className="w-[38px] text-right font-bold">
+                                            {isLoading ? (
+                                                <span className="text-[8.5px] text-slate-600 animate-pulse">...</span>
+                                            ) : (
+                                                renderCombinedRatio(stats.ratio1, stats.ratio2)
+                                            )}
+                                        </span>
+                                        <span className="w-[44px] text-right font-bold">
+                                            {isLoading ? (
+                                                <span className="text-[8.5px] text-slate-600 animate-pulse">...</span>
+                                            ) : (
+                                                renderBuyRatio(stats.buyRatio1, stats.buyRatio2)
+                                            )}
+                                        </span>
+                                    </div>
+                                );
+                            })
                         )}
                     </div>
                 </div>
-
-                {/* Column 2: Extreme Audit Stats (极值审计) */}
-                <div className="flex flex-col gap-[1px] text-[10px] shrink-0 min-w-[110px] max-w-[114px] pr-1 border-r border-l border-slate-800/80 pl-1 justify-center">
-                    <div className="flex justify-between items-center gap-0.5">
-                        <span className="text-slate-500 font-bold">极低点时间</span>
-                        <span className="text-cyan-400 font-extrabold">
-                            {loadingHistory ? '...' : `${lowDaysAgo}d`}
-                        </span>
-                    </div>
-                    <div className="flex justify-between items-center gap-0.5">
-                        <span className="text-slate-500 font-bold">极高点时间</span>
-                        <span className="text-pink-400 font-extrabold">
-                            {loadingHistory ? '...' : `${highDaysAgo}d`}
-                        </span>
-                    </div>
-                    <div className="flex justify-between items-center gap-0.5">
-                        <span className="text-slate-500 font-bold">极值最大跌幅</span>
-                        <span className="text-red-400 font-extrabold">
-                            {loadingHistory ? '...' : `${maxDeclinePct.toFixed(1)}%`}
-                        </span>
-                    </div>
-                    <div className="flex justify-between items-center gap-0.5">
-                        <span className="text-slate-500 font-bold">极值当前涨幅</span>
-                        <span className="text-emerald-400 font-extrabold">
-                            {loadingHistory ? '...' : `+${lowToCurrentIncreasePct.toFixed(1)}%`}
-                        </span>
-                    </div>
-                    <div className="flex justify-between items-center gap-0.5">
-                        <span className="text-slate-500 font-bold">极值最大涨幅</span>
-                        <span className="text-emerald-400 font-extrabold">
-                            {loadingHistory ? '...' : `+${maxIncreasePct.toFixed(1)}%`}
-                        </span>
-                    </div>
-                    <div className="flex justify-between items-center gap-0.5">
-                        <span className="text-slate-500 font-bold">极值当前跌幅</span>
-                        <span className="text-rose-400 font-extrabold">
-                            {loadingHistory ? '...' : `${highToCurrentDeclinePct.toFixed(1)}%`}
-                        </span>
-                    </div>
-                </div>
-
-                {/* Column 3: Multi-interval Stats & Volume Ratios */}
-                <div className="flex-1 flex flex-col gap-[1px] text-[10px] font-mono justify-center pl-1">
-                    {/* Header */}
-                    <div className="flex justify-between items-center gap-0.5 text-[8.5px] text-slate-500 font-black border-b border-slate-800 pb-0.5 mb-[1px]">
-                        <span className="w-[24px]">周期</span>
-                        <span className="w-[32px] text-right">涨跌</span>
-                        <span className="w-[38px] text-right" title="量比1 (最后1根) / 量比2 (最后4根平均)">量1/2</span>
-                        <span className="w-[44px] text-right" title="买单成交占比 (最后1根 / 最后4根平均)">买%</span>
-                    </div>
-                    
-                    {/* Rows */}
-                    {intervalMap.map((cfg) => {
-                        const stats = getStatsForInterval(cfg.key);
-                        const isLoading = intervalsData[cfg.key]?.loading;
-
-                        return (
-                            <div key={cfg.key} className="flex justify-between items-center gap-0.5 py-[1px] hover:bg-slate-800/30 rounded px-0.5">
-                                <span className="w-[24px] text-slate-400 font-bold">{cfg.key}</span>
-                                <span className="w-[32px] text-right">
-                                    {isLoading ? (
-                                        <span className="text-[8.5px] text-slate-600 animate-pulse">...</span>
-                                    ) : (
-                                        renderPercent(stats.changePct)
-                                    )}
-                                </span>
-                                <span className="w-[38px] text-right font-bold">
-                                    {isLoading ? (
-                                        <span className="text-[8.5px] text-slate-600 animate-pulse">...</span>
-                                    ) : (
-                                        renderCombinedRatio(stats.ratio1, stats.ratio2)
-                                    )}
-                                </span>
-                                <span className="w-[44px] text-right font-bold">
-                                    {isLoading ? (
-                                        <span className="text-[8.5px] text-slate-600 animate-pulse">...</span>
-                                    ) : (
-                                        renderBuyRatio(stats.buyRatio1, stats.buyRatio2)
-                                    )}
-                                </span>
-                            </div>
-                        );
-                    })}
-                </div>
-            </div>
+            )}
 
             {downloadProgress !== undefined && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-700 overflow-hidden rounded-b">
