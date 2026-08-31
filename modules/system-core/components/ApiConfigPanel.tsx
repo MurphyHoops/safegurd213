@@ -141,12 +141,23 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    apiKey: settings.binanceApiKey,
-                    apiSecret: settings.binanceApiSecret
+                    apiKey: (settings.binanceApiKey || '').trim(),
+                    apiSecret: (settings.binanceApiSecret || '').trim()
                 })
             });
 
-            const data = await response.json();
+            const rawText = await response.text();
+            let data: any = {};
+            try {
+                data = JSON.parse(rawText);
+            } catch (e) {
+                data = {
+                    success: false,
+                    error: response.status === 502 || response.status === 503 || response.status === 504 
+                        ? '服务节点正在连接就绪中，请稍候 2 秒后再次点击校验' 
+                        : (rawText && rawText.length < 150 ? rawText : '网络通信瞬时中断，请重试')
+                };
+            }
             if (response.ok && data.success) {
                 if (!silent) {
                     setValidationResult({

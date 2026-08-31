@@ -3,6 +3,7 @@ import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { AccountData, Position, PositionSide } from '../../types';
 import { Play, Pause, Trash2, AlertCircle, List, RefreshCw, Activity } from 'lucide-react';
 import { binanceWs } from '../../services/binanceWs';
+import { normalizeSymbol } from '../../services/symbolUtils';
 
 interface Props {
     account: AccountData;
@@ -42,7 +43,19 @@ const DashboardHeader: React.FC<Props> = ({
     const walletBalance = typeof account?.marginBalance === 'number' ? account.marginBalance : 0; 
     const equity = walletBalance + totalPnL;   
     const totalPnLPercentage = walletBalance > 0 ? (totalPnL / walletBalance) * 100 : 0;
-    const totalDebt = Array.isArray(positions) ? positions.reduce((s,p)=>s+(p.cumulativeHedgeLoss||0)+(p.cumulativeAmputationLoss||0), 0) : 0;
+    const totalDebt = Array.isArray(positions) ? (() => {
+        const symbolMap = new Map<string, { hedgeLoss: number; ampLoss: number }>();
+        positions.forEach(p => {
+            const sym = normalizeSymbol(p.symbol);
+            const current = symbolMap.get(sym) || { hedgeLoss: 0, ampLoss: 0 };
+            current.hedgeLoss = Math.max(current.hedgeLoss, p.cumulativeHedgeLoss || 0);
+            current.ampLoss = Math.max(current.ampLoss, p.cumulativeAmputationLoss || 0);
+            symbolMap.set(sym, current);
+        });
+        let sum = 0;
+        symbolMap.forEach(d => { sum += d.hedgeLoss + d.ampLoss; });
+        return sum;
+    })() : 0;
 
     // 标准币安合约可用保证金算法：(钱包余额 + 浮动盈亏) - (总持仓 / 杠杆倍数)
     const CONTRACT_LEVERAGE = 20;

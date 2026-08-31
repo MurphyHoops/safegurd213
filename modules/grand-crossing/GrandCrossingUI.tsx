@@ -22,7 +22,7 @@ interface Props {
 }
 
 const DEFAULT_CONFIG: List2Config = {
-    timeframes: ['5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'],
+    timeframes: ['15s', '30s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'],
     newModeRetention: 9,
     lookbackBars: 5,
     volMultiplier: 1.0,

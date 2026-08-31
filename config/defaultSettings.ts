@@ -85,8 +85,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
         hedgeOpenRatio: 150,
         hedgeCoverPercent: 10,
         hedgeProfitClearStopLoss: 2,
-        autoOpenAfterHedgeProfit: false,
-        autoOpenPullbackPercent: 1,
         callbackProfitClear: true,
         callbackHedgeRatio: 150,
         callbackCoverPercent: 10,
@@ -102,6 +100,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
         amputationHedgeOnlyExit: false,
         fuseEnabled: false,
         maxHedgeRetries: 3,
+        fuseActionMode: 'MANUAL',
+        fuseAlertEnabled: true,
         fuseFailStopPercent: 30,
         advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
     },

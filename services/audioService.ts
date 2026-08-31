@@ -71,6 +71,24 @@ class AudioService {
   }
 
   /**
+   * 循环连续播报指定文本 N 次（每次留出自然间隔）
+   */
+  speakRepeatedly(text: string, count: number = 3, intervalMs: number = 1800) {
+    if (!this.synthesis || !this.isVoiceEnabled()) return;
+    let played = 0;
+    this.playAlert();
+    const playNext = () => {
+      if (played >= count) return;
+      this.speak(text, true);
+      played++;
+      if (played < count) {
+        setTimeout(playNext, intervalMs);
+      }
+    };
+    playNext();
+  }
+
+  /**
    * Get or Create Single Audio Context
    */
   private getContext(): AudioContext {

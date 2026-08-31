@@ -25,14 +25,18 @@ export function checkHedgingRules(
     }
     
     // Define positionValue and entryValue for later use in hedging calculations
-    const positionValue = position.amount * position.markPrice;
-    const entryValue = position.amount * position.entryPrice;
+    const mark = (position.markPrice && position.markPrice > 0) ? position.markPrice : (position.entryPrice || 1);
+    const entry = (position.entryPrice && position.entryPrice > 0) ? position.entryPrice : mark;
+    const positionValue = position.amount * mark;
+    const entryValue = position.amount * entry;
+    const initialValue = position.initialAmount ? position.initialAmount * entry : 0;
+    const effectiveValue = Math.max(entryValue, positionValue, initialValue, (position.cost_usdt || 0));
     const minPositionThreshold = Number(hedgeSettings.minPosition ?? 10);
 
     // 🛡️ [Minimum Position Size Safeguard]
-    // If the entry value of the position is less than the configured minPosition threshold,
-    // we absolutely block automatic hedging to prevent dust or micro-positions from triggering hedges.
-    if (entryValue < minPositionThreshold) {
+    // If the effective nominal value of the position is less than the configured minPosition threshold,
+    // we block automatic hedging to prevent dust or micro-positions from triggering hedges.
+    if (effectiveValue < minPositionThreshold) {
         return false;
     }
 
@@ -57,8 +61,11 @@ export function checkHedgingRules(
 
     // 4. 熔断检查 (Fuse Check)
     const slSettings = settings.stopLoss;
+    if (position.isOscillationLocked) {
+        return false;
+    }
     if (slSettings.fuseEnabled) {
-        const retryCount = position.hedgeRetries || 0; // 借用字段或新增
+        const retryCount = Math.max(position.refillCount || 0, position.hedgeRetries || 0, position.amputationCount || 0);
         if (retryCount >= Number(slSettings.maxHedgeRetries ?? 3)) {
             return false; // 熔断触发，停止对冲
         }
@@ -196,9 +203,12 @@ export function checkHedgingRules(
     // 如果满足触发条件，检查是否突破了历史极值 (extremePrice)
     // 只有突破历史极值，或者没有历史极值时，才真正触发对冲
     let isWorseThanExtreme = true;
+    const isNewPositionWithoutPriorHedge = !position.lastHedgeClosedAt && !position.isReopened;
     
-    // Skip historical extreme check if it's an extreme hedge trigger or if oscillationCheck is disabled
-    if ((hedgeSettings.extremeHedgeEnabled || hedgeSettings.shortTermExtremeEnabled) && (triggerReason.includes('极值') || extremeHedgeTriggered || shortTermExtremeTriggered)) {
+    // Skip historical extreme check for new positions, extreme hedge triggers, or when oscillationCheck is disabled
+    if (isNewPositionWithoutPriorHedge) {
+        isWorseThanExtreme = true;
+    } else if ((hedgeSettings.extremeHedgeEnabled || hedgeSettings.shortTermExtremeEnabled) && (triggerReason.includes('极值') || extremeHedgeTriggered || shortTermExtremeTriggered)) {
         isWorseThanExtreme = true;
     } else if (hedgeSettings.oscillationCheck !== true) {
         // If oscillation check is disabled, do not block hedging based on historical extreme price
@@ -231,7 +241,8 @@ export function checkHedgingRules(
         }
 
         const originalQty = position.initialAmount !== undefined ? position.initialAmount : position.amount;
-        const hedgeAmount = originalQty * position.markPrice * (activeHedgeRatio / 100);
+        const initialCostUsdt = originalQty * (position.entryPrice || position.markPrice);
+        const hedgeAmount = initialCostUsdt * (activeHedgeRatio / 100);
         
         openHedge(
             position.symbol,

@@ -473,30 +473,42 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                         const currentPnlPct = p.entryPrice > 0 ? (priceDiff / p.entryPrice) * 100 : 0;
                         
                         const hasAmmo = (p.cumulativeHedgeProfit || 0) > 0;
-                        const hasHedgingHistory = 
-                            (p.cumulativeHedgeLoss || 0) > 0 || 
-                            (p.cumulativeHedgeProfit || 0) > 0 || 
-                            (p.cumulativeAmputationLoss || 0) > 0;
-                        const isHedgedMode = (p.isHedged || !!p.mainPositionId || hasHedgingHistory) && !p.isUnshackled;
+                        
+                        // 🔒【只有在正在防爆对冲期间，才读取和展示负债帐单】
+                        let mainPos: Position | undefined;
+                        let hedgePos: Position | undefined;
+                        
+                        const pNormSym = normalizeSymbol(p.symbol);
+                        if (p.mainPositionId) {
+                            hedgePos = p;
+                            mainPos = positions.find(x => x.entryId === p.mainPositionId || (normalizeSymbol(x.symbol) === pNormSym && x.side !== p.side && !x.mainPositionId));
+                        } else {
+                            mainPos = p;
+                            hedgePos = positions.find(x => x.mainPositionId === p.entryId || (normalizeSymbol(x.symbol) === pNormSym && x.side !== p.side && (x.mainPositionId || x.isHedged || x.amount > 0)));
+                        }
+
+                        // 判定是否处于正在防爆对冲状态：
+                        // 1. 存在对冲对手单 (hedgePos 存在且数量 > 0)；
+                        // 2. 本身为对冲仓位 (p.mainPositionId) 或主仓已触发对冲标记 (p.isHedged)；
+                        // 3. 处于断臂砍仓等待补仓的对冲周期 (p.isAmputated 且数量 > 0)；
+                        // 4. 存在单币累计负债或对冲亏损 (p.cumulativeAmputationLoss > 0 或 p.cumulativeHedgeLoss > 0)
+                        const isUnderActiveHedge = !p.isUnshackled && (
+                            !!hedgePos || 
+                            !!p.mainPositionId || 
+                            !!p.isHedged || 
+                            (!!p.isAmputated && (p.amputatedAmount || 0) > 0) ||
+                            (p.cumulativeAmputationLoss || 0) > 0 ||
+                            (p.cumulativeHedgeLoss || 0) > 0
+                        );
+
+                        const isHedgedMode = isUnderActiveHedge;
                         const isModule1Active = settings.profit?.enabled || settings.profit?.stopLoss?.enabled;
                         
                         let totalDebt = 0;
                         let showHedgeStats = false;
                         
-                        if (isHedgedMode) {
+                        if (isHedgedMode && mainPos) {
                             showHedgeStats = true;
-                            let mainPos: Position | undefined;
-                            let hedgePos: Position | undefined;
-                            
-                            if (p.mainPositionId) {
-                                hedgePos = p;
-                                mainPos = positions.find(x => x.entryId === p.mainPositionId);
-                            } else {
-                                mainPos = p;
-                                hedgePos = positions.find(x => x.mainPositionId === p.entryId);
-                            }
-                            
-                            if (mainPos) {
                                 const mLivePrice = mainPos.isBacktestRecord 
                                     ? (mainPos.markPrice || mainPos.entryPrice) 
                                     : resolvePrice(mainPos.symbol, realPrices, mainPos.markPrice || mainPos.entryPrice);
@@ -512,10 +524,14 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                     hPnl = hDiff * hedgePos.amount;
                                 }
 
+                                const symbolAmputationLoss = Math.max(
+                                    mainPos.cumulativeAmputationLoss || 0,
+                                    hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0
+                                );
+
                                 const cumulativeLoss = 
                                     (mainPos.cumulativeHedgeLoss || 0) + 
-                                    (mainPos.cumulativeAmputationLoss || 0) + 
-                                    (hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0);
+                                    symbolAmputationLoss;
 
                                 // Strategy 3: Callback Profit Clear (蚂蚁搬家)
                                 if (settings.stopLoss?.callbackProfitClear) {
@@ -538,7 +554,6 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                     // Default display if no specific strategy is selected
                                     totalDebt = (mPnl < 0 ? Math.abs(mPnl) : 0) + (hPnl < 0 ? Math.abs(hPnl) : 0) + cumulativeLoss;
                                 }
-                            }
                         }
 
                         return (
@@ -565,6 +580,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                 globalHedgingSettings={settings?.hedging}
                                 isManuallyClosed={manuallyClosedSymbols.has(p.symbol)}
                                 hasCustomSettings={!!p.customProfitSettings}
+                                hedgeTriggerReason={p.triggerReason || hedgePos?.triggerReason || mainPos?.triggerReason}
                             />
                         );
                     })

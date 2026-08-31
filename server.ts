@@ -11,12 +11,11 @@ import { ZipArchive } from "archiver";
 // Maintain a registry of browser clients subscribing to active prices
 const priceSubscribers = new Set<WebSocket>();
 const lastRequestTime = new Map<string, number>();
+const latestTickerPrices = new Map<string, number>();
 
 function startBinanceWSBridge() {
   const binanceUrls = [
-    'wss://fstream.binance.com/ws/!bookTicker',
-    'wss://fstream.binance.me/ws/!bookTicker',
-    'wss://fstream.binance.info/ws/!bookTicker'
+    'wss://fstream.binance.com/ws/!bookTicker'
   ];
   let currentIndex = 0;
   let bws: WebSocket | null = null;
@@ -44,6 +43,10 @@ function startBinanceWSBridge() {
           const item = JSON.parse(data.toString());
           if (item && item.s) {
              batchedUpdates[item.s] = item;
+             const p = parseFloat(item.c || item.b || item.a || "0");
+             if (p > 0) {
+               latestTickerPrices.set(item.s.toUpperCase(), p);
+             }
           }
         } catch(e) {
              // Ignore malformed JSON
@@ -126,6 +129,180 @@ async function startServer() {
   // Create HTTP server
   const server = http.createServer(app);
 
+  // maintain browser clients connected to default websocket (trade updates & account events)
+  const generalSubscribers = new Set<WebSocket>();
+
+  function broadcastToGeneralSubscribers(msgObj: any) {
+    const jsonStr = JSON.stringify(msgObj);
+    for (const client of generalSubscribers) {
+      if (client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(jsonStr);
+        } catch (e) {}
+      }
+    }
+  }
+
+  interface UserStreamInstance {
+    apiKey: string;
+    listenKey: string;
+    ws: WebSocket | null;
+    keepAliveTimer: NodeJS.Timeout | null;
+    lastConnected: number;
+  }
+
+  const activeUserStreams = new Map<string, UserStreamInstance>();
+
+  async function ensureUserDataStream(apiKey: string) {
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 10) return;
+    const cleanKey = apiKey.trim();
+    
+    const existing = activeUserStreams.get(cleanKey);
+    if (existing && existing.ws && (existing.ws.readyState === WebSocket.OPEN || existing.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    console.log(`📡 [Binance UserData Stream] Initiating User Data Stream for API Key: ${cleanKey.slice(0, 8)}...`);
+
+    try {
+      let listenKey = "";
+      let isAuthError = false;
+      try {
+        const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/listenKey`, {
+          method: "POST",
+          headers: { "X-MBX-APIKEY": cleanKey }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.listenKey) {
+            listenKey = data.listenKey;
+          }
+        } else {
+          const errData = await res.json().catch(() => null);
+          console.warn(`[Binance UserData Stream] listenKey rejected (HTTP ${res.status}): ${errData?.msg || res.statusText}`);
+          if (res.status === 401 || res.status === 400 || res.status === 403) {
+            isAuthError = true;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[Binance UserData Stream] Network error acquiring listenKey:`, err.message || err);
+      }
+
+      if (!listenKey) {
+        const retryDelay = isAuthError ? 60000 : 10000;
+        console.warn(`[Binance UserData Stream] Could not acquire listenKey for API Key: ${cleanKey.slice(0, 8)}... Next retry in ${Math.round(retryDelay / 1000)}s`);
+        setTimeout(() => ensureUserDataStream(cleanKey), retryDelay);
+        return;
+      }
+
+      console.log(`📡 [Binance UserData Stream] Obtained listenKey: ${listenKey.slice(0, 10)}... Connecting WS...`);
+
+      const wsUrls = [
+        `wss://fstream.binance.com/ws/${listenKey}`
+      ];
+
+      let wsIndex = 0;
+      const connectUserWs = () => {
+        const targetWsUrl = wsUrls[wsIndex % wsUrls.length];
+        const uws = new WebSocket(targetWsUrl);
+
+        const instance: UserStreamInstance = {
+          apiKey: cleanKey,
+          listenKey,
+          ws: uws,
+          keepAliveTimer: null,
+          lastConnected: Date.now()
+        };
+
+        uws.on('open', () => {
+          console.log(`🟢 [Binance UserData Stream] Successfully connected to ${targetWsUrl}`);
+          instance.lastConnected = Date.now();
+          if (instance.keepAliveTimer) clearInterval(instance.keepAliveTimer);
+          instance.keepAliveTimer = setInterval(async () => {
+            try {
+              await fetchWithFallback(`https://fapi.binance.com/fapi/v1/listenKey`, {
+                method: "PUT",
+                headers: { "X-MBX-APIKEY": cleanKey }
+              });
+              console.log(`🔄 [Binance UserData Stream] listenKey keep-alive ping sent successfully`);
+            } catch (e: any) {
+              console.warn(`[Binance UserData Stream] Keepalive error:`, e.message || e);
+            }
+          }, 20 * 60 * 1000);
+        });
+
+        uws.on('message', (raw) => {
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (!msg || !msg.e) return;
+
+            if (msg.e === 'ORDER_TRADE_UPDATE' && msg.o) {
+              const o = msg.o;
+              console.log(`⚡ [Binance Instant Push] ORDER_TRADE_UPDATE received: ${o.s} ${o.S} ${o.X} | AvgPrice: ${o.ap || o.L} | Qty: ${o.z || o.q} | PnL: ${o.rp}`);
+              
+              broadcastToGeneralSubscribers({
+                type: "BINANCE_ORDER_TRADE_UPDATE",
+                data: {
+                  symbol: o.s,
+                  clientOrderId: o.c,
+                  side: o.S,
+                  orderType: o.o,
+                  timeInForce: o.f,
+                  origQty: parseFloat(o.q || "0"),
+                  price: parseFloat(o.p || "0"),
+                  avgPrice: parseFloat(o.ap || o.L || "0"),
+                  executionType: o.x,
+                  orderStatus: o.X,
+                  orderId: String(o.i),
+                  lastFilledQty: parseFloat(o.l || "0"),
+                  cumFilledQty: parseFloat(o.z || "0"),
+                  lastFilledPrice: parseFloat(o.L || "0"),
+                  commission: parseFloat(o.n || "0"),
+                  commissionAsset: o.N,
+                  tradeTime: o.T || Date.now(),
+                  tradeId: o.t,
+                  positionSide: o.ps,
+                  realizedPnl: parseFloat(o.rp || "0")
+                }
+              });
+            } else if (msg.e === 'ACCOUNT_UPDATE' && msg.a) {
+              broadcastToGeneralSubscribers({
+                type: "BINANCE_ACCOUNT_UPDATE",
+                data: msg.a
+              });
+            } else if (msg.e === 'listenKeyExpired') {
+              console.warn(`⚠️ [Binance UserData Stream] listenKey expired. Reconnecting...`);
+              if (instance.keepAliveTimer) clearInterval(instance.keepAliveTimer);
+              activeUserStreams.delete(cleanKey);
+              setTimeout(() => ensureUserDataStream(cleanKey), 1000);
+            }
+          } catch (err) {}
+        });
+
+        uws.on('close', () => {
+          console.log(`🔴 [Binance UserData Stream] Connection closed for ${cleanKey.slice(0, 8)}... Auto-reconnecting in 2s`);
+          if (instance.keepAliveTimer) clearInterval(instance.keepAliveTimer);
+          activeUserStreams.delete(cleanKey);
+          wsIndex++;
+          setTimeout(() => ensureUserDataStream(cleanKey), 2000);
+        });
+
+        uws.on('error', (err: any) => {
+          console.warn(`⚠️ [Binance UserData Stream] Error:`, err.message || err);
+          try { uws.close(); } catch (e) {}
+        });
+
+        activeUserStreams.set(cleanKey, instance);
+      };
+
+      connectUserWs();
+
+    } catch (err: any) {
+      console.warn(`[Binance UserData Stream] Initialization error:`, err.message || err);
+      setTimeout(() => ensureUserDataStream(cleanKey), 5000);
+    }
+  }
+
   // Initialize WebSocket server instance
   const wss = new WebSocketServer({ server });
 
@@ -145,17 +322,28 @@ async function startServer() {
         priceSubscribers.delete(ws);
       });
     } else {
-      console.log("🟢 Client connected to default WebSocket");
+      console.log("🟢 Client connected to default WebSocket (User Data & Trade Updates)");
+      generalSubscribers.add(ws);
       
       // Send initial connection success message for general terminal
       ws.send(JSON.stringify({ type: "SYSTEM", message: "Connected to Trading Engine Server" }));
   
       ws.on("message", (message) => {
-        console.log("Received:", message.toString());
+        try {
+          const parsed = JSON.parse(message.toString());
+          if (parsed && parsed.type === "REGISTER_BINANCE_API" && parsed.apiKey) {
+            ensureUserDataStream(parsed.apiKey);
+          }
+        } catch (e) {}
       });
   
       ws.on("close", () => {
         console.log("🔴 Client disconnected from default WebSocket");
+        generalSubscribers.delete(ws);
+      });
+
+      ws.on("error", () => {
+        generalSubscribers.delete(ws);
       });
     }
   });
@@ -279,6 +467,18 @@ async function startServer() {
                 const data = await response.json();
                 cachedExchangeInfo = data;
                 lastExchangeInfoFetch = now;
+                if (data && Array.isArray(data.symbols)) {
+                    for (const s of data.symbols) {
+                        const lotFilter = s.filters?.find((f: any) => f.filterType === "LOT_SIZE");
+                        const notionalFilter = s.filters?.find((f: any) => f.filterType === "MIN_NOTIONAL" || f.filterType === "NOTIONAL");
+                        symbolFilterCache.set(s.symbol, {
+                            stepSize: lotFilter ? parseFloat(lotFilter.stepSize || "0.0001") : 0.0001,
+                            minQty: lotFilter ? parseFloat(lotFilter.minQty || "0.0001") : 0.0001,
+                            qtyPrecision: parseInt(s.quantityPrecision || "4"),
+                            minNotional: notionalFilter ? parseFloat(notionalFilter.notional || notionalFilter.minNotional || "20") : 20.0
+                        });
+                    }
+                }
                 return data;
             }
         } catch (e) {
@@ -286,6 +486,9 @@ async function startServer() {
         }
         return cachedExchangeInfo;
     }
+
+    // Pre-warm exchangeInfo on server startup
+    getExchangeInfo().catch(err => console.warn("ExchangeInfo pre-warm warning:", err));
 
     function formatBinanceSymbol(symbol: string): string {
         const clean = symbol.toUpperCase().trim();
@@ -296,35 +499,30 @@ async function startServer() {
     }
 
     async function fetchWithFallback(urlStr: string, options: RequestInit = {}): Promise<Response> {
-        const baseUrls = [
-            "https://fapi.binance.com",
-            "https://fapi.binance.me",
-            "https://fapi.binance.info"
-        ];
-        let lastError: any = null;
-        for (const baseUrl of baseUrls) {
-            const targetUrl = urlStr.replace("https://fapi.binance.com", baseUrl);
-            try {
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 6000); // 6s timeout per node
-                const res = await fetch(targetUrl, {
-                    ...options,
-                    signal: controller.signal
-                });
-                clearTimeout(timeout);
-                // If we get an active non-server error response (e.g. 4xx parameters error, 401 unauthorized),
-                // it means we successfully reached Binance and the request is rejected due to user input/auth.
-                // We do NOT need to fallback to other nodes. Return it immediately.
-                if (res.ok || res.status < 500) {
-                    return res;
-                }
-                lastError = new Error(`Node ${baseUrl} returned status ${res.status}`);
-            } catch (err: any) {
-                lastError = err;
-            }
+        // Binance official endpoint
+        const targetUrl = urlStr;
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 6000); // 6s timeout
+            const res = await fetch(targetUrl, {
+                ...options,
+                signal: controller.signal
+            });
+            clearTimeout(timeout);
+            return res;
+        } catch (err: any) {
+            console.error(`[Binance Fetch] Request to ${urlStr} failed:`, err.message || err);
+            throw err;
         }
-        throw lastError || new Error("All Binance nodes failed to respond");
     }
+
+    // Cache for dual-side position mode (Hedge Mode vs One-way Mode) per API key (24h TTL)
+    const dualSideModeCache = new Map<string, { isHedge: boolean, expiry: number }>();
+    // High-performance pre-parsed symbol filter memory cache
+    const symbolFilterCache = new Map<string, { stepSize: number, minQty: number, qtyPrecision: number, minNotional: number }>();
+    // Cache for account balance and active positions to prevent 429 rate limit
+    const accountStateCache = new Map<string, { data: any, timestamp: number }>();
+    const userTradesCache = new Map<string, { data: any, timestamp: number }>();
 
     app.post("/api/binance/order", async (req, res) => {
         const { apiKey, apiSecret, symbol, side, action, quantity, amountUsdt, leverage } = req.body;
@@ -363,51 +561,36 @@ async function startServer() {
                         console.log(`[Binance Order] Successfully set leverage to ${appliedLeverage}x`);
                     } else {
                         const levErrText = await levResponse.text();
-                        console.warn(`[Binance Order] Failed to set leverage to ${targetLeverage}x: ${levErrText}. Attempting auto-adaptive leverage fallback...`);
+                        console.log(`[Binance Order] Leverage setting note: ${targetLeverage}x returned ${levErrText}. Auto-adapting leverage...`);
                         
-                        // Auto-adaptive fallback: Try querying leverage brackets or stepping down (15, 10, 8, 5, 4, 3, 2, 1)
                         let adaptiveSuccess = false;
-                        
-                        // Attempt 1: Fetch leverageBracket for exact max leverage
-                        try {
-                            const bTimestamp = Date.now();
-                            const bQuery = `symbol=${formattedSymbol}&timestamp=${bTimestamp}&recvWindow=5000`;
-                            const bSig = crypto.createHmac("sha256", apiSecret).update(bQuery).digest("hex");
-                            const bRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverageBracket?${bQuery}&signature=${bSig}`, {
-                                headers: { "X-MBX-APIKEY": apiKey }
-                            });
-                            if (bRes.ok) {
-                                const bData = await bRes.json();
-                                const brackets = Array.isArray(bData) ? (bData[0]?.brackets || []) : (bData?.brackets || []);
-                                if (brackets.length > 0) {
-                                    // Find maximum allowed initial leverage
-                                    const maxAllowed = Math.max(...brackets.map((b: any) => parseInt(b.initialLeverage || "0")));
-                                    if (maxAllowed > 0 && maxAllowed < targetLeverage) {
-                                        console.log(`[Binance Order] Found symbol max leverage bracket: ${maxAllowed}x for ${formattedSymbol}. Retrying with ${maxAllowed}x...`);
-                                        const retryRes = await setLeverageFn(maxAllowed);
-                                        if (retryRes.ok) {
-                                            const rJson = await retryRes.json();
-                                            appliedLeverage = rJson.leverage || maxAllowed;
-                                            adaptiveSuccess = true;
-                                            console.log(`[Binance Order] Auto-adaptive leverage matched: ${appliedLeverage}x`);
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (bracketErr) {
-                            console.warn(`[Binance Order] Error querying leverage bracket:`, bracketErr);
-                        }
 
-                        // Attempt 2: If bracket query didn't succeed, step down sequentially
-                        if (!adaptiveSuccess) {
-                            const stepLevels = [15, 12, 10, 8, 5, 4, 3, 2, 1].filter(l => l < targetLeverage);
-                            for (const stepLev of stepLevels) {
-                                const retryRes = await setLeverageFn(stepLev);
+                        // Fast Path 1: Check if error message explicitly tells us the maximum leverage limit (e.g. "cannot exceed 5x leverage")
+                        const exceedMatch = levErrText.match(/cannot exceed\s+(\d+)x/i) || levErrText.match(/maximum leverage is\s+(\d+)x/i) || levErrText.match(/max(?:imum)?\s+(\d+)x/i);
+                        if (exceedMatch && exceedMatch[1]) {
+                            const maxLimit = parseInt(exceedMatch[1]);
+                            if (maxLimit > 0 && maxLimit < targetLeverage) {
+                                console.log(`[Binance Order] Detected exact symbol leverage limit: ${maxLimit}x for ${formattedSymbol}. Retrying...`);
+                                const retryRes = await setLeverageFn(maxLimit);
                                 if (retryRes.ok) {
                                     const rJson = await retryRes.json();
-                                    appliedLeverage = rJson.leverage || stepLev;
+                                    appliedLeverage = rJson.leverage || maxLimit;
                                     adaptiveSuccess = true;
-                                    console.log(`[Binance Order] Auto-adaptive leverage step-down matched: ${appliedLeverage}x for ${formattedSymbol}`);
+                                    console.log(`[Binance Order] Auto-adaptive leverage matched directly: ${appliedLeverage}x`);
+                                }
+                            }
+                        }
+                        
+                        // Fast Path 2: If not matched via message, probe 10x or 5x directly in 1 fast step (skip 10 sequential roundtrips)
+                        if (!adaptiveSuccess) {
+                            const candidateLevs = [10, 5, 2].filter(l => l < targetLeverage);
+                            for (const cLev of candidateLevs) {
+                                const retryRes = await setLeverageFn(cLev);
+                                if (retryRes.ok) {
+                                    const rJson = await retryRes.json();
+                                    appliedLeverage = rJson.leverage || cLev;
+                                    adaptiveSuccess = true;
+                                    console.log(`[Binance Order] Fast auto-adaptive leverage matched: ${appliedLeverage}x for ${formattedSymbol}`);
                                     break;
                                 }
                             }
@@ -417,6 +600,17 @@ async function startServer() {
                             try {
                                 const levErrJson = JSON.parse(levErrText);
                                 if (levErrJson.msg) {
+                                    if (levErrJson.code === -2015) {
+                                        return res.status(400).json({
+                                            success: false,
+                                            error: `【币安 API Key 或 IP 权限受限】${levErrJson.msg}。如果您的币安 API Key 开启了 IP 白名单限制，请将当前服务器出口 IP 添加至币安 API 白名单中，或在币安 API 设置中勾选“允许合约/期货交易”权限！`
+                                        });
+                                    } else if (levErrJson.code === -4028) {
+                                        return res.status(400).json({
+                                            success: false,
+                                            error: `【杠杆倍数不支持】${levErrJson.msg}。币安限制了该币种允许的最大杠杆倍数（例如部分新币或高波动币种最高仅支持 10x 或 5x），请在设置中调低全局/单币杠杆倍数！`
+                                        });
+                                    }
                                     return res.status(400).json({
                                         success: false,
                                         error: `【杠杆设置失败】${levErrJson.msg}。币安限制了该币种的最大杠杆倍数，自动匹配未能成功，请检查币安账户权限或在设置中调低杠杆！`
@@ -430,24 +624,26 @@ async function startServer() {
                 }
             }
 
-            // 2. Get current ticker price to calculate quantity or validate notional value
-            console.log(`[Binance Order] Fetching price for ${formattedSymbol} to calculate qty/validate notional...`);
-            let priceResponse;
-            try {
-                priceResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${formattedSymbol}`);
-            } catch (err: any) {
-                return res.status(502).json({ success: false, error: `获取 ${formattedSymbol} 当前价格失败。错误: ${err.message || err}` });
-            }
-
-            let currentPrice = 0;
-            if (priceResponse.ok) {
-                const priceData = await priceResponse.json();
-                currentPrice = parseFloat(priceData.price);
-            } else {
-                return res.status(502).json({ success: false, error: `获取 ${formattedSymbol} 当前价格失败。` });
-            }
-
+            // 2. Get current ticker price to calculate quantity or validate notional value (only fetch REST if quantity not provided)
+            let currentPrice = latestTickerPrices.get(formattedSymbol) || 0;
             let finalQty = quantity;
+
+            if ((!finalQty || finalQty <= 0) && currentPrice <= 0) {
+                console.log(`[Binance Order] Fetching price for ${formattedSymbol} from Binance REST...`);
+                try {
+                    const priceResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${formattedSymbol}`);
+                    if (priceResponse.ok) {
+                        const priceData = await priceResponse.json();
+                        currentPrice = parseFloat(priceData.price || "0");
+                        if (currentPrice > 0) {
+                            latestTickerPrices.set(formattedSymbol, currentPrice);
+                        }
+                    }
+                } catch (err: any) {
+                    console.warn(`[Binance Order] REST price fetch warning:`, err.message || err);
+                }
+            }
+
             if (!finalQty && amountUsdt && currentPrice > 0) {
                 finalQty = amountUsdt / currentPrice;
                 console.log(`[Binance Order] Calculated qty for ${formattedSymbol}: ${finalQty} (${amountUsdt} USDT @ ${currentPrice})`);
@@ -457,27 +653,35 @@ async function startServer() {
                 return res.status(400).json({ success: false, error: "无法确定合法的交易数量 (quantity 必须大于0)" });
             }
 
-            // 2. Adjust quantity according to exchangeInfo LOT_SIZE stepSize, precision and MIN_NOTIONAL
-            let minNotional = 20.0; // Default minimum notional for Binance Futures USDⓈ-M contracts
+            // 2. Adjust quantity according to symbol filter (LOT_SIZE stepSize, precision and MIN_NOTIONAL)
+            let minNotional = 20.0;
             let stepSize = 0.0001;
             let qtyPrecision = 4;
             let minQty = 0.0001;
 
-            const exchangeInfo = await getExchangeInfo();
-            if (exchangeInfo && exchangeInfo.symbols) {
-                const symInfo = exchangeInfo.symbols.find((s: any) => s.symbol === formattedSymbol);
-                if (symInfo) {
-                    qtyPrecision = parseInt(symInfo.quantityPrecision || "4");
-                    const lotFilter = symInfo.filters?.find((f: any) => f.filterType === "LOT_SIZE");
-                    if (lotFilter) {
-                        stepSize = parseFloat(lotFilter.stepSize || "0.0001");
-                        minQty = parseFloat(lotFilter.minQty || "0.0001");
-                    }
-                    const notionalFilter = symInfo.filters?.find((f: any) => f.filterType === "MIN_NOTIONAL" || f.filterType === "NOTIONAL");
-                    if (notionalFilter) {
-                        const parsedNotional = parseFloat(notionalFilter.notional || notionalFilter.minNotional || "20");
-                        if (!isNaN(parsedNotional) && parsedNotional > 0) {
-                            minNotional = parsedNotional;
+            const symCachedFilter = symbolFilterCache.get(formattedSymbol);
+            if (symCachedFilter) {
+                stepSize = symCachedFilter.stepSize;
+                minQty = symCachedFilter.minQty;
+                qtyPrecision = symCachedFilter.qtyPrecision;
+                minNotional = symCachedFilter.minNotional;
+            } else {
+                const exchangeInfo = await getExchangeInfo();
+                if (exchangeInfo && exchangeInfo.symbols) {
+                    const symInfo = exchangeInfo.symbols.find((s: any) => s.symbol === formattedSymbol);
+                    if (symInfo) {
+                        qtyPrecision = parseInt(symInfo.quantityPrecision || "4");
+                        const lotFilter = symInfo.filters?.find((f: any) => f.filterType === "LOT_SIZE");
+                        if (lotFilter) {
+                            stepSize = parseFloat(lotFilter.stepSize || "0.0001");
+                            minQty = parseFloat(lotFilter.minQty || "0.0001");
+                        }
+                        const notionalFilter = symInfo.filters?.find((f: any) => f.filterType === "MIN_NOTIONAL" || f.filterType === "NOTIONAL");
+                        if (notionalFilter) {
+                            const parsedNotional = parseFloat(notionalFilter.notional || notionalFilter.minNotional || "20");
+                            if (!isNaN(parsedNotional) && parsedNotional > 0) {
+                                minNotional = parsedNotional;
+                            }
                         }
                     }
                 }
@@ -521,29 +725,36 @@ async function startServer() {
             }
 
             // 3. Check Dual Position Side mode (Hedge Mode vs One-way Mode)
-            let isHedgeMode = false;
-            const timestamp = Date.now();
-            const dualQueryString = `timestamp=${timestamp}&recvWindow=5000`;
-            const dualSignature = crypto
-                .createHmac("sha256", apiSecret)
-                .update(dualQueryString)
-                .digest("hex");
+            let isHedgeMode = true; // Binance Perpetual Futures default to Hedge Mode
+            const cacheKey = `${apiKey.slice(0, 8)}_${apiSecret.slice(0, 8)}`;
+            const cachedDual = dualSideModeCache.get(cacheKey);
+            if (cachedDual && cachedDual.expiry > Date.now()) {
+                isHedgeMode = cachedDual.isHedge;
+            } else {
+                const timestamp = Date.now();
+                const dualQueryString = `timestamp=${timestamp}&recvWindow=5000`;
+                const dualSignature = crypto
+                    .createHmac("sha256", apiSecret)
+                    .update(dualQueryString)
+                    .digest("hex");
 
-            let dualResponse;
-            try {
-                dualResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/positionSide/dual?${dualQueryString}&signature=${dualSignature}`, {
-                    headers: { "X-MBX-APIKEY": apiKey }
-                });
+                try {
+                    const dualResponse = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/positionSide/dual?${dualQueryString}&signature=${dualSignature}`, {
+                        headers: { "X-MBX-APIKEY": apiKey }
+                    });
 
-                if (dualResponse.ok) {
-                    const dualData = await dualResponse.json();
-                    isHedgeMode = dualData.dualSidePosition === true;
-                    console.log(`[Binance Order] Position mode detected: ${isHedgeMode ? "Hedge Mode (双向持仓)" : "One-way Mode (单向持仓)"}`);
-                } else {
-                    console.warn("[Binance Order] Failed to fetch position mode, defaulting to One-way Mode");
+                    if (dualResponse.ok) {
+                        const dualData = await dualResponse.json();
+                        isHedgeMode = dualData.dualSidePosition === true;
+                        dualSideModeCache.set(cacheKey, { isHedge: isHedgeMode, expiry: Date.now() + 24 * 60 * 60 * 1000 });
+                        console.log(`[Binance Order] Position mode detected: ${isHedgeMode ? "Hedge Mode (双向持仓)" : "One-way Mode (单向持仓)"}`);
+                    } else {
+                        dualSideModeCache.set(cacheKey, { isHedge: true, expiry: Date.now() + 5 * 60 * 1000 });
+                    }
+                } catch (err: any) {
+                    dualSideModeCache.set(cacheKey, { isHedge: true, expiry: Date.now() + 5 * 60 * 1000 });
+                    console.warn(`[Binance Order] Exception while fetching position mode: ${err.message || err}. Defaulting to Hedge Mode`);
                 }
-            } catch (err: any) {
-                console.warn(`[Binance Order] Exception while fetching position mode: ${err.message || err}. Defaulting to One-way Mode`);
             }
 
             // 3.5 Handle CLOSE action safety checks (Optimized for lightning-fast execution & zero slippage delay)
@@ -555,41 +766,71 @@ async function startServer() {
                     .update(cancelQueryString)
                     .digest("hex");
 
-                const posTimestamp = Date.now();
-                const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=5000`;
-                const posSignature = crypto
-                    .createHmac("sha256", apiSecret)
-                    .update(posQueryString)
-                    .digest("hex");
+                // Asynchronously cancel any open limit/stop orders in the background without blocking the market close order
+                fetchWithFallback(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQueryString}&signature=${cancelSignature}`, {
+                    method: "DELETE",
+                    headers: { "X-MBX-APIKEY": apiKey }
+                }).catch(err => {
+                    console.warn(`[Binance Order] [Background Fast-Close] Open orders cancel warning:`, err.message || err);
+                });
+            }
 
-                await Promise.all([
-                    fetchWithFallback(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQueryString}&signature=${cancelSignature}`, {
-                        method: "DELETE",
-                        headers: { "X-MBX-APIKEY": apiKey }
-                    }).catch(err => console.warn(`[Binance Order] [Fast-Close] Open orders cancel warning:`, err)),
+            // 3.6 Handle OPEN action duplicate prevention (Physical Interceptor on Binance with rapid 1.5s non-blocking check)
+            if (action === "OPEN") {
+                try {
+                    const posTimestamp = Date.now();
+                    const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=5000`;
+                    const posSignature = crypto
+                        .createHmac("sha256", apiSecret)
+                        .update(posQueryString)
+                        .digest("hex");
 
-                    fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${posQueryString}&signature=${posSignature}`, {
-                        headers: { "X-MBX-APIKEY": apiKey }
-                    }).then(async posRes => {
-                        if (posRes.ok) {
-                            const positionsData = await posRes.json();
-                            if (Array.isArray(positionsData)) {
-                                let targetAmt = 0;
-                                if (isHedgeMode) {
-                                    const targetSide = side === "LONG" ? "LONG" : "SHORT";
-                                    const matched = positionsData.find((p: any) => p.positionSide === targetSide);
-                                    if (matched) targetAmt = Math.abs(parseFloat(matched.positionAmt));
-                                } else {
-                                    const matched = positionsData.find((p: any) => p.positionSide === "BOTH");
-                                    if (matched) targetAmt = Math.abs(parseFloat(matched.positionAmt));
+                    const posRes = await Promise.race([
+                        fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${posQueryString}&signature=${posSignature}`, {
+                            headers: { "X-MBX-APIKEY": apiKey }
+                        }),
+                        new Promise<null>(resolve => setTimeout(() => resolve(null), 1500))
+                    ]);
+                    if (posRes && posRes.ok) {
+                        const positionsData = await posRes.json();
+                        if (Array.isArray(positionsData)) {
+                            let currentExistingAmt = 0;
+                            if (isHedgeMode) {
+                                const targetSide = side === "LONG" ? "LONG" : "SHORT";
+                                const matched = positionsData.find((p: any) => p.positionSide === targetSide);
+                                if (matched) {
+                                    currentExistingAmt = Math.abs(parseFloat(matched.positionAmt || "0"));
                                 }
-                                if (targetAmt > 0 && targetAmt < finalQty) {
-                                    finalQty = targetAmt;
+                            } else {
+                                const matched = positionsData.find((p: any) => p.positionSide === "BOTH");
+                                if (matched) {
+                                    const rawAmt = parseFloat(matched.positionAmt || "0");
+                                    if ((side === "LONG" && rawAmt > 0) || (side === "SHORT" && rawAmt < 0)) {
+                                        currentExistingAmt = Math.abs(rawAmt);
+                                    }
                                 }
                             }
+
+                            // 🔒 If position already exists on Binance with valid size, intercept duplicate open!
+                            if (currentExistingAmt > 0) {
+                                console.log(`[Binance Order] [Anti-Duplicate] ${formattedSymbol} (${side}) already exists on Binance with amount ${currentExistingAmt}. Intercepting duplicate OPEN order!`);
+                                return res.json({
+                                    success: true,
+                                    orderId: "EXISTING_POSITION_INTERCEPTED",
+                                    symbol: formattedSymbol,
+                                    side: side === "LONG" ? "BUY" : "SELL",
+                                    positionSide: isHedgeMode ? (side === "LONG" ? "LONG" : "SHORT") : undefined,
+                                    qty: currentExistingAmt,
+                                    price: currentPrice,
+                                    leverage: appliedLeverage,
+                                    message: `币安已存在 ${formattedSymbol} (${side}) 真实持仓 (${currentExistingAmt})，系统已成功物理拦截重复开仓！`
+                                });
+                            }
                         }
-                    }).catch(err => console.warn(`[Binance Order] [Fast-Close] Position risk fetch warning:`, err))
-                ]);
+                    }
+                } catch (err) {
+                    console.warn(`[Binance Order] [Anti-Duplicate] Position risk check warning:`, err);
+                }
             }
 
             // 4. Map Action & Side to Binance Futures parameters
@@ -667,6 +908,44 @@ async function startServer() {
 
             if (orderResponse.ok) {
                 console.log(`[Binance Order] Success! Order ID: ${orderData.orderId}`);
+                const rawAvgPrice = parseFloat(orderData.avgPrice || "0");
+                const rawExecQty = parseFloat(orderData.executedQty || "0");
+                const rawCumQuote = parseFloat(orderData.cumQuote || "0");
+                const avgPrice = rawAvgPrice > 0 ? rawAvgPrice : (rawExecQty > 0 && rawCumQuote > 0 ? (rawCumQuote / rawExecQty) : currentPrice);
+                const executedQty = rawExecQty > 0 ? rawExecQty : finalQty;
+                const executedQuote = rawCumQuote > 0 ? rawCumQuote : (executedQty * avgPrice);
+
+                // Invalidate account cache immediately so UI sync receives new position state instantly
+                const userCacheKey = `${apiKey.substring(0, 10)}_${apiKey.slice(-6)}`;
+                accountStateCache.delete(userCacheKey);
+
+                // Auto ensure User Data Stream is alive for this API Key
+                ensureUserDataStream(apiKey);
+
+                // ⚡ Instant push execution update to browser WebSocket
+                broadcastToGeneralSubscribers({
+                    type: "BINANCE_ORDER_TRADE_UPDATE",
+                    data: {
+                        symbol: formattedSymbol,
+                        clientOrderId: orderData.clientOrderId,
+                        side: binanceSide,
+                        orderType: "MARKET",
+                        origQty: executedQty,
+                        price: avgPrice,
+                        avgPrice: avgPrice,
+                        executionType: "TRADE",
+                        orderStatus: orderData.status || "FILLED",
+                        orderId: String(orderData.orderId),
+                        lastFilledQty: executedQty,
+                        cumFilledQty: executedQty,
+                        lastFilledPrice: avgPrice,
+                        tradeTime: orderData.updateTime || Date.now(),
+                        positionSide: binancePositionSide || (side === "LONG" ? "LONG" : "SHORT"),
+                        realizedPnl: 0,
+                        action: action
+                    }
+                });
+
                 return res.json({
                     success: true,
                     orderId: orderData.orderId,
@@ -674,17 +953,70 @@ async function startServer() {
                     symbol: formattedSymbol,
                     side: binanceSide,
                     positionSide: binancePositionSide,
-                    qty: finalQty,
-                    price: currentPrice,
+                    qty: executedQty,
+                    price: avgPrice,
+                    cumQuote: executedQuote,
+                    status: orderData.status,
+                    updateTime: orderData.updateTime || Date.now(),
                     leverage: appliedLeverage,
-                    message: `成功在币安下单: ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${finalQty} 手（杠杆: ${appliedLeverage}x）！`
+                    message: `成功在币安下单: ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${executedQty} 手（杠杆: ${appliedLeverage}x）！`
                 });
             } else {
                 const errorCode = orderData.code;
                 const errorMsg = orderData.msg || orderText;
+
+                // Handle code -2022: "ReduceOnly Order is rejected"
+                if (errorCode === -2022 && action === "CLOSE") {
+                    console.log(`[Binance Order] ReduceOnly rejected for ${formattedSymbol} (${side}). Checking if position is already closed on Binance...`);
+                    try {
+                        const checkPosTimestamp = Date.now();
+                        const checkPosQuery = `symbol=${formattedSymbol}&timestamp=${checkPosTimestamp}&recvWindow=5000`;
+                        const checkPosSig = crypto.createHmac("sha256", apiSecret).update(checkPosQuery).digest("hex");
+                        const checkPosRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${checkPosQuery}&signature=${checkPosSig}`, {
+                            headers: { "X-MBX-APIKEY": apiKey }
+                        });
+                        if (checkPosRes.ok) {
+                            const pData = await checkPosRes.json();
+                            if (Array.isArray(pData)) {
+                                let remAmt = 0;
+                                if (isHedgeMode) {
+                                    const tSide = side === "LONG" ? "LONG" : "SHORT";
+                                    const match = pData.find((p: any) => p.positionSide === tSide);
+                                    if (match) remAmt = Math.abs(parseFloat(match.positionAmt || "0"));
+                                } else {
+                                    const match = pData.find((p: any) => p.positionSide === "BOTH");
+                                    if (match) {
+                                        const raw = parseFloat(match.positionAmt || "0");
+                                        if ((side === "LONG" && raw > 0) || (side === "SHORT" && raw < 0)) {
+                                            remAmt = Math.abs(raw);
+                                        }
+                                    }
+                                }
+                                if (remAmt === 0) {
+                                    console.log(`[Binance Order] Verified position for ${formattedSymbol} (${side}) is already 0. Treating as successful close.`);
+                                    return res.json({
+                                        success: true,
+                                        orderId: "ALREADY_CLOSED",
+                                        symbol: formattedSymbol,
+                                        side: binanceSide,
+                                        positionSide: binancePositionSide,
+                                        qty: 0,
+                                        price: currentPrice,
+                                        leverage: appliedLeverage,
+                                        message: `仓位在币安已处于已结清/已平仓状态`
+                                    });
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn(`[Binance Order] Error re-checking position on -2022:`, e);
+                    }
+                }
                 
                 let userFriendlyError = `币安交易所请求失败: ${errorMsg}`;
-                if (errorCode === -2015) {
+                if (errorCode === -2022) {
+                    userFriendlyError = "【只减仓订单被拒绝/仓位已平】该仓位在币安当前已无持仓或已被平仓完毕，无需重复提交平仓。";
+                } else if (errorCode === -2015) {
                     userFriendlyError = "币安 API 密钥无效或权限不足！请检查：1. 是否已在币安开启“期货交易 (Enable Futures)”权限；2. API Key 是否正确；3. 是否设置了 IP 限制。";
                 } else if (errorCode === -4411 || (typeof errorMsg === 'string' && (errorMsg.includes("Please sign TradFi-Perps agreement") || errorMsg.includes("agreement contract")))) {
                     userFriendlyError = "【需要签署币安合约协议】请登录您的币安 Web 网页端 or 币安 App，在合约/期权交易页面根据提示同意并签署《永续合约服务协议/TradFi-Perps Agreement》，然后再重新尝试下单。";
@@ -743,36 +1075,46 @@ async function startServer() {
     });
 
     app.post("/api/binance/validate-and-balance", async (req, res) => {
-        const { apiKey, apiSecret } = req.body;
+        let { apiKey, apiSecret, force, bypassCache } = req.body;
         if (!apiKey || !apiSecret) {
-            return res.status(400).json({ success: false, error: "请提供完整的 API Key 和 Secret Key" });
+            return res.json({ success: false, error: "请提供完整的 API Key 和 Secret Key" });
+        }
+
+        apiKey = typeof apiKey === 'string' ? apiKey.trim() : apiKey;
+        apiSecret = typeof apiSecret === 'string' ? apiSecret.trim() : apiSecret;
+
+        const cacheKey = `${apiKey.substring(0, 10)}_${apiKey.slice(-6)}`;
+        const now = Date.now();
+        const cached = accountStateCache.get(cacheKey);
+
+        // Return fresh cache if within 5 seconds to reduce rate limit pressure (unless explicitly forced)
+        if (!force && !bypassCache && cached && (now - cached.timestamp < 5000)) {
+            return res.json(cached.data);
         }
 
         try {
             const timestamp = Date.now();
-            const queryString = `timestamp=${timestamp}&recvWindow=5000`;
+            const queryString = `timestamp=${timestamp}&recvWindow=60000`;
             const signature = crypto
                 .createHmac("sha256", apiSecret)
                 .update(queryString)
                 .digest("hex");
 
             const baseUrls = [
-                "https://fapi.binance.com",
-                "https://fapi.binance.me",
-                "https://fapi.binance.info"
+                "https://fapi.binance.com"
             ];
 
             let lastError = null;
             let success = false;
             let resultData: any = null;
+            let isRateLimitHit = false;
 
             for (const baseUrl of baseUrls) {
                 const url = `${baseUrl}/fapi/v2/account?${queryString}&signature=${signature}`;
                 try {
                     const controller = new AbortController();
-                    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout per node
+                    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
                     
-                    console.log(`[Binance API Validation] Trying node: ${baseUrl}`);
                     const response = await fetch(url, {
                         method: "GET",
                         headers: {
@@ -794,16 +1136,19 @@ async function startServer() {
                         resultData = data;
                         break; // Stop trying other URLs if successful
                     } else {
+                        if (response.status === 429 || response.status === 418) {
+                            isRateLimitHit = true;
+                        }
                         const errText = await response.text();
                         let errMsg = errText;
                         try {
                             const errJson = JSON.parse(errText);
                             errMsg = errJson.msg || errText;
                         } catch (e) {}
-                        lastError = `节点 ${baseUrl} 报错 (状态码 ${response.status}): ${errMsg}`;
+                        lastError = `币安报错 (HTTP ${response.status}): ${errMsg}`;
                     }
                 } catch (err: any) {
-                    lastError = `连接节点 ${baseUrl} 发生错误: ${err.message || err}`;
+                    lastError = `连接币安网络错误: ${err.message || err}`;
                 }
             }
 
@@ -834,32 +1179,60 @@ async function startServer() {
                             liquidationPrice: liquidationPrice,
                             unrealizedPnL: unrealizedPnL,
                             unrealizedPnLPercentage: entryPrice > 0 ? (unrealizedPnL / (Math.abs(amount) * entryPrice)) * 100 : 0,
-                            entryId: `real_${p.symbol}_${side}`,
+                            entryId: `real_${p.symbol}_${side}_${p.updateTime || Date.now()}`,
                             entryTime: Date.now(),
                             leverage: leverage,
                             maintMargin: maintMargin
                         };
                     });
 
-                return res.json({
+                const formattedResult = {
                     success: true,
                     marginBalance,
                     walletBalance,
                     availableBalance,
                     activePositions,
                     message: "API 校验连接成功！"
+                };
+
+                // Store in memory cache
+                accountStateCache.set(cacheKey, {
+                    data: formattedResult,
+                    timestamp: Date.now()
+                });
+
+                // Auto ensure User Data Stream is alive for this API Key
+                ensureUserDataStream(apiKey);
+
+                return res.json(formattedResult);
+            }
+
+            // If rate limited or transient error but we have recent cache, return cache smoothly
+            if (cached && (now - cached.timestamp < 120000)) {
+                return res.json({
+                    ...cached.data,
+                    isCachedFallback: true,
+                    rateLimited: isRateLimitHit
                 });
             }
 
-            return res.status(502).json({
+            if (isRateLimitHit) {
+                return res.json({
+                    success: false,
+                    rateLimited: true,
+                    error: `币安接口请求频率受限 (429 Rate Exceeded)，系统已启动自动退避与平滑重试机制。`
+                });
+            }
+
+            return res.json({
                 success: false,
-                error: `API 校验连接失败。${lastError || "无法连接至任何币安 API 节点。"}`
+                error: `API 校验连接失败: ${lastError || "无法连接至币安 API 节点。"}`
             });
 
         } catch (e: any) {
-            return res.status(500).json({
+            return res.json({
                 success: false,
-                error: `系统在准备签名或发送请求时遇到未知错误: ${e.message || e}`
+                error: `系统在准备签名或发送请求时遇到错误: ${e.message || e}`
             });
         }
     });
@@ -882,9 +1255,7 @@ async function startServer() {
                 .digest("hex");
 
             const baseUrls = [
-                "https://api.binance.com",
-                "https://api.binance.me",
-                "https://api.binance.info"
+                "https://api.binance.com"
             ];
 
             let lastError = null;
@@ -949,6 +1320,151 @@ async function startServer() {
                 success: false,
                 error: `系统在划转执行时遇到未知错误: ${e.message || e}`
             });
+        }
+    });
+
+    // 启动/维持币安用户数据流 WebSocket (POST /api/binance/user-stream/start)
+    app.post("/api/binance/user-stream/start", async (req, res) => {
+        const { apiKey } = req.body || {};
+        if (!apiKey) {
+            return res.status(400).json({ success: false, error: "Missing apiKey" });
+        }
+        try {
+            await ensureUserDataStream(apiKey);
+            return res.json({ success: true, active: true });
+        } catch (e: any) {
+            return res.status(500).json({ success: false, error: e.message || e });
+        }
+    });
+
+    // 币安实盘历史成交/交易账本对账接口 (POST /api/binance/user-trades)
+    app.post("/api/binance/user-trades", async (req, res) => {
+        const { apiKey, apiSecret, symbol, startTime, limit } = req.body;
+        if (!apiKey || !apiSecret) {
+            return res.status(400).json({ success: false, error: "请提供完整的 API Key 和 Secret Key" });
+        }
+
+        const startTimestamp = startTime ? parseInt(String(startTime)) : 0;
+        const cacheKey = `${apiKey.substring(0, 10)}_${symbol || (Array.isArray(req.body.symbols) ? req.body.symbols.join(',') : "ALL")}`;
+        const now = Date.now();
+        const cached = userTradesCache.get(cacheKey);
+
+        // 2 seconds cache for trades during fast polling
+        if (cached && (now - cached.timestamp < 2000)) {
+            const filteredCached = startTimestamp > 0 
+                ? (cached.data || []).filter((t: any) => (parseInt(t.time || t.timestamp || "0") || 0) > startTimestamp)
+                : cached.data;
+            return res.json({ success: true, trades: filteredCached });
+        }
+
+        try {
+            const timestamp = Date.now();
+            const baseUrls = [
+                "https://fapi.binance.com"
+            ];
+
+            let allTrades: any[] = [];
+            let lastError = null;
+            let isRateLimited = false;
+
+            // 1. Determine target symbols list
+            const targetSymbols: string[] = [];
+            if (symbol) {
+                targetSymbols.push(formatBinanceSymbol(symbol));
+            } else if (Array.isArray(req.body.symbols) && req.body.symbols.length > 0) {
+                for (const s of req.body.symbols) {
+                    if (s) targetSymbols.push(formatBinanceSymbol(s));
+                }
+            }
+
+            if (targetSymbols.length === 0) {
+                return res.json({ success: true, trades: [] });
+            }
+
+            // Fetch true executed userTrades for each target symbol
+            const fetchTradesForSymbol = async (sym: string) => {
+                const queryParts: string[] = [
+                    `symbol=${sym}`,
+                    `limit=${Math.min(parseInt(limit || "50") || 50, 100)}`,
+                    `timestamp=${Date.now()}`,
+                    `recvWindow=5000`
+                ];
+                const effectiveStartTime = startTime || (Date.now() - 3600000);
+                queryParts.push(`startTime=${effectiveStartTime}`);
+                const queryString = queryParts.join("&");
+                const signature = crypto.createHmac("sha256", apiSecret).update(queryString).digest("hex");
+
+                for (const baseUrl of baseUrls) {
+                    const url = `${baseUrl}/fapi/v1/userTrades?${queryString}&signature=${signature}`;
+                    try {
+                        const controller = new AbortController();
+                        const timeout = setTimeout(() => controller.abort(), 8000);
+                        const response = await fetch(url, {
+                            method: "GET",
+                            headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" },
+                            signal: controller.signal
+                        });
+                        clearTimeout(timeout);
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (Array.isArray(data)) {
+                                return data;
+                            }
+                        } else {
+                            if (response.status === 429 || response.status === 418) isRateLimited = true;
+                            const errText = await response.text();
+                            lastError = errText;
+                        }
+                    } catch (err: any) {
+                        lastError = err.message || err;
+                    }
+                }
+                return [];
+            };
+
+            const results = await Promise.all(targetSymbols.slice(0, 25).map(s => fetchTradesForSymbol(s)));
+            allTrades = results.flat();
+
+            if (allTrades.length > 0) {
+                userTradesCache.set(cacheKey, {
+                    data: allTrades,
+                    timestamp: Date.now()
+                });
+            } else if (cached) {
+                allTrades = cached.data;
+            }
+
+            return res.json({
+                success: true,
+                trades: allTrades,
+                rateLimited: isRateLimited
+            });
+
+        } catch (e: any) {
+            return res.status(500).json({
+                success: false,
+                error: `获取币安成交账单异常: ${e.message || e}`
+            });
+        }
+    });
+
+    // 彻底清空币安历史成交流水服务端缓存 (POST /api/binance/clear-trade-cache)
+    app.post("/api/binance/clear-trade-cache", (req, res) => {
+        try {
+            const { apiKey } = req.body || {};
+            if (apiKey) {
+                const prefix = apiKey.substring(0, 10);
+                for (const key of userTradesCache.keys()) {
+                    if (key.startsWith(prefix)) {
+                        userTradesCache.delete(key);
+                    }
+                }
+            } else {
+                userTradesCache.clear();
+            }
+            return res.json({ success: true, message: "已彻底清空交易对账缓存" });
+        } catch (e: any) {
+            return res.json({ success: true });
         }
     });
 
@@ -1099,22 +1615,19 @@ async function startServer() {
           fetchCandidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`, isPublicProxy: true, isSpotScale1000: false });
       }
 
-      const maxRetries = fetchCandidates.length;
-      let attempt = 0;
+      const officialCandidates = fetchCandidates.filter(c => !c.isPublicProxy);
+      const publicCandidates = fetchCandidates.filter(c => c.isPublicProxy);
 
-      for (const candidate of fetchCandidates) {
-          attempt++;
-          const urlToFetch = candidate.url;
+      const fetchCandidate = async (candidate: typeof fetchCandidates[0]) => {
+          const controller = new AbortController();
+          const timeoutMs = candidate.isPublicProxy ? 4000 : (isHighPriority ? 2500 : 4000);
+          const timeoutId = setTimeout(() => {
+              if (!controller.signal.aborted) {
+                  controller.abort();
+              }
+          }, timeoutMs);
 
           try {
-              const controller = new AbortController();
-              const timeoutMs = candidate.isPublicProxy ? 5000 : 6000;
-              const timeoutId = setTimeout(() => {
-                  if (!controller.signal.aborted) {
-                      controller.abort();
-                  }
-              }, timeoutMs);
-
               const headers: Record<string, string> = {
                   "Accept": "application/json"
               };
@@ -1123,68 +1636,82 @@ async function startServer() {
                   headers["Cache-Control"] = "no-cache";
               }
 
-              const response = await fetch(urlToFetch, {
+              const response = await fetch(candidate.url, {
                   headers,
                   signal: controller.signal
               });
+
+              if (!response.ok) {
+                  throw new Error(`HTTP ${response.status}`);
+              }
+
+              const text = await response.text();
+              if (!text || text.trim() === '') {
+                  throw new Error("Empty response from upstream");
+              }
+              if (text.trim().startsWith('<') || text.toLowerCase().includes('doctype html')) {
+                  throw new Error("Received HTML error page from proxy/upstream");
+              }
+              let data = JSON.parse(text);
+
+              // Scale 1000-prefixed contracts if served from spot
+              if (candidate.isSpotScale1000) {
+                  if (Array.isArray(data) && Array.isArray(data[0])) {
+                      // K-Line data array: [openTime, open, high, low, close, volume, closeTime, quoteAssetVolume, ...]
+                      data = data.map((k: any[]) => {
+                          const open = (parseFloat(k[1]) * 1000).toString();
+                          const high = (parseFloat(k[2]) * 1000).toString();
+                          const low = (parseFloat(k[3]) * 1000).toString();
+                          const close = (parseFloat(k[4]) * 1000).toString();
+                          return [k[0], open, high, low, close, k[5], k[6], k[7], k[8], k[9], k[10], k[11]];
+                      });
+                  } else if (data && typeof data === 'object' && 'price' in data) {
+                      data = { ...data, symbol: rawSymbol, price: (parseFloat(data.price) * 1000).toString() };
+                  } else if (data && typeof data === 'object' && 'lastPrice' in data) {
+                      data = { 
+                          ...data, 
+                          symbol: rawSymbol, 
+                          lastPrice: (parseFloat(data.lastPrice) * 1000).toString(),
+                          highPrice: (parseFloat(data.highPrice || "0") * 1000).toString(),
+                          lowPrice: (parseFloat(data.lowPrice || "0") * 1000).toString()
+                      };
+                  }
+              }
+              return data;
+          } finally {
               clearTimeout(timeoutId);
+          }
+      };
 
-              if (response.ok) {
-                  const text = await response.text();
-                  if (!text || text.trim() === '') {
-                      throw new Error("Empty response from upstream");
-                  }
-                  if (text.trim().startsWith('<') || text.toLowerCase().includes('doctype html')) {
-                      throw new Error("Received HTML error page from proxy/upstream");
-                  }
-                  let data = JSON.parse(text);
+      // 1. Race all official Binance endpoints in parallel (Instant 20-80ms response)
+      if (officialCandidates.length > 0) {
+          try {
+              const data = await Promise.any(officialCandidates.map(c => fetchCandidate(c)));
+              const ttl = getServerCacheTTL(targetUrl);
+              serverCache.set(cacheKey, {
+                  data,
+                  timestamp: Date.now(),
+                  ttl
+              });
+              return res.json(data);
+          } catch (raceErr) {
+              console.warn(`[Proxy Race] Official candidates failed for ${targetUrl}, trying public proxies...`);
+          }
+      }
 
-                  // Scale 1000-prefixed contracts if served from spot
-                  if (candidate.isSpotScale1000) {
-                      if (Array.isArray(data) && Array.isArray(data[0])) {
-                          // K-Line data array: [openTime, open, high, low, close, volume, closeTime, quoteAssetVolume, ...]
-                          data = data.map((k: any[]) => {
-                              const open = (parseFloat(k[1]) * 1000).toString();
-                              const high = (parseFloat(k[2]) * 1000).toString();
-                              const low = (parseFloat(k[3]) * 1000).toString();
-                              const close = (parseFloat(k[4]) * 1000).toString();
-                              return [k[0], open, high, low, close, k[5], k[6], k[7], k[8], k[9], k[10], k[11]];
-                          });
-                      } else if (data && typeof data === 'object' && 'price' in data) {
-                          data = { ...data, symbol: rawSymbol, price: (parseFloat(data.price) * 1000).toString() };
-                      } else if (data && typeof data === 'object' && 'lastPrice' in data) {
-                          data = { 
-                              ...data, 
-                              symbol: rawSymbol, 
-                              lastPrice: (parseFloat(data.lastPrice) * 1000).toString(),
-                              highPrice: (parseFloat(data.highPrice || "0") * 1000).toString(),
-                              lowPrice: (parseFloat(data.lowPrice || "0") * 1000).toString()
-                          };
-                      }
-                  }
-
-                  // Cache successful responses
-                  const ttl = getServerCacheTTL(targetUrl);
-                  serverCache.set(cacheKey, {
-                      data,
-                      timestamp: Date.now(),
-                      ttl
-                  });
-
-                  return res.json(data);
-              }
-
-              if (response.status === 400 || response.status === 404) {
-                  continue;
-              }
-
-              if (response.status === 429 || response.status === 418) {
-                  continue;
-              }
-
-              throw new Error(`Response status ${response.status}`);
-          } catch (error: any) {
-              // Failover to next candidate in cluster
+      // 2. Fallback to public proxies sequentially if official candidates failed
+      for (const candidate of publicCandidates) {
+          try {
+              const data = await fetchCandidate(candidate);
+              const ttl = getServerCacheTTL(targetUrl);
+              serverCache.set(cacheKey, {
+                  data,
+                  timestamp: Date.now(),
+                  ttl
+              });
+              return res.json(data);
+          } catch (pubErr) {
+              // try next public proxy
           }
       }
   

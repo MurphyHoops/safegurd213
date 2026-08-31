@@ -63,14 +63,20 @@ export function checkRescueRules(
     }
 
     if (!position.mainPositionId) {
-        const hedgePosition = allPositions.find(p => p.mainPositionId === position.entryId);
+        const hedgePosition = allPositions.find(p => 
+            p.mainPositionId === position.entryId || 
+            (p.symbol && position.symbol && p.symbol.replace(/USDT$/i, '').toUpperCase() === position.symbol.replace(/USDT$/i, '').toUpperCase() && p.side !== position.side)
+        );
         
         // 1. 如果启用了"断臂求生"
         if (settings.stopLoss.amputationEnabled) {
+            const symbolAmputationLoss = Math.max(
+                position.cumulativeAmputationLoss || 0,
+                hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0
+            );
             const totalAccumulatedLoss = 
                 (position.cumulativeHedgeLoss || 0) + 
-                (position.cumulativeAmputationLoss || 0) + 
-                (hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0);
+                symbolAmputationLoss;
             
             const hasHedgingHistory = totalAccumulatedLoss > 0 || hedgePosition !== undefined;
 

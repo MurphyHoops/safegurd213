@@ -70,7 +70,7 @@ const List5_Live: React.FC<List5Props> = ({
         });
     }, [sortedActivePositions, filterSide, filterPnL]);
 
-    // Verify symbol on Binance Exchange (futures REST API check)
+    // Verify symbol on Binance Exchange (instant local cache first + fast lightweight single-ticker query)
     const handleVerifySymbol = async (targetSymbolOverride?: string) => {
         const inputSymbol = typeof targetSymbolOverride === 'string' ? targetSymbolOverride : manualSymbol;
         if (!inputSymbol.trim()) {
@@ -84,11 +84,70 @@ const List5_Live: React.FC<List5Props> = ({
         setMatchedSymbols([]);
         
         const clean = inputSymbol.trim().toUpperCase();
+        const fullFormatted = clean.endsWith('USDT') ? clean : clean + 'USDT';
+        const baseCoinName = clean.replace(/USDT$/, '');
+
+        // 1. Fast Path (0ms): Check local realPrices & memory registry immediately
+        let localPrice = 0;
+        if (realPrices) {
+            localPrice = realPrices[clean] || realPrices[fullFormatted] || realPrices[baseCoinName] || 0;
+        }
+        if (!localPrice && typeof (window as any).getPriceRegistry === 'function') {
+            const reg = (window as any).getPriceRegistry();
+            if (reg) {
+                localPrice = reg[clean] || reg[fullFormatted] || reg[baseCoinName] || 0;
+            }
+        }
+
+        if (localPrice > 0) {
+            setManualSymbol(baseCoinName);
+            setVerifiedPrice(localPrice);
+            setVerifyStatus('verified');
+            setMatchedSymbols([]);
+            return;
+        }
+
+        // 2. Fast Path (100ms): Query single ticker directly from Binance API
+        try {
+            const singleRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${fullFormatted}`);
+            if (singleRes.ok) {
+                const singleData = await singleRes.json();
+                const p = parseFloat(singleData.price);
+                if (p > 0) {
+                    setManualSymbol(baseCoinName);
+                    setVerifiedPrice(p);
+                    setVerifyStatus('verified');
+                    setMatchedSymbols([]);
+                    return;
+                }
+            }
+        } catch (e) {
+            console.log('[Verify] Single ticker probe missed, attempting 1000x fallback or lightweight search');
+        }
+
+        // 2.1 Fast Path: Try 1000x symbol prefix (e.g. 1000PEPE, 1000SHIB, 1000BONK, etc.)
+        if (!baseCoinName.startsWith('1000')) {
+            try {
+                const thousandSymbol = `1000${baseCoinName}USDT`;
+                const thousandRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${thousandSymbol}`);
+                if (thousandRes.ok) {
+                    const tData = await thousandRes.json();
+                    const p = parseFloat(tData.price);
+                    if (p > 0) {
+                        setManualSymbol(`1000${baseCoinName}`);
+                        setVerifiedPrice(p);
+                        setVerifyStatus('verified');
+                        setMatchedSymbols([]);
+                        return;
+                    }
+                }
+            } catch (e) {
+                // pass to fallback
+            }
+        }
         
-        // Let's collect all possible symbols from both local realPrices and Binance Exchange
+        // 3. Fallback: Search in local pricing list or allTickers if user typed a partial match
         let allTickers: { symbol: string; price: number }[] = [];
-        
-        // 1. Get from local realPrices
         if (realPrices) {
             Object.entries(realPrices).forEach(([sym, price]) => {
                 const upperSym = sym.toUpperCase();
@@ -97,38 +156,34 @@ const List5_Live: React.FC<List5Props> = ({
             });
         }
         
-        // 2. Fetch all tickers from Binance
-        try {
-            const url = `https://fapi.binance.com/fapi/v1/ticker/price`;
-            const response = await fetchWithFallback(url);
-            if (response.ok) {
-                const data = await response.json();
-                if (Array.isArray(data)) {
-                    data.forEach((item: any) => {
-                        const sym = item.symbol;
-                        const price = parseFloat(item.price);
-                        if (sym && price && !isNaN(price)) {
-                            // Avoid duplicates
-                            if (!allTickers.some(t => t.symbol === sym)) {
-                                allTickers.push({ symbol: sym, price });
+        if (allTickers.length === 0) {
+            try {
+                const url = `https://fapi.binance.com/fapi/v1/ticker/price`;
+                const response = await fetchWithFallback(url);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (Array.isArray(data)) {
+                        data.forEach((item: any) => {
+                            const sym = item.symbol;
+                            const price = parseFloat(item.price);
+                            if (sym && price && !isNaN(price)) {
+                                if (!allTickers.some(t => t.symbol === sym)) {
+                                    allTickers.push({ symbol: sym, price });
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
                 }
+            } catch (err) {
+                console.warn('[Verify] Fallback ticker fetch issue', err);
             }
-        } catch (err) {
-            console.warn('[Verify] Failed to fetch all tickers, using local pricing list', err);
         }
         
-        // Filter out non-USDT symbols to keep it clean (Binance Futures has mainly USDT and BUSD/COIN, USDT is the core)
+        // Filter out non-USDT symbols
         const usdtTickers = allTickers.filter(t => t.symbol.endsWith('USDT'));
+        const getBaseCoin = (sym: string) => sym.replace(/USDT$/, '');
         
-        // Helper to extract base coin
-        const getBaseCoin = (sym: string) => {
-            return sym.replace(/USDT$/, '');
-        };
-        
-        // Find exact matches first
+        // Find exact matches
         const exactMatch = usdtTickers.find(t => {
             const base = getBaseCoin(t.symbol);
             return base === clean || t.symbol === clean;
@@ -136,14 +191,14 @@ const List5_Live: React.FC<List5Props> = ({
         
         if (exactMatch) {
             const base = getBaseCoin(exactMatch.symbol);
-            setManualSymbol(base); // Auto-fill with the base symbol (e.g. BTC)
+            setManualSymbol(base);
             setVerifiedPrice(exactMatch.price);
             setVerifyStatus('verified');
             setMatchedSymbols([]);
             return;
         }
         
-        // If not exact match, let's do partial match
+        // Partial match
         const matches = usdtTickers.filter(t => {
             const base = getBaseCoin(t.symbol);
             return base.includes(clean) || t.symbol.includes(clean);
@@ -155,11 +210,9 @@ const List5_Live: React.FC<List5Props> = ({
             return;
         }
         
-        // Rank matches so that closest match starts first
         const sortedMatches = [...matches].sort((a, b) => {
             const baseA = getBaseCoin(a.symbol);
             const baseB = getBaseCoin(b.symbol);
-            
             let scoreA = 0;
             if (baseA === clean) scoreA = 100;
             else if (baseA === '1000' + clean || clean === '1000' + baseA) scoreA = 90;
@@ -178,14 +231,12 @@ const List5_Live: React.FC<List5Props> = ({
             return baseA.localeCompare(baseB);
         });
         
-        // Auto-select the BEST candidate as verified! No extra clicks needed
         const bestMatch = sortedMatches[0];
         const bestBase = getBaseCoin(bestMatch.symbol);
         setManualSymbol(bestBase);
         setVerifiedPrice(bestMatch.price);
         setVerifyStatus('verified');
         
-        // Save alternative matched symbols (limit to top 12) if there are others
         if (sortedMatches.length > 1) {
             const matchedList = sortedMatches.slice(0, 12).map(t => ({
                 symbol: t.symbol,
@@ -373,21 +424,43 @@ const List5_Live: React.FC<List5Props> = ({
                     )}
 
                     {/* Leverage Selector Row */}
-                    <div className="flex items-center justify-between bg-slate-950/60 border border-slate-800 rounded px-2 py-1">
-                        <span className="text-[10px] font-bold text-slate-400">开仓杠杆倍数 (Leverage):</span>
-                        <select
-                            value={manualLeverage}
-                            onChange={(e) => setManualLeverage(parseInt(e.target.value) || 20)}
-                            className="bg-slate-900 text-xs font-bold text-emerald-400 outline-none rounded px-2 py-0.5 border border-slate-700 cursor-pointer"
-                        >
-                            <option value={5}>5x 杠杆</option>
-                            <option value={10}>10x 杠杆</option>
-                            <option value={20}>20x 杠杆 (推荐)</option>
-                            <option value={30}>30x 杠杆</option>
-                            <option value={50}>50x 杠杆</option>
-                            <option value={75}>75x 杠杆</option>
-                            <option value={100}>100x 杠杆</option>
-                        </select>
+                    <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-950/60 border border-slate-800 rounded px-2.5 py-1.5">
+                        <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] font-bold text-slate-400">杠杆倍数 (Leverage):</span>
+                            <div className="flex items-center bg-slate-900 border border-slate-700 focus-within:border-emerald-500 rounded px-1.5 py-0.5 transition-colors">
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="125"
+                                    value={manualLeverage || ''}
+                                    onChange={(e) => {
+                                        const val = parseInt(e.target.value);
+                                        setManualLeverage(isNaN(val) ? 0 : Math.max(1, Math.min(125, val)));
+                                    }}
+                                    placeholder="20"
+                                    className="w-10 bg-transparent text-xs font-mono font-bold text-emerald-400 outline-none text-center"
+                                />
+                                <span className="text-[10px] font-mono font-bold text-emerald-500">x</span>
+                            </div>
+                        </div>
+                        
+                        {/* Quick Presets */}
+                        <div className="flex items-center gap-1">
+                            {[2, 3, 5, 10, 20, 50, 75, 100].map(lev => (
+                                <button
+                                    key={lev}
+                                    type="button"
+                                    onClick={() => setManualLeverage(lev)}
+                                    className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded transition-all ${
+                                        manualLeverage === lev
+                                            ? 'bg-emerald-600 text-white shadow-sm'
+                                            : 'bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800'
+                                    }`}
+                                >
+                                    {lev}x
+                                </button>
+                            ))}
+                        </div>
                     </div>
 
                     {/* Side Toggle + Qty Input */}

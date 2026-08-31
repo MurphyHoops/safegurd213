@@ -8,17 +8,20 @@ export function checkStrategy5_OscillationGuard(
     const slSettings = settings.stopLoss;
     if (!slSettings.fuseEnabled) return false;
 
-    // 1. Check if fuse is tripped (max retries reached)
-    const retryCount = position.hedgeRetries || 0; 
-    if (retryCount >= slSettings.maxHedgeRetries) {
-        // Fuse is tripped, hedging is disabled for this position.
-        // Now check if we hit the fatal fail stop percent.
+    // 1. Check if fuse is tripped (max refill / retries reached or oscillation locked)
+    const maxRetries = slSettings.maxHedgeRetries || 3;
+    const retryCount = Math.max(position.refillCount || 0, position.amputationCount || 0, position.hedgeRetries || 0); 
+    const isTripped = position.isOscillationLocked || retryCount >= maxRetries;
+
+    if (isTripped) {
+        // Fuse is tripped, hedging and amputation are disabled for this position.
+        // Check if we hit the fatal fail stop percent (based on underlying price change).
         const pnlPercent = position.unrealizedPnLPercentage;
         if (slSettings.fuseFailStopPercent > 0 && pnlPercent <= -Math.abs(slSettings.fuseFailStopPercent)) {
             closePosition(
                 position.symbol, 
                 position.side, 
-                `5. 熔断强制止损: 连续失败 ${retryCount} 次, 亏损达 ${pnlPercent.toFixed(2)}% <= -${slSettings.fuseFailStopPercent}%`
+                `5. 熔断强制止损: 补仓/重试达 ${retryCount} 次, 亏损达 ${pnlPercent.toFixed(2)}% <= -${slSettings.fuseFailStopPercent}%`
             );
             return true;
         }

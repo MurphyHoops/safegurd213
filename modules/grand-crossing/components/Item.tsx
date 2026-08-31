@@ -7,6 +7,7 @@ import { verifyAndFixSymbolPrice } from '../../../services/priceVerifier';
 const getTfMinutes = (tf: string) => {
     const unit = tf.slice(-1);
     const val = parseInt(tf);
+    if (unit === 's') return val / 60;
     if (unit === 'm') return val;
     if (unit === 'h') return val * 60;
     if (unit === 'd') return val * 1440;

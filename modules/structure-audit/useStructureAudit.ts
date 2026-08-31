@@ -19,9 +19,12 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
   const val = parseInt(tf);
+  if (unit === "s") return val / 60;
   if (unit === "m") return val;
   if (unit === "h") return val * 60;
   if (unit === "d") return val * 1440;
+  if (unit === "w") return val * 10080;
+  if (unit === "M") return val * 43200;
   return 0;
 };
 
@@ -45,27 +48,14 @@ export const useStructureAudit = (
 
   // Ensure timeframes is sanitized & never empty
   useEffect(() => {
-    let modified = false;
     let newTfs = [...(config.timeframes || [])];
-    if (newTfs.includes("1m") || newTfs.includes("3m")) {
-      newTfs = newTfs.filter((t) => t !== "1m" && t !== "3m");
-      modified = true;
-    }
-    if (!newTfs.includes("8h")) {
-      newTfs.push("8h");
-      modified = true;
-    }
-    if (!newTfs.includes("1d")) {
-      newTfs.push("1d");
-      modified = true;
-    }
-    if (modified || !config.timeframes || config.timeframes.length === 0) {
+    if (!config.timeframes || config.timeframes.length === 0) {
       setConfig((prev) => ({
         ...prev,
         timeframes:
           newTfs.length > 0
             ? newTfs
-            : ["5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
+            : ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
       }));
     }
   }, [config.timeframes, setConfig]);
@@ -384,7 +374,7 @@ export const useStructureAudit = (
     const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
     if (isBg) return;
 
-    const ALL_TFS = ["5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"];
+    const ALL_TFS = ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"];
     const timer = setInterval(() => {
       const now = Date.now();
       const newCounts: Record<string, string> = {};
@@ -587,10 +577,61 @@ export const useStructureAudit = (
             }
 
             const tfList = Array.from(neededTFs);
+            const secTFs = tfList.filter((tf) => tf === '15s' || tf === '30s');
             const synthesizable = tfList.filter(
-              (tf) => getTfMinutes(tf) <= 5
+              (tf) => (tf === '1m' || tf === '3m' || tf === '5m')
             );
             const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5);
+
+            // A0. Ultra-short Second Timeframes (15s, 30s) synthesized from 1s spot klines
+            if (secTFs.length > 0) {
+              try {
+                const safeSymbol = item.symbol.endsWith("USDT")
+                  ? item.symbol
+                  : `${item.symbol}USDT`;
+                const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${Date.now()}`;
+                const res1s = await fetchWithFallback(
+                  spot1sUrl,
+                  { cache: "no-store" },
+                  (d) => Array.isArray(d),
+                  directMode,
+                );
+                if (res1s.ok) {
+                  const raw1s = await res1s.json();
+                  if (Array.isArray(raw1s) && raw1s.length > 0) {
+                    const secKlines: KLine[] = raw1s.map((k: any) => ({
+                      time: Number(k[0]),
+                      open: parseFloat(k[1]),
+                      high: parseFloat(k[2]),
+                      low: parseFloat(k[3]),
+                      close: parseFloat(k[4]),
+                      volume: parseFloat(k[5]),
+                    }));
+                    secTFs.forEach((tf) => {
+                      lastCandleScanRef.current.set(
+                        `${item.symbol}-${tf}`,
+                        Date.now(),
+                      );
+                      const targetMin = tf === '15s' ? 0.25 : 0.5;
+                      const synthKlines = KLineSynthesizer.synthesize(
+                        secKlines,
+                        targetMin,
+                      );
+                      if (synthKlines.length > 0) {
+                        processStructureForTf(
+                          item,
+                          tf,
+                          synthKlines,
+                          livePrice,
+                          historyExtremes,
+                        );
+                        hasChanges = true;
+                      }
+                    });
+                  }
+                }
+              } catch (e) {}
+            }
 
             let cache1m: KLine[] | null = null;
 
@@ -903,11 +944,61 @@ export const useStructureAudit = (
               }
 
               const tfList = Array.from(neededTFs);
-              // Only synthesize 1m, 3m, 5m. 15m and 30m need more data for EMA80.
+              const secTFs = tfList.filter((tf) => tf === '15s' || tf === '30s');
               const synthesizable = tfList.filter(
-                (tf) => getTfMinutes(tf) <= 5,
+                (tf) => (tf === '1m' || tf === '3m' || tf === '5m'),
               );
               const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5);
+
+              // A0. 处理 15s, 30s 秒级周期 (通过 1s 现货 K 线合成)
+              if (secTFs.length > 0) {
+                try {
+                  const safeSymbol = item.symbol.endsWith("USDT")
+                    ? item.symbol
+                    : `${item.symbol}USDT`;
+                  const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${Date.now()}`;
+                  const res1s = await fetchWithFallback(
+                    spot1sUrl,
+                    { cache: "no-store" },
+                    (d) => Array.isArray(d),
+                    directMode,
+                  );
+                  if (res1s.ok) {
+                    const raw1s = await res1s.json();
+                    if (Array.isArray(raw1s) && raw1s.length > 0) {
+                      const secKlines: KLine[] = raw1s.map((k: any) => ({
+                        time: Number(k[0]),
+                        open: parseFloat(k[1]),
+                        high: parseFloat(k[2]),
+                        low: parseFloat(k[3]),
+                        close: parseFloat(k[4]),
+                        volume: parseFloat(k[5]),
+                      }));
+                      for (const tf of secTFs) {
+                        lastCandleScanRef.current.set(
+                          `${item.symbol}-${tf}`,
+                          Date.now(),
+                        );
+                        const targetMin = tf === '15s' ? 0.25 : 0.5;
+                        const synthKlines = KLineSynthesizer.synthesize(
+                          secKlines,
+                          targetMin,
+                        );
+                        if (synthKlines.length > 0) {
+                          processStructureForTf(
+                            item,
+                            tf,
+                            synthKlines,
+                            livePrice,
+                            historyExtremes,
+                          );
+                          hasChanges = true;
+                        }
+                      }
+                    }
+                  }
+                } catch (e) {}
+              }
 
               let cache1m: KLine[] | null = null;
 

@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { X, FileText, Activity, Code, Clock, ArrowRight, ArrowLeft, Search, TrendingUp, TrendingDown, AlertCircle, Calculator, Link, Shield, PieChart, BarChart2, History, Filter, RotateCcw, Layers, Banknote, List, LayoutGrid, Trash2, Brain } from 'lucide-react';
 import { TradeLog, SystemEvent, PositionSide, Position } from '../types';
+import { normalizeSymbol } from '../services/symbolUtils';
 
 interface Props {
   tradeLogs: TradeLog[];
@@ -155,16 +156,18 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
       // 1. Group all logs and positions by symbol
       const logsBySymbol = new Map<string, TradeLog[]>();
       filteredTradeLogs.forEach(l => {
-          const list = logsBySymbol.get(l.symbol) || [];
+          const sym = normalizeSymbol(l.symbol);
+          const list = logsBySymbol.get(sym) || [];
           list.push(l);
-          logsBySymbol.set(l.symbol, list);
+          logsBySymbol.set(sym, list);
       });
 
       const positionsBySymbol = new Map<string, Position[]>();
       filteredPositions.forEach(p => {
-          const list = positionsBySymbol.get(p.symbol) || [];
+          const sym = normalizeSymbol(p.symbol);
+          const list = positionsBySymbol.get(sym) || [];
           list.push(p);
-          positionsBySymbol.set(p.symbol, list);
+          positionsBySymbol.set(sym, list);
       });
 
       const rSummaries: any[] = [];
@@ -481,7 +484,11 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               else pairLoss += Math.abs(hedgePos.unrealizedPnL);
           }
 
-          const debt = (mainPos.cumulativeHedgeLoss || 0) + (mainPos.cumulativeAmputationLoss || 0) + (hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0);
+          const symbolAmpLoss = Math.max(
+              mainPos.cumulativeAmputationLoss || 0,
+              hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0
+          );
+          const debt = (mainPos.cumulativeHedgeLoss || 0) + symbolAmpLoss;
           const count = (mainPos.hedgeRetries || 0);
           
           return {
@@ -536,7 +543,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               // HEDGE: Currently hedging trading pairs
               if (activeFilter === 'HEDGE') {
                   if (log.status !== 'OPEN') return false;
-                  const pos = positions.find(p => p.entryId === log.entry_id);
+                  const pos = positions.find(p => p.entryId === log.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
                   // Show all positions involved in an active hedge (both main and hedge)
                   return pos ? pos.isHedged === true : false;
               }
@@ -548,7 +555,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                       const selectedDebtLog = tradeLogs.find(l => l.entry_id === selectedDebtId);
                       const targetSymbol = selectedDebtLog?.symbol;
                       // 这里确保relatedIds包含的日志条目属于当前选中债务的币种
-                      return summary ? (summary.relatedIds.has(log.entry_id) && (!targetSymbol || log.symbol === targetSymbol)) : false;
+                      return summary ? (summary.relatedIds.has(log.entry_id) && (!targetSymbol || normalizeSymbol(log.symbol) === normalizeSymbol(targetSymbol))) : false;
                   } else {
                       return activeHedgeStats.summaries.some(s => s.mainLog?.entry_id === log.entry_id);
                   }
@@ -597,7 +604,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               if (activeFilter === 'UNHEDGED_WIN') {
                   const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
                   if (log.status !== 'OPEN' || !!log.main_entry_id || isHedged) return false;
-                  const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id);
+                  const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
                   return pos ? (pos.unrealizedPnL > 0 && !pos.isHedged) : false;
               }
 
@@ -605,7 +612,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               if (activeFilter === 'UNHEDGED_LOSS') {
                   const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
                   if (log.status !== 'OPEN' || !!log.main_entry_id || isHedged) return false;
-                  const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id);
+                  const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
                   return pos ? (pos.unrealizedPnL < 0 && !pos.isHedged) : false;
               }
 
@@ -613,7 +620,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               if (activeFilter === 'NEW_OPEN') {
                   const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
                   if (log.status !== 'OPEN' || !!log.main_entry_id || isHedged) return false;
-                  const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id);
+                  const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
                   return pos ? !pos.isHedged : false;
               }
 
@@ -674,7 +681,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
           
           let pnl = log.profit_usdt || 0;
           if (log.status === 'OPEN') {
-              const pos = positions.find(p => p.entryId === log.entry_id);
+              const pos = positions.find(p => p.entryId === log.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
               if (pos) pnl = pos.unrealizedPnL;
           }
           g.totalPnL += pnl;
@@ -717,12 +724,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
           } else {
               let pnlA = a.profit_usdt || 0;
               if (a.status === 'OPEN') {
-                  const posA = positions.find(p => p.entryId === a.entry_id);
+                  const posA = positions.find(p => p.entryId === a.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(a.symbol) && p.side === a.direction));
                   if (posA) pnlA = posA.unrealizedPnL;
               }
               let pnlB = b.profit_usdt || 0;
               if (b.status === 'OPEN') {
-                  const posB = positions.find(p => p.entryId === b.entry_id);
+                  const posB = positions.find(p => p.entryId === b.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(b.symbol) && p.side === b.direction));
                   if (posB) pnlB = posB.unrealizedPnL;
               }
               
@@ -743,8 +750,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
   };
 
   const getDuration = (start: number, end?: number) => {
-      if (!end) return '-';
-      const ms = end - start;
+      if (!start) return '-';
+      const endTime = end || Date.now();
+      const ms = Math.max(0, endTime - start);
       const sec = Math.floor(ms / 1000);
       if (sec < 60) return `${sec}秒`;
       const min = Math.floor(sec / 60);
@@ -847,8 +855,8 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
             <div className="flex flex-wrap items-center gap-3">
                 <div className="flex flex-wrap items-center gap-2">
                     <FilterChip type="ALL" label="全部" icon={Layers} colorClass="bg-slate-700 text-white border-slate-500" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
+                    <FilterChip type="NEW_OPEN" label="新开仓" icon={Activity} colorClass="bg-indigo-900/40 text-indigo-400 border-indigo-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="OPEN" label="全部开仓" icon={Activity} colorClass="bg-blue-900/40 text-blue-400 border-blue-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
-                    <FilterChip type="NEW_OPEN" label="持仓中" icon={Activity} colorClass="bg-indigo-900/40 text-indigo-400 border-indigo-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="UNHEDGED_WIN" label="未对冲盈利" icon={TrendingUp} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="UNHEDGED_LOSS" label="未对冲亏损" icon={TrendingDown} colorClass="bg-red-900/40 text-red-400 border-red-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
                     <FilterChip type="NORMAL_WIN" label="常规止盈" icon={Banknote} colorClass="bg-emerald-900/40 text-emerald-400 border-emerald-500/30" activeFilter={activeFilter} handleFilterChange={handleFilterChange} />
@@ -1182,8 +1190,10 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 );
                                 const uniqueKey = `${log.entry_id}-${log.status}-${log.exit_timestamp || log.entry_timestamp}-${idx}`;
                                 
-                                const activePos = positions.find(p => p.entryId === log.entry_id);
-                                const currentPrice = activePos ? activePos.markPrice : (log.exit_price || 0);
+                                const activePos = log.status === 'OPEN'
+                                    ? positions.find(p => p.entryId === log.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction && (p.amount || 0) > 0.0001 && Math.abs((p.entryTime || 0) - log.entry_timestamp) < 300000))
+                                    : undefined;
+                                const currentPrice = activePos ? activePos.markPrice : (log.exit_price || log.entry_price || 0);
                                 const realizedPnL = log.profit_usdt || 0;
                                 const realizedPnLPct = log.profit_percent || 0;
 
@@ -1295,13 +1305,16 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                     }
 
                                 const isClosed = log.status === 'CLOSED';
-                                const hasActivePosition = positions.some(p => p.entryId === log.entry_id);
-                                const hasClosedLog = tradeLogs.some(l => l.entry_id === log.entry_id && l.status === 'CLOSED');
+                                const hasActivePosition = !isClosed && !!activePos;
+                                const hasClosedLog = tradeLogs.some(l => 
+                                    (l.entry_id === log.entry_id || (normalizeSymbol(l.symbol) === normalizeSymbol(log.symbol) && l.direction === log.direction && (l.exit_timestamp || 0) >= log.entry_timestamp)) && 
+                                    l.status === 'CLOSED'
+                                );
                                 const isCompletedCycle = isClosed || (!hasActivePosition && hasClosedLog);
 
                                 const isHedgeCut = !!log.parent_entry_id && (log.entry_id?.includes('_cut_') || log.exit_reason?.includes('减仓') || log.exit_reason?.includes('砍仓'));
                                 const isRefill = log.entry_id?.includes('_refill_') || (log.events && log.events.some(e => e.action.includes('补')));
-                                const isHedgeClear = log.exit_reason?.includes('解套') || log.exit_reason?.includes('断臂') || log.exit_reason?.includes('对冲清仓') || log.exit_reason?.includes('防爆安全') || log.exit_reason?.includes('断臂全清');
+                                const isHedgeClear = log.exit_reason?.includes('解套') || log.exit_reason?.includes('断臂') || log.exit_reason?.includes('对冲清仓') || log.exit_reason?.includes('防爆安全') || log.exit_reason?.includes('断臂全清') || log.exit_reason?.includes('对冲解套');
                                 const isHedge = log.is_hedge || !!log.main_entry_id;
 
                                 let actionLabel = '开仓';
@@ -1314,10 +1327,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                     } else if (isHedgeClear) {
                                         actionLabel = '防爆对冲清仓';
                                         actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
-                                    } else if (isHedge) {
-                                        actionLabel = '对冲平仓';
-                                        actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
-                                    } else if (log.profit_usdt && log.profit_usdt >= 0) {
+                                    } else if (log.profit_usdt !== undefined && log.profit_usdt >= 0) {
                                         actionLabel = '盈利平仓';
                                         actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
                                     } else {
@@ -1332,7 +1342,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         actionLabel = '防爆对冲补仓';
                                         actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
                                     } else {
-                                        actionLabel = '原仓位开仓';
+                                        actionLabel = '新开仓';
                                         actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
                                     }
                                 }
@@ -1414,7 +1424,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                 </div>
                                             )}
                                             {!!log.main_entry_id && <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-400 border border-blue-500/30 text-[9px] font-bold"><Shield size={8} /> 🛡️对冲</span>}
-                                            {!!log.parent_entry_id && <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-400 border border-purple-500/30 text-[9px] font-bold"><Shield size={8} /> ✂️减仓</span>}
+                                            {!!log.parent_entry_id && <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-400 border border-purple-500/30 text-[9px] font-bold"><Shield size={8} /> {log.exit_reason?.includes('止损砍仓') ? '✂️止损砍仓' : '✂️减仓'}</span>}
                                         </td>
                                         <td className="px-4 py-3 text-xs font-mono">
                                             <div className="font-bold text-slate-200">{log.cost_usdt.toFixed(2)} U</div>
@@ -1468,14 +1478,16 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                         <div className="mt-2 pt-2 border-t border-slate-800/50 flex flex-col gap-1 bg-indigo-950/20 p-1.5 rounded">
                                                             {(() => {
                                                                 // Calculate Combined Stats for the pair
-                                                                let mainPos = activePos.mainPositionId ? positions.find(p => p.entryId === activePos.mainPositionId) : activePos;
-                                                                let hedgePos = activePos.mainPositionId ? activePos : positions.find(p => p.mainPositionId === activePos.entryId);
+                                                                let mainPos = activePos?.mainPositionId ? positions.find(p => p.entryId === activePos.mainPositionId || (normalizeSymbol(p.symbol) === normalizeSymbol(activePos.symbol) && p.side !== activePos.side)) : activePos;
+                                                                let hedgePos = activePos?.mainPositionId ? activePos : positions.find(p => p.mainPositionId === activePos?.entryId || (activePos && normalizeSymbol(p.symbol) === normalizeSymbol(activePos.symbol) && p.side !== activePos.side));
                                                                 
                                                                 if (!mainPos) return null;
 
-                                                                const cumulativeLoss = (mainPos.cumulativeHedgeLoss || 0) + 
-                                                                                     (mainPos.cumulativeAmputationLoss || 0) + 
-                                                                                     (hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0);
+                                                                const symbolAmpLoss = Math.max(
+                                                                    mainPos.cumulativeAmputationLoss || 0,
+                                                                    hedgePos ? (hedgePos.cumulativeAmputationLoss || 0) : 0
+                                                                );
+                                                                const cumulativeLoss = (mainPos.cumulativeHedgeLoss || 0) + symbolAmpLoss;
                                                                 
                                                                 let currentFloatingLoss = 0;
                                                                 if (mainPos.unrealizedPnL < 0) currentFloatingLoss += Math.abs(mainPos.unrealizedPnL);

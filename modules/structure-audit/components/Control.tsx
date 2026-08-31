@@ -10,7 +10,7 @@ interface List3PanelProps {
 }
 
 export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, countdowns }) => {
-    const ALL_TFS = ['5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+    const ALL_TFS = ['15s', '30s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
     const toggleTf = (tf: string) => setConfig(prev => ({ ...prev, timeframes: prev.timeframes.includes(tf) ? prev.timeframes.filter(t => t !== tf) : [...prev.timeframes, tf] }));
     const isActive = config.timeframes.length > 0;
     const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('list3_control_collapsed') === 'true');

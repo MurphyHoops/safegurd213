@@ -1,6 +1,6 @@
 import React from 'react';
 import { Position, PositionSide } from '../../../types';
-import { Shield, Target, Zap, History, BarChart2, Settings, Brain, RefreshCw } from 'lucide-react';
+import { Shield, Target, Zap, History, BarChart2, Settings, Brain, RefreshCw, AlertTriangle } from 'lucide-react';
 import { formatPrice } from '../../../services/symbolUtils';
 import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
 import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
@@ -45,6 +45,114 @@ function getStrategyNameById(id?: string): string {
     return id;
 }
 
+/**
+ * 格式化对冲启动条件显示：
+ * 严格按照实际触发原因显示：
+ * - 亏损值（X）%启动防爆对冲
+ * - （300）天极值（X）%启动防爆对冲
+ * - 短期极值（X）%启动防爆对冲
+ * - EMA(X)防火墙启动防爆对冲
+ * - 破位振幅（X）%启动防爆对冲
+ * - 手动启动防爆对冲
+ */
+function formatSingleHedgeReason(trimmed: string, hedgeSettings?: any): string {
+    if (!trimmed) return '';
+
+    // 1. 亏损值触发
+    const lossMatch = trimmed.match(/亏损达到\s*([\d.]+)%/) || trimmed.match(/亏损[^\d]*([\d.]+)%/);
+    if (lossMatch) {
+        return `亏损值（${lossMatch[1]}）%`;
+    }
+    if (trimmed.includes('亏损')) {
+        const lossVal = hedgeSettings?.triggerLossPercent ?? 1.0;
+        return `亏损值（${lossVal}）%`;
+    }
+
+    // 2. 300天极值触发
+    if (trimmed.includes('300天极值') || trimmed.includes('300天') || trimmed.includes('极值对冲启动价') || trimmed.includes('极值防爆')) {
+        const extremePct = hedgeSettings?.extremeHedgePercent ?? 0.8;
+        return `（300）天极值（${extremePct}）%`;
+    }
+
+    // 3. 短期极值触发
+    if (trimmed.includes('短期极值')) {
+        const shortPct = hedgeSettings?.shortTermExtremePercent ?? 0.5;
+        return `短期极值（${shortPct}）%`;
+    }
+
+    // 4. EMA 防火墙触发
+    const emaMatch = trimmed.match(/EMA(\d+)/);
+    if (emaMatch || trimmed.includes('防火墙') || trimmed.includes('EMA')) {
+        const emaPeriod = emaMatch ? emaMatch[1] : (hedgeSettings?.trendHedgeEmaPeriod || 80);
+        return `EMA${emaPeriod}防火墙`;
+    }
+
+    // 5. 破位触发
+    const breakMatch = trimmed.match(/振幅\s*([\d.]+)%/);
+    if (breakMatch || trimmed.includes('振幅') || trimmed.includes('破位')) {
+        const breakVal = breakMatch ? breakMatch[1] : (hedgeSettings?.breakKLineRatio ?? 20);
+        return `破位振幅（${breakVal}）%`;
+    }
+
+    // 6. 手动开启
+    if (trimmed.includes('手动')) {
+        return '手动';
+    }
+
+    // 7. 自定义具体文本
+    if (trimmed && trimmed !== '自动防爆对冲' && trimmed !== '对冲策略触发' && trimmed !== '实盘发现/触发开仓') {
+        return trimmed;
+    }
+
+    return '';
+}
+
+function formatHedgeTriggerDisplay(triggerReason?: string, hedgedPos?: Position, hedgeSettings?: any): string {
+    const rawReason = triggerReason || '';
+
+    // 如果包含具体原因（包括多条件组合 | ），进行拆分格式化
+    if (rawReason && rawReason !== '自动防爆对冲' && rawReason !== '对冲策略触发' && rawReason !== '实盘发现/触发开仓') {
+        const parts = rawReason.split('|').map(p => formatSingleHedgeReason(p.trim(), hedgeSettings)).filter(Boolean);
+        if (parts.length > 0) {
+            // 去重
+            const uniqueParts = Array.from(new Set(parts));
+            return `${uniqueParts.join(' + ')}启动防爆对冲`;
+        }
+    }
+
+    // 如果未记录具体字符串，根据当前持仓数据特征判断（绝不盲目默认300天极值）
+    if (hedgedPos) {
+        // 判断是否为亏损触发
+        if (hedgedPos.unrealizedPnLPercentage !== undefined && hedgedPos.unrealizedPnLPercentage <= -Math.abs(hedgeSettings?.triggerLossPercent ?? 1.0)) {
+            const lossVal = hedgeSettings?.triggerLossPercent ?? 1.0;
+            return `亏损值（${lossVal}）%启动防爆对冲`;
+        }
+        // 判断是否为300天极值触发
+        if (hedgedPos.extremeHedgeTriggerPrice !== undefined && hedgedPos.markPrice !== undefined && hedgedPos.markPrice > 0) {
+            const isBreached = hedgedPos.side === PositionSide.LONG 
+                ? hedgedPos.markPrice <= hedgedPos.extremeHedgeTriggerPrice 
+                : hedgedPos.markPrice >= hedgedPos.extremeHedgeTriggerPrice;
+            if (isBreached) {
+                const extremePct = hedgeSettings?.extremeHedgePercent ?? 0.8;
+                return `（300）天极值（${extremePct}）%启动防爆对冲`;
+            }
+        }
+        // 判断是否为短期极值触发
+        if (hedgedPos.shortTermExtremeTriggerPrice !== undefined && hedgedPos.markPrice !== undefined && hedgedPos.markPrice > 0) {
+            const isShortBreached = hedgedPos.side === PositionSide.LONG 
+                ? hedgedPos.markPrice <= hedgedPos.shortTermExtremeTriggerPrice 
+                : hedgedPos.markPrice >= hedgedPos.shortTermExtremeTriggerPrice;
+            if (isShortBreached) {
+                const shortPct = hedgeSettings?.shortTermExtremePercent ?? 0.5;
+                return `短期极值（${shortPct}）%启动防爆对冲`;
+            }
+        }
+    }
+
+    // 默认展示
+    return '启动防爆对冲';
+}
+
 interface Props {
     p: Position;
     idx: number;
@@ -67,12 +175,13 @@ interface Props {
     globalHedgingSettings?: any;
     isManuallyClosed?: boolean;
     hasCustomSettings?: boolean;
+    hedgeTriggerReason?: string;
 }
 
 // @LOCKED: PositionItem logic
 export const PositionItem: React.FC<Props> = ({
     p, idx, livePrice, currentPnl, currentPnlPct, showHedgeStats, totalDebt, isHedgedMode, isModule1Active, hasAmmo,
-    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings
+    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings, hedgeTriggerReason
 }) => {
     const isHedgedActive = p.isHedged || !!p.mainPositionId;
 
@@ -220,17 +329,10 @@ export const PositionItem: React.FC<Props> = ({
                         </div>
                     )}
                     {isHedgedMode ? (
-                        <>
-                            <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${p.mainPositionId ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' : 'bg-indigo-900/30 text-indigo-300 border-indigo-500/30'}`} title="模块4已接管">
-                                <Shield size={8} fill="currentColor"/>
-                                <span>{p.mainPositionId ? (p.reopenCount ? `对冲仓位 (编号${p.reopenCount})` : '对冲仓位') : '原仓位'}</span>
-                            </div>
-                            {p.mainPositionId && p.triggerReason && (
-                                <div className="flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border bg-slate-800/50 text-slate-400 border-slate-700/50 max-w-[120px]" title={p.triggerReason}>
-                                    <span className="truncate">{p.triggerReason}</span>
-                                </div>
-                            )}
-                        </>
+                        <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${p.mainPositionId ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' : 'bg-indigo-900/30 text-indigo-300 border-indigo-500/30'}`} title="模块4已接管">
+                            <Shield size={8} fill="currentColor"/>
+                            <span>{p.mainPositionId ? (p.reopenCount ? `对冲仓位 (编号${p.reopenCount})` : '对冲仓位') : '原仓位'}</span>
+                        </div>
                     ) : (
                         <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${isModule1Active ? 'bg-emerald-900/20 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-600'}`}>
                             <Target size={8} />
@@ -241,6 +343,12 @@ export const PositionItem: React.FC<Props> = ({
                         <div className="flex items-center gap-1 bg-amber-900/30 text-amber-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-amber-500/30">
                             <Zap size={8} fill="currentColor"/>
                             <span>+{(p.cumulativeHedgeProfit || 0).toFixed(1)}U</span>
+                        </div>
+                    )}
+                    {p.isOscillationLocked && (
+                        <div className="flex items-center gap-1 bg-amber-500/20 text-amber-300 text-[8px] font-black px-1.5 py-0.5 rounded-sm border border-amber-500/40 animate-pulse" title={`已触发震荡磨损保护熔断 (已补仓${p.refillCount || 0}次)，已停止自动砍仓与补仓`}>
+                            <AlertTriangle size={8} />
+                            <span>震荡熔断({p.refillCount || 0}次)</span>
                         </div>
                     )}
                     {isAiEnabled && (
@@ -336,38 +444,45 @@ export const PositionItem: React.FC<Props> = ({
 
             {/* 4. Actions */}
             <div className="w-[40%] flex items-center justify-end gap-2 shrink-0">
-                {/* @LOCKED: Display all active triggers with custom labels & distance percentages */}
-                {candidates.length > 0 && (
-                    (() => {
-                        return (
-                            <div className="flex items-center gap-1.5">
-                                <div 
-                                    className="flex bg-blue-900/20 border border-blue-500/20 rounded-sm px-1.5 py-0.5 items-center gap-1 whitespace-nowrap" 
-                                    title={candidates.map(c => `${c.label}启动价格: ${formatPrice(c.price)}`).join(' | ')}
-                                >
-                                    {candidates.map((cand, idx) => {
-                                        const distPct = livePrice > 0 ? Math.abs((livePrice - cand.price) / livePrice) * 100 : 0;
-                                        return (
-                                            <span key={idx} className="font-mono text-[9px] text-blue-100 flex items-center">
-                                                <span className="text-[8px] text-blue-400 font-bold mr-0.5">{cand.label}</span>
-                                                <span>{distPct.toFixed(2)}%</span>
-                                                {idx < candidates.length - 1 && <span className="mx-1 text-blue-500/60 font-sans">;</span>}
-                                            </span>
-                                        );
-                                    })}
-                                </div>
-                                {!isHedgedActive && (
-                                    <button 
-                                        onClick={(e) => { e.stopPropagation(); onManualHedge?.(p); }} 
-                                        className="px-1.5 py-0.5 bg-indigo-950/40 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded text-[9px] font-bold border border-indigo-800/60 hover:border-indigo-500 transition-all relative whitespace-nowrap"
-                                        title="手动立即开启对冲保护"
-                                    >
-                                        手动对冲
-                                    </button>
-                                )}
+                {/* When hedged: Show activated hedge trigger condition in the right-side area */}
+                {isHedgedActive ? (
+                    <div className="flex items-center gap-1.5">
+                        <div 
+                            className="flex bg-purple-950/40 border border-purple-800/50 rounded-sm px-2 py-0.5 items-center gap-1 whitespace-nowrap text-purple-300 font-bold text-[9px] shadow-[0_0_8px_rgba(168,85,247,0.15)]"
+                            title={hedgeTriggerReason || p.triggerReason || '防爆对冲已启动'}
+                        >
+                            <Shield size={10} className="text-purple-400 shrink-0" />
+                            <span>{formatHedgeTriggerDisplay(hedgeTriggerReason || p.triggerReason, p, globalHedgingSettings)}</span>
+                        </div>
+                    </div>
+                ) : (
+                    /* When not hedged: Display all active trigger preview candidates with custom labels & distance percentages */
+                    candidates.length > 0 && (
+                        <div className="flex items-center gap-1.5">
+                            <div 
+                                className="flex bg-blue-900/20 border border-blue-500/20 rounded-sm px-1.5 py-0.5 items-center gap-1 whitespace-nowrap" 
+                                title={candidates.map(c => `${c.label}启动价格: ${formatPrice(c.price)}`).join(' | ')}
+                            >
+                                {candidates.map((cand, idx) => {
+                                    const distPct = livePrice > 0 ? Math.abs((livePrice - cand.price) / livePrice) * 100 : 0;
+                                    return (
+                                        <span key={idx} className="font-mono text-[9px] text-blue-100 flex items-center">
+                                            <span className="text-[8px] text-blue-400 font-bold mr-0.5">{cand.label}</span>
+                                            <span>{distPct.toFixed(2)}%</span>
+                                            {idx < candidates.length - 1 && <span className="mx-1 text-blue-500/60 font-sans">;</span>}
+                                        </span>
+                                    );
+                                })}
                             </div>
-                        );
-                    })()
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); onManualHedge?.(p); }} 
+                                className="px-1.5 py-0.5 bg-indigo-950/40 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded text-[9px] font-bold border border-indigo-800/60 hover:border-indigo-500 transition-all relative whitespace-nowrap"
+                                title="手动立即开启对冲保护"
+                            >
+                                手动对冲
+                            </button>
+                        </div>
+                    )
                 )}
                 <div className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity relative">
                     <button 

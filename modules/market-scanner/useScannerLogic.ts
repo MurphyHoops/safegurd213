@@ -558,10 +558,15 @@ export const useScannerLogic = (
                 audioService.speak("行情接口被封禁");
             }
             
-            if (!errMsg.includes('Failed to fetch') && !errMsg.includes('NetworkError')) {
+            const isBenignNetworkNoise = errMsg.includes('Failed to fetch') || 
+                                         errMsg.includes('NetworkError') || 
+                                         errMsg.includes('aborted') || 
+                                         errMsg.includes('AbortError');
+            
+            if (!isBenignNetworkNoise) {
                 console.error("Scanner Fetch Failed:", errMsg); 
             } else {
-                console.warn("Scanner Network Glitch (Retrying...):", errMsg);
+                console.warn("Scanner Network Reconnecting/Glitch:", errMsg);
             }
             
             if (wasForceFullRef.current && retryCountRef.current < 3 && !errMsg.includes('418')) {
@@ -1205,18 +1210,17 @@ export const useScannerLogic = (
         }
     }, []);
 
-    // Major Trend Background Loop
+    // Major Trend Background Loop - strictly according to intervalMinutes
     useEffect(() => {
         if (!initialConfig.majorTrend?.enabled) return;
 
         const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
         const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
         if (isBg) {
-            console.log(`[useScannerLogic] Skipping Major Trend background loop for background strategy ${strategyId}`);
             return;
         }
 
-        // Trigger initial discovery through Pipeline Coordinator if candidates empty
+        // Trigger initial discovery through Pipeline Coordinator only if candidates completely empty
         if (majorTrendCandidates.size === 0 && !hasRunMajorTrend && !isMajorScanning) {
             pipelineCoordinator.enqueue('major_trend', async () => {
                 await runMajorTrendDiscovery(false);
@@ -1236,7 +1240,7 @@ export const useScannerLogic = (
             }
         }, intervalMs);
         return () => clearInterval(timer);
-    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, initialConfig.majorTrend?.intervalMinutes, initialConfig.majorTrend?.updateIntervalHours, majorTrendCandidates.size, hasRunMajorTrend, isMajorScanning, runMajorTrendDiscovery, strategyId]);
+    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, initialConfig.majorTrend?.intervalMinutes, initialConfig.majorTrend?.updateIntervalHours, runMajorTrendDiscovery, strategyId]);
 
 
     // 🔒 [SECURITY_LOCK]: AUTO-TRIGGER DISCOVERY. Detect config parameter changes with an 800ms debounce

@@ -237,17 +237,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             }
         }, 1000);
 
-        // Listen for volume pool updates
-        const handleVolumePoolUpdate = () => {
-            if (isMountedRef.current && !isScanningRef.current && isAutoScan) {
-                triggerScheduledScan();
-            }
-        };
-
-        window.addEventListener('storage', handleVolumePoolUpdate);
-        window.addEventListener('scanner_volume_pool_updated', handleVolumePoolUpdate);
-
-        // Periodic auto-sync based on syncIntervalMin (Default: 3 minutes)
+        // Periodic auto-sync based purely on syncIntervalMin (Default: 3 minutes) - no event spamming
         const intervalMs = Math.max(1, syncIntervalMin || 3) * 60 * 1000;
         const interval = setInterval(() => {
             if (isMountedRef.current && !isScanningRef.current && isAutoScan) {
@@ -258,8 +248,6 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         return () => {
             clearTimeout(timer);
             clearInterval(interval);
-            window.removeEventListener('storage', handleVolumePoolUpdate);
-            window.removeEventListener('scanner_volume_pool_updated', handleVolumePoolUpdate);
         };
     }, [isAutoScan, syncIntervalMin, scanConfig.majorTrend?.enableStartTrendLong, scanConfig.majorTrend?.enableStartTrendShort]);
 

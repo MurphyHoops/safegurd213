@@ -6,7 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { binanceRealtimeService } from "../services/realtime/BinanceRealtimeService";
-import { ScannerSettings, PositionSide, Position, KLine, StrategyItem } from "../types";
+import { ScannerSettings, PositionSide, Position, KLine, StrategyItem, TradeLog } from "../types";
 import {
   X,
   Crosshair,
@@ -109,6 +109,7 @@ interface Props {
   onBacktestPositionsUpdate?: (positions: Position[]) => void;
   onBatchClose?: () => void;
   isRealTrading?: boolean;
+  onAddTradeLog?: (log: TradeLog) => void;
 }
 
 const UnconfiguredColumn: React.FC<{
@@ -156,6 +157,7 @@ const ScannerDashboardInner: React.FC<
   setBacktestKlines,
   onBacktestPositionsUpdate,
   isRealTrading = false,
+  onAddTradeLog,
 }) => {
   const {
     virtualTime,
@@ -1332,6 +1334,8 @@ const ScannerDashboardInner: React.FC<
 
       if (scannerMode === "BACKTEST") {
         const qty = amount / price;
+        const entryId = Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
+        const tradeTime = virtualTimeRef.current || Date.now();
         const newPos: Position = {
           symbol: cleanSymbol,
           side,
@@ -1340,15 +1344,37 @@ const ScannerDashboardInner: React.FC<
           markPrice: price,
           unrealizedPnL: 0,
           unrealizedPnLPercentage: 0,
-          entryTime: virtualTimeRef.current,
+          entryTime: tradeTime,
           isHedged: false,
           liquidationPrice: side === "LONG" ? price * 0.95 : price * 1.05,
-          entryId: Date.now().toString(),
+          entryId,
           isBacktestRecord: true,
-          backtestEntryTime: virtualTimeRef.current,
+          backtestEntryTime: tradeTime,
           strategyId: selectedStrategyId,
         };
         setPositions((prev) => [...prev, newPos]);
+
+        if (onAddTradeLog) {
+          onAddTradeLog({
+            symbol: cleanSymbol,
+            entry_id: entryId,
+            status: 'OPEN',
+            is_hedge: false,
+            entry_timestamp: tradeTime,
+            direction: side,
+            cost_usdt: amount,
+            entry_price: price,
+            timeframe: signalTf || '5m',
+            events: [{
+              timestamp: tradeTime,
+              action: '回测开仓成交',
+              price: price,
+              amount: qty,
+              reason: reason || '回测策略开仓'
+            }]
+          });
+        }
+
         if (onLog)
           onLog(
             "SUCCESS",
@@ -1416,6 +1442,16 @@ const ScannerDashboardInner: React.FC<
     }
 
     const now = Date.now();
+    let isCancelled = false;
+
+    // Collect candidates that meet opening conditions
+    const pendingOpenTasks: Array<{
+      symbol: string;
+      side: PositionSide;
+      price: number;
+      reason: string;
+      isReopen: boolean;
+    }> = [];
 
     list1Candidates.forEach(item => {
       const symbol = normalizeSymbol(item.symbol);
@@ -1450,19 +1486,14 @@ const ScannerDashboardInner: React.FC<
 
         const price = resolvePrice(item.symbol, currentPrices, item.price);
         if (price > 0) {
-          list1OpenedSymbolsRef.current.add(symbol);
-          list1LastTriggerTimeRef.current[symbol] = now;
-          delete list1ClosedTimeRef.current[symbol];
-          list1ClosedSymbolsRef.current.delete(symbol);
-
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
-          console.log(`[List 1 Reopen After Close] Triggering trade for ${symbol} @ ${price} (${side})`);
-          executeTradeSafe(
+          pendingOpenTasks.push({
             symbol,
             side,
             price,
-            `[List1 Auto] ReopenAfterClose`
-          );
+            reason: `[List1 Auto] ReopenAfterClose`,
+            isReopen: true
+          });
         }
         return;
       }
@@ -1475,20 +1506,63 @@ const ScannerDashboardInner: React.FC<
 
         const price = resolvePrice(item.symbol, currentPrices, item.price);
         if (price > 0) {
-          list1OpenedSymbolsRef.current.add(symbol);
-          list1LastTriggerTimeRef.current[symbol] = now;
-
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
-          console.log(`[List 1 Instant Open] Triggering trade for ${symbol} @ ${price} (${side})`);
-          executeTradeSafe(
+          pendingOpenTasks.push({
             symbol,
             side,
             price,
-            `[List1 Auto] InstantOpen`
-          );
+            reason: `[List1 Auto] InstantOpen`,
+            isReopen: false
+          });
         }
       }
     });
+
+    if (pendingOpenTasks.length === 0) return;
+
+    // 🚀 [列表1批量开仓限速引擎] 1秒钟不超过5个币，间隔1秒再提交下一批
+    const BATCH_SIZE = 5;
+    const taskChunks: typeof pendingOpenTasks[] = [];
+    for (let i = 0; i < pendingOpenTasks.length; i += BATCH_SIZE) {
+      taskChunks.push(pendingOpenTasks.slice(i, i + BATCH_SIZE));
+    }
+
+    (async () => {
+      for (let chunkIndex = 0; chunkIndex < taskChunks.length; chunkIndex++) {
+        if (isCancelled) break;
+
+        const currentChunk = taskChunks[chunkIndex];
+
+        // 非首批次，严格等待1秒间隔再提交
+        if (chunkIndex > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          if (isCancelled) break;
+        }
+
+        for (const task of currentChunk) {
+          if (isCancelled) break;
+
+          list1OpenedSymbolsRef.current.add(task.symbol);
+          list1LastTriggerTimeRef.current[task.symbol] = Date.now();
+          if (task.isReopen) {
+            delete list1ClosedTimeRef.current[task.symbol];
+            list1ClosedSymbolsRef.current.delete(task.symbol);
+          }
+
+          console.log(`[List 1 Batch Open] Triggering trade for ${task.symbol} @ ${task.price} (${task.side}) | Batch ${chunkIndex + 1}/${taskChunks.length}`);
+          executeTradeSafe(
+            task.symbol,
+            task.side,
+            task.price,
+            task.reason
+          );
+        }
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [list1Candidates, scanConfig, filteredPositions, currentPrices, executeTradeSafe]);
 
   const handleClosePositionInternal = useCallback(
@@ -2053,9 +2127,9 @@ const ScannerDashboardInner: React.FC<
 
       {chartData && (
         <KlineChartModal
-          key={`${chartData.symbol}-${chartData.tf}`}
+          key={`${chartData.symbol}-${chartData.tf || chartData.timeframe || '15m'}`}
           symbol={chartData.symbol}
-          initialTimeframe={chartData.tf}
+          initialTimeframe={chartData.tf || chartData.timeframe || '15m'}
           signals={chartData.signals}
           entryPrice={chartData.entryPrice}
           entryTime={chartData.entryTime}

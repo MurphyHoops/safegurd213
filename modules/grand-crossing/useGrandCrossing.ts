@@ -23,6 +23,7 @@ import { normalizeSymbol } from "../../services/symbolUtils";
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
   const val = parseInt(tf);
+  if (unit === "s") return val / 60;
   if (unit === "m") return val;
   if (unit === "h") return val * 60;
   if (unit === "d") return val * 1440;
@@ -54,21 +55,16 @@ export const useGrandCrossing = (
     configKey,
     initialConfig,
   );
-  // Ensure timeframes is sanitized (filter out legacy 1m/3m) & never empty
+  // Ensure timeframes is sanitized & never empty
   useEffect(() => {
-    let modified = false;
     let newTfs = [...(config.timeframes || [])];
-    if (newTfs.includes("1m") || newTfs.includes("3m")) {
-      newTfs = newTfs.filter((t) => t !== "1m" && t !== "3m");
-      modified = true;
-    }
-    if (modified || !config.timeframes || config.timeframes.length === 0) {
+    if (!config.timeframes || config.timeframes.length === 0) {
       setConfig((prev) => ({
         ...prev,
         timeframes:
           newTfs.length > 0
             ? newTfs
-            : ["5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
+            : ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
       }));
     }
   }, [config.timeframes, setConfig]);
@@ -113,6 +109,67 @@ export const useGrandCrossing = (
   const [activeScanTfs, setActiveScanTfs] = useState<Set<string>>(new Set());
   const [scanningSymbols, setScanningSymbols] = useState<Record<string, string>>({});
   const [lastScanTime, setLastScanTime] = useState<number | null>(null);
+
+  const fetchKlinesForTf = async (safeSymbol: string, tf: string, limit: number = 200): Promise<KLine[]> => {
+    const now = Date.now();
+    if (tf === '15s' || tf === '30s') {
+      const targetMin = tf === '15s' ? 0.25 : 0.5;
+      try {
+        const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${now}`;
+        const res = await fetchWithFallback(spot1sUrl, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+        if (res.ok) {
+          const raw = await res.json();
+          if (Array.isArray(raw) && raw.length > 0) {
+            const secKlines: KLine[] = raw.map((k: any) => ({
+              time: Number(k[0]),
+              open: parseFloat(k[1]),
+              high: parseFloat(k[2]),
+              low: parseFloat(k[3]),
+              close: parseFloat(k[4]),
+              volume: parseFloat(k[5]),
+            }));
+            const synthesized = KLineSynthesizer.synthesize(secKlines, targetMin);
+            if (synthesized.length > 0) return synthesized;
+          }
+        }
+      } catch (e) {}
+
+      // Fallback to 1m
+      try {
+        const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=200&_t=${now}`;
+        const res = await fetchWithFallback(url1m, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+        if (res.ok) {
+          const raw = await res.json();
+          return raw.map((k: any) => ({
+            time: Number(k[0]),
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+            volume: parseFloat(k[5]),
+          }));
+        }
+      } catch (e) {}
+      return [];
+    }
+
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=${limit}&_t=${now}`;
+    const res = await fetchWithFallback(url, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+    if (res.ok) {
+      const raw = await res.json();
+      if (Array.isArray(raw)) {
+        return raw.map((k: any) => ({
+          time: Number(k[0]),
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+          volume: parseFloat(k[5]),
+        }));
+      }
+    }
+    return [];
+  };
 
   const startScanTf = useCallback((tf: string, symbol?: string) => {
     setActiveScanTfs((prev) => {
@@ -628,23 +685,8 @@ export const useGrandCrossing = (
           }
 
           const safeSymbol = item.symbol.endsWith("USDT") ? item.symbol : `${item.symbol}USDT`;
-          const now = Date.now();
-
           try {
-            let klines: KLine[] = [];
-            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=200&_t=${now}`;
-            const res = await fetchWithFallback(url, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
-            if (res.ok) {
-              const raw = await res.json();
-              klines = raw.map((k: any) => ({
-                time: Number(k[0]),
-                open: parseFloat(k[1]),
-                high: parseFloat(k[2]),
-                low: parseFloat(k[3]),
-                close: parseFloat(k[4]),
-                volume: parseFloat(k[5]),
-              }));
-            }
+            const klines: KLine[] = await fetchKlinesForTf(safeSymbol, tf, 200);
 
             if (klines.length > 0) {
               const freshSignals = analyzeList2Crossing(
@@ -842,27 +884,11 @@ export const useGrandCrossing = (
     const retention = configRef.current.newModeRetention ?? 9;
 
     try {
-      let klines: KLine[] = [];
       let mergedResults = [...(existingItem?.groupedResults || [])];
 
       const safeSymbol = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
-      const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=200&_t=${now}`;
-      const res = await fetchWithFallback(
-        url,
-        { cache: "no-store" },
-        (d) => Array.isArray(d),
-        directMode,
-      );
-      if (!res.ok) return;
-      const raw = await res.json();
-      klines = raw.map((k: any) => ({
-        time: Number(k[0]),
-        open: parseFloat(k[1]),
-        high: parseFloat(k[2]),
-        low: parseFloat(k[3]),
-        close: parseFloat(k[4]),
-        volume: parseFloat(k[5]),
-      }));
+      const klines: KLine[] = await fetchKlinesForTf(safeSymbol, tf, 200);
+      if (!klines || klines.length === 0) return;
 
       const results = analyzeList2Crossing(
         symbol,

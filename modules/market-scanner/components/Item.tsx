@@ -317,6 +317,7 @@ export const List1Item: React.FC<Props> = ({
         <div 
             onClick={() => setChartData({ 
                 symbol: item.symbol, 
+                tf: scanConfig.list1DefaultTf || '1d',
                 timeframe: scanConfig.list1DefaultTf || '1d', 
                 lookbackDays 
             })}

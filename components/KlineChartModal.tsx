@@ -7,6 +7,7 @@ import { analyzeList2Crossing } from '../services/rules/list2_crossing'; // Impo
 import { List2Config } from './Scanner/scannerTypes';
 import { useOptionalBacktest } from '../modules/backtester/BacktestContext';
 import { formatPrice } from '../services/symbolUtils';
+import { KLineSynthesizer } from '../services/klineSynthesizer';
 
 interface Signal {
     time: number;
@@ -72,11 +73,11 @@ interface KlineData {
   volume: number;
 }
 
-const TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '1w', '1M', '3M'];
+const TIMEFRAMES = ['15s', '30s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '1w', '1M', '3M'];
 
 const sanitizeTf = (tf: string): string => {
     if (!tf) return '15m';
-    const match = tf.match(/(\d+[mhd])/i);
+    const match = tf.match(/(\d+[smhd])/i);
     if (match) {
         const clean = match[1].toLowerCase();
         if (TIMEFRAMES.includes(clean)) return clean;
@@ -100,6 +101,7 @@ const getTfMinutes = (tf: string) => {
     if (!tf) return 15;
     const unit = tf.slice(-1);
     const val = parseInt(tf);
+    if (unit === 's') return val / 60;
     if (unit === 'm') return val;
     if (unit === 'h') return val * 60;
     if (unit === 'd') return val * 1440;
@@ -198,52 +200,140 @@ async function fetchKlinesViaWebSocket(safeSymbol: string, timeframe: string, li
     });
 }
 
+async function fetchFirstValid(channels: Array<Promise<{ data: any[][], source: string }>>): Promise<{ data: any[][], source: string }> {
+    return new Promise((resolve, reject) => {
+        let rejectedCount = 0;
+        let isResolved = false;
+        const total = channels.length;
+        if (total === 0) {
+            reject(new Error("No channels provided"));
+            return;
+        }
+        channels.forEach((p) => {
+            p.then((res) => {
+                if (!isResolved && res && Array.isArray(res.data) && res.data.length > 0) {
+                    isResolved = true;
+                    resolve(res);
+                } else {
+                    rejectedCount++;
+                    if (rejectedCount >= total && !isResolved) {
+                        reject(new Error("All channels returned invalid or empty data"));
+                    }
+                }
+            }).catch(() => {
+                rejectedCount++;
+                if (rejectedCount >= total && !isResolved) {
+                    reject(new Error("All racing channels failed"));
+                }
+            });
+        });
+    });
+}
+
 async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
-    const controllers: AbortController[] = [];
+    // 15s and 30s synthesized seconds klines
+    if (timeframe === '15s' || timeframe === '30s') {
+        const targetMin = timeframe === '15s' ? 0.25 : 0.5;
+        const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000`;
+        try {
+            const res = await fetchWithFallback(spot1sUrl, { priority: 'HIGH', timeout: 5000 });
+            if (res.ok) {
+                const raw = await res.json();
+                if (Array.isArray(raw) && raw.length > 0) {
+                    const secKlines = raw.map((k: any) => ({
+                        time: Number(k[0]),
+                        open: parseFloat(k[1]),
+                        high: parseFloat(k[2]),
+                        low: parseFloat(k[3]),
+                        close: parseFloat(k[4]),
+                        volume: parseFloat(k[5]),
+                    }));
+                    const synthesized = KLineSynthesizer.synthesize(secKlines, targetMin);
+                    if (synthesized.length > 0) {
+                        return {
+                            data: synthesized.map(k => [k.time, k.open, k.high, k.low, k.close, k.volume]),
+                            source: 'Spot-1s-Synthesized'
+                        };
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("[KlineRace] 1s synthesis fetch failed, continuing to standard kline race", e);
+        }
+    }
+
     const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
     const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
 
-    // --- CONFIGURATION: PROXY POOL ---
-    // NOTE: Replace these placeholder URLs with your actual working proxy provider endpoints.
-    const PROXY_POOL = [
-        "https://proxy-provider-1.example.com",
-        "https://proxy-provider-2.example.com"
-    ];
-
-    const fetchWithTimeout = async (url: string, sourceName: string, timeout = 5000): Promise<{ data: any[][], source: string }> => {
+    const fetchWithTimeout = async (url: string, sourceName: string, timeout = 3500): Promise<{ data: any[][], source: string }> => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
         try {
             const res = await fetch(url, { signal: controller.signal });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            return { data, source: sourceName };
+            if (Array.isArray(data) && data.length > 0) {
+                return { data, source: sourceName };
+            }
+            throw new Error('Empty data');
         } finally {
             clearTimeout(timeoutId);
         }
     };
 
-    // Tier 1: Local Proxy & Direct (Fastest)
-    try {
-        return await Promise.race([
-            fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(futuresUrl)}`, 'Local-Proxy'),
-            fetchWithTimeout(spotUrl, 'Direct-Spot')
-        ]);
-    } catch (e) {
-        console.warn("[KlineRace] Tier 1 failed, trying Tier 2 (Proxy Pool)...");
-    }
-
-    // Tier 2: Proxy Pool (Sequential)
-    for (const proxyBase of PROXY_POOL) {
-        try {
-            const proxyUrl = `${proxyBase}/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
-            return await fetchWithTimeout(proxyUrl, `Proxy-${proxyBase}`);
-        } catch (e) {
-            console.warn(`[KlineRace] Proxy ${proxyBase} failed, trying next...`);
+    const fetchViaFallbackService = async (url: string, sourceName: string): Promise<{ data: any[][], source: string }> => {
+        const res = await fetchWithFallback(url, { priority: 'HIGH', timeout: 4000 });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+            return { data, source: sourceName };
         }
+        throw new Error('Empty data');
+    };
+
+    // Parallel multi-channel racing (Promise.any equivalent that ignores fast rejections)
+    const raceChannels: Array<Promise<{ data: any[][], source: string }>> = [
+        // 1. High-speed local backend proxy (Futures)
+        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, 'Local-Proxy-Futures', 3000),
+        // 2. High-speed local backend proxy (Spot)
+        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(spotUrl)}&priority=high`, 'Local-Proxy-Spot', 3000),
+        // 3. Direct Futures WebSocket API
+        fetchKlinesViaWebSocket(safeSymbol, timeframe, limit, true),
+        // 4. Direct Spot WebSocket API
+        fetchKlinesViaWebSocket(safeSymbol, timeframe, limit, false),
+        // 5. Fallback engine with multi-proxy rotation
+        fetchViaFallbackService(futuresUrl, 'FallbackService-Futures'),
+        // 6. Direct Spot endpoint (Fastest if client has non-blocked network)
+        fetchWithTimeout(spotUrl, 'Direct-Spot', 2000),
+        // 7. Direct Futures endpoint
+        fetchWithTimeout(futuresUrl, 'Direct-Futures', 2000)
+    ];
+
+    try {
+        const winner = await fetchFirstValid(raceChannels);
+        return winner;
+    } catch (raceErr) {
+        console.warn("[KlineRace] All fast race channels failed, trying final fallback sequence...");
     }
 
-    // Tier 3: Final fallback
-    return await fetchWithTimeout(futuresUrl, 'Final-Direct-Fallback');
+    // Final fallback sequence
+    try {
+        const res = await fetchWithFallback(futuresUrl, { priority: 'HIGH', timeout: 6000 });
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+            return { data, source: 'Final-Fallback-Futures' };
+        }
+    } catch (e) {}
+
+    try {
+        const res = await fetchWithFallback(spotUrl, { priority: 'HIGH', timeout: 6000 });
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+            return { data, source: 'Final-Fallback-Spot' };
+        }
+    } catch (e) {}
+
+    throw new Error(`无法获取 ${safeSymbol} 的 K 线数据，请检查网络连接或稍后重试`);
 }
 
 const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays, hasPrev, hasNext, currentIndexLabel, onPrev, onNext }) => {
@@ -953,8 +1043,6 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                   markers.push({ time: l.exit_timestamp, type: 'HEDGE_CUT', label: `砍仓(${dirLabel})`, price: l.exit_price || l.entry_price });
               } else if (isClear) {
                   markers.push({ time: l.exit_timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${dirLabel})`, price: l.exit_price || 0 });
-              } else if (isHedge) {
-                  markers.push({ time: l.exit_timestamp, type: 'HEDGE_CLOSE', label: `对冲平仓(${dirLabel})`, price: l.exit_price || 0 });
               } else if (l.profit_usdt !== undefined && l.profit_usdt >= 0) {
                   markers.push({ time: l.exit_timestamp, type: 'PROFIT_CLOSE', label: `盈利平仓(${dirLabel})`, price: l.exit_price || 0 });
               } else {

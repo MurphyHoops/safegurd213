@@ -215,7 +215,8 @@ const List1_Selection: React.FC<Props> = ({
     const fetchingSymbolsRef = useRef<Set<string>>(new Set());
 
     const baseList = useMemo(() => {
-        if (!scanConfig.majorTrend?.enabled) {
+        // 🔒 无论是否开启大行情发现，列表1的基础底池均由行情启动底池（startTrendPool）支撑，无缝承接所有候选币
+        if (startTrendPool && startTrendPool.length > 0) {
             return startTrendPool.map(p => {
                 const existing = list1.find(item => item.symbol === p.symbol);
                 return {
@@ -229,7 +230,7 @@ const List1_Selection: React.FC<Props> = ({
             });
         }
         return list1;
-    }, [scanConfig.majorTrend?.enabled, startTrendPool, list1]);
+    }, [startTrendPool, list1]);
 
     const list1SymbolsStr = baseList.map(item => item.symbol).join(',');
 
@@ -240,19 +241,10 @@ const List1_Selection: React.FC<Props> = ({
         const fetchMetricsForList = async () => {
             const KLINE_LIMIT_CACHE = (window as any).KLINE_LIMIT_CACHE = (window as any).KLINE_LIMIT_CACHE || {};
 
-            const currentList = list1Ref.current;
+            const currentList = baseList;
             const symbolsToFetch = currentList.filter(item => {
                 const symbol = item.symbol;
                 if (!symbol) return false;
-
-                // Optimize: If majorTrend is enabled and candidates exist, only fetch metrics for coins that are in majorTrendCandidates
-                if (scanConfig.majorTrend?.enabled && majorTrendCandidates && majorTrendCandidates.size > 0 && !isMajorScanning) {
-                    const keySuffix = isLong ? '_LONG' : '_SHORT';
-                    const key = `${symbol}${keySuffix}`;
-                    if (!majorTrendCandidates.has(key)) {
-                        return false; // Skip this coin entirely from kline fetching!
-                    }
-                }
 
                 // Skip if already computed and not loading, unless trend validation fields are undefined
                 const cachedMetrics = metricsCacheRef.current[symbol];
@@ -548,22 +540,22 @@ const List1_Selection: React.FC<Props> = ({
     });
 
     const filteredList = useMemo(() => {
-        // CASE 1: 没开“大行情发现”时（即配置A常规模式），市场初筛列表直接由 sortedList1（已应用 涨幅榜/跌幅榜/全部、成交额范围、涨跌幅阈值）决定
+        // CASE 1: 没开“大行情发现”时，市场初筛列表直接由 sortedList1 决定
         if (!scanConfig.majorTrend?.enabled) {
             return sortedList1;
         }
 
-        // CASE 2: 开启了“大行情发现”过滤规则时，市场初筛列表显示“大行情发现”过滤筛选过的币
+        // CASE 2: 开启了“大行情发现”过滤规则时，根据具体子规则开关放行或严格筛选
         const cfg = (scanConfig.majorTrend || {}) as any;
         const enableLong = cfg.enableLong !== false;
         const enableShort = cfg.enableShort !== false;
-        const enableSideways = cfg.enableSideways !== false;
+        const enableSideways = cfg.enableSideways === true; // 横盘蓄势开关开启时生效
+        const enableLookbackFilter = cfg.enableLookbackFilter ?? (enableLong || enableShort);
 
-        const hasCandidates = majorTrendCandidates && majorTrendCandidates.size > 0;
+        // 仅在明确启用后台大行情全域白名单锁定且有候选币时做前置检查，否则以底池币种实时指标为准
+        const hasCandidates = Boolean(cfg.enableStrictDiscoveryPool && majorTrendCandidates && majorTrendCandidates.size > 0);
 
         return sortedList1.filter(item => {
-            // 🔒 [SECURITY_LOCK]: PRIORITY CANDIDATE PRECHECK. Skip any symbol not discovered by background major scan immediately
-            // to prevent the list from inflating when metric caches are undefined or loading.
             if (hasCandidates) {
                 const keySuffix = isLong ? '_LONG' : '_SHORT';
                 const key = `${item.symbol}${keySuffix}`;
@@ -571,85 +563,108 @@ const List1_Selection: React.FC<Props> = ({
                     return false;
                 }
             }
-            // 🔒 [END_SECURITY_LOCK]
 
             const metrics = metricsCache[item.symbol];
-            if (!metrics) return true; // Keep loading items visible
-            if (metrics.loading) return true; // Keep loading items visible
+            // 正在加载中的币种暂不展示，避免闪烁放行不符合的币
+            if (!metrics || metrics.loading) return false;
 
             const currentPrice = item.price;
 
-            if (isLong) {
-                // 做多方向
-                if (!enableLong) return false;
-
-                // 1. 最小历史跌幅 (maxDeclinePct is negative, e.g. -50%)
-                const minHistoryDrop = cfg.minHistoryDrop ?? 50;
-                if (Math.abs(metrics.maxDeclinePct) < minHistoryDrop) return false;
-
-                // 2. 距离极点比例 (lowToCurrentIncreasePct)
-                const minLow = metrics.minPeriodLow || currentPrice;
-                const liveLowToCurrentIncrease = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
-
-                const minExtremeDistanceLong = cfg.minExtremeDistanceLong ?? 0;
-                const maxExtremeDistanceLong = cfg.maxExtremeDistanceLong !== undefined 
-                    ? cfg.maxExtremeDistanceLong 
-                    : (cfg.maxExtremeDistance ?? 5);
-                if (liveLowToCurrentIncrease < minExtremeDistanceLong || 
-                    liveLowToCurrentIncrease > maxExtremeDistanceLong) {
-                    return false;
-                }
-
-                // 3. 极点天数 (lowDaysAgo)
-                const extremeDaysMinLong = cfg.extremeDaysMinLong ?? 0;
-                const extremeDaysMaxLong = cfg.extremeDaysMaxLong ?? 300;
-                if (metrics.lowDaysAgo < extremeDaysMinLong || 
-                    metrics.lowDaysAgo > extremeDaysMaxLong) {
-                    return false;
-                }
-            } else {
-                // 做空方向
-                if (!enableShort) return false;
-
-                // 1. 最小历史涨幅 (maxIncreasePct)
-                const minHistoryPump = cfg.minHistoryPump ?? 100;
-                if (metrics.maxIncreasePct < minHistoryPump) return false;
-
-                // 2. 距离极点比例 (highToCurrentDeclinePct is negative, e.g. -5%)
-                const maxHigh = metrics.maxPeriodHigh || currentPrice;
-                const liveHighToCurrentDecline = maxHigh > 0 ? ((currentPrice - maxHigh) / maxHigh) * 100 : 0;
-
-                const minExtremeDistanceShort = cfg.minExtremeDistanceShort ?? 0;
-                const maxExtremeDistanceShort = cfg.maxExtremeDistanceShort !== undefined 
-                    ? cfg.maxExtremeDistanceShort 
-                    : (cfg.maxExtremeDistance ?? 5);
-                const distShort = Math.abs(liveHighToCurrentDecline);
-                if (distShort < minExtremeDistanceShort || distShort > maxExtremeDistanceShort) {
-                    return false;
-                }
-
-                // 3. 极点天数 (highDaysAgo)
-                const extremeDaysMinShort = cfg.extremeDaysMinShort ?? 0;
-                const extremeDaysMaxShort = cfg.extremeDaysMaxShort ?? 300;
-                if (metrics.highDaysAgo < extremeDaysMinShort || 
-                    metrics.highDaysAgo > extremeDaysMaxShort) {
-                    return false;
-                }
-            }
-
-            // 4. 横盘整理过滤
+            // 1. Stage 1 横盘整理过滤 (若开启 enableSideways，严格比对过去 Z 天内与最高/最低点的幅差)
             if (enableSideways) {
                 if (metrics.isSidewaysMatch === false) return false;
             }
 
-            // 5. 行情启动趋势过滤 (Start Trend Filter)
-            if (isLong) {
-                if (scanConfig.majorTrend?.enableStartTrendLong) {
-                    if (metrics.startTrendValidLong === false) return false;
+            // 2. Stage 2 回溯周期与极值区间过滤
+            if (enableLookbackFilter) {
+                const checkLongMatch = () => {
+                    if (!enableLong) return false;
+
+                    // 最小历史跌幅
+                    if (cfg.minHistoryDrop !== undefined && cfg.minHistoryDrop > 0) {
+                        if (Math.abs(metrics.maxDeclinePct || 0) < cfg.minHistoryDrop) return false;
+                    }
+
+                    // 最低点到当前涨幅区间
+                    const minLow = metrics.minPeriodLow || currentPrice;
+                    const liveLowToCurrentIncrease = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
+                    const minExtremeDistanceLong = cfg.minExtremeDistanceLong ?? 0;
+                    const maxExtremeDistanceLong = cfg.maxExtremeDistanceLong !== undefined 
+                        ? cfg.maxExtremeDistanceLong 
+                        : (cfg.maxExtremeDistance ?? 100);
+                    if (liveLowToCurrentIncrease < minExtremeDistanceLong || 
+                        liveLowToCurrentIncrease > maxExtremeDistanceLong) {
+                        return false;
+                    }
+
+                    // 最低点距今天数区间
+                    const extremeDaysMinLong = cfg.extremeDaysMinLong ?? 0;
+                    const extremeDaysMaxLong = cfg.extremeDaysMaxLong ?? 300;
+                    if ((metrics.lowDaysAgo ?? 0) < extremeDaysMinLong || 
+                        (metrics.lowDaysAgo ?? 0) > extremeDaysMaxLong) {
+                        return false;
+                    }
+
+                    // 行情启动趋势多头
+                    if (scanConfig.majorTrend?.enableStartTrendLong) {
+                        if (metrics.startTrendValidLong === false) return false;
+                    }
+
+                    return true;
+                };
+
+                const checkShortMatch = () => {
+                    if (!enableShort) return false;
+
+                    // 最小历史涨幅
+                    if (cfg.minHistoryPump !== undefined && cfg.minHistoryPump > 0) {
+                        if ((metrics.maxIncreasePct || 0) < cfg.minHistoryPump) return false;
+                    }
+
+                    // 最高点到当前跌幅区间
+                    const maxHigh = metrics.maxPeriodHigh || currentPrice;
+                    const liveHighToCurrentDecline = maxHigh > 0 ? ((maxHigh - currentPrice) / maxHigh) * 100 : 0;
+                    const minExtremeDistanceShort = cfg.minExtremeDistanceShort ?? 0;
+                    const maxExtremeDistanceShort = cfg.maxExtremeDistanceShort !== undefined 
+                        ? cfg.maxExtremeDistanceShort 
+                        : (cfg.maxExtremeDistance ?? 100);
+                    if (liveHighToCurrentDecline < minExtremeDistanceShort || 
+                        liveHighToCurrentDecline > maxExtremeDistanceShort) {
+                        return false;
+                    }
+
+                    // 最高点距今天数区间
+                    const extremeDaysMinShort = cfg.extremeDaysMinShort ?? 0;
+                    const extremeDaysMaxShort = cfg.extremeDaysMaxShort ?? 300;
+                    if ((metrics.highDaysAgo ?? 0) < extremeDaysMinShort || 
+                        (metrics.highDaysAgo ?? 0) > extremeDaysMaxShort) {
+                        return false;
+                    }
+
+                    // 行情启动趋势空头
+                    if (scanConfig.majorTrend?.enableStartTrendShort) {
+                        if (metrics.startTrendValidShort === false) return false;
+                    }
+
+                    return true;
+                };
+
+                if (enableLong && enableShort) {
+                    if (!checkLongMatch() && !checkShortMatch()) return false;
+                } else if (enableLong) {
+                    if (!checkLongMatch()) return false;
+                } else if (enableShort) {
+                    if (!checkShortMatch()) return false;
+                } else {
+                    return false;
                 }
             } else {
-                if (scanConfig.majorTrend?.enableStartTrendShort) {
-                    if (metrics.startTrendValidShort === false) return false;
+                // 如果未开启 Stage 2 回溯过滤，仅检查启动趋势
+                if (isLong && scanConfig.majorTrend?.enableStartTrendLong && metrics.startTrendValidLong === false) {
+                    return false;
+                }
+                if (!isLong && scanConfig.majorTrend?.enableStartTrendShort && metrics.startTrendValidShort === false) {
+                    return false;
                 }
             }
 

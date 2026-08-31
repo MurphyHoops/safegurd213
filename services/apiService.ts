@@ -376,7 +376,11 @@ const _fetchWithFallbackInner = async (
                 const controller = new AbortController();
                 timeoutId = setTimeout(() => {
                     console.warn(`[API] Direct fetch timed out for ${url}`);
-                    controller.abort();
+                    try {
+                        controller.abort(new DOMException("Direct fetch timed out", "TimeoutError"));
+                    } catch (e) {
+                        controller.abort();
+                    }
                 }, TIMEOUT_MS);
                 const { timeout, priority: customPriority, ...restOptions } = options || {};
                 
@@ -465,7 +469,13 @@ const _fetchWithFallbackInner = async (
                 const controller = new AbortController();
                 const proxyTimeout = Math.min(TIMEOUT_MS, isKlinePayload ? 3000 : (isHeavyPayload ? 45000 : 20000));
                 timeoutId = setTimeout(() => {
-                    if (!controller.signal.aborted) controller.abort();
+                    if (!controller.signal.aborted) {
+                        try {
+                            controller.abort(new DOMException(`Proxy fetch timed out (${proxyTimeout}ms)`, "TimeoutError"));
+                        } catch (e) {
+                            controller.abort();
+                        }
+                    }
                 }, proxyTimeout);
 
                 const { headers, timeout, priority: customPriority, ...restOptions } = options || {};

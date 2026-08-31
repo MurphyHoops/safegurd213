@@ -49,6 +49,7 @@ export interface Position {
     amputatedAmount?: number;
     cumulativeAmputationLoss?: number;
     cumulativeAmputationProfit?: number;
+    amputationCount?: number;
     hedgeRetries?: number;
     mainPositionId?: string;
     strategyId?: string;
@@ -92,6 +93,9 @@ export interface Position {
     isBeingClosed?: boolean;
     lastAmputationTime?: number;
     leverage?: number; // Added: Locked leverage for position and matching hedge
+    cost_usdt?: number;
+    refillCount?: number; // 震荡磨损补仓累计次数
+    isOscillationLocked?: boolean; // 震荡熔断锁定状态
 }
 
 export interface LogEntry {
@@ -134,6 +138,8 @@ export interface TradeLog {
     timeframe?: string; // Added timeframe field
     last_stop_loss_time?: number; // Added last stop loss time
     stop_loss_rule?: string; // Added stop loss rule
+    binance_order_id?: string; // Binance Official Trade/Order ID for reconciliation
+    commission?: number; // Binance Trading Fee
     events?: TradeEvent[]; // Collection of all actions during the trade lifecycle
 }
 
@@ -297,8 +303,8 @@ export interface StopLossSettings {
     hedgeOpenRatio: number;
     hedgeCoverPercent: number;
     hedgeProfitClearStopLoss: number;
-    autoOpenAfterHedgeProfit: boolean; // 新增功能
-    autoOpenPullbackPercent: number;  // 新增功能
+    autoOpenAfterHedgeProfit?: boolean;
+    autoOpenPullbackPercent?: number;
     callbackProfitClear: boolean;
     callbackHedgeRatio: number;
     callbackCoverPercent: number;
@@ -315,6 +321,8 @@ export interface StopLossSettings {
     amputationHedgeOnlyExit?: boolean; // 新增：只清对冲、主仓续航
     fuseEnabled: boolean;
     maxHedgeRetries: number;
+    fuseActionMode?: 'MANUAL' | 'AUTO_CLOSE'; // 熔断处置模式：人工处理 或 自动清仓
+    fuseAlertEnabled?: boolean; // 语音提醒与弹窗
     fuseFailStopPercent: number;
     advisor: AdvisorSettings;
 }

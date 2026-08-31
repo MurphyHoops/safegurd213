@@ -15,6 +15,8 @@ let reconnectTimer = null;
 let lastMessageTime = Date.now();
 let watchdogTimer = null;
 let isConnected = false;
+let activePositionSymbols = new Set();
+let positionDirectWsMap = new Map(); // symbol -> WebSocket for direct dedicated stream
 
 function cleanSymbol(s) {
     if (!s) return '';
@@ -27,6 +29,83 @@ function cleanSymbol(s) {
 
 function rotateUrl() {
     currentUrlIndex = (currentUrlIndex + 1) % urls.length;
+}
+
+function connectDedicatedPositionWs(cleanSym) {
+    if (!cleanSym || positionDirectWsMap.has(cleanSym)) return;
+    try {
+        const binanceSym = cleanSym.toLowerCase() + 'usdt';
+        const url = 'wss://fstream.binance.com/ws/' + binanceSym + '@bookTicker';
+        const dedicatedWs = new WebSocket(url);
+        
+        dedicatedWs.onopen = () => {
+            // Dedicated connection open
+        };
+        
+        dedicatedWs.onmessage = (event) => {
+            try {
+                const item = JSON.parse(event.data);
+                if (!item) return;
+                const b = parseFloat(item.b);
+                const a = parseFloat(item.a);
+                let priceVal = null;
+                if (!isNaN(b) && !isNaN(a) && b > 0 && a > 0) {
+                    priceVal = (b + a) / 2;
+                } else if (item.c || item.p) {
+                    priceVal = parseFloat(item.c || item.p);
+                }
+                if (priceVal !== null && !isNaN(priceVal) && priceVal > 0) {
+                    const update = {};
+                    update[cleanSym] = priceVal;
+                    postMessage({ type: 'prices', prices: update, isPositionDirect: true });
+                }
+            } catch(e) {}
+        };
+        
+        dedicatedWs.onerror = () => {
+            try { dedicatedWs.close(); } catch(e){}
+        };
+        
+        dedicatedWs.onclose = () => {
+            positionDirectWsMap.delete(cleanSym);
+            // Auto-reconnect if still active
+            if (activePositionSymbols.has(cleanSym)) {
+                setTimeout(() => {
+                    if (activePositionSymbols.has(cleanSym)) {
+                        connectDedicatedPositionWs(cleanSym);
+                    }
+                }, 1000);
+            }
+        };
+        
+        positionDirectWsMap.set(cleanSym, dedicatedWs);
+    } catch(e) {}
+}
+
+function syncDedicatedStreams(symbols) {
+    const nextSet = new Set();
+    if (Array.isArray(symbols)) {
+        for (let i = 0; i < symbols.length; i++) {
+            const sym = cleanSymbol(symbols[i]);
+            if (sym) nextSet.add(sym);
+        }
+    }
+    activePositionSymbols = nextSet;
+    
+    // Close removed streams
+    for (const [sym, dws] of positionDirectWsMap.entries()) {
+        if (!activePositionSymbols.has(sym)) {
+            try { dws.close(); } catch(e){}
+            positionDirectWsMap.delete(sym);
+        }
+    }
+    
+    // Open new streams for active positions
+    for (const sym of activePositionSymbols) {
+        if (!positionDirectWsMap.has(sym)) {
+            connectDedicatedPositionWs(sym);
+        }
+    }
 }
 
 function connect() {
@@ -149,6 +228,8 @@ self.onmessage = (e) => {
         currentUrlIndex = payload.currentUrlIndex || 0;
         connect();
         startWatchdog();
+    } else if (cmd === 'syncPositions') {
+        syncDedicatedStreams(payload.symbols);
     } else if (cmd === 'forceReconnect') {
         if (ws) {
             ws.onclose = null;
@@ -363,6 +444,15 @@ export class BinanceWebSocket {
         
         this.isConnected = false;
         this.notifyStatus();
+    }
+
+    public syncActivePositions(symbols: string[]) {
+        if (this.worker) {
+            this.worker.postMessage({
+                cmd: 'syncPositions',
+                payload: { symbols }
+            });
+        }
     }
 
     public subscribe(callback: PriceCallback) {

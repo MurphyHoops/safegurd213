@@ -33,10 +33,13 @@ export function checkStrategy3_CallbackProfit(
 
     // B. 累计利润清仓
     const totalAccumulatedProfit = mainPosition.cumulativeHedgeProfit || 0;
+    const symbolAmputationLoss = Math.max(
+        mainPosition.cumulativeAmputationLoss || 0,
+        hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0
+    );
     const totalAccumulatedLoss = 
         (mainPosition.cumulativeHedgeLoss || 0) + 
-        (mainPosition.cumulativeAmputationLoss || 0) +
-        (hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0);
+        symbolAmputationLoss;
     
     // 必须有对冲历史或当前有对冲单，才执行解套清仓逻辑
     const hasHedgingHistory = totalAccumulatedProfit > 0 || totalAccumulatedLoss > 0 || hedgePosition !== undefined;

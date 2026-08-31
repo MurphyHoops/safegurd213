@@ -27,10 +27,13 @@ export function checkStrategy2_HedgeProfit(
     // 情况 B: 当前无对冲单 (或对冲单未盈利)，主仓盈利
     // 条件: 主仓盈利 > (历史对冲止损之和) * (1 + 覆盖盈余阈值)
 
+    const symbolAmputationLoss = Math.max(
+        mainPosition.cumulativeAmputationLoss || 0,
+        hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0
+    );
     const totalAccumulatedLoss = 
         (mainPosition.cumulativeHedgeLoss || 0) + 
-        (mainPosition.cumulativeAmputationLoss || 0) +
-        (hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0);
+        symbolAmputationLoss;
     const coverRatio = 1 + (slSettings.hedgeCoverPercent || 0) / 100;
 
     // 必须有对冲历史或当前有对冲单，才执行解套清仓逻辑

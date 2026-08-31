@@ -15,7 +15,7 @@ interface Props {
 }
 
 export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, scanningSymbols, pollingStatus }) => {
-    const ALL_TFS = ['5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+    const ALL_TFS = ['15s', '30s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pressStartTimeRef = useRef<number>(0);
 
