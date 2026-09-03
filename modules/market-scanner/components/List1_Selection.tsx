@@ -268,10 +268,14 @@ const List1_Selection: React.FC<Props> = ({
             // Mark all as fetching
             symbolsToFetch.forEach(item => fetchingSymbolsRef.current.add(item.symbol));
 
-            // Fetch concurrently with Promise.all
-            await Promise.all(symbolsToFetch.map(async (item) => {
-                if (!active) return;
-                const symbol = item.symbol;
+            // Fetch in controlled concurrency batches to prevent proxy stampede and timeouts
+            const batchSize = 3;
+            for (let i = 0; i < symbolsToFetch.length; i += batchSize) {
+                if (!active) break;
+                const batch = symbolsToFetch.slice(i, i + batchSize);
+                await Promise.all(batch.map(async (item) => {
+                    if (!active) return;
+                    const symbol = item.symbol;
 
                 try {
                     const now = Date.now();
@@ -365,7 +369,7 @@ const List1_Selection: React.FC<Props> = ({
                                     klines1h = cached1h.klines;
                                 } else {
                                     const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=${limit1h}`;
-                                    const res1h = await fetchWithFallback(url1h, { timeout: 10000 }, (d) => Array.isArray(d), directMode);
+                                    const res1h = await fetchWithFallback(url1h, { timeout: 15000 }, (d) => Array.isArray(d), directMode);
                                     klines1h = await res1h.json();
                                     if (Array.isArray(klines1h)) {
                                         if (!KLINE_LIMIT_CACHE[symbol]) {
@@ -448,7 +452,7 @@ const List1_Selection: React.FC<Props> = ({
                                     startTrendValidShort = !enableStartTrendShort;
                                 }
                             } catch (err1h) {
-                                console.error("[StartTrend list views] Fetch 1h error: ", err1h);
+                                console.warn("[StartTrend list views] Fetch 1h warning: ", err1h);
                                 startTrendValidLong = true;
                                 startTrendValidShort = true;
                             }
@@ -473,8 +477,8 @@ const List1_Selection: React.FC<Props> = ({
                         }));
                     }
                     fetchingSymbolsRef.current.delete(symbol);
-                } catch (err) {
-                    console.error("Failed to fetch metrics in list view for " + symbol, err);
+                } catch (err: any) {
+                    console.warn(`[Metrics] Skipped metrics calculation for ${symbol}: ${err?.message || err}`);
                     fetchingSymbolsRef.current.delete(symbol);
                     setMetricsCache(prev => ({
                         ...prev,
@@ -492,7 +496,8 @@ const List1_Selection: React.FC<Props> = ({
                     }));
                 }
             }));
-        };
+        }
+    };
 
         fetchMetricsForList();
 

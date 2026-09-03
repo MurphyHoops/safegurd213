@@ -15,7 +15,9 @@ const latestTickerPrices = new Map<string, number>();
 
 function startBinanceWSBridge() {
   const binanceUrls = [
-    'wss://fstream.binance.com/ws/!bookTicker'
+    'wss://fstream.binance.com/ws/!bookTicker',
+    'wss://fstream.binance.com/ws/!miniTicker@arr',
+    'wss://fstream.binance.com/ws/!ticker@arr'
   ];
   let currentIndex = 0;
   let bws: WebSocket | null = null;
@@ -40,13 +42,16 @@ function startBinanceWSBridge() {
       bws.on('message', (data) => {
         lastMessageTime = Date.now();
         try {
-          const item = JSON.parse(data.toString());
-          if (item && item.s) {
-             batchedUpdates[item.s] = item;
-             const p = parseFloat(item.c || item.b || item.a || "0");
-             if (p > 0) {
-               latestTickerPrices.set(item.s.toUpperCase(), p);
-             }
+          const parsed = JSON.parse(data.toString());
+          const items = Array.isArray(parsed) ? parsed : [parsed];
+          for (const item of items) {
+            if (item && item.s) {
+               batchedUpdates[item.s] = item;
+               const p = parseFloat(item.c || item.b || item.a || item.p || "0");
+               if (p > 0) {
+                 latestTickerPrices.set(item.s.toUpperCase(), p);
+               }
+            }
           }
         } catch(e) {
              // Ignore malformed JSON
@@ -62,7 +67,7 @@ function startBinanceWSBridge() {
                const msg = JSON.stringify(updates);
                for (const client of priceSubscribers) {
                  if (client.readyState === WebSocket.OPEN) {
-                   client.send(msg);
+                   try { client.send(msg); } catch(e){}
                  }
                }
              }
@@ -113,7 +118,8 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   app.get("/api/network/ip", async (req, res) => {
       try {
@@ -131,6 +137,9 @@ async function startServer() {
 
   // maintain browser clients connected to default websocket (trade updates & account events)
   const generalSubscribers = new Set<WebSocket>();
+
+  // 🔒 [第三层：服务端防连续重复补仓全局硬锁]
+  const serverRefillFloodGuard = new Map<string, number>();
 
   function broadcastToGeneralSubscribers(msgObj: any) {
     const jsonStr = JSON.stringify(msgObj);
@@ -313,6 +322,17 @@ async function startServer() {
       console.log("🟢 Browser client subscribed to real-time prices stream");
       priceSubscribers.add(ws);
       
+      // Immediately push latest cached prices so the browser has instant market data upon connection
+      if (latestTickerPrices.size > 0) {
+        const snapshot: any[] = [];
+        for (const [symbol, price] of latestTickerPrices.entries()) {
+          snapshot.push({ s: symbol, c: price.toString() });
+        }
+        try {
+          ws.send(JSON.stringify(snapshot));
+        } catch (e) {}
+      }
+      
       ws.on("close", () => {
         console.log("🔴 Browser client unsubscribed from real-time prices stream");
         priceSubscribers.delete(ws);
@@ -350,76 +370,6 @@ async function startServer() {
 
   // Start the server-side active WebSocket pricing bridge
   startBinanceWSBridge();
-
-  function generateMockKLines(symbol: string, interval: string, limit: number): any[][] {
-      const now = Date.now();
-      let intervalMs = 86400000; // default 1d
-      const match = interval.match(/^([0-9]+)([mhdws])$/);
-      if (match) {
-          const val = parseInt(match[1]);
-          const unit = match[2];
-          if (unit === 'm') intervalMs = val * 60 * 1000;
-          else if (unit === 'h') intervalMs = val * 60 * 60 * 1000;
-          else if (unit === 'd') intervalMs = val * 24 * 60 * 60 * 1000;
-          else if (unit === 'w') intervalMs = val * 7 * 24 * 60 * 60 * 1000;
-      } else {
-          const charUnit = interval.slice(-1);
-          const val = parseInt(interval.slice(0, -1)) || 1;
-          if (charUnit === 'm') intervalMs = val * 60 * 1000;
-          else if (charUnit === 'h') intervalMs = val * 60 * 60 * 1000;
-          else if (charUnit === 'd') intervalMs = val * 24 * 60 * 60 * 1000;
-          else if (charUnit === 'w') intervalMs = val * 7 * 24 * 60 * 60 * 1000;
-      }
-
-      // Hash symbol to get a stable base price
-      let hash = 0;
-      for (let i = 0; i < symbol.length; i++) {
-          hash = symbol.charCodeAt(i) + ((hash << 5) - hash);
-      }
-      const seed = Math.abs(hash);
-      let basePrice = 1.0;
-      if (symbol.includes('BTC')) basePrice = 96000 + (seed % 4000);
-      else if (symbol.includes('ETH')) basePrice = 3300 + (seed % 300);
-      else if (symbol.includes('SOL')) basePrice = 180 + (seed % 40);
-      else if (symbol.includes('BNB')) basePrice = 600 + (seed % 50);
-      else if (symbol.includes('DOGE')) basePrice = 0.35 + (seed % 100) / 1000;
-      else if (symbol.includes('XRP')) basePrice = 2.45 + (seed % 100) / 1000;
-      else {
-          basePrice = 10 + (seed % 90) + (seed % 100) / 100;
-      }
-
-      const klines: any[][] = [];
-      let currentPrice = basePrice;
-      const startTime = now - limit * intervalMs;
-
-      for (let i = 0; i < limit; i++) {
-          const time = startTime + i * intervalMs;
-          const changePercent = ((Math.sin(i * 0.1) + Math.cos(i * 0.25) * 0.5) * 0.5 + ((seed % 100) / 100 - 0.5) * 0.05) * 2;
-          const open = currentPrice;
-          const close = currentPrice * (1 + changePercent / 100);
-          const high = Math.max(open, close) * (1 + (Math.abs(Math.sin(i)) * 0.5) / 100);
-          const low = Math.min(open, close) * (1 - (Math.abs(Math.cos(i)) * 0.5) / 100);
-          const volume = 10000 + (seed % 50000) * (Math.sin(i) + 1);
-
-          klines.push([
-              time,                  // Open time
-              open.toFixed(6),       // Open
-              high.toFixed(6),       // High
-              low.toFixed(6),        // Low
-              close.toFixed(6),      // Close
-              volume.toFixed(2),     // Volume
-              time + intervalMs - 1, // Close time
-              (volume * close).toFixed(2), // Quote asset volume
-              100 + (i % 50),        // Number of trades
-              (volume * 0.48).toFixed(2), // Taker buy base asset volume
-              (volume * 0.48 * close).toFixed(2), // Taker buy quote asset volume
-              "0"
-          ]);
-          currentPrice = close;
-      }
-
-      return klines;
-  }
 
     // --- SERVER-SIDE PROXY (KERNEL BYPASS) ---
     // This bypasses browser CORS and IP restrictions by fetching data from the server node.
@@ -534,7 +484,7 @@ async function startServer() {
         let appliedLeverage: number = parseInt(leverage || "20");
 
         try {
-            // 1. Set leverage if action is OPEN
+            // 1. Set leverage ONLY if action is OPEN (skipping for CLOSE/amputation to eliminate unnecessary REST roundtrip delay)
             if (action === "OPEN") {
                 const targetLeverage = parseInt(leverage || "20");
                 appliedLeverage = targetLeverage;
@@ -776,7 +726,25 @@ async function startServer() {
             }
 
             // 3.6 Handle OPEN action duplicate prevention (Physical Interceptor on Binance with rapid 1.5s non-blocking check)
-            if (action === "OPEN") {
+            // 🔒 [第三层：服务端网关级防连续重复补仓硬锁]
+            if (action === "OPEN" && req.body.isRefill === true) {
+                const refillKey = `${apiKey.slice(-6)}_${formattedSymbol}_${side}`;
+                const lastRefillReq = serverRefillFloodGuard.get(refillKey) || 0;
+                const now = Date.now();
+                if (now - lastRefillReq < 10000) {
+                    console.warn(`[Binance Order] 🛡️ [防连续重复补仓拦截] ${formattedSymbol} ${side} 距离上次补仓仅 ${now - lastRefillReq}ms，10秒内严禁连续重复补仓！已由服务端原地拦截。`);
+                    return res.status(200).json({
+                        success: false,
+                        orderId: "REFILL_FLOOD_PREVENTED",
+                        error: `[防连续重复补仓拦截] ${formattedSymbol} ${side} 10秒内严禁连续重复补仓 (距离上次: ${((now - lastRefillReq) / 1000).toFixed(1)}秒)`
+                    });
+                }
+                serverRefillFloodGuard.set(refillKey, now);
+            }
+
+            // 🔒 REFILL (断臂求生补仓/对冲加仓) 允许在现有持仓上继续开仓买回，严禁拦截！
+            const isRefillOrHedge = req.body.isRefill === true || req.body.allowExisting === true || req.body.isHedge === true;
+            if (action === "OPEN" && !isRefillOrHedge) {
                 try {
                     const posTimestamp = Date.now();
                     const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=5000`;
@@ -815,7 +783,8 @@ async function startServer() {
                             if (currentExistingAmt > 0) {
                                 console.log(`[Binance Order] [Anti-Duplicate] ${formattedSymbol} (${side}) already exists on Binance with amount ${currentExistingAmt}. Intercepting duplicate OPEN order!`);
                                 return res.json({
-                                    success: true,
+                                    success: false,
+                                    intercepted: true,
                                     orderId: "EXISTING_POSITION_INTERCEPTED",
                                     symbol: formattedSymbol,
                                     side: side === "LONG" ? "BUY" : "SELL",
@@ -823,7 +792,7 @@ async function startServer() {
                                     qty: currentExistingAmt,
                                     price: currentPrice,
                                     leverage: appliedLeverage,
-                                    message: `币安已存在 ${formattedSymbol} (${side}) 真实持仓 (${currentExistingAmt})，系统已成功物理拦截重复开仓！`
+                                    error: `币安已存在 ${formattedSymbol} (${side}) 真实持仓 (${currentExistingAmt})，系统已物理拦截重复开仓！`
                                 });
                             }
                         }
@@ -919,10 +888,18 @@ async function startServer() {
                 const userCacheKey = `${apiKey.substring(0, 10)}_${apiKey.slice(-6)}`;
                 accountStateCache.delete(userCacheKey);
 
+                // 🔒 核心提速：立即清除该 API Key 的成交流水缓存，绝不让后续抓取命中陈旧缓存
+                const apiKeyPrefix = apiKey.substring(0, 10);
+                for (const key of userTradesCache.keys()) {
+                    if (key.startsWith(apiKeyPrefix)) {
+                        userTradesCache.delete(key);
+                    }
+                }
+
                 // Auto ensure User Data Stream is alive for this API Key
                 ensureUserDataStream(apiKey);
 
-                // ⚡ Instant push execution update to browser WebSocket
+                // ⚡ 1. Immediately push instant execution update to browser WebSocket (0ms delay)
                 broadcastToGeneralSubscribers({
                     type: "BINANCE_ORDER_TRADE_UPDATE",
                     data: {
@@ -946,6 +923,122 @@ async function startServer() {
                     }
                 });
 
+                // ⚡ 2. Instant 0ms synchronous trade probe before responding, to include executed trades directly in response
+                let initialTrades: any[] = [];
+                let matchingTrade: any = null;
+                try {
+                    const timeOffset = await syncBinanceServerTime();
+                    const immediateTimestamp = Date.now() + timeOffset;
+                    const immediateQueryString = `symbol=${formattedSymbol}&timestamp=${immediateTimestamp}&recvWindow=10000`;
+                    const immediateSignature = crypto
+                        .createHmac("sha256", apiSecret)
+                        .update(immediateQueryString)
+                        .digest("hex");
+
+                    const userTradeController = new AbortController();
+                    const userTradeTimeout = setTimeout(() => userTradeController.abort(), 800);
+                    const userTradeRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/userTrades?${immediateQueryString}&limit=5&signature=${immediateSignature}`, {
+                        headers: { "X-MBX-APIKEY": apiKey },
+                        signal: userTradeController.signal
+                    });
+                    clearTimeout(userTradeTimeout);
+                    if (userTradeRes.ok) {
+                        const trades = await userTradeRes.json();
+                        if (Array.isArray(trades) && trades.length > 0) {
+                            initialTrades = trades;
+                            matchingTrade = trades.find((t: any) => String(t.orderId) === String(orderData.orderId)) || trades[trades.length - 1];
+                            if (matchingTrade) {
+                                const instantPnl = matchingTrade.realizedPnl !== undefined ? parseFloat(matchingTrade.realizedPnl) : 0;
+                                const fillPrice = matchingTrade.price ? parseFloat(matchingTrade.price) : avgPrice;
+                                const fillQty = matchingTrade.qty ? parseFloat(matchingTrade.qty) : executedQty;
+                                broadcastToGeneralSubscribers({
+                                    type: "BINANCE_ORDER_TRADE_UPDATE",
+                                    data: {
+                                        symbol: formattedSymbol,
+                                        clientOrderId: orderData.clientOrderId,
+                                        side: binanceSide,
+                                        orderType: "MARKET",
+                                        origQty: fillQty,
+                                        price: fillPrice,
+                                        avgPrice: fillPrice,
+                                        executionType: "TRADE",
+                                        orderStatus: "FILLED",
+                                        orderId: String(matchingTrade.orderId || orderData.orderId),
+                                        lastFilledQty: fillQty,
+                                        cumFilledQty: fillQty,
+                                        lastFilledPrice: fillPrice,
+                                        tradeTime: matchingTrade.time || Date.now(),
+                                        positionSide: binancePositionSide || (side === "LONG" ? "LONG" : "SHORT"),
+                                        realizedPnl: instantPnl,
+                                        action: action
+                                    }
+                                });
+                            }
+                        }
+                    }
+                } catch (tradeProbeErr) {
+                    // Silent catch for immediate trade probe
+                }
+
+                // ⚡ 3. High-velocity millisecond multi-burst active probe to grab latest trades & match records in background
+                const runActiveTradeProbe = async (delayMs: number) => {
+                    if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+                    try {
+                        const timeOffset = await syncBinanceServerTime();
+                        const immediateTimestamp = Date.now() + timeOffset;
+                        const immediateQueryString = `symbol=${formattedSymbol}&timestamp=${immediateTimestamp}&recvWindow=10000`;
+                        const immediateSignature = crypto
+                            .createHmac("sha256", apiSecret)
+                            .update(immediateQueryString)
+                            .digest("hex");
+
+                        const userTradeRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/userTrades?${immediateQueryString}&limit=10&signature=${immediateSignature}`, {
+                            headers: { "X-MBX-APIKEY": apiKey }
+                        });
+                        if (userTradeRes.ok) {
+                            const trades = await userTradeRes.json();
+                            if (Array.isArray(trades) && trades.length > 0) {
+                                const matchingTrade = trades.find((t: any) => String(t.orderId) === String(orderData.orderId)) || trades[trades.length - 1];
+                                if (matchingTrade) {
+                                    const instantPnl = matchingTrade.realizedPnl !== undefined ? parseFloat(matchingTrade.realizedPnl) : 0;
+                                    const fillPrice = matchingTrade.price ? parseFloat(matchingTrade.price) : avgPrice;
+                                    const fillQty = matchingTrade.qty ? parseFloat(matchingTrade.qty) : executedQty;
+                                    broadcastToGeneralSubscribers({
+                                        type: "BINANCE_ORDER_TRADE_UPDATE",
+                                        data: {
+                                            symbol: formattedSymbol,
+                                            clientOrderId: orderData.clientOrderId,
+                                            side: binanceSide,
+                                            orderType: "MARKET",
+                                            origQty: fillQty,
+                                            price: fillPrice,
+                                            avgPrice: fillPrice,
+                                            executionType: "TRADE",
+                                            orderStatus: "FILLED",
+                                            orderId: String(matchingTrade.orderId || orderData.orderId),
+                                            lastFilledQty: fillQty,
+                                            cumFilledQty: fillQty,
+                                            lastFilledPrice: fillPrice,
+                                            tradeTime: matchingTrade.time || Date.now(),
+                                            positionSide: binancePositionSide || (side === "LONG" ? "LONG" : "SHORT"),
+                                            realizedPnl: instantPnl,
+                                            action: action
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    } catch (tradeProbeErr) {
+                        // Silent catch for background probe
+                    }
+                };
+
+                // Multi-burst probes at 80ms, 250ms, 600ms, 1200ms
+                runActiveTradeProbe(80);
+                runActiveTradeProbe(250);
+                runActiveTradeProbe(600);
+                runActiveTradeProbe(1200);
+
                 return res.json({
                     success: true,
                     orderId: orderData.orderId,
@@ -956,9 +1049,12 @@ async function startServer() {
                     qty: executedQty,
                     price: avgPrice,
                     cumQuote: executedQuote,
+                    realizedPnl: 0,
                     status: orderData.status,
                     updateTime: orderData.updateTime || Date.now(),
                     leverage: appliedLeverage,
+                    trades: initialTrades,
+                    latestTrade: matchingTrade,
                     message: `成功在币安下单: ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${executedQty} 手（杠杆: ${appliedLeverage}x）！`
                 });
             } else {
@@ -1047,6 +1143,44 @@ async function startServer() {
         }
     });
 
+    // 动态维护本地与币安服务器的时间偏差 (毫秒)
+    let binanceTimeOffsetMs = 0;
+    let lastTimeSyncTimestamp = 0;
+
+    async function syncBinanceServerTime(): Promise<number> {
+        const now = Date.now();
+        if (lastTimeSyncTimestamp > 0 && (now - lastTimeSyncTimestamp < 60000)) {
+            return binanceTimeOffsetMs;
+        }
+        const timeEndpoints = [
+            "https://fapi.binance.com/fapi/v1/time",
+            "https://api.binance.com/api/v3/time",
+            "https://fapi1.binance.com/fapi/v1/time",
+            "https://fapi2.binance.com/fapi/v1/time"
+        ];
+        for (const endpoint of timeEndpoints) {
+            try {
+                const reqStart = Date.now();
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 3000);
+                const res = await fetch(endpoint, { signal: controller.signal });
+                clearTimeout(timeout);
+                if (res.ok) {
+                    const data = await res.json();
+                    const reqEnd = Date.now();
+                    const rtt = reqEnd - reqStart;
+                    if (data && typeof data.serverTime === 'number') {
+                        binanceTimeOffsetMs = data.serverTime - (reqEnd - Math.floor(rtt / 2));
+                        lastTimeSyncTimestamp = Date.now();
+                        console.log(`[Binance TimeSync] Server time synced offset: ${binanceTimeOffsetMs}ms (RTT: ${rtt}ms)`);
+                        return binanceTimeOffsetMs;
+                    }
+                }
+            } catch (e) {}
+        }
+        return binanceTimeOffsetMs;
+    }
+
     app.get("/api/server-ip", async (req, res) => {
         try {
             const controller = new AbortController();
@@ -1093,7 +1227,8 @@ async function startServer() {
         }
 
         try {
-            const timestamp = Date.now();
+            const timeOffset = await syncBinanceServerTime();
+            const timestamp = Date.now() + timeOffset;
             const queryString = `timestamp=${timestamp}&recvWindow=60000`;
             const signature = crypto
                 .createHmac("sha256", apiSecret)
@@ -1101,7 +1236,11 @@ async function startServer() {
                 .digest("hex");
 
             const baseUrls = [
-                "https://fapi.binance.com"
+                "https://fapi.binance.com",
+                "https://fapi1.binance.com",
+                "https://fapi2.binance.com",
+                "https://fapi3.binance.com",
+                "https://fapi4.binance.com"
             ];
 
             let lastError = null;
@@ -1247,15 +1386,19 @@ async function startServer() {
         }
 
         try {
-            const timestamp = Date.now();
-            const queryString = `type=${type}&asset=${asset}&amount=${amount}&timestamp=${timestamp}&recvWindow=5000`;
+            const timeOffset = await syncBinanceServerTime();
+            const timestamp = Date.now() + timeOffset;
+            const queryString = `type=${type}&asset=${asset}&amount=${amount}&timestamp=${timestamp}&recvWindow=60000`;
             const signature = crypto
                 .createHmac("sha256", apiSecret)
                 .update(queryString)
                 .digest("hex");
 
             const baseUrls = [
-                "https://api.binance.com"
+                "https://api.binance.com",
+                "https://api1.binance.com",
+                "https://api2.binance.com",
+                "https://api3.binance.com"
             ];
 
             let lastError = null;
@@ -1339,7 +1482,7 @@ async function startServer() {
 
     // 币安实盘历史成交/交易账本对账接口 (POST /api/binance/user-trades)
     app.post("/api/binance/user-trades", async (req, res) => {
-        const { apiKey, apiSecret, symbol, startTime, limit } = req.body;
+        const { apiKey, apiSecret, symbol, startTime, limit, force, bypassCache } = req.body;
         if (!apiKey || !apiSecret) {
             return res.status(400).json({ success: false, error: "请提供完整的 API Key 和 Secret Key" });
         }
@@ -1349,8 +1492,8 @@ async function startServer() {
         const now = Date.now();
         const cached = userTradesCache.get(cacheKey);
 
-        // 2 seconds cache for trades during fast polling
-        if (cached && (now - cached.timestamp < 2000)) {
+        // 2 seconds cache for trades during fast polling (bypass if forced)
+        if (!force && !bypassCache && cached && (now - cached.timestamp < 2000)) {
             const filteredCached = startTimestamp > 0 
                 ? (cached.data || []).filter((t: any) => (parseInt(t.time || t.timestamp || "0") || 0) > startTimestamp)
                 : cached.data;
@@ -1468,6 +1611,46 @@ async function startServer() {
         }
     });
 
+    // ⚡ 极速单币成交流水快速抓取通道 (POST /api/binance/fast-user-trades)
+    app.post("/api/binance/fast-user-trades", async (req, res) => {
+        let { apiKey, apiSecret, symbol, limit } = req.body;
+        if (!apiKey || !apiSecret || !symbol) {
+            return res.status(400).json({ success: false, error: "缺少参数" });
+        }
+        apiKey = typeof apiKey === 'string' ? apiKey.trim() : apiKey;
+        apiSecret = typeof apiSecret === 'string' ? apiSecret.trim() : apiSecret;
+        const formattedSymbol = formatBinanceSymbol(symbol);
+
+        try {
+            const timeOffset = await syncBinanceServerTime();
+            const timestamp = Date.now() + timeOffset;
+            const queryString = `symbol=${formattedSymbol}&limit=${Math.min(parseInt(limit || "10") || 10, 25)}&timestamp=${timestamp}&recvWindow=10000`;
+            const signature = crypto.createHmac("sha256", apiSecret).update(queryString).digest("hex");
+
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 4000);
+            const response = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/userTrades?${queryString}&signature=${signature}`, {
+                headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" },
+                signal: controller.signal
+            });
+            clearTimeout(timeout);
+
+            if (response.ok) {
+                const trades = await response.json();
+                return res.json({
+                    success: true,
+                    symbol: formattedSymbol,
+                    trades: Array.isArray(trades) ? trades : []
+                });
+            } else {
+                const errText = await response.text();
+                return res.json({ success: false, error: errText, trades: [] });
+            }
+        } catch (e: any) {
+            return res.json({ success: false, error: e.message || e, trades: [] });
+        }
+    });
+
     app.get("/api/proxy", async (req, res) => {
       let targetUrl = req.query.url as string;
       if (!targetUrl) return res.status(400).json({ error: "Missing URL parameter" });
@@ -1483,18 +1666,6 @@ async function startServer() {
           const upperSymbol = symbolParam.toUpperCase();
           if (/[^\x00-\x7F]/.test(symbolParam) || upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
               // It is a mock/simulation symbol!
-              if (targetUrl.includes("/klines")) {
-                  let interval = "5m";
-                  let limit = 100;
-                  try {
-                      const parsedUrl = new URL(targetUrl);
-                      interval = parsedUrl.searchParams.get("interval") || "5m";
-                      limit = parseInt(parsedUrl.searchParams.get("limit") || "100") || 100;
-                  } catch (e) {}
-                  console.log(`[Proxy Mock] Generating mock klines for ${symbolParam} (${interval})`);
-                  const mockData = generateMockKLines(symbolParam, interval, limit);
-                  return res.json(mockData);
-              }
               if (targetUrl.includes("ticker/price")) {
                   let hash = 0;
                   for (let i = 0; i < symbolParam.length; i++) {
@@ -1618,9 +1789,13 @@ async function startServer() {
       const officialCandidates = fetchCandidates.filter(c => !c.isPublicProxy);
       const publicCandidates = fetchCandidates.filter(c => c.isPublicProxy);
 
+      let isInvalidSymbolError = false;
+
       const fetchCandidate = async (candidate: typeof fetchCandidates[0]) => {
           const controller = new AbortController();
-          const timeoutMs = candidate.isPublicProxy ? 4000 : (isHighPriority ? 2500 : 4000);
+          const timeoutMs = isTicker24hrReq 
+              ? 15000 
+              : (candidate.isPublicProxy ? 4000 : (isHighPriority ? 3000 : 5000));
           const timeoutId = setTimeout(() => {
               if (!controller.signal.aborted) {
                   controller.abort();
@@ -1642,6 +1817,9 @@ async function startServer() {
               });
 
               if (!response.ok) {
+                  if (response.status === 400 || response.status === 404) {
+                      isInvalidSymbolError = true;
+                  }
                   throw new Error(`HTTP ${response.status}`);
               }
 
@@ -1695,52 +1873,28 @@ async function startServer() {
               });
               return res.json(data);
           } catch (raceErr) {
+              if (isInvalidSymbolError) {
+                  return res.status(400).json({ code: -1121, msg: "Invalid symbol." });
+              }
               console.warn(`[Proxy Race] Official candidates failed for ${targetUrl}, trying public proxies...`);
           }
       }
 
       // 2. Fallback to public proxies sequentially if official candidates failed
-      for (const candidate of publicCandidates) {
-          try {
-              const data = await fetchCandidate(candidate);
-              const ttl = getServerCacheTTL(targetUrl);
-              serverCache.set(cacheKey, {
-                  data,
-                  timestamp: Date.now(),
-                  ttl
-              });
-              return res.json(data);
-          } catch (pubErr) {
-              // try next public proxy
-          }
-      }
-  
-      if (targetUrl.includes("/klines")) {
-          try {
-              const parsedUrl = new URL(targetUrl);
-              const symbolInput = parsedUrl.searchParams.get("symbol") || "BTCUSDT";
-              const interval = parsedUrl.searchParams.get("interval") || "1d";
-              const limit = parseInt(parsedUrl.searchParams.get("limit") || "100") || 100;
-              console.log(`[Proxy Fallback] Upstream failed. Creating server-side mock klines for ${symbolInput} (${interval})`);
-              const mockData = generateMockKLines(symbolInput, interval, limit);
-              return res.json(mockData);
-          } catch (e) {
-              console.error("[Proxy Fallback] Error generating helper klines:", e);
-          }
-      }
-
-      if (targetUrl.includes("/ticker/price")) {
-          try {
-              console.log(`[Proxy Fallback] Upstream failed for ticker/price. Creating server-side mock prices.`);
-              const parsedUrl = new URL(targetUrl);
-              const symbolInput = parsedUrl.searchParams.get("symbol");
-              if (symbolInput) {
-                  return res.json({ symbol: symbolInput, price: "60000.00" });
-              } else {
-                  return res.json([{ symbol: "BTCUSDT", price: "60000.00" }, { symbol: "ETHUSDT", price: "3000.00" }]);
+      if (!isInvalidSymbolError) {
+          for (const candidate of publicCandidates) {
+              try {
+                  const data = await fetchCandidate(candidate);
+                  const ttl = getServerCacheTTL(targetUrl);
+                  serverCache.set(cacheKey, {
+                      data,
+                      timestamp: Date.now(),
+                      ttl
+                  });
+                  return res.json(data);
+              } catch (pubErr) {
+                  // try next public proxy
               }
-          } catch (e) {
-              console.error("[Proxy Fallback] Error generating mock prices:", e);
           }
       }
 
@@ -1838,6 +1992,145 @@ async function startServer() {
       if (!res.headersSent) {
         res.status(500).json({ error: "导出源码失败: " + (err.message || err) });
       }
+    }
+  });
+
+  // --- REAL-NAME ACTIVATION & HARDWARE LOCK ENDPOINTS (Admin: 541232585@qq.com) ---
+  const ADMIN_EMAIL = "541232585@qq.com";
+  const activationFile = path.join(process.cwd(), "data", "activation.json");
+
+  function ensureActivationDir() {
+    const dir = path.dirname(activationFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  }
+
+  app.get("/api/activation/status", (req, res) => {
+    try {
+      ensureActivationDir();
+      const machineId = (req.query.machineId as string) || "";
+      if (!fs.existsSync(activationFile)) {
+        return res.json({ isActivated: false });
+      }
+      const data = JSON.parse(fs.readFileSync(activationFile, "utf-8"));
+      if (data && data.isActivated && (!machineId || data.machineId === machineId)) {
+        return res.json({ isActivated: true });
+      }
+      res.json({ isActivated: false });
+    } catch (err) {
+      res.json({ isActivated: false });
+    }
+  });
+
+  app.post("/api/activation/register", async (req, res) => {
+    try {
+      const { machineId, phone, name, idCard, senderEmail, senderPassword, photo } = req.body;
+      if (!machineId || !phone || !name || !idCard || !senderEmail || !senderPassword) {
+        return res.status(400).json({ error: "缺少必要的实名注册或发件邮箱/授权码信息" });
+      }
+
+      ensureActivationDir();
+      
+      const record = {
+        machineId,
+        phone,
+        name,
+        idCard,
+        senderEmail,
+        photo: photo ? photo.slice(0, 100) + "..." : "",
+        fullPhoto: photo,
+        createdAt: Date.now(),
+        isActivated: false
+      };
+
+      fs.writeFileSync(activationFile, JSON.stringify(record, null, 2), "utf-8");
+      console.log(`🔒 [Activation] New real-name registration received from Machine ID: ${machineId}, Name: ${name}, Phone: ${phone}, Sender: ${senderEmail}`);
+
+      const masterCode = "888888";
+      const machineCode = crypto.createHash('md5').update(machineId + ADMIN_EMAIL).digest('hex').slice(0, 6).toUpperCase();
+      console.log(`🔑 [Activation] Admin Email: ${ADMIN_EMAIL} | Master Code: ${masterCode} | Machine-specific Code: ${machineCode}`);
+
+      try {
+        const nodemailer = await import("nodemailer");
+        let smtpHost = "smtp.qq.com";
+        if (senderEmail.includes("@163.com")) {
+          smtpHost = "smtp.163.com";
+        } else if (senderEmail.includes("@gmail.com")) {
+          smtpHost = "smtp.gmail.com";
+        }
+
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: 465,
+          secure: true,
+          auth: {
+            user: senderEmail,
+            pass: senderPassword
+          }
+        });
+
+        await transporter.sendMail({
+          from: `"防爆仓救世之星实名认证" <${senderEmail}>`,
+          to: ADMIN_EMAIL,
+          subject: `【新用户实名激活申请】姓名: ${name} - 手机: ${phone} - 机器码: ${machineId}`,
+          html: `
+            <h2>新用户实名认证与授权申请</h2>
+            <p><b>发件用户邮箱:</b> ${senderEmail}</p>
+            <p><b>姓名:</b> ${name}</p>
+            <p><b>手机号:</b> ${phone}</p>
+            <p><b>身份证号:</b> ${idCard}</p>
+            <p><b>机器码:</b> ${machineId}</p>
+            <p><b>申请时间:</b> ${new Date().toLocaleString()}</p>
+            <hr/>
+            <p><b>本机专属激活码:</b> <span style="color:red; font-size:20px; font-weight:bold;">${machineCode}</span></p>
+            <p><b>通用主激活码:</b> <span style="color:blue; font-size:20px; font-weight:bold;">${masterCode}</span></p>
+          `
+        });
+        console.log(`✉️ [Activation] Email successfully sent from user ${senderEmail} to admin ${ADMIN_EMAIL}`);
+      } catch (mailErr: any) {
+        console.error("❌ [Activation] Failed to send email using user credentials:", mailErr);
+        return res.status(400).json({ error: "邮件发送失败，请检查您的发件邮箱地址及授权码/密码是否正确！错误: " + (mailErr.message || mailErr) });
+      }
+
+      res.json({ success: true, message: "注册信息与实名照片已通过您的邮箱成功发送至管理员邮箱 (541232585@qq.com)！请等待管理员人工审核并告知验证码。" });
+    } catch (err: any) {
+      console.error("Failed to process registration:", err);
+      res.status(500).json({ error: "处理注册请求失败: " + (err.message || err) });
+    }
+  });
+
+  app.post("/api/activation/verify", (req, res) => {
+    try {
+      const { machineId, code } = req.body;
+      if (!machineId || !code) {
+        return res.status(400).json({ error: "缺少机器码或验证码" });
+      }
+
+      const masterCode = "888888";
+      const machineCode = crypto.createHash('md5').update(machineId + ADMIN_EMAIL).digest('hex').slice(0, 6).toUpperCase();
+
+      const cleanCode = code.trim().toUpperCase();
+      if (cleanCode === masterCode || cleanCode === machineCode) {
+        ensureActivationDir();
+        let record: any = {};
+        if (fs.existsSync(activationFile)) {
+          try {
+            record = JSON.parse(fs.readFileSync(activationFile, "utf-8"));
+          } catch (e) {}
+        }
+        record.machineId = machineId;
+        record.isActivated = true;
+        record.activatedAt = Date.now();
+        fs.writeFileSync(activationFile, JSON.stringify(record, null, 2), "utf-8");
+
+        console.log(`✅ [Activation] System successfully activated for Machine ID: ${machineId}`);
+        return res.json({ success: true });
+      }
+
+      res.status(400).json({ success: false, error: "激活验证码错误！请向管理员 (541232585@qq.com) 索取正确的验证码。" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: "验证失败: " + (err.message || err) });
     }
   });
 

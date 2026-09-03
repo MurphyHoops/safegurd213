@@ -4,6 +4,7 @@ import { Shield, Target, Zap, History, BarChart2, Settings, Brain, RefreshCw, Al
 import { formatPrice } from '../../../services/symbolUtils';
 import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
 import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
+import { RealtimeClockSpan } from '../../../components/RealtimeClockSpan';
 
 /**
  * 本地获取 AI 智能开启的真实百分比阈值，避免循环依赖
@@ -384,7 +385,7 @@ export const PositionItem: React.FC<Props> = ({
                     <span className="text-slate-400">{formatPrice(p.entryPrice)}</span>
                 </div>
                 <div className="flex items-center gap-1.5 font-mono text-[10px] shrink-0">
-                    <span className="text-slate-500">{new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}</span>
+                    <RealtimeClockSpan className="text-slate-500" />
                     {p.isBacktestRecord ? (
                         <span className={`font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{formatPrice(livePrice)}</span>
                     ) : (

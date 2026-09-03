@@ -56,76 +56,6 @@ const releaseSlot = () => {
 const blacklistedProxies = new Set<string>();
 let lastBlacklistReset = Date.now();
 
-function generateMockKLines(symbol: string, interval: string, limit: number): any[][] {
-    const now = Date.now();
-    let intervalMs = 86400000; // default 1d
-    const match = interval.match(/^([0-9]+)([mhdws])$/);
-    if (match) {
-        const val = parseInt(match[1]);
-        const unit = match[2];
-        if (unit === 'm') intervalMs = val * 60 * 1000;
-        else if (unit === 'h') intervalMs = val * 60 * 60 * 1000;
-        else if (unit === 'd') intervalMs = val * 24 * 60 * 60 * 1000;
-        else if (unit === 'w') intervalMs = val * 7 * 24 * 60 * 60 * 1000;
-    } else {
-        const charUnit = interval.slice(-1);
-        const val = parseInt(interval.slice(0, -1)) || 1;
-        if (charUnit === 'm') intervalMs = val * 60 * 1000;
-        else if (charUnit === 'h') intervalMs = val * 60 * 60 * 1000;
-        else if (charUnit === 'd') intervalMs = val * 24 * 60 * 60 * 1000;
-        else if (charUnit === 'w') intervalMs = val * 7 * 24 * 60 * 60 * 1000;
-    }
-
-    // Hash symbol to get a stable base price
-    let hash = 0;
-    for (let i = 0; i < symbol.length; i++) {
-        hash = symbol.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    const seed = Math.abs(hash);
-    let basePrice = 1.0;
-    if (symbol.includes('BTC')) basePrice = 96000 + (seed % 4000);
-    else if (symbol.includes('ETH')) basePrice = 3300 + (seed % 300);
-    else if (symbol.includes('SOL')) basePrice = 180 + (seed % 40);
-    else if (symbol.includes('BNB')) basePrice = 600 + (seed % 50);
-    else if (symbol.includes('DOGE')) basePrice = 0.35 + (seed % 100) / 1000;
-    else if (symbol.includes('XRP')) basePrice = 2.45 + (seed % 100) / 1000;
-    else {
-        basePrice = 10 + (seed % 90) + (seed % 100) / 100;
-    }
-
-    const klines: any[][] = [];
-    let currentPrice = basePrice;
-    const startTime = now - limit * intervalMs;
-
-    for (let i = 0; i < limit; i++) {
-        const time = startTime + i * intervalMs;
-        const changePercent = ((Math.sin(i * 0.1) + Math.cos(i * 0.25) * 0.5) * 0.5 + ((seed % 100) / 100 - 0.5) * 0.05) * 2;
-        const open = currentPrice;
-        const close = currentPrice * (1 + changePercent / 100);
-        const high = Math.max(open, close) * (1 + (Math.abs(Math.sin(i)) * 0.5) / 100);
-        const low = Math.min(open, close) * (1 - (Math.abs(Math.cos(i)) * 0.5) / 100);
-        const volume = 10000 + (seed % 50000) * (Math.sin(i) + 1);
-
-        klines.push([
-            time,                  // Open time
-            open.toFixed(6),       // Open
-            high.toFixed(6),       // High
-            low.toFixed(6),        // Low
-            close.toFixed(6),      // Close
-            volume.toFixed(2),     // Volume
-            time + intervalMs - 1, // Close time
-            (volume * close).toFixed(2), // Quote asset volume
-            100 + (i % 50),        // Number of trades
-            (volume * 0.48).toFixed(2), // Taker buy base asset volume
-            (volume * 0.48 * close).toFixed(2), // Taker buy quote asset volume
-            "0"
-        ]);
-        currentPrice = close;
-    }
-
-    return klines;
-}
-
 /**
  * Robust fetcher with multiple fallbacks for CORS/Network restrictions.
  * Strategy: Direct Connection -> Stable Proxies -> High Speed Proxies -> Backup
@@ -194,21 +124,6 @@ export const fetchWithFallback = async (
         const upperSymbol = symbolParam.toUpperCase();
         if (/[^\x00-\x7F]/.test(symbolParam) || upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
             // It is a mock/simulation symbol!
-            if (url.includes('/klines')) {
-                let interval = "5m";
-                let limit = 100;
-                try {
-                    const urlObj = new URL(url, typeof window !== 'undefined' ? window.location.origin : undefined);
-                    interval = urlObj.searchParams.get("interval") || "5m";
-                    limit = parseInt(urlObj.searchParams.get("limit") || "100") || 100;
-                } catch(e) {}
-                console.log(`[API Mock] Generating client-side mock klines for ${symbolParam} (${interval})`);
-                const mockData = generateMockKLines(symbolParam, interval, limit);
-                return new Response(JSON.stringify(mockData), {
-                    status: 200,
-                    headers: { 'Content-Type': 'application/json' }
-                });
-            }
             if (url.includes('ticker/price')) {
                 let hash = 0;
                 for (let i = 0; i < symbolParam.length; i++) {
@@ -334,8 +249,8 @@ const _fetchWithFallbackInner = async (
         return new Response(JSON.stringify([]), { status: 200 }); // Return empty array to avoid unhandled rejections
     }
 
-    // 1. Enter Queue with priority (Charts go higher priority than background scans)
-    const priority = options?.priority || (url.includes('ticker/24hr') ? 'LOW' : 'NORMAL');
+    // 1. Enter Queue with priority (Charts and 24hr Ticker go higher priority than background scans)
+    const priority = options?.priority || (url.includes('ticker/24hr') ? 'HIGH' : 'NORMAL');
     const isHighPriority = priority === 'HIGH';
     if (!isHighPriority) {
         await acquireSlot(priority);
@@ -467,7 +382,7 @@ const _fetchWithFallbackInner = async (
             let timeoutId: any;
             try {
                 const controller = new AbortController();
-                const proxyTimeout = Math.min(TIMEOUT_MS, isKlinePayload ? 3000 : (isHeavyPayload ? 45000 : 20000));
+                const proxyTimeout = Math.min(TIMEOUT_MS, isKlinePayload ? (priority === 'HIGH' ? 6000 : 15000) : (isHeavyPayload ? 45000 : 20000));
                 timeoutId = setTimeout(() => {
                     if (!controller.signal.aborted) {
                         try {
@@ -486,6 +401,9 @@ const _fetchWithFallbackInner = async (
                 });
                 
                 if (!res.ok) {
+                    if (res.status === 400 || res.status === 404) {
+                        throw new Error(`HTTP ${res.status}: Invalid symbol or resource`);
+                    }
                     if (res.status === 403 || res.status === 429) {
                         if (hostname && hostname !== 'localhost' && !hostname.startsWith('127.0.0.1')) {
                             blacklistedProxies.add(hostname);
@@ -575,23 +493,6 @@ const _fetchWithFallbackInner = async (
         if (continuousFailures > 25) {
             circuitBreakerUntil = Date.now() + 30000;
             continuousFailures = 10;
-        }
-
-        if (url.includes('/klines')) {
-            try {
-                const urlObj = new URL(url);
-                const symbolInput = urlObj.searchParams.get("symbol") || "BTCUSDT";
-                const interval = urlObj.searchParams.get("interval") || "1d";
-                const limit = parseInt(urlObj.searchParams.get("limit") || "100") || 100;
-                console.log(`[API Fallback] Creating client-side mock klines for ${symbolInput} (${interval})`);
-                const mockData = generateMockKLines(symbolInput, interval, limit);
-                return new Response(JSON.stringify(mockData), {
-                    status: 200,
-                    headers: { 'Content-Type': 'application/json' }
-                });
-            } catch (e) {
-                console.error("[API Fallback] Error generating helper klines:", e);
-            }
         }
 
         throw lastError || new Error("Failed after all line attempts");

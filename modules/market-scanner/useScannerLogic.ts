@@ -97,8 +97,8 @@ export const useScannerLogic = (
     const modeRef = useRef(mode);
     const wasForceFullRef = useRef(false);
     
-    // --- 早上8点成交量缓存 ---
-    const volume8amCacheRef = useRef<Map<string, { volume: number, timestamp: number }>>(new Map());
+    // --- 早上8点成交量与开盘价缓存 ---
+    const volume8amCacheRef = useRef<Map<string, { volume: number, openPrice: number, timestamp: number }>>(new Map());
     const majorTrendCandidatesRef = useRef<Set<string>>(new Set());
     
     // --- MAJOR TREND DISCOVERY STATE ---
@@ -272,20 +272,35 @@ export const useScannerLogic = (
             lastFilterPulseRef.current = pulse; // Update ref early
 
             if (rawDataRef.current && Array.isArray(rawDataRef.current) && rawDataRef.current.length > 0) {
+                const nowTime = Date.now();
+                const expiry = 5 * 60 * 1000;
+                const enrichedRaw = rawDataRef.current.map((t: any) => {
+                    const cached = volume8amCacheRef.current.get(t.symbol);
+                    if (cached && (nowTime - cached.timestamp < expiry)) {
+                        return {
+                            ...t,
+                            _cachedVolume8am: cached.volume,
+                            _cachedOpenPrice8am: cached.openPrice
+                        };
+                    }
+                    return t;
+                });
+
                 const { list1: filtered, stats } = processMarketData(
-                    rawDataRef.current, 
+                    enrichedRaw, 
                     initialConfig, 
                     customSymbolSet, 
                     fixedModeView
                 );
                 
-                // Map volume8am from cache if exists
-                const nowTime = Date.now();
-                const expiry = 5 * 60 * 1000;
+                // Map volume8am and change8am from cache if exists
                 filtered.forEach(item => {
                     const cached = volume8amCacheRef.current.get(item.symbol);
                     if (cached && (nowTime - cached.timestamp < expiry)) {
                         item.volume8am = cached.volume;
+                        if (cached.openPrice > 0 && item.price > 0) {
+                            item.change8am = ((item.price - cached.openPrice) / cached.openPrice) * 100;
+                        }
                     }
                 });
 
@@ -294,11 +309,20 @@ export const useScannerLogic = (
                 if (initialConfig.enableVol8am) {
                     const minVol8am = initialConfig.minVolume8am ?? 0;
                     const maxVol8am = initialConfig.maxVolume8am ?? 0;
+                    const minChange = initialConfig.minChange || 0;
+                    const source = initialConfig.source || 'BOTH';
+
                     finalCandidates = filtered.filter(item => {
                         const rawVol8am = item.volume8am;
                         const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : (item.volume24h !== undefined ? item.volume24h : (parseFloat((item as any).volume || "0") || 0));
                         if (vol8am < minVol8am) return false;
                         if (maxVol8am > 0 && vol8am > maxVol8am) return false;
+
+                        const effectiveChange = item.change8am !== undefined ? item.change8am : 0;
+                        if (source === 'GAINERS' && effectiveChange <= 0) return false;
+                        if (source === 'LOSERS' && effectiveChange >= 0) return false;
+                        if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
+
                         return true;
                     });
                 }
@@ -466,52 +490,81 @@ export const useScannerLogic = (
             // Reset retry counter on success
             retryCountRef.current = 0;
             
+            // --- 早上8点成交量异步获取与过滤 (Since 8 AM Volume) ---
+            const cacheExpiryMs = 5 * 60 * 1000; // 5 minute cache
+            const nowTime = Date.now();
+            const enrichedData = data.map((t: any) => {
+                const cached = volume8amCacheRef.current.get(t.symbol);
+                if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
+                    return {
+                        ...t,
+                        _cachedVolume8am: cached.volume,
+                        _cachedOpenPrice8am: cached.openPrice
+                    };
+                }
+                return t;
+            });
+
             // Logic Processing
             const { list1: filtered, stats } = processMarketData(
-                data, 
+                enrichedData, 
                 configRef.current, 
                 customSymbolSetRef.current, 
                 fixedModeViewRef.current
             );
-            
-            // --- 早上8点成交量异步获取与过滤 (Since 8 AM Volume) ---
-            const cacheExpiryMs = 5 * 60 * 1000; // 5 minute cache
-            const nowTime = Date.now();
 
             // Filter by 8AM volume if enabled
             let finalCandidates = filtered;
             if (configRef.current.enableVol8am) {
-                // Fetch 1d klines concurrently to fill volume8am for candidates only when enabled
+                // Fetch 1d klines concurrently to fill volume8am and compute change8am for candidates only when enabled
                 await Promise.all(filtered.map(async (item) => {
                     const cached = volume8amCacheRef.current.get(item.symbol);
                     let vol8am = 0;
+                    let openPrice8am = 0;
                     if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
                         vol8am = cached.volume;
+                        openPrice8am = cached.openPrice || 0;
                     } else {
                         try {
                             const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
                             const res1d = await fetchWithFallback(url1d, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
                             const klines1d = await res1d.json();
                             if (Array.isArray(klines1d) && klines1d.length > 0) {
-                                // index 7 is quote asset volume (USDT volume)
+                                // index 7 is quote asset volume (USDT volume), index 1 is open price
                                 vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
-                                volume8amCacheRef.current.set(item.symbol, { volume: vol8am, timestamp: nowTime });
+                                openPrice8am = parseFloat(klines1d[0][1]) || 0;
+                                volume8amCacheRef.current.set(item.symbol, { volume: vol8am, openPrice: openPrice8am, timestamp: nowTime });
                             }
                         } catch (err) {
                             console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
                             vol8am = cached ? cached.volume : (item.volume24h !== undefined ? item.volume24h : (parseFloat((item as any).volume || "0") || 0));
+                            openPrice8am = cached?.openPrice || 0;
                         }
                     }
                     item.volume8am = vol8am;
+                    if (openPrice8am > 0 && item.price > 0) {
+                        item.change8am = ((item.price - openPrice8am) / openPrice8am) * 100;
+                    } else {
+                        item.change8am = undefined;
+                    }
                 }));
 
                 const minVol8am = configRef.current.minVolume8am ?? 0;
                 const maxVol8am = configRef.current.maxVolume8am ?? 0;
+                const minChange = configRef.current.minChange || 0;
+                const source = configRef.current.source || 'BOTH';
+
                 finalCandidates = filtered.filter(item => {
                     const rawVol8am = item.volume8am;
                     const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : (item.volume24h !== undefined ? item.volume24h : (parseFloat((item as any).volume || "0") || 0));
                     if (vol8am < minVol8am) return false;
                     if (maxVol8am > 0 && vol8am > maxVol8am) return false;
+
+                    const effectiveChange = item.change8am !== undefined ? item.change8am : (item.change || 0);
+                    if (source === 'GAINERS' && effectiveChange <= 0) return false;
+                    if (source === 'LOSERS' && effectiveChange >= 0) return false;
+                    if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
+
                     return true;
                 });
             }
@@ -737,8 +790,10 @@ export const useScannerLogic = (
             await Promise.all(baseFiltered.map(async (item) => {
                 const cached = volume8amCacheRef.current.get(item.symbol);
                 let vol8am = 0;
+                let openPrice8am = 0;
                 if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
                     vol8am = cached.volume;
+                    openPrice8am = cached.openPrice || 0;
                 } else {
                     try {
                         const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
@@ -746,23 +801,39 @@ export const useScannerLogic = (
                         const klines1d = await res1d.json();
                         if (Array.isArray(klines1d) && klines1d.length > 0) {
                             vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
-                            volume8amCacheRef.current.set(item.symbol, { volume: vol8am, timestamp: nowTime });
+                            openPrice8am = parseFloat(klines1d[0][1]) || 0;
+                            volume8amCacheRef.current.set(item.symbol, { volume: vol8am, openPrice: openPrice8am, timestamp: nowTime });
                         }
                     } catch (err) {
                         console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
                         vol8am = cached ? cached.volume : item.volume24h;
+                        openPrice8am = cached?.openPrice || 0;
                     }
                 }
                 item.volume8am = vol8am;
+                if (openPrice8am > 0 && item.price > 0) {
+                    item.change8am = ((item.price - openPrice8am) / openPrice8am) * 100;
+                } else {
+                    item.change8am = undefined;
+                }
             }));
 
             const minVol8am = configRef.current.minVolume8am ?? 0;
             const maxVol8am = configRef.current.maxVolume8am ?? 0;
+            const minChange = configRef.current.minChange || 0;
+            const source = configRef.current.source || 'BOTH';
+
             baseFiltered = baseFiltered.filter(item => {
                 const rawVol8am = item.volume8am;
                 const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : item.volume24h;
                 if (vol8am < minVol8am) return false;
                 if (maxVol8am > 0 && vol8am > maxVol8am) return false;
+
+                const effectiveChange = item.change8am !== undefined ? item.change8am : (item.change || 0);
+                if (source === 'GAINERS' && effectiveChange <= 0) return false;
+                if (source === 'LOSERS' && effectiveChange >= 0) return false;
+                if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
+
                 return true;
             });
         }
@@ -1149,7 +1220,7 @@ export const useScannerLogic = (
                             }
                         }
                     } catch (err) {
-                        console.error(`[StartTrend] Error checking ${symbol}:`, err);
+                        console.warn(`[StartTrend] Warning checking ${symbol}:`, err);
                     }
                 }
 

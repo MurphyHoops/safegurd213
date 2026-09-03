@@ -92,6 +92,7 @@ export interface Position {
     isAmputatedToZero?: boolean;
     isBeingClosed?: boolean;
     lastAmputationTime?: number;
+    lastRefillTime?: number;
     leverage?: number; // Added: Locked leverage for position and matching hedge
     cost_usdt?: number;
     refillCount?: number; // 震荡磨损补仓累计次数

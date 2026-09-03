@@ -61,6 +61,10 @@ export class MarketSimulator {
     // 🔒 [平仓在途缓冲与自愈重试池]
     private inFlightClosingPool: Map<string, { symbol: string; side: PositionSide; amount: number; requestTime: number; retryCount: number }> = new Map();
 
+    // 🔒 [防连续重复补仓三层硬锁 - 内核级在途锁与持久冷却时间戳]
+    public inFlightRefillPool: Set<string> = new Set();
+    public lastRefillTimestampMap: Map<string, number> = new Map();
+
     public registerInFlightClosing(symbol: string, side: PositionSide, amount: number) {
         const cleanSymbol = normalizeSymbol(symbol);
         const key = `${cleanSymbol}_${side}`;
@@ -325,7 +329,7 @@ export class MarketSimulator {
             // 🔒 只有在无活动持仓或确实全额清仓时才使用 isRecentlyClosed 隔离；若实盘持仓仍然有效存在，必须正常匹配以保全救世策略元数据与砍仓锁
             const matchingOldPositions = hasPendingOpen
                 ? []
-                : oldPositions.filter(p => normalizeSymbol(p.symbol) === symbolKey && p.side === newPos.side && (p.amount > 0 || p.isAmputated || (p.amputatedAmount || 0) > 0 || p.isHedged || !!p.mainPositionId) && (!newPos.entryId || p.entryId === newPos.entryId));
+                : oldPositions.filter(p => normalizeSymbol(p.symbol) === symbolKey && p.side === newPos.side && (p.amount > 0 || p.isAmputated || (p.amputatedAmount || 0) > 0 || p.isHedged || !!p.mainPositionId));
             
             if (matchingOldPositions.length > 0) {
                 // 🔒 [单币同向绝对聚合] 币安每个交易对同方向为唯一净持仓，绝对保证一个 newPos 对应一条合并后的 position，严禁拆分成多条！
@@ -337,7 +341,7 @@ export class MarketSimulator {
                 const symbolAllOld = oldPositions.filter(p => normalizeSymbol(p.symbol) === cleanSym);
                 
                 const isOldSymbolUnderActiveHedge = symbolAllOld.some(p => p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0)) ||
-                    symbolAllOld.length > 1 || !!newPos.isHedged || !!newPos.mainPositionId || this.amputatedSymbolsInCycle.has(cleanSym);
+                    !!newPos.isHedged || !!newPos.mainPositionId || this.amputatedSymbolsInCycle.has(cleanSym);
                 
                 const maxSymbolAmpLoss = isOldSymbolUnderActiveHedge
                     ? Math.max(0, ...symbolAllOld.map(p => p.cumulativeAmputationLoss || 0), ...matchingOldPositions.map(p => p.cumulativeAmputationLoss || 0))
@@ -352,8 +356,30 @@ export class MarketSimulator {
                 // 🔒 精确识别被砍仓位本方：只有该方向自身处于砍仓标记或有砍仓扣减数量，且两边不处于等量对冲时才保持 isAmputatedState
                 const opposingInOld = symbolAllOld.find(p => p.side !== newPos.side);
                 const isOpposingEqual = opposingInOld && Math.abs(newPos.amount - opposingInOld.amount) <= Math.max(newPos.amount, opposingInOld.amount) * 0.05;
-                const mySideAmpAmount = matchingOldPositions.find(p => (p.amputatedAmount || 0) > 0)?.amputatedAmount || (primaryOldPos.isAmputated ? (primaryOldPos.amputatedAmount || 0) : 0);
-                const isAmputatedState = !isOpposingEqual && isOldSymbolUnderActiveHedge && (primaryOldPos.isAmputated || mySideAmpAmount > 0);
+                let mySideAmpAmount = matchingOldPositions.find(p => (p.amputatedAmount || 0) > 0)?.amputatedAmount || (primaryOldPos.isAmputated ? (primaryOldPos.amputatedAmount || 0) : 0);
+                let isAmputatedState = !isOpposingEqual && isOldSymbolUnderActiveHedge && (primaryOldPos.isAmputated || mySideAmpAmount > 0);
+
+                // 🔒 [自愈兜底恢复]：如果原标记因网络重连或重启刷新丢失，但流水中有未补仓的砍仓记录，且仓位显著小于对手单，则自动恢复被砍状态
+                if (!isAmputatedState && opposingInOld && (opposingInOld.amount - newPos.amount) > (opposingInOld.amount * 0.2)) {
+                    const latestCutLog = this.tradeLogs.find(l => 
+                        normalizeSymbol(l.symbol) === cleanSym && 
+                        l.direction === newPos.side && 
+                        (l.exit_reason?.includes('砍仓') || l.exit_reason?.includes('断臂'))
+                    );
+                    const latestRefillLog = this.tradeLogs.find(l => 
+                        normalizeSymbol(l.symbol) === cleanSym && 
+                        l.direction === newPos.side && 
+                        l.exit_reason?.includes('补仓')
+                    );
+                    if (latestCutLog && (!latestRefillLog || (latestCutLog.exit_timestamp || 0) > (latestRefillLog.entry_timestamp || 0))) {
+                        const recoveredCutQty = latestCutLog.current_amount || (opposingInOld.amount - newPos.amount);
+                        if (recoveredCutQty > 0) {
+                            isAmputatedState = true;
+                            mySideAmpAmount = recoveredCutQty;
+                        }
+                    }
+                }
+
                 const finalAmpAmount = isAmputatedState ? (mySideAmpAmount || (primaryOldPos.amputatedAmount || 0)) : 0;
                 
                 if (isAmputatedState) {
@@ -378,6 +404,9 @@ export class MarketSimulator {
                     hedgeOrderInFlightTime: primaryOldPos.hedgeOrderInFlightTime,
                     isReopened: primaryOldPos.isReopened,
                     reopenCount: primaryOldPos.reopenCount,
+                    refillCount: Math.max(primaryOldPos.refillCount || 0, ...matchingOldPositions.map(p => p.refillCount || 0)),
+                    lastRefillTime: Math.max(primaryOldPos.lastRefillTime || 0, this.lastRefillTimestampMap.get(`${cleanSym}_${newPos.side}`) || 0),
+                    isOscillationLocked: primaryOldPos.isOscillationLocked || matchingOldPositions.some(p => p.isOscillationLocked),
                     triggerReason: primaryOldPos.triggerReason,
                     correlationId: primaryOldPos.correlationId,
                     hedgeRetries: primaryOldPos.hedgeRetries,
@@ -423,17 +452,19 @@ export class MarketSimulator {
             }
         }
 
-        // 1.8 Preserve any active hedged / amputated positions from oldPositions that might have been omitted in newPositions
-        for (const oldPos of oldPositions) {
-            const cleanSym = normalizeSymbol(oldPos.symbol);
-            const lookupKey = `${cleanSym}_${oldPos.side}`;
-            const isUnderActiveHedgeOrAmp = oldPos.isAmputated || (oldPos.amputatedAmount || 0) > 0 || oldPos.isHedged || !!oldPos.mainPositionId;
-            const alreadyUpdated = updatedPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === oldPos.side);
-            const isRecentlyClosed = this.recentlyClosedKeys.has(lookupKey);
+        // 1.8 In simulation mode (!isReal), preserve simulated active positions
+        if (!isReal) {
+            for (const oldPos of oldPositions) {
+                const cleanSym = normalizeSymbol(oldPos.symbol);
+                const lookupKey = `${cleanSym}_${oldPos.side}`;
+                const isUnderActiveHedgeOrAmp = oldPos.isAmputated || (oldPos.amputatedAmount || 0) > 0 || oldPos.isHedged || !!oldPos.mainPositionId;
+                const alreadyUpdated = updatedPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === oldPos.side);
+                const isRecentlyClosed = this.recentlyClosedKeys.has(lookupKey);
 
-            if (isUnderActiveHedgeOrAmp && !alreadyUpdated && !isRecentlyClosed) {
-                console.log(`[MarketSimulator] Preserving hedged/amputated position ${oldPos.symbol} (${oldPos.side}) in current positions list during anti-explosion hedging period.`);
-                updatedPositions.push(oldPos);
+                if (isUnderActiveHedgeOrAmp && !alreadyUpdated && !isRecentlyClosed) {
+                    console.log(`[MarketSimulator] Preserving simulated hedged/amputated position ${oldPos.symbol} (${oldPos.side})`);
+                    updatedPositions.push(oldPos);
+                }
             }
         }
 
@@ -489,46 +520,9 @@ export class MarketSimulator {
                         }
                     }
 
-                    // D. Fallback: If we STILL cannot determine but we have two opposing positions,
-                    // we MUST pair them up anyway to prevent double-hedging, which causes severe bugs.
-                    if (!main || !hedge) {
-                        // Compare entry times (older is main, newer is hedge)
-                        const timeA = posA.entryTime || 0;
-                        const timeB = posB.entryTime || 0;
-                        if (Math.abs(timeA - timeB) > 500) {
-                            if (timeA < timeB) {
-                                main = posA;
-                                hedge = posB;
-                            } else {
-                                main = posB;
-                                hedge = posA;
-                            }
-                        } else {
-                            // If entry times are too close (e.g. both created at same sync tick),
-                            // make the larger amount the main position.
-                            const amtA = posA.amount || 0;
-                            const amtB = posB.amount || 0;
-                            if (amtA !== amtB) {
-                                if (amtA > amtB) {
-                                    main = posA;
-                                    hedge = posB;
-                                } else {
-                                    main = posB;
-                                    hedge = posA;
-                                }
-                            } else {
-                                // Default fallback if amounts are also equal: LONG is main, SHORT is hedge
-                                if (posA.side === PositionSide.LONG) {
-                                    main = posA;
-                                    hedge = posB;
-                                } else {
-                                    main = posB;
-                                    hedge = posA;
-                                }
-                            }
-                        }
-                    }
-
+                    // 🔒 [严格区分] 严禁盲目使用时间或数量盲目将非防爆对冲引发的双向仓位强行配对为对冲仓！
+                    // 只有当 A、B、C 明确识别出由防爆对冲触发的主对冲关系时，才进行配对与标记。
+                    // 否则保持为独立的“标准风控”仓位，各自按止盈止损规则独立运行。
                     if (main && hedge) {
                         main.isHedged = true;
                         main.hedgeSignalTriggered = true;
@@ -772,6 +766,26 @@ export class MarketSimulator {
         }
 
         this.positions = finalPositions;
+        
+        // 🔒 [断网重连与仓位同步即时救世策略触发]
+        // 当币安仓位同步/断网恢复完成后，立即对具有有效标记价/入场价的持仓执行一次盈亏核算与策略扫描，
+        // 确保达到断臂求生/救世策略阈值的仓位无需等待下一次 WebSocket 推送即刻被触发！
+        for (const p of this.positions) {
+            const symKey = normalizeSymbol(p.symbol);
+            if (!this.symbolsWithFreshPrice.has(symKey) && p.markPrice > 0 && p.entryPrice > 0) {
+                this.symbolsWithFreshPrice.add(symKey);
+            }
+            if (p.markPrice > 0 && p.entryPrice > 0) {
+                const isLong = p.side === PositionSide.LONG;
+                p.unrealizedPnLPercentage = isLong 
+                    ? ((p.markPrice - p.entryPrice) / p.entryPrice) * 100 
+                    : ((p.entryPrice - p.markPrice) / p.entryPrice) * 100;
+                p.unrealizedPnL = isLong
+                    ? (p.markPrice - p.entryPrice) * p.amount
+                    : (p.entryPrice - p.markPrice) * p.amount;
+            }
+        }
+        this.checkStrategies();
         this.emitUpdate(true);
     }
 
@@ -1455,11 +1469,11 @@ export class MarketSimulator {
     public amputate(position: Position, ratio: number, reason: string) {
         const cleanSym = normalizeSymbol(position.symbol);
 
-        // 🔒 [断臂求生防并发与在途锁] 仅当该仓位确实处于被砍且数量明显少于对手单且未补仓状态时，才进行防重复砍仓拦截
+        // 🔒 [断臂求生双边等额绝对硬锁] 
+        // 铁律：必须处于双边等额对冲状态才允许发起砍仓！只要两边数量不对等（说明前次砍仓未补回），严禁连续砍仓！
         const opposingPos = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSym && p.side !== position.side);
-        const isGenuineCurrentlyCut = position.isAmputated && (position.amputatedAmount || 0) > 0 && opposingPos && position.amount < (opposingPos.amount * 0.95);
-        if (isGenuineCurrentlyCut) {
-            console.warn(`[Amputation Lock] 🛡️ 拦截重复砍仓: ${position.symbol} ${position.side} 当前处于砍仓未补仓状态，需回本补仓后方可进行下一轮砍仓！`);
+        if (!opposingPos || Math.abs(position.amount - opposingPos.amount) > Math.max(position.amount, opposingPos.amount) * 0.05) {
+            console.warn(`[Amputation Lock] 🛡️ 拦截二次砍仓: ${position.symbol} ${position.side} 与对手仓位数量不对等 (当前:${position.amount.toFixed(4)} vs 对手:${opposingPos?.amount.toFixed(4) || 0})，必须等回踩补仓恢复等额后方可再次砍仓！`);
             return;
         }
 
@@ -1479,12 +1493,23 @@ export class MarketSimulator {
             console.warn(`[Amputation Cooldown] 🛡️ 拦截重复砍仓触发: ${position.symbol} ${position.side} 处于8秒冷却中(上次砍仓: ${now - lastAmp}ms前)`);
             return;
         }
-        position.lastAmputationTime = now;
-        this.amputatedSymbolsInCycle.add(cleanSym);
 
         const cutAmount = position.amount * (ratio / 100);
+
+        if (this.settings?.system?.realTrading) {
+            // 🔒【实盘绝对零虚假铁律】在实盘模式下，严禁提前修改 position.isAmputated、amputatedAmount、amputationCount 等状态！
+            // 仅记录在途触发时间戳防止短时间重复提交，一切持仓扣减、标记与负债记录严格等待 handleRealAmputationSuccess 收到币安真实成功回执后执行！
+            position.lastAmputationTime = now;
+            if (this.onRealClose) {
+                this.onRealClose(position, reason, cutAmount, ratio);
+            }
+            return;
+        }
         
-        // 🔒 同步立即标记已砍仓与被砍数量，防止异步请求在途或行情跳动时重复提交砍仓信号
+        position.lastAmputationTime = now;
+        this.amputatedSymbolsInCycle.add(cleanSym);
+        
+        // 模拟模式下立即同步标记已砍仓与被砍数量
         position.isAmputated = true;
         position.isHedged = true;
         position.amputatedAmount = (position.amputatedAmount || 0) + cutAmount;
@@ -1492,13 +1517,6 @@ export class MarketSimulator {
         if (opposingPos) {
             opposingPos.amputationCount = position.amputationCount;
             opposingPos.isHedged = true;
-        }
-
-        if (this.settings?.system?.realTrading) {
-            if (this.onRealClose) {
-                this.onRealClose(position, reason, cutAmount, ratio);
-            }
-            return;
         }
         
         // 记录砍仓的实际盈亏
@@ -1682,31 +1700,81 @@ export class MarketSimulator {
             p.amount > 0
         );
 
-        // 🔒 [有效对冲绝对禁补铁律]：当原仓位与对冲仓位数量一样多时（处于有效等额对冲），绝对严禁补仓！
-        if (oppositePos && Math.abs(position.amount - oppositePos.amount) <= Math.max(position.amount, oppositePos.amount) * 0.01) {
+        const isRescueRefill = reason.includes('断臂') || reason.includes('求生');
+
+        // 🔒 [有效对冲绝对禁补铁律]：当原仓位与对冲仓位数量一样多时（处于有效等额对冲），非断臂救世补仓绝对严禁补仓！
+        if (oppositePos && !isRescueRefill && Math.abs(position.amount - oppositePos.amount) <= Math.max(position.amount, oppositePos.amount) * 0.05) {
             this.addLog('WARNING', `🛡️ [有效对冲禁补] ${position.symbol} 原仓位与对冲仓位数量一致(${position.amount.toFixed(4)})处于有效对冲状态，安全铁律拦截，绝对严禁补仓！`);
             return;
         }
 
-        const isRescueRefill = reason.includes('断臂') || reason.includes('求生');
         if (oppositePos && !isRescueRefill) {
             this.addLog('WARNING', `🛡️ [对冲补仓拦截] ${position.symbol} 处于双向持仓对冲状态，安全锁已激活，拒绝自动补仓！只有等断臂砍仓/平对冲之后才能补仓。`);
             return;
         }
 
-        if (!position.amputatedAmount || position.amputatedAmount <= 0) return;
-        
-        const refillAmount = position.amputatedAmount;
+        // 🔒 [精确补仓铁律] 严格读取该仓位被砍掉的实际数量，绝对严禁通过数量差推导虚假补仓
+        const refillAmount = position.amputatedAmount || 0;
+        if (refillAmount <= 0) {
+            return;
+        }
 
-        // 🔒 [只补一次防重锁] 立即清空被砍记录与待补仓数量，杜绝重复补仓
+        const cleanSym = normalizeSymbol(position.symbol);
+        const lockKey = `${cleanSym}_${position.side}`;
+
+        // 🔒 [震荡磨损保护熔断机制 Strategy 5] 熔断锁检测
+        const fuseEnabled = this.settings?.stopLoss?.fuseEnabled;
+        const maxRetries = this.settings?.stopLoss?.maxHedgeRetries || 3;
+        const currentRefillCount = position.refillCount || 0;
+        if (position.isOscillationLocked || (fuseEnabled && currentRefillCount >= maxRetries)) {
+            console.warn(`[Refill Locked] 🛡️ 拦截补仓: ${position.symbol} ${position.side} 已处于震荡磨损熔断锁定状态(补仓次数: ${currentRefillCount}/${maxRetries})`);
+            return;
+        }
+
+        // 🔒 [第一层：在途并发硬锁] 防止网络请求耗时期间行情毫秒级跳动造成瞬间几十次重复提交
+        if (this.inFlightRefillPool.has(lockKey)) {
+            console.warn(`[Refill In-Flight] 🛡️ 拦截重复补仓: ${position.symbol} ${position.side} 补仓正在在途处理中，严禁重复提交！`);
+            return;
+        }
+
+        // 🔒 [第一层：10秒硬冷却防抖锁] 读取独立时间戳字典，彻底杜绝对象刷新重置
+        const now = Date.now();
+        const lastRefill = Math.max(
+            position.lastRefillTime || 0,
+            this.lastRefillTimestampMap.get(lockKey) || 0
+        );
+        if (now - lastRefill < 10000) {
+            console.warn(`[Refill Cooldown] 🛡️ 拦截重复补仓触发: ${position.symbol} ${position.side} 处于10秒硬冷却中(上次补仓: ${now - lastRefill}ms前)`);
+            return;
+        }
+
+        if (this.settings?.system?.realTrading) {
+            // 🔒【实盘绝对零虚假铁律】在实盘模式下，严禁提前清空 position.isAmputated、amputatedAmount！
+            // 立即加上在途锁与持久时间戳，一切持仓增加、标记清空与流水记录严格等待 handleRealRefillSuccess 收到币安真实成功回执后执行！
+            this.inFlightRefillPool.add(lockKey);
+            this.lastRefillTimestampMap.set(lockKey, now);
+            position.lastRefillTime = now;
+
+            // 5秒安全超时防死锁（防止前端网络死锁或未正确返回回执）
+            setTimeout(() => {
+                this.inFlightRefillPool.delete(lockKey);
+            }, 6000);
+
+            if (this.onRealOpen) {
+                this.onRealOpen(position, refillAmount, reason);
+            }
+            return;
+        }
+
+        // 模拟模式下同步记录时间戳
+        this.lastRefillTimestampMap.set(lockKey, now);
+        position.lastRefillTime = now;
+
+        // 🔒 [只补一次防重锁] 仅在模拟模式下立即清空被砍记录与待补仓数量，杜绝重复补仓
         position.isAmputated = false;
         position.amputatedAmount = 0;
         this.amputatedSymbolsInCycle.delete(normalizeSymbol(position.symbol));
         delete (position as any)._slTriggered;
-        
-        if (this.settings?.system?.realTrading && this.onRealOpen) {
-            this.onRealOpen(position, refillAmount, reason);
-        }
         
         // Calculate new average entry price
         const currentTotalValue = position.amount * position.entryPrice;
@@ -1720,7 +1788,6 @@ export class MarketSimulator {
         const wasEverHedged = position.isHedged || (position.hedgeRetries || 0) > 0 || !!position.mainPositionId || (position.cumulativeHedgeLoss || 0) > 0 || (position.cumulativeHedgeProfit || 0) > 0;
 
         // 🔒 [回踩补仓恢复开仓价值]
-        const cleanSym = normalizeSymbol(position.symbol);
         const parentOpenLog = this.tradeLogs.find(l => (l.entry_id === position.entryId || (normalizeSymbol(l.symbol) === cleanSym && l.direction === position.side)) && l.status === 'OPEN');
         if (parentOpenLog) {
             parentOpenLog.cost_usdt = (parentOpenLog.cost_usdt || 0) + (refillAmount * position.entryPrice);
@@ -1729,6 +1796,31 @@ export class MarketSimulator {
 
         // Add sub-event to main log
         this.addTradeEvent(position, '防爆对冲补仓', position.markPrice, refillAmount, reason);
+
+        // 🔒 [实盘独立记录防爆对冲补仓流水铁律]
+        const refillCostUsdt = refillAmount * (position.markPrice || position.entryPrice);
+        const refillLogEntry: TradeLog = {
+            symbol: position.symbol,
+            entry_id: `${position.entryId || position.symbol}_refill_${now}`,
+            parent_entry_id: position.entryId,
+            status: 'OPEN',
+            is_hedge: true,
+            entry_timestamp: now,
+            direction: position.side,
+            cost_usdt: refillCostUsdt,
+            entry_price: position.markPrice || position.entryPrice,
+            current_amount: refillAmount,
+            timeframe: (position as any).timeframe,
+            exit_reason: `防爆对冲补仓 (${reason || '回踩补回'})`,
+            events: [{
+                timestamp: now,
+                action: '防爆对冲补仓',
+                price: position.markPrice || position.entryPrice,
+                amount: refillAmount,
+                reason: reason || '回踩补回'
+            }]
+        };
+        this.tradeLogs.unshift(refillLogEntry);
 
         // 重置砍仓记录，但保留历史亏损记录用于算总账
         position.isAmputated = false;
@@ -1746,8 +1838,6 @@ export class MarketSimulator {
         }
 
         // 🔒 检查震荡磨损熔断机制
-        const fuseEnabled = this.settings?.stopLoss?.fuseEnabled;
-        const maxRetries = this.settings?.stopLoss?.maxHedgeRetries || 3;
         if (fuseEnabled && nextRefillCount >= maxRetries) {
             position.isOscillationLocked = true;
             if (opposingPos) opposingPos.isOscillationLocked = true;
@@ -1791,12 +1881,18 @@ export class MarketSimulator {
      */
     public handleRealRefillSuccess(symbol: string, side: PositionSide, refillAmount: number, reason: string) {
         const cleanSym = normalizeSymbol(symbol);
+        const lockKey = `${cleanSym}_${side}`;
+        this.inFlightRefillPool.delete(lockKey);
+        const successNow = Date.now();
+        this.lastRefillTimestampMap.set(lockKey, successNow);
+
         const position = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSym && p.side === side);
         const opposingPos = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSym && p.side !== side);
         
         const nextRefillCount = Math.max(position?.refillCount || 0, opposingPos?.refillCount || 0) + 1;
         
         if (position) {
+            position.lastRefillTime = successNow;
             position.isAmputated = false;
             position.amputatedAmount = 0;
             position.refillCount = nextRefillCount;
@@ -1809,6 +1905,33 @@ export class MarketSimulator {
                 parentOpenLog.cost_usdt = (parentOpenLog.cost_usdt || 0) + (refillAmount * position.entryPrice);
                 parentOpenLog.current_amount = position.amount;
             }
+
+            // 🔒 [实盘独立记录防爆对冲补仓流水铁律]
+            const now = Date.now();
+            const refillCostUsdt = refillAmount * (position.markPrice || position.entryPrice);
+            const refillLogEntry: TradeLog = {
+                symbol: symbol,
+                entry_id: `${position.entryId || symbol}_refill_${now}`,
+                parent_entry_id: position.entryId,
+                status: 'OPEN',
+                is_hedge: true,
+                entry_timestamp: now,
+                direction: side,
+                cost_usdt: refillCostUsdt,
+                entry_price: position.markPrice || position.entryPrice,
+                current_amount: refillAmount,
+                timeframe: (position as any).timeframe,
+                exit_reason: `防爆对冲补仓 (${reason || '实盘回踩补回'})`,
+                events: [{
+                    timestamp: now,
+                    action: '防爆对冲补仓',
+                    price: position.markPrice || position.entryPrice,
+                    amount: refillAmount,
+                    reason: reason || '实盘回踩补回'
+                }]
+            };
+            this.tradeLogs.unshift(refillLogEntry);
+            this.addTradeEvent(position, '防爆对冲补仓', position.markPrice || position.entryPrice, refillAmount, reason);
         }
         if (opposingPos) {
             opposingPos.refillCount = nextRefillCount;
@@ -2249,7 +2372,7 @@ export class MarketSimulator {
                         // 🔒 [官方账单负债校准] 严格差额校准，绝不全额重复累加
                         if (realizedPnl < 0) {
                             const activePositions = this.positions.filter(p => normalizeSymbol(p.symbol) === normSym);
-                            const isSymbolUnderActiveHedge = activePositions.some(p => p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0)) || activePositions.length > 1;
+                            const isSymbolUnderActiveHedge = activePositions.some(p => p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0));
                             const hedgeStartTime = Math.min(...activePositions.map(p => p.lastAmputationTime || p.entryTime || 0));
                             
                             if (isSymbolUnderActiveHedge && tradeTime >= hedgeStartTime - 30000) {
@@ -2302,7 +2425,7 @@ export class MarketSimulator {
                         if (realizedPnl < 0 && !this.processedExternalPnlOrders.has(orderId)) {
                             this.processedExternalPnlOrders.add(orderId);
                             const activePositions = this.positions.filter(p => normalizeSymbol(p.symbol) === normSym);
-                            const isSymbolUnderActiveHedge = activePositions.some(p => p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0)) || activePositions.length > 1;
+                            const isSymbolUnderActiveHedge = activePositions.some(p => p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0));
                             const hedgeStartTime = Math.min(...activePositions.map(p => p.lastAmputationTime || p.entryTime || 0));
 
                             if (isSymbolUnderActiveHedge && tradeTime >= hedgeStartTime - 30000) {
@@ -2354,22 +2477,23 @@ export class MarketSimulator {
             } else {
                 // Binance trade execution for opening position (realizedPnl === 0)
                 const inferredDirection = (positionSide === "LONG" || (positionSide === "BOTH" && side === "BUY")) ? PositionSide.LONG : PositionSide.SHORT;
+                
+                // 🔒【开仓唯一性铁律】检查是否已有该开仓订单/该活跃持仓的 OPEN 日志，杜绝任何同向二次重复开仓日志
+                const activePos = this.positions.find(p => 
+                    normalizeSymbol(p.symbol) === normSym && 
+                    p.side === inferredDirection && 
+                    (p.amount || 0) > 0.0001
+                );
+
                 const existingOpenLog = this.tradeLogs.find(l => 
-                    (l.binance_order_id && l.binance_order_id === orderId) ||
-                    (normalizeSymbol(l.symbol) === normSym && l.status === 'OPEN' && l.direction === inferredDirection && Math.abs((l.entry_timestamp || 0) - tradeTime) < 60000)
+                    (orderId && l.binance_order_id && String(l.binance_order_id) === orderId) ||
+                    (activePos && l.entry_id === activePos.entryId && l.status === 'OPEN') ||
+                    (normalizeSymbol(l.symbol) === normSym && l.status === 'OPEN' && l.direction === inferredDirection)
                 );
 
                 if (!existingOpenLog) {
                     // 🔒【严禁为历史已完结开仓生成孤立 OPEN 日志】
                     // 必须先检查当前真实持仓中是否存在对应活跃仓位且时间吻合！
-                    const activePos = this.positions.find(p => 
-                        normalizeSymbol(p.symbol) === normSym && 
-                        p.side === inferredDirection && 
-                        (p.amount || 0) > 0.0001 &&
-                        Math.abs((p.entryTime || 0) - tradeTime) < 300000
-                    );
-
-                    // 如果当前根本没有对应活跃持仓，说明这是过去早已完结的开仓流水，绝对严禁生成 OPEN 日志！
                     if (!activePos) {
                         continue;
                     }
@@ -2381,7 +2505,7 @@ export class MarketSimulator {
                     this.tradeLogs.unshift({
                         symbol: rawSymbol.toUpperCase(),
                         entry_id: activePos.entryId || `binance_open_${orderId}_${tradeTime}`,
-                        binance_order_id: orderId,
+                        binance_order_id: orderId || undefined,
                         status: 'OPEN',
                         is_hedge: isHedge,
                         main_entry_id: isHedge ? mainPos?.entryId : undefined,
@@ -2399,10 +2523,12 @@ export class MarketSimulator {
                             reason: isHedge ? '实盘防爆对冲开仓成交' : '实盘交易所成交反馈'
                         }]
                     });
+                    if (orderId) this.knownOrderIds.add(orderId);
                     hasNewUpdates = true;
                 } else {
                     if (!existingOpenLog.binance_order_id && orderId) {
                         existingOpenLog.binance_order_id = orderId;
+                        this.knownOrderIds.add(orderId);
                         hasNewUpdates = true;
                     }
                     const opposingPos = this.positions.find(p => normalizeSymbol(p.symbol) === normSym && p.side !== inferredDirection);
@@ -2416,13 +2542,26 @@ export class MarketSimulator {
         }
 
         if (hasNewUpdates) {
-            // Deduplicate logs
+            // Deduplicate logs: ensure strictly at most 1 OPEN log per active position/entry_id
             const seenKeys = new Set<string>();
+            const seenOpenEntries = new Set<string>();
+
             this.tradeLogs = this.tradeLogs.filter(l => {
                 if (!l) return false;
                 if (this.clearedTradeLogsTimestamp && (l.exit_timestamp || l.entry_timestamp || 0) <= this.clearedTradeLogsTimestamp) {
                     return false;
                 }
+
+                if (l.status === 'OPEN') {
+                    const norm = normalizeSymbol(l.symbol);
+                    const openKey = l.entry_id ? `OPEN_ID_${l.entry_id}` : `OPEN_SYM_${norm}_${l.direction}`;
+                    if (seenOpenEntries.has(openKey)) {
+                        return false;
+                    }
+                    seenOpenEntries.add(openKey);
+                    return true;
+                }
+
                 const key = `${l.status}_${l.binance_order_id || l.entry_id || ''}_${l.exit_timestamp || l.entry_timestamp || 0}`;
                 if (seenKeys.has(key)) return false;
                 seenKeys.add(key);
@@ -2547,6 +2686,37 @@ export class MarketSimulator {
 
             if (orderId) this.knownOrderIds.add(orderId);
 
+            // ⚡ [即时持仓同步] 收到币安成交回报后，毫秒级直接从持仓列表扣减或彻底移除已平仓位！
+            const lookupKey = `${normSym}_${inferredDirection}`;
+            this.recentlyClosedKeys.set(lookupKey, tradeTime);
+            this.inFlightClosingPool.delete(lookupKey);
+            this.inFlightClosingPool.delete(normSym);
+
+            const posIdx = this.positions.findIndex(p => 
+                normalizeSymbol(p.symbol) === normSym && 
+                (p.side === inferredDirection || positionSide === "BOTH")
+            );
+
+            if (posIdx >= 0) {
+                const targetPos = this.positions[posIdx];
+                const remainingAmount = targetPos.amount - qty;
+                if (remainingAmount <= 0.0001) {
+                    console.log(`⚡ [Instant Position Removal] Completely removed closed position ${rawSymbol} (${inferredDirection}) via WebSocket fill`);
+                    this.positions.splice(posIdx, 1);
+                } else {
+                    console.log(`⚡ [Instant Position Deduct] Deducted ${qty} from ${rawSymbol} (${inferredDirection}), remaining: ${remainingAmount}`);
+                    this.positions[posIdx] = {
+                        ...targetPos,
+                        amount: remainingAmount
+                    };
+                }
+            }
+
+            // 检查该币种是否已无任何持仓，清理对冲标记
+            if (!this.positions.some(p => normalizeSymbol(p.symbol) === normSym && p.amount > 0.0001)) {
+                this.amputatedSymbolsInCycle.delete(normSym);
+            }
+
             this.addLog(
                 realizedPnl >= 0 ? 'SUCCESS' : 'WARNING',
                 `⚡ [币安即时成交回报] 收到平仓成交反馈: ${rawSymbol} ${inferredDirection} | 成交价: ${avgPrice.toFixed(4)} | 数量: ${qty} | 盈亏: ${realizedPnl >= 0 ? '+' : ''}${realizedPnl.toFixed(4)} USDT`
@@ -2557,11 +2727,19 @@ export class MarketSimulator {
             // 开仓成交回报
             const inferredDirection = (positionSide === "SHORT" || (positionSide === "BOTH" && side === "SELL")) ? PositionSide.SHORT : PositionSide.LONG;
             
-            const alreadyHasOpen = this.tradeLogs.some(l => 
+            const alreadyHasOpen = this.tradeLogs.find(l => 
                 ((orderId && l.binance_order_id && String(l.binance_order_id) === orderId) || 
-                 (normalizeSymbol(l.symbol) === normSym && l.direction === inferredDirection && Math.abs((l.entry_timestamp || 0) - tradeTime) < 3000)) &&
+                 (normalizeSymbol(l.symbol) === normSym && l.direction === inferredDirection)) &&
                 l.status === 'OPEN'
             );
+
+            if (alreadyHasOpen) {
+                if (orderId && !alreadyHasOpen.binance_order_id) {
+                    alreadyHasOpen.binance_order_id = orderId;
+                    this.knownOrderIds.add(orderId);
+                }
+                return;
+            }
 
             if (!alreadyHasOpen) {
                 const opposingPos = this.positions.find(p => normalizeSymbol(p.symbol) === normSym && p.side !== inferredDirection);
@@ -2593,6 +2771,86 @@ export class MarketSimulator {
                 if (orderId) this.knownOrderIds.add(orderId);
 
                 this.addLog('SUCCESS', `⚡ [币安即时成交回报] 收到新开仓成交反馈: ${rawSymbol} ${inferredDirection} | 开仓价: ${avgPrice.toFixed(4)} | 数量: ${qty}`);
+                this.emitUpdate(true);
+            }
+        }
+    }
+
+    /**
+     * ⚡ 币安 User Data Stream WebSocket 即时账户与持仓变动 (ACCOUNT_UPDATE)
+     * 毫秒级同步手机 App 或交易所端一键全平、保证金、钱包余额与持仓量变化
+     */
+    public handleInstantAccountUpdate(accData: {
+        m?: string; // event reason type
+        B?: Array<{ a: string; wb: string; cw: string; bc?: string }>; // Balances
+        P?: Array<{ s: string; pa: string; ep: string; cr: string; up: string; mt: string; iw: string; ps: string; ma?: string }>; // Positions
+    }) {
+        if (!accData) return;
+
+        // 1. 同步钱包与可用保证金余额
+        if (accData.B && Array.isArray(accData.B)) {
+            const usdtBal = accData.B.find(b => b.a === 'USDT');
+            if (usdtBal) {
+                const wb = parseFloat(usdtBal.wb || "0");
+                const cw = parseFloat(usdtBal.cw || "0");
+                const activeBal = cw > 0 ? cw : wb;
+                if (activeBal > 0) {
+                    this.updateRealBalance(activeBal);
+                }
+            }
+        }
+
+        // 2. 即时更新或移除变动持仓 (特别是手机端一键平仓 pa === "0")
+        if (accData.P && Array.isArray(accData.P)) {
+            let positionsChanged = false;
+            for (const pos of accData.P) {
+                const normSym = normalizeSymbol(pos.s);
+                const posAmount = parseFloat(pos.pa || "0");
+                const posSideStr = pos.ps || "BOTH";
+                let inferredSide = posSideStr === "LONG" ? PositionSide.LONG : (posSideStr === "SHORT" ? PositionSide.SHORT : undefined);
+                if (!inferredSide) {
+                    inferredSide = posAmount > 0 ? PositionSide.LONG : (posAmount < 0 ? PositionSide.SHORT : undefined);
+                }
+
+                if (Math.abs(posAmount) <= 0.00001) {
+                    // 交易所端已彻底清仓该方向持仓 (如手机 App 一键全平)
+                    const beforeLen = this.positions.length;
+                    this.positions = this.positions.filter(p => {
+                        if (normalizeSymbol(p.symbol) !== normSym) return true;
+                        if (inferredSide && p.side !== inferredSide) return true;
+                        return false;
+                    });
+                    if (this.positions.length !== beforeLen) {
+                        positionsChanged = true;
+                        if (inferredSide) {
+                            this.recentlyClosedKeys.set(`${normSym}_${inferredSide}`, Date.now());
+                        }
+                        console.log(`⚡ [ACCOUNT_UPDATE] 立即移除已全平仓位: ${pos.s} ${inferredSide || ''}`);
+                    }
+                    // 检查该币种是否已无任何持仓
+                    if (!this.positions.some(p => normalizeSymbol(p.symbol) === normSym)) {
+                        this.amputatedSymbolsInCycle.delete(normSym);
+                    }
+                } else if (inferredSide) {
+                    // 持仓量发生变化 (部分平仓或加仓)
+                    const existingIdx = this.positions.findIndex(p => normalizeSymbol(p.symbol) === normSym && p.side === inferredSide);
+                    const ep = parseFloat(pos.ep || "0");
+                    const up = parseFloat(pos.up || "0");
+                    const absQty = Math.abs(posAmount);
+
+                    if (existingIdx >= 0) {
+                        this.positions[existingIdx] = {
+                            ...this.positions[existingIdx],
+                            amount: absQty,
+                            entryPrice: ep > 0 ? ep : this.positions[existingIdx].entryPrice,
+                            unrealizedPnL: up
+                        };
+                        positionsChanged = true;
+                    }
+                }
+            }
+
+            if (positionsChanged) {
                 this.emitUpdate(true);
             }
         }
@@ -2964,7 +3222,8 @@ export class MarketSimulator {
             const symbolKey = normalizeSymbol(position.symbol);
             
             // CRITICAL: Skip strategy checking if we don't have fresh price for this specific symbol yet
-            if (!this.symbolsWithFreshPrice.has(symbolKey)) {
+            const hasPrice = this.symbolsWithFreshPrice.has(symbolKey) || (position.markPrice > 0 && position.entryPrice > 0);
+            if (!hasPrice) {
                 continue;
             }
             
@@ -3339,7 +3598,8 @@ export class MarketSimulator {
             const symbolKey = normalizeSymbol(position.symbol);
 
             // CRITICAL: Skip rescue if no fresh price yet
-            if (!this.symbolsWithFreshPrice.has(symbolKey)) {
+            const hasPrice = this.symbolsWithFreshPrice.has(symbolKey) || (position.markPrice > 0 && position.entryPrice > 0);
+            if (!hasPrice) {
                 continue;
             }
 

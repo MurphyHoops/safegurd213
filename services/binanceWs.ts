@@ -35,7 +35,8 @@ function connectDedicatedPositionWs(cleanSym) {
     if (!cleanSym || positionDirectWsMap.has(cleanSym)) return;
     try {
         const binanceSym = cleanSym.toLowerCase() + 'usdt';
-        const url = 'wss://fstream.binance.com/ws/' + binanceSym + '@bookTicker';
+        // Stream bookTicker + aggTrade for ultra-high frequency updates
+        const url = 'wss://fstream.binance.com/stream?streams=' + binanceSym + '@bookTicker/' + binanceSym + '@aggTrade';
         const dedicatedWs = new WebSocket(url);
         
         dedicatedWs.onopen = () => {
@@ -44,16 +45,22 @@ function connectDedicatedPositionWs(cleanSym) {
         
         dedicatedWs.onmessage = (event) => {
             try {
-                const item = JSON.parse(event.data);
+                const json = JSON.parse(event.data);
+                const item = json.data || json;
                 if (!item) return;
-                const b = parseFloat(item.b);
-                const a = parseFloat(item.a);
+                
                 let priceVal = null;
-                if (!isNaN(b) && !isNaN(a) && b > 0 && a > 0) {
-                    priceVal = (b + a) / 2;
-                } else if (item.c || item.p) {
-                    priceVal = parseFloat(item.c || item.p);
+                if (item.b !== undefined && item.a !== undefined) {
+                    const b = parseFloat(item.b);
+                    const a = parseFloat(item.a);
+                    if (!isNaN(b) && !isNaN(a) && b > 0 && a > 0) {
+                        priceVal = (b + a) / 2;
+                    }
                 }
+                if (priceVal === null && (item.p !== undefined || item.c !== undefined)) {
+                    priceVal = parseFloat(item.p || item.c);
+                }
+                
                 if (priceVal !== null && !isNaN(priceVal) && priceVal > 0) {
                     const update = {};
                     update[cleanSym] = priceVal;
@@ -129,6 +136,10 @@ function connect() {
 
         ws.onmessage = (event) => {
             lastMessageTime = Date.now();
+            if (!isConnected) {
+                isConnected = true;
+                postMessage({ type: 'status', isConnected: true, lastMessageTime });
+            }
             try {
                 const json = JSON.parse(event.data);
                 const data = json.data || json;
@@ -200,14 +211,14 @@ function scheduleReconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => {
         connect();
-    }, 1500);
+    }, 2000);
 }
 
 function startWatchdog() {
     watchdogTimer = setInterval(() => {
         const now = Date.now();
-        // Lowered from 12000 to 6000 for faster detection & millisecond responsiveness
-        if (now - lastMessageTime > 6000) {
+        // 10s silent watchdog to prevent false positives while remaining responsive
+        if (now - lastMessageTime > 10000) {
             if (ws) {
                 ws.onclose = null;
                 ws.onerror = null;
@@ -216,9 +227,10 @@ function startWatchdog() {
             }
             isConnected = false;
             postMessage({ type: 'status', isConnected: false, lastMessageTime: now });
+            rotateUrl();
             scheduleReconnect();
         }
-    }, 1000);
+    }, 1500);
 }
 
 self.onmessage = (e) => {
@@ -257,21 +269,17 @@ export class BinanceWebSocket {
     private isIntentionalClose = false;
     private urls = [
         'wss://fstream.binance.com/ws/!bookTicker',       
-        'wss://fstream.binance.me/ws/!bookTicker',        
+        'wss://fstream.binance.com/ws/!miniTicker@arr',
         'wss://fstream.binance.com/ws/!ticker@arr',
-        'wss://fstream.binance.me/ws/!ticker@arr',
         'wss://fstream.binance.com/ws/!markPrice@arr@1s', 
-        'wss://fstream.binance.me/ws/!markPrice@arr@1s',  
-        'wss://stream.binance.com:9443/ws/!miniTicker@arr',
-        'wss://stream.binance.me:9443/ws/!miniTicker@arr',
-        'wss://stream.binance.com:443/ws/!ticker@arr',
-        'wss://nbstream.binance.com/lapi/v1/stream?streams=!ticker@arr'
+        'wss://stream.binance.com:443/ws/!miniTicker@arr'
     ];
     private currentUrlIndex = 0;
     public lastMessageTime = Date.now();
     private isConnected = false;
     private consecutiveFailures = 0;
     private fallbackTimer: any = null;
+    private statusCheckTimer: any = null;
     private lastRestFetchTime = 0;
 
     private getLocalWsUrl(): string | null {
@@ -294,6 +302,11 @@ export class BinanceWebSocket {
         this.initWorker();
         this.setupEventListeners();
         this.startFallbackPoller();
+
+        // Broadcast real-time network health every 1 second
+        this.statusCheckTimer = setInterval(() => {
+            this.notifyStatus();
+        }, 1000);
     }
 
     private initWorker() {
@@ -310,6 +323,10 @@ export class BinanceWebSocket {
                 if (type === 'prices') {
                     this.lastMessageTime = Date.now();
                     this.consecutiveFailures = 0;
+                    if (!this.isConnected) {
+                        this.isConnected = true;
+                        this.notifyStatus();
+                    }
                     
                     // Directly broadcast prices to DOM Bypass Registry first
                     priceRegistry.updatePrices(prices);
@@ -444,6 +461,7 @@ export class BinanceWebSocket {
         
         this.isConnected = false;
         this.notifyStatus();
+        this.fetchRestPrices();
     }
 
     public syncActivePositions(symbols: string[]) {

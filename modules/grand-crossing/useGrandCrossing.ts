@@ -114,13 +114,18 @@ export const useGrandCrossing = (
     const now = Date.now();
     if (tf === '15s' || tf === '30s') {
       const targetMin = tf === '15s' ? 0.25 : 0.5;
+      const subBarsPer1m = tf === '15s' ? 4 : 2;
+      const intervalMs = targetMin * 60 * 1000;
+
+      // 1. Fetch 1m baseline futures data (100 bars = 100 minutes)
+      let baseline1mKlines: KLine[] = [];
       try {
-        const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${now}`;
-        const res = await fetchWithFallback(spot1sUrl, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
-        if (res.ok) {
-          const raw = await res.json();
-          if (Array.isArray(raw) && raw.length > 0) {
-            const secKlines: KLine[] = raw.map((k: any) => ({
+        const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=100&_t=${now}`;
+        const res1m = await fetchWithFallback(url1m, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+        if (res1m.ok) {
+          const raw1m = await res1m.json();
+          if (Array.isArray(raw1m)) {
+            baseline1mKlines = raw1m.map((k: any) => ({
               time: Number(k[0]),
               open: parseFloat(k[1]),
               high: parseFloat(k[2]),
@@ -128,28 +133,73 @@ export const useGrandCrossing = (
               close: parseFloat(k[4]),
               volume: parseFloat(k[5]),
             }));
-            const synthesized = KLineSynthesizer.synthesize(secKlines, targetMin);
-            if (synthesized.length > 0) return synthesized;
           }
         }
       } catch (e) {}
 
-      // Fallback to 1m
+      // 2. Fetch 1s spot data for recent high-resolution seconds
+      let synthRecent: KLine[] = [];
       try {
-        const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=200&_t=${now}`;
-        const res = await fetchWithFallback(url1m, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
-        if (res.ok) {
-          const raw = await res.json();
-          return raw.map((k: any) => ({
-            time: Number(k[0]),
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-            volume: parseFloat(k[5]),
-          }));
+        const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${now}`;
+        const res1s = await fetchWithFallback(spot1sUrl, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+        if (res1s.ok) {
+          const raw1s = await res1s.json();
+          if (Array.isArray(raw1s) && raw1s.length > 0) {
+            const secKlines: KLine[] = raw1s.map((k: any) => ({
+              time: Number(k[0]),
+              open: parseFloat(k[1]),
+              high: parseFloat(k[2]),
+              low: parseFloat(k[3]),
+              close: parseFloat(k[4]),
+              volume: parseFloat(k[5]),
+            }));
+            synthRecent = KLineSynthesizer.synthesize(secKlines, targetMin);
+          }
         }
       } catch (e) {}
+
+      if (synthRecent.length > 0) {
+        const earliestSecTime = synthRecent[0].time;
+        const expandedOlder: KLine[] = [];
+        for (const k1m of baseline1mKlines) {
+          if (k1m.time + 60000 <= earliestSecTime) {
+            for (let b = 0; b < subBarsPer1m; b++) {
+              const subTime = k1m.time + b * intervalMs;
+              expandedOlder.push({
+                time: subTime,
+                open: b === 0 ? k1m.open : (k1m.open + (k1m.close - k1m.open) * (b / subBarsPer1m)),
+                high: k1m.high,
+                low: k1m.low,
+                close: b === subBarsPer1m - 1 ? k1m.close : (k1m.open + (k1m.close - k1m.open) * ((b + 1) / subBarsPer1m)),
+                volume: (k1m.volume || 0) / subBarsPer1m,
+              });
+            }
+          }
+        }
+        const combined = [...expandedOlder, ...synthRecent];
+        if (combined.length >= 80) {
+          return combined;
+        }
+      }
+
+      // Fallback: expand 1m candles into seconds candles
+      if (baseline1mKlines.length > 0) {
+        const expandedAll: KLine[] = [];
+        for (const k1m of baseline1mKlines) {
+          for (let b = 0; b < subBarsPer1m; b++) {
+            const subTime = k1m.time + b * intervalMs;
+            expandedAll.push({
+              time: subTime,
+              open: b === 0 ? k1m.open : (k1m.open + (k1m.close - k1m.open) * (b / subBarsPer1m)),
+              high: k1m.high,
+              low: k1m.low,
+              close: b === subBarsPer1m - 1 ? k1m.close : (k1m.open + (k1m.close - k1m.open) * ((b + 1) / subBarsPer1m)),
+              volume: (k1m.volume || 0) / subBarsPer1m,
+            });
+          }
+        }
+        return expandedAll;
+      }
       return [];
     }
 
@@ -198,7 +248,11 @@ export const useGrandCrossing = (
 
   // --- ROLLING SCAN REFS ---
   const indicesRef = useRef<Record<string, number>>({
+    "15s": 0,
+    "30s": 0,
     "1m": 0,
+    "3m": 0,
+    "5m": 0,
     "15m": 0,
     "30m": 0,
     "1h": 0,
@@ -1060,7 +1114,11 @@ export const useGrandCrossing = (
       run();
     };
 
-    // 启动 8 大周期专属高频/低迟 Ticker 调度器
+    // 启动 12 大周期专属高频/低迟 Ticker 调度器 (包含 15s, 30s, 1m, 3m 等全周期)
+    startWorker("15s", 100);
+    startWorker("30s", 120);
+    startWorker("1m", 150);
+    startWorker("3m", 150);
     startWorker("5m", 150);
     startWorker("15m", 200);
     startWorker("30m", 250);

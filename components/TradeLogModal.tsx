@@ -33,11 +33,24 @@ const FilterChip = ({ type, label, icon: Icon, colorClass, activeFilter, handleF
 const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: rawPositions, systemEvents, onClose, initialSearch = '', onClearHistory, onOpenChart }) => {
   const tradeLogs = useMemo(() => {
       if (!Array.isArray(rawTradeLogs)) return [];
-      return rawTradeLogs.map((l, index) => ({
+      const mapped = rawTradeLogs.map((l, index) => ({
           ...l,
           status: l.status === ('CLOSED_OPEN' as any) ? 'OPEN' : l.status,
           entry_id: l.entry_id ? String(l.entry_id) : `manual_fallback_${l.symbol || 'coin'}_${index}_${l.exit_timestamp || l.entry_timestamp || Date.now()}`
       }));
+
+      // 🔒【开仓唯一性防护】确保每个进行中的活跃仓位仅显示一条唯一的 OPEN 记录
+      const seenOpenKeys = new Set<string>();
+      return mapped.filter(l => {
+          if (l.status === 'OPEN') {
+              const normSym = normalizeSymbol(l.symbol);
+              const openKey = l.entry_id ? `OPEN_ID_${l.entry_id}` : `OPEN_SYM_${normSym}_${l.direction}`;
+              if (seenOpenKeys.has(openKey)) return false;
+              seenOpenKeys.add(openKey);
+              return true;
+          }
+          return true;
+      });
   }, [rawTradeLogs]);
 
   const positions = useMemo(() => {
@@ -1312,8 +1325,8 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 );
                                 const isCompletedCycle = isClosed || (!hasActivePosition && hasClosedLog);
 
-                                const isHedgeCut = !!log.parent_entry_id && (log.entry_id?.includes('_cut_') || log.exit_reason?.includes('减仓') || log.exit_reason?.includes('砍仓'));
-                                const isRefill = log.entry_id?.includes('_refill_') || (log.events && log.events.some(e => e.action.includes('补')));
+                                const isRefill = log.entry_id?.includes('_refill_');
+                                const isHedgeCut = !isRefill && !!log.parent_entry_id && (log.entry_id?.includes('_cut_') || log.exit_reason?.includes('减仓') || log.exit_reason?.includes('砍仓'));
                                 const isHedgeClear = log.exit_reason?.includes('解套') || log.exit_reason?.includes('断臂') || log.exit_reason?.includes('对冲清仓') || log.exit_reason?.includes('防爆安全') || log.exit_reason?.includes('断臂全清') || log.exit_reason?.includes('对冲解套');
                                 const isHedge = log.is_hedge || !!log.main_entry_id;
 
@@ -1321,7 +1334,10 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 let actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
 
                                 if (isClosed) {
-                                    if (isHedgeCut) {
+                                    if (isRefill) {
+                                        actionLabel = '防爆对冲补仓';
+                                        actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                    } else if (isHedgeCut) {
                                         actionLabel = '防爆对冲砍仓';
                                         actionBadgeClass = 'bg-orange-900/40 text-orange-400 border-orange-500/20';
                                     } else if (isHedgeClear) {
@@ -1335,12 +1351,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         actionBadgeClass = 'bg-red-900/40 text-red-400 border-red-500/20';
                                     }
                                 } else {
-                                    if (isHedge) {
-                                        actionLabel = '防爆对冲开仓';
-                                        actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
-                                    } else if (isRefill) {
+                                    if (isRefill) {
                                         actionLabel = '防爆对冲补仓';
                                         actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                    } else if (isHedge) {
+                                        actionLabel = '防爆对冲开仓';
+                                        actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
                                     } else {
                                         actionLabel = '新开仓';
                                         actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
@@ -1397,7 +1413,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                 >
                                                     {log.symbol}
                                                     <span className="text-[10px] text-slate-400 ml-1">
-                                                        ({log.main_entry_id ? (log.reopenCount ? `对冲仓位(编号${log.reopenCount})` : "对冲仓位") : ((log.is_reopened || log.correlationId) ? `复开仓位(编号${log.reopenCount || 1})` : "原仓位")})
+                                                        ({isRefill ? '砍仓后补仓' : (isHedgeCut ? '防爆对冲砍仓' : (log.main_entry_id ? (log.reopenCount ? `对冲仓位(编号${log.reopenCount})` : "对冲仓位") : ((log.is_reopened || log.correlationId) ? `复开仓位(编号${log.reopenCount || 1})` : "原仓位")))})
                                                     </span>
                                                 </span>
                                                 <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><History size={12} /></button>
@@ -1423,8 +1439,13 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                     {log.direction}
                                                 </div>
                                             )}
-                                            {!!log.main_entry_id && <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-400 border border-blue-500/30 text-[9px] font-bold"><Shield size={8} /> 🛡️对冲</span>}
-                                            {!!log.parent_entry_id && <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-400 border border-purple-500/30 text-[9px] font-bold"><Shield size={8} /> {log.exit_reason?.includes('止损砍仓') ? '✂️止损砍仓' : '✂️减仓'}</span>}
+                                            {isRefill ? (
+                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-500/30 text-[9px] font-bold">🔄 补仓</span>
+                                            ) : !!log.main_entry_id ? (
+                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-400 border border-blue-500/30 text-[9px] font-bold"><Shield size={8} /> 🛡️对冲</span>
+                                            ) : !!log.parent_entry_id ? (
+                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-400 border border-purple-500/30 text-[9px] font-bold"><Shield size={8} /> {log.exit_reason?.includes('止损砍仓') ? '✂️止损砍仓' : '✂️减仓'}</span>
+                                            ) : null}
                                         </td>
                                         <td className="px-4 py-3 text-xs font-mono">
                                             <div className="font-bold text-slate-200">{log.cost_usdt.toFixed(2)} U</div>

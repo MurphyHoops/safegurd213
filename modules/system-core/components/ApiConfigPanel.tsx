@@ -142,7 +142,9 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
                 },
                 body: JSON.stringify({
                     apiKey: (settings.binanceApiKey || '').trim(),
-                    apiSecret: (settings.binanceApiSecret || '').trim()
+                    apiSecret: (settings.binanceApiSecret || '').trim(),
+                    force: !silent,
+                    bypassCache: !silent
                 })
             });
 

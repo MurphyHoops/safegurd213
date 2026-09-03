@@ -83,6 +83,7 @@ import {
 
 interface Props {
   networkStatus?: "healthy" | "delayed" | "disconnected";
+  isOnline?: boolean;
   settings: ScannerSettings;
   isVisible: boolean;
   onClose: () => void;
@@ -142,6 +143,7 @@ const ScannerDashboardInner: React.FC<
   }
 > = ({
   networkStatus = "disconnected",
+  isOnline = true,
   settings,
   isVisible,
   onClose,
@@ -1800,8 +1802,14 @@ const ScannerDashboardInner: React.FC<
                   <span className="text-xs text-emerald-400 font-bold tracking-wider font-sans">当前正在实盘交易</span>
                 </div>
               )}
-              {scannerMode !== "BACKTEST" && networkStatus && (
-                <NetworkWidget networkStatus={networkStatus} />
+              {/* 币安行情连接与自动连接/重连全部按钮组件 */}
+              {scannerMode !== "BACKTEST" && (
+                <div className="shrink-0">
+                  <NetworkWidget 
+                    networkStatus={networkStatus || 'healthy'}
+                    isOnline={isOnline}
+                  />
+                </div>
               )}
             </div>
             <div className="flex items-center gap-3">

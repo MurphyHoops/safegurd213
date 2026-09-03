@@ -11,6 +11,7 @@ import { usePositionsListLogic } from './usePositionsListLogic';
 import { binanceWs } from '../../services/binanceWs';
 import { audioService } from '../../services/audioService';
 import { backtestDb } from '../../services/backtest/db';
+import { NetworkWidget } from '../../components/NetworkWidget';
 
 // @LOCKED: PositionsListUI logic
 export const PositionsListModule: React.FC<PositionsListProps> = ({
@@ -254,7 +255,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                     </div>
                     
                     <div className="flex items-center gap-2">
-                        {/* 其它控制按钮 */}
+                        {/* 控制按钮 */}
 
                         <button 
                             onClick={onOpenTradeModal} 

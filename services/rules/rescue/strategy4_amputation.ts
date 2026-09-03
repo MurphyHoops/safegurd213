@@ -15,14 +15,6 @@ export function checkStrategy4_Amputation(
     const slSettings = settings.stopLoss;
     if (!slSettings || !slSettings.amputationEnabled) return false;
 
-    // 🔒 [断臂求生防重复砍仓安全锁] 8秒内不允许对同一仓位进行二次砍仓
-    const now = Date.now();
-    const lastAmpMain = mainPosition.lastAmputationTime || 0;
-    const lastAmpHedge = hedgePosition ? (hedgePosition.lastAmputationTime || 0) : 0;
-    if (now - lastAmpMain < 8000 || now - lastAmpHedge < 8000) {
-        return false;
-    }
-
     // 建立极端防御机制：即便用户浏览器中存在旧版 localStorage 且缺失新属性，也完全兜底，杜绝 NaN 与白屏
     const triggerProfitPercent = typeof slSettings.amputationTriggerProfit === 'number' && !Number.isNaN(slSettings.amputationTriggerProfit)
         ? slSettings.amputationTriggerProfit
@@ -68,50 +60,36 @@ export function checkStrategy4_Amputation(
 
     // ==========================================
     // 🌟 第一执行顺位：补回仓位 (当【被砍仓位】自身盈亏值大于等于0% / 亏损归0%时立即补回砍仓前的数量)
-    // 🔒【有效对冲绝对禁补铁律】：在形成有效对冲期间（原仓位与对冲仓位数量一样多时），绝对严禁补仓！
-    // 🔒【只补一次铁律】：补仓触发后立即锁定并清空被砍状态，杜绝任何重复补仓！
+    // 🔒【严格被砍物理标记铁律】：必须且仅当该仓位切实经历过砍仓 (isAmputated === true 且 amputatedAmount > 0)
+    // 🔒【只补一次铁律】：补仓触发后立即清空被砍状态，杜绝任何重复补仓或由数量差推导的误补仓！
     // ==========================================
-    const isEffectiveEqualHedge = hedgePosition && 
-        mainPosition.amount > 0 && 
-        hedgePosition.amount > 0 && 
-        Math.abs(mainPosition.amount - hedgePosition.amount) <= Math.max(mainPosition.amount, hedgePosition.amount) * 0.05;
+    const isMainAmputated = !!mainPosition.isAmputated && (mainPosition.amputatedAmount || 0) > 0;
+    const isHedgeAmputated = hedgePosition && !!hedgePosition.isAmputated && (hedgePosition.amputatedAmount || 0) > 0;
 
-    if (isEffectiveEqualHedge) {
-        // 双边仓位数量等额，属于完整对冲状态，清空被砍标记以确保新一轮砍仓随时可响应
-        mainPosition.isAmputated = false;
-        mainPosition.amputatedAmount = 0;
-        if (hedgePosition) {
-            hedgePosition.isAmputated = false;
-            hedgePosition.amputatedAmount = 0;
-        }
-    } else {
-        // A. 主仓是被砍仓位：必须确实被砍且数量少于对冲仓位，当【主仓自身】盈亏值大于等于0%(unrealizedPnLPercentage >= 0) 或价格回到开仓均价时补仓
-        const isMainAmputatedTarget = !!mainPosition.isAmputated && (mainPosition.amputatedAmount || 0) > 0 && (!hedgePosition || mainPosition.amount < hedgePosition.amount);
+    if (isMainAmputated) {
+        // 主仓被砍：当【主仓自身】盈亏值大于等于0% 或价格回到开仓均价时补仓
         const isMainPriceBackToEntry = (mainPosition.unrealizedPnLPercentage !== undefined && mainPosition.unrealizedPnLPercentage >= 0) ||
+            (mainPosition.unrealizedPnL !== undefined && mainPosition.unrealizedPnL >= 0) ||
             (mainPosition.side === PositionSide.LONG
                 ? mainPosition.markPrice >= mainPosition.entryPrice
                 : mainPosition.markPrice <= mainPosition.entryPrice);
 
-        if (isMainAmputatedTarget && isMainPriceBackToEntry) {
-            // 🔒 [只补一次防重锁] 立即消耗被砍状态
-            mainPosition.isAmputated = false;
-            refill(mainPosition, `3. 断臂求生: 被砍主仓盈亏值≥0%(已达${(mainPosition.unrealizedPnLPercentage || 0).toFixed(2)}%)，立即补回砍仓前数量(${mainPosition.amputatedAmount?.toFixed(4)})`);
+        if (isMainPriceBackToEntry) {
+            const refillQty = mainPosition.amputatedAmount || 0;
+            refill(mainPosition, `3. 断臂求生: 被砍主仓盈亏值≥0%(已达${(mainPosition.unrealizedPnLPercentage || 0).toFixed(2)}%)，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
             return false;
         }
+    } else if (isHedgeAmputated && hedgePosition) {
+        // 对冲仓被砍：当【对冲仓自身】盈亏值大于等于0% 或价格回到开仓均价时补仓
+        const isHedgePriceBackToEntry = (hedgePosition.unrealizedPnLPercentage !== undefined && hedgePosition.unrealizedPnLPercentage >= 0) ||
+            (hedgePosition.unrealizedPnL !== undefined && hedgePosition.unrealizedPnL >= 0) ||
+            (hedgePosition.side === PositionSide.LONG
+                ? hedgePosition.markPrice >= hedgePosition.entryPrice
+                : hedgePosition.markPrice <= hedgePosition.entryPrice);
 
-        // B. 对冲仓是被砍仓位：必须确实被砍且数量少于主仓，当【对冲仓自身】盈亏值大于等于0%(unrealizedPnLPercentage >= 0) 或价格回到开仓均价时补仓
-        const isHedgeAmputatedTarget = hedgePosition && !!hedgePosition.isAmputated && (hedgePosition.amputatedAmount || 0) > 0 && hedgePosition.amount < mainPosition.amount;
-        const isHedgePriceBackToEntry = hedgePosition
-            ? ((hedgePosition.unrealizedPnLPercentage !== undefined && hedgePosition.unrealizedPnLPercentage >= 0) ||
-               (hedgePosition.side === PositionSide.LONG
-                    ? hedgePosition.markPrice >= hedgePosition.entryPrice
-                    : hedgePosition.markPrice <= hedgePosition.entryPrice))
-            : false;
-
-        if (isHedgeAmputatedTarget && isHedgePriceBackToEntry && hedgePosition) {
-            // 🔒 [只补一次防重锁] 立即消耗被砍状态
-            hedgePosition.isAmputated = false;
-            refill(hedgePosition, `3. 断臂求生: 被砍对冲仓盈亏值≥0%(已达${(hedgePosition.unrealizedPnLPercentage || 0).toFixed(2)}%)，立即补回砍仓前数量(${hedgePosition.amputatedAmount?.toFixed(4)})`);
+        if (isHedgePriceBackToEntry) {
+            const refillQty = hedgePosition.amputatedAmount || 0;
+            refill(hedgePosition, `3. 断臂求生: 被砍对冲仓盈亏值≥0%(已达${(hedgePosition.unrealizedPnLPercentage || 0).toFixed(2)}%)，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
             return false;
         }
     }
@@ -200,9 +178,24 @@ export function checkStrategy4_Amputation(
     // 2. 触发断臂 (谁赚砍谁 - 🔄 动态循环状态机：砍仓->亏损归零补仓->再次盈利再砍仓，循环次数受震荡磨损保护熔断控制)
     if (!cutRatio || cutRatio <= 0) return false;
 
-    // 🔒 [在途与防并发锁] 识别双方是否处于实质被砍仓状态（被砍且数量明显少于对手单）
-    const isMainCurrentlyCut = !!mainPosition.isAmputated && (mainPosition.amputatedAmount || 0) > 0 && mainPosition.amount < (hedgePosition.amount * 0.95);
-    const isHedgeCurrentlyCut = !!hedgePosition.isAmputated && (hedgePosition.amputatedAmount || 0) > 0 && hedgePosition.amount < (mainPosition.amount * 0.95);
+    // 🔒 [断臂求生防重复砍仓安全锁] 8秒内不允许对同一币种进行二次砍仓
+    const now = Date.now();
+    const lastAmpMain = mainPosition.lastAmputationTime || 0;
+    const lastAmpHedge = hedgePosition ? (hedgePosition.lastAmputationTime || 0) : 0;
+    if (now - lastAmpMain < 8000 || now - lastAmpHedge < 8000) {
+        return false;
+    }
+
+    // 🔒 [双边等额绝对硬锁与严格交替闭环] 
+    // 铁律：必须是双边仓位等额（处于完整对冲状态）才允许发起砍仓！
+    // 只要有一方被砍导致数量不对等（即尚未回踩补仓），100% 绝对禁止发起第2次、第3次连续砍仓！
+    const isBothSidesEqualHedged = mainPosition.amount > 0 && hedgePosition.amount > 0 && 
+        Math.abs(mainPosition.amount - hedgePosition.amount) <= Math.max(mainPosition.amount, hedgePosition.amount) * 0.05;
+
+    if (!isBothSidesEqualHedged) {
+        // 双边数量不对等，说明上一轮砍仓尚未完成回踩补仓，绝对禁止砍仓
+        return false;
+    }
 
     // 🔒 [震荡磨损保护熔断控制] 检查当前币种累计砍仓循环次数
     const currentAmpCount = Math.max(
@@ -218,16 +211,16 @@ export function checkStrategy4_Amputation(
     const hedgeNotional = hedgePosition ? hedgePosition.amount * (hedgePosition.markPrice || hedgePosition.entryPrice) : 0;
 
     // A. 对冲单赚钱，砍主仓
-    // 条件：对冲单盈利率达标，主仓亏损，主仓有效存在，且当前主仓未处于被砍未补状态
-    const mainCanBeAmputated = !isMainCurrentlyCut && (mainNotional >= 0.1 || mainPosition.amount > 0);
+    // 条件：对冲单盈利率达标，主仓亏损，主仓有效存在
+    const mainCanBeAmputated = (mainNotional >= 0.1 || mainPosition.amount > 0);
     if (mainCanBeAmputated && (hedgePosition.unrealizedPnLPercentage || 0) >= triggerProfitPercent && (mainPosition.unrealizedPnL || 0) < 0) {
         amputate(mainPosition, cutRatio, `3. 断臂求生: 对冲单盈利 ${(hedgePosition.unrealizedPnLPercentage || 0).toFixed(2)}%，砍主仓 ${cutRatio}% (第${currentAmpCount + 1}次)`);
         return false;
     }
 
     // B. 主仓赚钱，砍对冲单
-    // 条件：主仓盈利率达标，对冲单亏损，对冲单有效存在，且当前对冲单未处于被砍未补状态
-    const hedgeCanBeAmputated = !isHedgeCurrentlyCut && (hedgeNotional >= 0.1 || hedgePosition.amount > 0);
+    // 条件：主仓盈利率达标，对冲单亏损，对冲单有效存在
+    const hedgeCanBeAmputated = (hedgeNotional >= 0.1 || hedgePosition.amount > 0);
     if (hedgeCanBeAmputated && (mainPosition.unrealizedPnLPercentage || 0) >= triggerProfitPercent && (hedgePosition.unrealizedPnL || 0) < 0) {
         amputate(hedgePosition, cutRatio, `3. 断臂求生: 主仓盈利 ${(mainPosition.unrealizedPnLPercentage || 0).toFixed(2)}%，砍对冲单 ${cutRatio}% (第${currentAmpCount + 1}次)`);
         return false;

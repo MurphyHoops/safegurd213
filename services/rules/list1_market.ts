@@ -27,6 +27,9 @@ export function processMarketData(
     }
 
     // 1. First Pass: Stats & Normalization
+    const nowTime = Date.now();
+    const expiry = 5 * 60 * 1000;
+
     rawData.forEach((t: any) => {
         if (!t.symbol || !t.symbol.endsWith('USDT')) return;
 
@@ -52,11 +55,19 @@ export function processMarketData(
         // Optimization: Pre-filter zero volume or very small volume
         if (volume <= 0 && config.minVolume > 0) return;
 
+        const cachedVol = t._cachedVolume8am;
+        const cachedOpen = t._cachedOpenPrice8am;
+        let change8am = undefined;
+        if (cachedOpen !== undefined && cachedOpen > 0 && price > 0) {
+            change8am = ((price - cachedOpen) / cachedOpen) * 100;
+        }
+
         allCandidates.push({
             symbol: t.symbol,
             price: price,
             volume24h: volumeM,
-            change8am: change, 
+            volume8am: cachedVol,
+            change8am: change8am, 
             change: change,    
             isNew: false,
             openPrice,
@@ -120,9 +131,10 @@ export function processMarketData(
             }
 
             // Regular filters for Config A / Standard Mode
-            if (config.source === 'GAINERS' && (i.change || 0) <= 0) return false;
-            if (config.source === 'LOSERS' && (i.change || 0) >= 0) return false;
-            if (config.minChange > 0 && Math.abs(i.change || 0) < config.minChange) return false;
+            const effectiveChange = check8am ? (i.change8am !== undefined ? i.change8am : 0) : (i.change || 0);
+            if (config.source === 'GAINERS' && effectiveChange <= 0) return false;
+            if (config.source === 'LOSERS' && effectiveChange >= 0) return false;
+            if (config.minChange > 0 && Math.abs(effectiveChange) < config.minChange) return false;
 
             return true;
         });
@@ -137,7 +149,11 @@ export function processMarketData(
     }
 
     // 3. Sorting
-    filtered.sort((a, b) => Math.abs(b.change || 0) - Math.abs(a.change || 0));
+    filtered.sort((a, b) => {
+        const chgA = config.enableVol8am && a.change8am !== undefined ? a.change8am : (a.change || 0);
+        const chgB = config.enableVol8am && b.change8am !== undefined ? b.change8am : (b.change || 0);
+        return Math.abs(chgB) - Math.abs(chgA);
+    });
 
     // 4. Limit
     if (config.limit > 0 && filtered.length > config.limit) {

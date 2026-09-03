@@ -44,7 +44,7 @@ export const List1Item: React.FC<Props> = ({
     
     const isChecked = customSymbolSet.has(item.symbol.replace('USDT', '').toUpperCase());
     const showCheckbox = true; // Always allow rapid toggling to/from Watchlist (M1 -> Watchlist transfer)
-    const changeVal = item.change8am || 0; // Safe Fallback
+    const changeVal = scanConfig.enableVol8am && item.change8am !== undefined ? item.change8am : (item.change || 0);
     const isSmart = mode === 'SMART' && item.smartScore !== undefined;
 
     const lookbackDays = scanConfig.majorTrend?.lookbackDays || 300;
