@@ -649,9 +649,10 @@ async function startServer() {
                     const minNeededQty = Math.ceil((minNotional / currentPrice) / stepSize) * stepSize;
                     const adjustedQty = parseFloat(minNeededQty.toFixed(qtyPrecision));
                     
-                    // If user passed an amount or requested opening and it's close to minNotional, auto-align upward to satisfy minNotional
-                    if (amountUsdt && amountUsdt >= minNotional * 0.75) {
-                        console.log(`[Binance Order] Auto-adjusting quantity for ${formattedSymbol} from ${finalQty} to ${adjustedQty} (${(adjustedQty * currentPrice).toFixed(2)} USDT) to satisfy Binance MIN_NOTIONAL (${minNotional} USDT)`);
+                    // If user passed an amount or requested opening/refill and it's close to minNotional, auto-align upward to satisfy minNotional
+                    const isRefillReq = req.body.isRefill === true || req.body.allowExisting === true;
+                    if ((amountUsdt && amountUsdt >= minNotional * 0.75) || notionalValue >= minNotional * 0.75 || isRefillReq) {
+                        console.log(`[Binance Order] Auto-adjusting quantity for ${formattedSymbol} from ${finalQty} to ${adjustedQty} (${(adjustedQty * currentPrice).toFixed(2)} USDT) to satisfy Binance MIN_NOTIONAL (${minNotional} USDT) (Refill: ${isRefillReq})`);
                         finalQty = adjustedQty;
                     } else if (finalQty * currentPrice < minNotional) {
                         return res.status(400).json({ 
@@ -824,12 +825,17 @@ async function startServer() {
                 }
             }
 
-            // 5. Construct order parameters
+            // 5. Construct order parameters with unique clientOrderId for targeted probing (方案2)
+            const generatedClientOrderId = (req.body.clientOrderId && typeof req.body.clientOrderId === 'string' && req.body.clientOrderId.length <= 36)
+                ? req.body.clientOrderId
+                : `x-408z613X_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
+
             const orderParams: any = {
                 symbol: formattedSymbol,
                 side: binanceSide,
                 type: "MARKET",
                 quantity: finalQty.toString(),
+                newClientOrderId: generatedClientOrderId,
                 timestamp: Date.now().toString(),
                 recvWindow: "5000"
             };
@@ -853,29 +859,98 @@ async function startServer() {
 
             const finalOrderUrl = `https://fapi.binance.com/fapi/v1/order?${orderQueryString}&signature=${orderSignature}`;
 
-            console.log(`[Binance Order] Executing real MARKET order on Binance: ${formattedSymbol} | Side: ${binanceSide} | positionSide: ${binancePositionSide || 'N/A'} | Qty: ${finalQty}`);
+            console.log(`[Binance Order] Executing real MARKET order on Binance: ${formattedSymbol} | Side: ${binanceSide} | positionSide: ${binancePositionSide || 'N/A'} | Qty: ${finalQty} | ClientOrderId: ${generatedClientOrderId}`);
 
-            const orderResponse = await fetchWithFallback(finalOrderUrl, {
-                method: "POST",
-                headers: {
-                    "X-MBX-APIKEY": apiKey,
-                    "Content-Type": "application/json"
-                }
-            });
+            let orderData: any = null;
+            let orderResponseOk = false;
+            let orderText = "";
 
-            const orderText = await orderResponse.text();
-            let orderData;
             try {
-                orderData = JSON.parse(orderText);
-            } catch (e) {
-                console.warn(`[Binance Order] Failed to parse response as JSON. Raw response: ${orderText}`);
-                return res.status(502).json({
-                    success: false,
-                    error: `币安交易所返回了非 JSON 格式的响应: ${orderResponse.status} - ${orderText.substring(0, 100)}`
+                const orderPromise = fetchWithFallback(finalOrderUrl, {
+                    method: "POST",
+                    headers: {
+                        "X-MBX-APIKEY": apiKey,
+                        "Content-Type": "application/json"
+                    }
                 });
+
+                // 方案2：如果下单请求超过 1500ms 尚未返回，主动发起定向探针查询该 clientOrderId 的状态
+                const probeTimerPromise = new Promise<{ isProbeTimeout: true }>(resolve => setTimeout(() => resolve({ isProbeTimeout: true }), 1500));
+                const firstResult = await Promise.race([orderPromise, probeTimerPromise]);
+
+                if ('isProbeTimeout' in firstResult) {
+                    console.warn(`[Binance Order] ⏱️ 下单请求处理超过 1.5s，启动定向探针 (ClientOrderId: ${generatedClientOrderId}) 毫秒级探测...`);
+                    const probeTimeOffset = await syncBinanceServerTime();
+                    const probeTimestamp = Date.now() + probeTimeOffset;
+                    const probeQuery = `symbol=${formattedSymbol}&origClientOrderId=${encodeURIComponent(generatedClientOrderId)}&timestamp=${probeTimestamp}&recvWindow=5000`;
+                    const probeSig = crypto.createHmac("sha256", apiSecret).update(probeQuery).digest("hex");
+                    const probeUrl = `https://fapi.binance.com/fapi/v1/order?${probeQuery}&signature=${probeSig}`;
+
+                    const probePromise = fetchWithFallback(probeUrl, {
+                        headers: { "X-MBX-APIKEY": apiKey }
+                    }).then(async res => {
+                        if (res.ok) {
+                            const pJson = await res.json().catch(() => null);
+                            if (pJson && (pJson.status === "FILLED" || pJson.status === "PARTIALLY_FILLED" || pJson.status === "NEW")) {
+                                return pJson;
+                            }
+                        }
+                        return null;
+                    }).catch(() => null);
+
+                    const raceWinner = await Promise.race([orderPromise, probePromise]);
+                    if (raceWinner && 'status' in raceWinner && (raceWinner.status === "FILLED" || raceWinner.status === "PARTIALLY_FILLED" || raceWinner.status === "NEW")) {
+                        console.log(`⚡ [Binance Order] 定向探针抢先确认订单已撮合成交: OrderId=${raceWinner.orderId}, Status=${raceWinner.status}`);
+                        orderData = raceWinner;
+                        orderResponseOk = true;
+                    } else {
+                        const actualRes = await orderPromise;
+                        orderResponseOk = actualRes.ok;
+                        orderText = await actualRes.text();
+                        try { orderData = JSON.parse(orderText); } catch {}
+                    }
+                } else {
+                    const actualRes = firstResult;
+                    orderResponseOk = actualRes.ok;
+                    orderText = await actualRes.text();
+                    try { orderData = JSON.parse(orderText); } catch {}
+                }
+            } catch (networkErr: any) {
+                console.warn(`[Binance Order] 下单请求遇到网络异常 (${networkErr.message || networkErr})，正在启动应急定向探针确认交易所真实状态...`);
+                try {
+                    const probeTimeOffset = await syncBinanceServerTime();
+                    const probeTimestamp = Date.now() + probeTimeOffset;
+                    const probeQuery = `symbol=${formattedSymbol}&origClientOrderId=${encodeURIComponent(generatedClientOrderId)}&timestamp=${probeTimestamp}&recvWindow=5000`;
+                    const probeSig = crypto.createHmac("sha256", apiSecret).update(probeQuery).digest("hex");
+                    const probeUrl = `https://fapi.binance.com/fapi/v1/order?${probeQuery}&signature=${probeSig}`;
+                    const pRes = await fetchWithFallback(probeUrl, { headers: { "X-MBX-APIKEY": apiKey } });
+                    if (pRes.ok) {
+                        const pJson = await pRes.json().catch(() => null);
+                        if (pJson && (pJson.status === "FILLED" || pJson.status === "PARTIALLY_FILLED" || pJson.status === "NEW")) {
+                            console.log(`⚡ [Binance Order] 应急探针确认订单已在币安成功撮合: OrderId=${pJson.orderId}`);
+                            orderData = pJson;
+                            orderResponseOk = true;
+                        }
+                    }
+                } catch {}
+                if (!orderData) {
+                    throw networkErr;
+                }
             }
 
-            if (orderResponse.ok) {
+            if (!orderData && orderText) {
+                try {
+                    orderData = JSON.parse(orderText);
+                } catch (e) {
+                    console.warn(`[Binance Order] Failed to parse response as JSON. Raw response: ${orderText}`);
+                    return res.status(502).json({
+                        success: false,
+                        error: `币安交易所返回了非 JSON 格式的响应: ${orderText.substring(0, 100)}`
+                    });
+                }
+            }
+
+            if (orderResponseOk && orderData) {
                 console.log(`[Binance Order] Success! Order ID: ${orderData.orderId}`);
                 const rawAvgPrice = parseFloat(orderData.avgPrice || "0");
                 const rawExecQty = parseFloat(orderData.executedQty || "0");
@@ -1127,7 +1202,7 @@ async function startServer() {
                 }
                 
                 console.warn(`[Binance Order] Failed: ${JSON.stringify(orderData)}`);
-                return res.status(orderResponse.status).json({
+                return res.status(400).json({
                     success: false,
                     error: userFriendlyError,
                     code: errorCode
@@ -1185,7 +1260,8 @@ async function startServer() {
         try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 4000);
-            const response = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+            // Force IPv4 lookup (api4.ipify.org) so it never returns an IPv6 address incompatible with Binance API whitelist
+            const response = await fetch("https://api4.ipify.org?format=json", { signal: controller.signal });
             clearTimeout(timeout);
             if (response.ok) {
                 const data = await response.json();
@@ -1197,14 +1273,14 @@ async function startServer() {
             try {
                 const controller = new AbortController();
                 const timeout = setTimeout(() => controller.abort(), 4000);
-                const response = await fetch("https://icanhazip.com", { signal: controller.signal });
+                const response = await fetch("https://ipv4.icanhazip.com", { signal: controller.signal });
                 clearTimeout(timeout);
                 if (response.ok) {
                     const ip = (await response.text()).trim();
                     return res.json({ success: true, ip });
                 }
             } catch (inner: any) {}
-            return res.json({ success: false, error: "无法获取出口IP: " + (e.message || e) });
+            return res.json({ success: false, error: "无法获取出口IPv4: " + (e.message || e) });
         }
     });
 
@@ -1475,6 +1551,48 @@ async function startServer() {
         try {
             await ensureUserDataStream(apiKey);
             return res.json({ success: true, active: true });
+        } catch (e: any) {
+            return res.status(500).json({ success: false, error: e.message || e });
+        }
+    });
+
+    // 🎯 方案2：定向订单探针接口 (POST /api/binance/order-status) —— 仅消耗 1 权重，秒级精准确认单笔订单状态
+    app.post("/api/binance/order-status", async (req, res) => {
+        const { apiKey, apiSecret, symbol, orderId, origClientOrderId } = req.body;
+        if (!apiKey || !apiSecret || !symbol || (!orderId && !origClientOrderId)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "请提供完整的查询参数 (apiKey, apiSecret, symbol, orderId 或 origClientOrderId)" 
+            });
+        }
+        const formattedSymbol = formatBinanceSymbol(symbol);
+        try {
+            const timeOffset = await syncBinanceServerTime();
+            const timestamp = Date.now() + timeOffset;
+            let queryParams = `symbol=${formattedSymbol}&timestamp=${timestamp}&recvWindow=5000`;
+            if (orderId) {
+                queryParams += `&orderId=${orderId}`;
+            }
+            if (origClientOrderId) {
+                queryParams += `&origClientOrderId=${encodeURIComponent(origClientOrderId)}`;
+            }
+            const signature = crypto.createHmac("sha256", apiSecret).update(queryParams).digest("hex");
+            const probeUrl = `https://fapi.binance.com/fapi/v1/order?${queryParams}&signature=${signature}`;
+            
+            const response = await fetchWithFallback(probeUrl, {
+                headers: { "X-MBX-APIKEY": apiKey }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                return res.json({ success: true, order: data });
+            } else {
+                const errData = await response.json().catch(() => ({}));
+                return res.json({ 
+                    success: false, 
+                    error: errData.msg || response.statusText, 
+                    code: errData.code 
+                });
+            }
         } catch (e: any) {
             return res.status(500).json({ success: false, error: e.message || e });
         }

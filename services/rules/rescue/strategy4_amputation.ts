@@ -67,29 +67,35 @@ export function checkStrategy4_Amputation(
     const isHedgeAmputated = hedgePosition && !!hedgePosition.isAmputated && (hedgePosition.amputatedAmount || 0) > 0;
 
     if (isMainAmputated) {
-        // 主仓被砍：当【主仓自身】盈亏值大于等于0% 或价格回到开仓均价时补仓
-        const isMainPriceBackToEntry = (mainPosition.unrealizedPnLPercentage !== undefined && mainPosition.unrealizedPnLPercentage >= 0) ||
-            (mainPosition.unrealizedPnL !== undefined && mainPosition.unrealizedPnL >= 0) ||
-            (mainPosition.side === PositionSide.LONG
-                ? mainPosition.markPrice >= mainPosition.entryPrice
-                : mainPosition.markPrice <= mainPosition.entryPrice);
+        // 主仓被砍：当【主仓自身】盈亏值≥-0.08%(实盘买卖价差与滑点容差) 或价格回到开仓均价附近(相对偏差<=0.08%)时立即补仓
+        const mainPnlPct = mainPosition.unrealizedPnLPercentage ?? 0;
+        const mainEntry = mainPosition.entryPrice || 0;
+        const mainMark = mainPosition.markPrice || mainEntry;
+        const mainPriceDiffRatio = mainEntry > 0 ? (mainPosition.side === PositionSide.LONG ? (mainMark - mainEntry) / mainEntry : (mainEntry - mainMark) / mainEntry) : 0;
+
+        const isMainPriceBackToEntry = mainPnlPct >= -0.08 ||
+            (mainPosition.unrealizedPnL !== undefined && mainPosition.unrealizedPnL >= -0.01) ||
+            mainPriceDiffRatio >= -0.0008;
 
         if (isMainPriceBackToEntry) {
             const refillQty = mainPosition.amputatedAmount || 0;
-            refill(mainPosition, `3. 断臂求生: 被砍主仓盈亏值≥0%(已达${(mainPosition.unrealizedPnLPercentage || 0).toFixed(2)}%)，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
+            refill(mainPosition, `3. 断臂求生: 被砍主仓回踩开仓价(盈亏已达${mainPnlPct.toFixed(2)}%)，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
             return false;
         }
     } else if (isHedgeAmputated && hedgePosition) {
-        // 对冲仓被砍：当【对冲仓自身】盈亏值大于等于0% 或价格回到开仓均价时补仓
-        const isHedgePriceBackToEntry = (hedgePosition.unrealizedPnLPercentage !== undefined && hedgePosition.unrealizedPnLPercentage >= 0) ||
-            (hedgePosition.unrealizedPnL !== undefined && hedgePosition.unrealizedPnL >= 0) ||
-            (hedgePosition.side === PositionSide.LONG
-                ? hedgePosition.markPrice >= hedgePosition.entryPrice
-                : hedgePosition.markPrice <= hedgePosition.entryPrice);
+        // 对冲仓被砍：当【对冲仓自身】盈亏值≥-0.08%(实盘买卖价差与滑点容差) 或价格回到开仓均价附近(相对偏差<=0.08%)时立即补仓
+        const hedgePnlPct = hedgePosition.unrealizedPnLPercentage ?? 0;
+        const hedgeEntry = hedgePosition.entryPrice || 0;
+        const hedgeMark = hedgePosition.markPrice || hedgeEntry;
+        const hedgePriceDiffRatio = hedgeEntry > 0 ? (hedgePosition.side === PositionSide.LONG ? (hedgeMark - hedgeEntry) / hedgeEntry : (hedgeEntry - hedgeMark) / hedgeEntry) : 0;
+
+        const isHedgePriceBackToEntry = hedgePnlPct >= -0.08 ||
+            (hedgePosition.unrealizedPnL !== undefined && hedgePosition.unrealizedPnL >= -0.01) ||
+            hedgePriceDiffRatio >= -0.0008;
 
         if (isHedgePriceBackToEntry) {
             const refillQty = hedgePosition.amputatedAmount || 0;
-            refill(hedgePosition, `3. 断臂求生: 被砍对冲仓盈亏值≥0%(已达${(hedgePosition.unrealizedPnLPercentage || 0).toFixed(2)}%)，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
+            refill(hedgePosition, `3. 断臂求生: 被砍对冲仓回踩开仓价(盈亏已达${hedgePnlPct.toFixed(2)}%)，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
             return false;
         }
     }
@@ -186,14 +192,29 @@ export function checkStrategy4_Amputation(
         return false;
     }
 
-    // 🔒 [双边等额绝对硬锁与严格交替闭环] 
-    // 铁律：必须是双边仓位等额（处于完整对冲状态）才允许发起砍仓！
-    // 只要有一方被砍导致数量不对等（即尚未回踩补仓），100% 绝对禁止发起第2次、第3次连续砍仓！
-    const isBothSidesEqualHedged = mainPosition.amount > 0 && hedgePosition.amount > 0 && 
-        Math.abs(mainPosition.amount - hedgePosition.amount) <= Math.max(mainPosition.amount, hedgePosition.amount) * 0.05;
+    // 🔒 [双边完整对冲硬锁与严格交替闭环] 
+    // 铁律 1：如果上一轮砍仓尚未回踩补仓 (isAmputated 为 true 或待补仓数量 > 0)，100% 绝对禁止发起二次连续砍仓！
+    const hasPendingRefill = !!mainPosition.isAmputated || 
+        (mainPosition.amputatedAmount || 0) > 0 || 
+        (hedgePosition ? (!!hedgePosition.isAmputated || (hedgePosition.amputatedAmount || 0) > 0) : false);
 
-    if (!isBothSidesEqualHedged) {
-        // 双边数量不对等，说明上一轮砍仓尚未完成回踩补仓，绝对禁止砍仓
+    if (hasPendingRefill) {
+        // 上一轮砍仓尚未完成回踩补仓，严格等待回踩补仓恢复，禁止连续砍仓！
+        return false;
+    }
+
+    // 铁律 2：双边仓位必须同时有效存在 (持仓数量 > 0)
+    if (mainPosition.amount <= 0.0001 || !hedgePosition || hedgePosition.amount <= 0.0001) {
+        return false;
+    }
+
+    // 铁律 3：数量比例防御 (双保险)
+    // 砍仓通常砍掉 90% (两边比例会变成 10:1 甚至差值超 80%)。
+    // 如果两边持仓差异超过 45%，说明有一边被严重削减且未补齐，严禁发起砍仓；
+    // 反之，初次开仓因价格波动与精度产生的正常数量差异 (通常在 5%~25% 以内) 100% 正常放行！
+    const maxAmt = Math.max(mainPosition.amount, hedgePosition.amount);
+    const minAmt = Math.min(mainPosition.amount, hedgePosition.amount);
+    if (maxAmt > 0 && ((maxAmt - minAmt) / maxAmt) > 0.45) {
         return false;
     }
 

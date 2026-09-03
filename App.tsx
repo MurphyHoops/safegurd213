@@ -2192,14 +2192,27 @@ const AppContent: React.FC = () => {
                             realizedPnL,
                             resData
                         );
-                        if (ratio >= 100 || (position.amount - customQty) <= 0.0001) {
+                        // 🔒 判定是否全额砍光归零：handleRealAmputationSuccess 已对 position.amount 执行过扣减，此处直接检查扣减后的剩余持仓数量
+                        const isFullyAmputated = (ratio !== undefined && ratio >= 99.99) || position.amount <= 0.0001;
+                        if (isFullyAmputated) {
                             // 🔒 100%全额砍仓：记录全额砍仓负债，并同步给该币对手单，然后移除已砍光仓位
                             simulatorRef.current.removePositionLocally(cleanSymbol, position.side);
                             setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side)));
                             const updatedSimPositions = simulatorRef.current.getPositions();
                             setPositions(updatedSimPositions);
                         } else {
-                            // 🔒 部分砍仓（无论比例多少）：直接同步模拟器中已唯一计算好的权威持仓对象，严禁在前端再次进行 +lossAmount 二次累加
+                            // 🔒 部分砍仓（如砍90%留10%底仓）：必须保全剩余持仓，严禁删除仓位！同步权威持仓对象与剩余数量
+                            setBinanceRealPositions(prev => prev.map(p => {
+                                if (normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side) {
+                                    return {
+                                        ...p,
+                                        amount: position.amount,
+                                        isAmputated: true,
+                                        amputatedAmount: position.amputatedAmount
+                                    };
+                                }
+                                return p;
+                            }));
                             const updatedSimPositions = simulatorRef.current.getPositions();
                             setPositions(updatedSimPositions);
                         }
@@ -2319,6 +2332,7 @@ const AppContent: React.FC = () => {
                     side: position.side,
                     action: "OPEN",
                     quantity: qty,
+                    amountUsdt: qty * (position.markPrice || position.entryPrice || 0),
                     isRefill: true,
                     allowExisting: true
                 })

@@ -1325,41 +1325,88 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 );
                                 const isCompletedCycle = isClosed || (!hasActivePosition && hasClosedLog);
 
-                                const isRefill = log.entry_id?.includes('_refill_');
-                                const isHedgeCut = !isRefill && !!log.parent_entry_id && (log.entry_id?.includes('_cut_') || log.exit_reason?.includes('减仓') || log.exit_reason?.includes('砍仓'));
-                                const isHedgeClear = log.exit_reason?.includes('解套') || log.exit_reason?.includes('断臂') || log.exit_reason?.includes('对冲清仓') || log.exit_reason?.includes('防爆安全') || log.exit_reason?.includes('断臂全清') || log.exit_reason?.includes('对冲解套');
-                                const isHedge = log.is_hedge || !!log.main_entry_id;
+                                const isRefill = log.entry_id?.includes('_refill_') || log.exit_reason?.includes('补仓');
+                                const isCut = !isRefill && (log.entry_id?.includes('_cut_') || log.exit_reason?.includes('砍仓') || log.exit_reason?.includes('减仓'));
+                                const isClear = isClosed && !isCut && !isRefill && (
+                                    log.exit_reason?.includes('清仓') || 
+                                    log.exit_reason?.includes('解套') || 
+                                    log.exit_reason?.includes('断臂') || 
+                                    log.exit_reason?.includes('对冲') ||
+                                    log.exit_reason?.includes('平仓') ||
+                                    log.exit_reason?.includes('止盈') ||
+                                    log.exit_reason?.includes('止损') ||
+                                    log.status === 'CLOSED'
+                                );
 
-                                let actionLabel = '开仓';
+                                // 判定当前日志属于对冲仓位还是原仓位：
+                                // 对冲仓位的核心特征：有 main_entry_id、或者 entry_id/exit_reason 明确包含对冲/HEDGE
+                                const isHedgeSide = !!log.main_entry_id || log.entry_id?.startsWith('HEDGE_') || (log.exit_reason?.includes('对冲') && !log.exit_reason?.includes('原仓位'));
+
+                                // 检查该币种在历史上或当前是否开启过防爆对冲
+                                const normSym = normalizeSymbol(log.symbol);
+                                const hasEverTriggeredHedge = tradeLogs.some(l => 
+                                    normalizeSymbol(l.symbol) === normSym && 
+                                    (!!l.main_entry_id || l.entry_id?.startsWith('HEDGE_') || l.is_hedge || l.exit_reason?.includes('对冲'))
+                                ) || positions.some(p => 
+                                    normalizeSymbol(p.symbol) === normSym && 
+                                    (p.isHedged || !!p.mainPositionId || (p.hedgeRetries || 0) > 0)
+                                );
+
+                                let actionLabel = '新开仓';
                                 let actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
 
                                 if (isClosed) {
-                                    if (isRefill) {
-                                        actionLabel = '防爆对冲补仓';
-                                        actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
-                                    } else if (isHedgeCut) {
-                                        actionLabel = '防爆对冲砍仓';
-                                        actionBadgeClass = 'bg-orange-900/40 text-orange-400 border-orange-500/20';
-                                    } else if (isHedgeClear) {
-                                        actionLabel = '防爆对冲清仓';
-                                        actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
-                                    } else if (log.profit_usdt !== undefined && log.profit_usdt >= 0) {
-                                        actionLabel = '盈利平仓';
-                                        actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
+                                    if (isHedgeSide) {
+                                        if (isCut) {
+                                            actionLabel = '防爆对冲砍仓';
+                                            actionBadgeClass = 'bg-orange-900/40 text-orange-400 border-orange-500/20';
+                                        } else if (isRefill) {
+                                            actionLabel = '防爆对冲补仓';
+                                            actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                        } else {
+                                            actionLabel = '防爆对冲清仓';
+                                            actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
+                                        }
                                     } else {
-                                        actionLabel = '止损平仓';
-                                        actionBadgeClass = 'bg-red-900/40 text-red-400 border-red-500/20';
+                                        // 原仓位链路
+                                        if (isCut) {
+                                            actionLabel = '原仓位砍仓';
+                                            actionBadgeClass = 'bg-orange-900/40 text-orange-400 border-orange-500/20';
+                                        } else if (isRefill) {
+                                            actionLabel = '原仓位补仓';
+                                            actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                        } else if (hasEverTriggeredHedge) {
+                                            actionLabel = '原仓位清仓';
+                                            actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
+                                        } else {
+                                            actionLabel = (log.profit_usdt !== undefined && log.profit_usdt >= 0) ? '盈利平仓' : '止损平仓';
+                                            actionBadgeClass = (log.profit_usdt !== undefined && log.profit_usdt >= 0) 
+                                                ? 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20' 
+                                                : 'bg-red-900/40 text-red-400 border-red-500/20';
+                                        }
                                     }
                                 } else {
-                                    if (isRefill) {
-                                        actionLabel = '防爆对冲补仓';
-                                        actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
-                                    } else if (isHedge) {
-                                        actionLabel = '防爆对冲开仓';
-                                        actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
+                                    // OPEN 状态
+                                    if (isHedgeSide) {
+                                        if (isRefill) {
+                                            actionLabel = '防爆对冲补仓';
+                                            actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                        } else {
+                                            actionLabel = '防爆对冲开仓';
+                                            actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
+                                        }
                                     } else {
-                                        actionLabel = '新开仓';
-                                        actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
+                                        if (isRefill) {
+                                            actionLabel = '原仓位补仓';
+                                            actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                        } else if (hasEverTriggeredHedge) {
+                                            // 开启对冲后，原新开仓标记自动更新为【原仓位】
+                                            actionLabel = '原仓位';
+                                            actionBadgeClass = 'bg-indigo-900/40 text-indigo-300 border-indigo-500/20';
+                                        } else {
+                                            actionLabel = '新开仓';
+                                            actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
+                                        }
                                     }
                                 }
 
@@ -1413,7 +1460,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                 >
                                                     {log.symbol}
                                                     <span className="text-[10px] text-slate-400 ml-1">
-                                                        ({isRefill ? '砍仓后补仓' : (isHedgeCut ? '防爆对冲砍仓' : (log.main_entry_id ? (log.reopenCount ? `对冲仓位(编号${log.reopenCount})` : "对冲仓位") : ((log.is_reopened || log.correlationId) ? `复开仓位(编号${log.reopenCount || 1})` : "原仓位")))})
+                                                        ({isRefill ? (isHedgeSide ? '防爆对冲补仓' : '原仓位补仓') : (isCut ? (isHedgeSide ? '防爆对冲砍仓' : '原仓位砍仓') : (isHedgeSide ? '防爆对冲仓位' : (hasEverTriggeredHedge ? '原仓位' : '新开仓位')))})
                                                     </span>
                                                 </span>
                                                 <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><History size={12} /></button>
@@ -1440,11 +1487,21 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                 </div>
                                             )}
                                             {isRefill ? (
-                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-500/30 text-[9px] font-bold">🔄 补仓</span>
-                                            ) : !!log.main_entry_id ? (
-                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-400 border border-blue-500/30 text-[9px] font-bold"><Shield size={8} /> 🛡️对冲</span>
-                                            ) : !!log.parent_entry_id ? (
-                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-400 border border-purple-500/30 text-[9px] font-bold"><Shield size={8} /> {log.exit_reason?.includes('止损砍仓') ? '✂️止损砍仓' : '✂️减仓'}</span>
+                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-500/30 text-[9px] font-bold">
+                                                    🔄 {isHedgeSide ? '防爆对冲补仓' : '原仓位补仓'}
+                                                </span>
+                                            ) : isCut ? (
+                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-orange-900/40 text-orange-300 border border-orange-500/30 text-[9px] font-bold">
+                                                    ✂️ {isHedgeSide ? '防爆对冲砍仓' : '原仓位砍仓'}
+                                                </span>
+                                            ) : isHedgeSide ? (
+                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-purple-900/30 text-purple-400 border border-purple-500/30 text-[9px] font-bold">
+                                                    <Shield size={8} /> 防爆对冲
+                                                </span>
+                                            ) : hasEverTriggeredHedge ? (
+                                                <span className="inline-flex items-center gap-0.5 mt-1 px-1.5 py-0.5 rounded bg-indigo-900/30 text-indigo-300 border border-indigo-500/30 text-[9px] font-bold">
+                                                    ⚓ 原仓位
+                                                </span>
                                             ) : null}
                                         </td>
                                         <td className="px-4 py-3 text-xs font-mono">

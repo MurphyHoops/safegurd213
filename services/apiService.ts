@@ -382,7 +382,11 @@ const _fetchWithFallbackInner = async (
             let timeoutId: any;
             try {
                 const controller = new AbortController();
-                const proxyTimeout = Math.min(TIMEOUT_MS, isKlinePayload ? (priority === 'HIGH' ? 6000 : 15000) : (isHeavyPayload ? 45000 : 20000));
+                const isLocalProxy = proxyUrl.startsWith('/api/proxy');
+                // Give local server proxy enough time (25s) while capping external public proxies to 8-10s to prevent hanging
+                const proxyTimeout = isLocalProxy
+                    ? Math.min(TIMEOUT_MS, isHeavyPayload ? 25000 : 15000)
+                    : (priority === 'HIGH' ? 6000 : (isHeavyPayload ? 10000 : 8000));
                 timeoutId = setTimeout(() => {
                     if (!controller.signal.aborted) {
                         try {
@@ -454,7 +458,8 @@ const _fetchWithFallbackInner = async (
         };
 
         let lastError: any;
-        if (priority === 'HIGH') {
+        // For HIGH priority or heavy payload (such as 24hr ticker market scan), race local server with direct & first fallback
+        if (priority === 'HIGH' || isHeavyPayload) {
             try {
                 const raceBatch = [proxyLocalServer, proxyCorsProxyIO, proxyCodeTabs];
                 const response = await Promise.any(raceBatch.map(p => fetchProxy(p)));
@@ -465,8 +470,8 @@ const _fetchWithFallbackInner = async (
             }
         }
 
-        // Filter out already failed race batch items for HIGH priority to prevent wasting another 45+ seconds of sequential retries
-        const remainingProxies = priority === 'HIGH' 
+        // Filter out already failed race batch items to prevent wasting time on sequential retries
+        const remainingProxies = (priority === 'HIGH' || isHeavyPayload)
             ? proxies.filter(p => p !== proxyLocalServer && p !== proxyCorsProxyIO && p !== proxyCodeTabs)
             : proxies;
 

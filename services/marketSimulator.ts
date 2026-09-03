@@ -1469,11 +1469,26 @@ export class MarketSimulator {
     public amputate(position: Position, ratio: number, reason: string) {
         const cleanSym = normalizeSymbol(position.symbol);
 
-        // 🔒 [断臂求生双边等额绝对硬锁] 
-        // 铁律：必须处于双边等额对冲状态才允许发起砍仓！只要两边数量不对等（说明前次砍仓未补回），严禁连续砍仓！
+        // 🔒 [断臂求生双边完整对冲硬锁] 
+        // 铁律 1：如果任一方处于被砍待补仓状态 (isAmputated 为 true 或待补仓数量 > 0)，绝对严禁发起连续二次砍仓！
         const opposingPos = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSym && p.side !== position.side);
-        if (!opposingPos || Math.abs(position.amount - opposingPos.amount) > Math.max(position.amount, opposingPos.amount) * 0.05) {
-            console.warn(`[Amputation Lock] 🛡️ 拦截二次砍仓: ${position.symbol} ${position.side} 与对手仓位数量不对等 (当前:${position.amount.toFixed(4)} vs 对手:${opposingPos?.amount.toFixed(4) || 0})，必须等回踩补仓恢复等额后方可再次砍仓！`);
+        if (!opposingPos || position.amount <= 0.0001 || opposingPos.amount <= 0.0001) {
+            console.warn(`[Amputation Lock] 🛡️ 拦截砍仓: ${position.symbol} 对手仓位不存在或数量为0`);
+            return;
+        }
+
+        const isAnyAmputated = !!position.isAmputated || (position.amputatedAmount || 0) > 0 ||
+            !!opposingPos.isAmputated || (opposingPos.amputatedAmount || 0) > 0;
+        if (isAnyAmputated) {
+            console.warn(`[Amputation Lock] 🛡️ 拦截二次砍仓: ${position.symbol} 前次砍仓尚未完成回踩补仓，必须等回踩补仓恢复后方可再次砍仓！`);
+            return;
+        }
+
+        // 铁律 2：数量比例防御 (双保险，防止大幅失衡仍未补仓时误砍)
+        const maxAmt = Math.max(position.amount, opposingPos.amount);
+        const minAmt = Math.min(position.amount, opposingPos.amount);
+        if (maxAmt > 0 && ((maxAmt - minAmt) / maxAmt) > 0.45) {
+            console.warn(`[Amputation Lock] 🛡️ 拦截二次砍仓: ${position.symbol} 两边数量相差悬殊(当前:${position.amount.toFixed(4)} vs 对手:${opposingPos.amount.toFixed(4)})，说明有减仓未补齐，严禁连续砍仓！`);
             return;
         }
 
@@ -1545,6 +1560,9 @@ export class MarketSimulator {
         const isStopLoss = realizedPnL < 0;
         const wasEverHedged = position.isHedged || (position.hedgeRetries || 0) > 0 || !!position.mainPositionId || (position.cumulativeHedgeLoss || 0) > 0 || (position.cumulativeHedgeProfit || 0) > 0;
 
+        const isHedgePos = !!position.mainPositionId || position.entryId?.startsWith('HEDGE_');
+        const cutActionName = isHedgePos ? `防爆对冲砍仓 (${ratio}%)` : `原仓位砍仓 (${ratio}%)`;
+
         // 🔒 [止损砍仓独立记录流水铁律]
         const cutCostUsdt = cutAmount * position.entryPrice;
         const cutLogEntry: TradeLog = {
@@ -1554,7 +1572,7 @@ export class MarketSimulator {
             status: 'CLOSED',
             profit_usdt: realizedPnL,
             profit_percent: position.unrealizedPnLPercentage || 0,
-            exit_reason: reason || `止损砍仓 (${ratio}%)`,
+            exit_reason: reason || cutActionName,
             is_hedge: true,
             entry_timestamp: position.entryTime || now,
             exit_timestamp: now,
@@ -1575,7 +1593,7 @@ export class MarketSimulator {
         }
 
         // Add sub-event to main log
-        this.addTradeEvent(position, `止损砍仓 (${ratio}%)`, position.markPrice, cutAmount, reason, realizedPnL);
+        this.addTradeEvent(position, cutActionName, position.markPrice, cutAmount, reason, realizedPnL);
 
         // 真实扣除或增加账户余额
         this.account.marginBalance += realizedPnL;
@@ -1641,6 +1659,9 @@ export class MarketSimulator {
         const isStopLoss = realizedPnL < 0;
         const wasEverHedged = position.isHedged || (position.hedgeRetries || 0) > 0 || !!position.mainPositionId || (position.cumulativeHedgeLoss || 0) > 0 || (position.cumulativeHedgeProfit || 0) > 0;
 
+        const isHedgePos = !!position.mainPositionId || position.entryId?.startsWith('HEDGE_');
+        const cutActionName = isHedgePos ? `防爆对冲砍仓 (${ratio}%)` : `原仓位砍仓 (${ratio}%)`;
+
         // 🔒 [实盘独立记录止损砍仓流水铁律]
         const cutCostUsdt = cutAmount * position.entryPrice;
         const cutLogEntry: TradeLog = {
@@ -1651,7 +1672,7 @@ export class MarketSimulator {
             status: 'CLOSED',
             profit_usdt: realizedPnL,
             profit_percent: position.unrealizedPnLPercentage || 0,
-            exit_reason: reason || `防爆对冲砍仓 (${ratio}%)`,
+            exit_reason: reason || cutActionName,
             is_hedge: true,
             entry_timestamp: position.entryTime || now,
             exit_timestamp: now,
@@ -1672,7 +1693,7 @@ export class MarketSimulator {
         }
 
         // Add sub-event to main log
-        this.addTradeEvent(position, `防爆对冲砍仓 (${ratio}%)`, position.markPrice || position.entryPrice, cutAmount, reason, realizedPnL);
+        this.addTradeEvent(position, cutActionName, position.markPrice || position.entryPrice, cutAmount, reason, realizedPnL);
 
         // 真实扣除或增加账户余额
         this.account.marginBalance += realizedPnL;
@@ -1794,8 +1815,11 @@ export class MarketSimulator {
             parentOpenLog.current_amount = position.amount;
         }
 
+        const isHedgePos = !!position.mainPositionId || position.entryId?.startsWith('HEDGE_');
+        const refillActionName = isHedgePos ? '防爆对冲补仓' : '原仓位补仓';
+
         // Add sub-event to main log
-        this.addTradeEvent(position, '防爆对冲补仓', position.markPrice, refillAmount, reason);
+        this.addTradeEvent(position, refillActionName, position.markPrice, refillAmount, reason);
 
         // 🔒 [实盘独立记录防爆对冲补仓流水铁律]
         const refillCostUsdt = refillAmount * (position.markPrice || position.entryPrice);
@@ -1811,10 +1835,10 @@ export class MarketSimulator {
             entry_price: position.markPrice || position.entryPrice,
             current_amount: refillAmount,
             timeframe: (position as any).timeframe,
-            exit_reason: `防爆对冲补仓 (${reason || '回踩补回'})`,
+            exit_reason: `${refillActionName} (${reason || '回踩补回'})`,
             events: [{
                 timestamp: now,
-                action: '防爆对冲补仓',
+                action: refillActionName,
                 price: position.markPrice || position.entryPrice,
                 amount: refillAmount,
                 reason: reason || '回踩补回'
@@ -1908,6 +1932,8 @@ export class MarketSimulator {
 
             // 🔒 [实盘独立记录防爆对冲补仓流水铁律]
             const now = Date.now();
+            const isHedgePos = !!position.mainPositionId || position.entryId?.startsWith('HEDGE_');
+            const refillActionName = isHedgePos ? '防爆对冲补仓' : '原仓位补仓';
             const refillCostUsdt = refillAmount * (position.markPrice || position.entryPrice);
             const refillLogEntry: TradeLog = {
                 symbol: symbol,
@@ -1921,17 +1947,17 @@ export class MarketSimulator {
                 entry_price: position.markPrice || position.entryPrice,
                 current_amount: refillAmount,
                 timeframe: (position as any).timeframe,
-                exit_reason: `防爆对冲补仓 (${reason || '实盘回踩补回'})`,
+                exit_reason: `${refillActionName} (${reason || '实盘回踩补回'})`,
                 events: [{
                     timestamp: now,
-                    action: '防爆对冲补仓',
+                    action: refillActionName,
                     price: position.markPrice || position.entryPrice,
                     amount: refillAmount,
                     reason: reason || '实盘回踩补回'
                 }]
             };
             this.tradeLogs.unshift(refillLogEntry);
-            this.addTradeEvent(position, '防爆对冲补仓', position.markPrice || position.entryPrice, refillAmount, reason);
+            this.addTradeEvent(position, refillActionName, position.markPrice || position.entryPrice, refillAmount, reason);
         }
         if (opposingPos) {
             opposingPos.refillCount = nextRefillCount;
