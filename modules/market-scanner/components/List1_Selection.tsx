@@ -216,21 +216,42 @@ const List1_Selection: React.FC<Props> = ({
 
     const baseList = useMemo(() => {
         // 🔒 无论是否开启大行情发现，列表1的基础底池均由行情启动底池（startTrendPool）支撑，无缝承接所有候选币
+        // 同时确保大行情发现中通过的候选币种（majorTrendCandidates）也能在baseList中存在，避免被遗漏
+        const poolMap = new Map<string, any>();
         if (startTrendPool && startTrendPool.length > 0) {
-            return startTrendPool.map(p => {
+            startTrendPool.forEach(p => {
                 const existing = list1.find(item => item.symbol === p.symbol);
-                return {
+                poolMap.set(p.symbol, {
                     symbol: p.symbol,
                     price: p.price || existing?.price || 0,
                     change: p.changePct !== undefined ? p.changePct : (existing?.change || 0),
                     volume24h: existing?.volume24h,
                     volume: existing?.volume,
                     ...existing
-                };
+                });
+            });
+        } else {
+            list1.forEach(item => {
+                poolMap.set(item.symbol, item);
             });
         }
-        return list1;
-    }, [startTrendPool, list1]);
+
+        if (majorTrendCandidates && majorTrendCandidates.size > 0) {
+            majorTrendCandidates.forEach(cand => {
+                const sym = cand.replace('_LONG', '').replace('_SHORT', '');
+                if (sym && !poolMap.has(sym)) {
+                    const existing = list1.find(item => item.symbol === sym);
+                    poolMap.set(sym, existing || {
+                        symbol: sym,
+                        price: 0,
+                        change: 0
+                    });
+                }
+            });
+        }
+
+        return Array.from(poolMap.values());
+    }, [startTrendPool, list1, majorTrendCandidates]);
 
     const list1SymbolsStr = baseList.map(item => item.symbol).join(',');
 
@@ -281,9 +302,11 @@ const List1_Selection: React.FC<Props> = ({
                     const now = Date.now();
                     let data: any[] | null = null;
 
-                    const cached = KLINE_LIMIT_CACHE[symbol]?.[lookbackDays];
-                    if (cached && now - cached.timestamp < 10 * 60 * 1000) {
+                    const cached = KLINE_LIMIT_CACHE[symbol]?.[lookbackDays] || KLINE_LIMIT_CACHE[symbol]?.['1d'];
+                    if (cached && now - (cached.timestamp || 0) < 10 * 60 * 1000 && Array.isArray(cached.klines) && cached.klines.length >= lookbackDays) {
                         data = cached.klines;
+                    } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= lookbackDays) {
+                        data = KLINE_LIMIT_CACHE[`${symbol}_1d`];
                     } else {
                         const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=${limit}`;
                         const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d), directMode);
@@ -293,6 +316,11 @@ const List1_Selection: React.FC<Props> = ({
                                 KLINE_LIMIT_CACHE[symbol] = {};
                             }
                             KLINE_LIMIT_CACHE[symbol][lookbackDays] = {
+                                timestamp: now,
+                                klines: data
+                            };
+                            KLINE_LIMIT_CACHE[`${symbol}_1d`] = data;
+                            KLINE_LIMIT_CACHE[symbol]['1d'] = {
                                 timestamp: now,
                                 klines: data
                             };
@@ -347,7 +375,7 @@ const List1_Selection: React.FC<Props> = ({
                             }
                         }
 
-                        // 1h K-line starting trend calculations on the fly
+                        // ⚡ [日K极速扫描方案]: 直接复用已拉取的日K数据(data)，零网络额外开销零阻塞
                         const startTrendGroups = scanConfig.majorTrend?.startTrendGroups || [];
                         const enableStartTrendLong = scanConfig.majorTrend?.enableStartTrendLong;
                         const enableStartTrendShort = scanConfig.majorTrend?.enableStartTrendShort;
@@ -356,103 +384,80 @@ const List1_Selection: React.FC<Props> = ({
                         let startTrendValidLong = true;
                         let startTrendValidShort = true;
 
-                        if ((enableStartTrendLong || enableStartTrendShort) && hasActiveGroups) {
+                        if ((enableStartTrendLong || enableStartTrendShort) && hasActiveGroups && Array.isArray(data) && data.length > 0) {
                             try {
                                 const activeGroups = startTrendGroups.map((g, idx) => ({ ...g, idx })).filter(g => g.enabled);
-                                // 🔒 [SECURITY_LOCK]: KEEP LIMIT1H FIXED AT 100 TO MAXIMIZE CACHE HIT-RATES ACROSS DIFFERENT TIME COMBINATIONS
-                                const limit1h = 100; // Fixed large limit to maximize cache hits
-                                // 🔒 [END_SECURITY_LOCK]
-                                
-                                let klines1h: any[] | null = null;
-                                const cached1h = KLINE_LIMIT_CACHE[symbol]?.[`1h_${limit1h}`];
-                                if (cached1h && now - cached1h.timestamp < 3 * 60 * 1000) {
-                                    klines1h = cached1h.klines;
-                                } else {
-                                    const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=${limit1h}`;
-                                    const res1h = await fetchWithFallback(url1h, { timeout: 15000 }, (d) => Array.isArray(d), directMode);
-                                    klines1h = await res1h.json();
-                                    if (Array.isArray(klines1h)) {
-                                        if (!KLINE_LIMIT_CACHE[symbol]) {
-                                            KLINE_LIMIT_CACHE[symbol] = {};
+                                const lastDayCandle = data[data.length - 1];
+                                const lastPrice = currentPrice > 0 ? currentPrice : parseFloat(lastDayCandle[4]);
+
+                                if (!isNaN(lastPrice) && lastPrice > 0) {
+                                    let isLongTrendValid = false;
+                                    let isShortTrendValid = false;
+
+                                    for (const group of activeGroups) {
+                                        let lastCandles: any[] = [];
+                                        if (group.idx === 0) {
+                                            // 组合0：今日日K线 (从今日08:00开盘起)
+                                            lastCandles = [lastDayCandle];
+                                        } else {
+                                            const groupDays = group.days !== undefined ? group.days : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7));
+                                            const requiredDays = Math.max(groupDays, 1);
+                                            lastCandles = data.slice(-Math.min(requiredDays, data.length));
                                         }
-                                        KLINE_LIMIT_CACHE[symbol][`1h_${limit1h}`] = {
-                                            timestamp: now,
-                                            klines: klines1h
-                                        };
-                                    }
-                                }
 
-                                if (Array.isArray(klines1h) && klines1h.length > 0) {
-                                    const last1hPrice = parseFloat(klines1h[klines1h.length - 1][4]);
-                                    if (!isNaN(last1hPrice) && last1hPrice > 0) {
-                                        let isLongTrendValid = false;
-                                        let isShortTrendValid = false;
+                                        if (lastCandles.length === 0) continue;
 
-                                        for (const group of activeGroups) {
-                                            const groupDays = group.days !== undefined ? group.days : (group.idx === 0 ? 1 : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7)));
-                                            const requiredHours = groupDays * 24;
-
-                                            if (klines1h.length < requiredHours) {
-                                                continue;
-                                            }
-
-                                            const lastHCandles = klines1h.slice(-requiredHours);
-
-                                            if (enableStartTrendLong) {
-                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                                if (periodLows.length > 0 && periodHighs.length > 0) {
-                                                    const periodMinLow = Math.min(...periodLows);
-                                                    const periodMaxHigh = Math.max(...periodHighs);
-                                                    const baseOpen = parseFloat(lastHCandles[0][1]);
-                                                    
-                                                    const changePct = ((last1hPrice - baseOpen) / baseOpen) * 100;
-                                                    const changePctFromLow = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
-                                                    const effectiveChange = Math.max(changePct, changePctFromLow);
-                                                    
-                                                    const pullbackPct = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
-                                                    const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
-                                                    
-                                                    if (!isNaN(effectiveChange) && effectiveChange >= group.minLong && effectiveChange <= group.maxLong && !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
-                                                        isLongTrendValid = true;
-                                                    }
-                                                }
-                                            }
-
-                                            if (enableStartTrendShort) {
-                                                const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                                const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                                if (periodHighs.length > 0 && periodLows.length > 0) {
-                                                    const periodMaxHigh = Math.max(...periodHighs);
-                                                    const periodMinLow = Math.min(...periodLows);
-                                                    const baseOpen = parseFloat(lastHCandles[0][1]);
-                                                    
-                                                    const dropPct = ((baseOpen - last1hPrice) / baseOpen) * 100;
-                                                    const dropPctFromHigh = ((periodMaxHigh - last1hPrice) / periodMaxHigh) * 100;
-                                                    const effectiveDrop = Math.max(dropPct, dropPctFromHigh);
-                                                    
-                                                    const bouncePct = ((last1hPrice - periodMinLow) / periodMinLow) * 100;
-                                                    const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
-                                                    
-                                                    if (!isNaN(effectiveDrop) && effectiveDrop >= group.minShort && effectiveDrop <= group.maxShort && !isNaN(bouncePct) && bouncePct <= maxPullbackShort) {
-                                                        isShortTrendValid = true;
-                                                    }
+                                        if (enableStartTrendLong) {
+                                            const periodLows = lastCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                            const periodHighs = lastCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                            if (periodLows.length > 0 && periodHighs.length > 0) {
+                                                const periodMinLow = Math.min(...periodLows);
+                                                const periodMaxHigh = Math.max(...periodHighs);
+                                                const baseOpen = parseFloat(lastCandles[0][1]);
+                                                
+                                                const changePct = ((lastPrice - baseOpen) / baseOpen) * 100;
+                                                const changePctFromLow = ((lastPrice - periodMinLow) / periodMinLow) * 100;
+                                                const effectiveChange = Math.max(changePct, changePctFromLow);
+                                                
+                                                const pullbackPct = ((periodMaxHigh - lastPrice) / periodMaxHigh) * 100;
+                                                const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
+                                                
+                                                if (!isNaN(effectiveChange) && effectiveChange >= group.minLong && effectiveChange <= group.maxLong && !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
+                                                    isLongTrendValid = true;
                                                 }
                                             }
                                         }
 
-                                        startTrendValidLong = enableStartTrendLong ? isLongTrendValid : true;
-                                        startTrendValidShort = enableStartTrendShort ? isShortTrendValid : true;
-                                    } else {
-                                        startTrendValidLong = !enableStartTrendLong;
-                                        startTrendValidShort = !enableStartTrendShort;
+                                        if (enableStartTrendShort) {
+                                            const periodHighs = lastCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                            const periodLows = lastCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                            if (periodHighs.length > 0 && periodLows.length > 0) {
+                                                const periodMaxHigh = Math.max(...periodHighs);
+                                                const periodMinLow = Math.min(...periodLows);
+                                                const baseOpen = parseFloat(lastCandles[0][1]);
+                                                
+                                                const dropPct = ((baseOpen - lastPrice) / baseOpen) * 100;
+                                                const dropPctFromHigh = ((periodMaxHigh - lastPrice) / periodMaxHigh) * 100;
+                                                const effectiveDrop = Math.max(dropPct, dropPctFromHigh);
+                                                
+                                                const bouncePct = ((lastPrice - periodMinLow) / periodMinLow) * 100;
+                                                const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
+                                                
+                                                if (!isNaN(effectiveDrop) && effectiveDrop >= group.minShort && effectiveDrop <= group.maxShort && !isNaN(bouncePct) && bouncePct <= maxPullbackShort) {
+                                                    isShortTrendValid = true;
+                                                }
+                                            }
+                                        }
                                     }
+
+                                    startTrendValidLong = enableStartTrendLong ? isLongTrendValid : true;
+                                    startTrendValidShort = enableStartTrendShort ? isShortTrendValid : true;
                                 } else {
                                     startTrendValidLong = !enableStartTrendLong;
                                     startTrendValidShort = !enableStartTrendShort;
                                 }
-                            } catch (err1h) {
-                                console.warn("[StartTrend list views] Fetch 1h warning: ", err1h);
+                            } catch (err1d) {
+                                console.warn("[StartTrend list views] Calculate 1d error: ", err1d);
                                 startTrendValidLong = true;
                                 startTrendValidShort = true;
                             }
@@ -557,21 +562,31 @@ const List1_Selection: React.FC<Props> = ({
         const enableSideways = cfg.enableSideways === true; // 横盘蓄势开关开启时生效
         const enableLookbackFilter = cfg.enableLookbackFilter ?? (enableLong || enableShort);
 
-        // 仅在明确启用后台大行情全域白名单锁定且有候选币时做前置检查，否则以底池币种实时指标为准
-        const hasCandidates = Boolean(cfg.enableStrictDiscoveryPool && majorTrendCandidates && majorTrendCandidates.size > 0);
+        // 🔒 [大行情实时候选同步与零空隙保障]:
+        // 若后台“大行情发现”已有候选集合，以候选集合为核心基准，实现新币实时加入、失效币自动删除，并确保列表1持续存留为列表2提供0空隙数据源
+        const hasCandidates = Boolean(majorTrendCandidates && majorTrendCandidates.size > 0);
 
         return sortedList1.filter(item => {
+            const sym = item.symbol;
+            if (!sym) return false;
+
             if (hasCandidates) {
-                const keySuffix = isLong ? '_LONG' : '_SHORT';
-                const key = `${item.symbol}${keySuffix}`;
-                if (!majorTrendCandidates.has(key)) {
-                    return false;
+                const matchLong = majorTrendCandidates.has(`${sym}_LONG`) || majorTrendCandidates.has(sym);
+                const matchShort = majorTrendCandidates.has(`${sym}_SHORT`) || majorTrendCandidates.has(sym);
+
+                if (enableLong && enableShort) {
+                    return matchLong || matchShort;
+                } else if (enableLong) {
+                    return matchLong;
+                } else if (enableShort) {
+                    return matchShort;
                 }
+                return false;
             }
 
             const metrics = metricsCache[item.symbol];
-            // 正在加载中的币种暂不展示，避免闪烁放行不符合的币
-            if (!metrics || metrics.loading) return false;
+            // 尚未产出大行情候选集时，正在加载中的底池币种保留展示，避免闪烁归零
+            if (!metrics || metrics.loading) return true;
 
             const currentPrice = item.price;
 

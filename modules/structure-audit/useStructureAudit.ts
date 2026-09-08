@@ -48,17 +48,16 @@ export const useStructureAudit = (
 
   // Ensure timeframes is sanitized & never empty
   useEffect(() => {
-    let newTfs = [...(config.timeframes || [])];
     if (!config.timeframes || config.timeframes.length === 0) {
-      setConfig((prev) => ({
-        ...prev,
-        timeframes:
-          newTfs.length > 0
-            ? newTfs
-            : ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
-      }));
+      setConfig((prev) => {
+        if (prev.timeframes && prev.timeframes.length > 0) return prev;
+        return {
+          ...prev,
+          timeframes: ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
+        };
+      });
     }
-  }, [config.timeframes, setConfig]);
+  }, [config.timeframes?.length, setConfig]);
 
   const [list3, setList3] = useState<ScannerItem[]>(() => {
     try {

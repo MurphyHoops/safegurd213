@@ -121,18 +121,18 @@ async function fetchKlinesViaWebSocket(safeSymbol: string, timeframe: string, li
         throw new Error('WebSocket not supported in this environment');
     }
     return new Promise((resolve, reject) => {
-        const primaryDomain = isFutures ? 'fstream.binance.com' : 'ws-api.binance.com';
-        const backupDomain = isFutures ? 'fstream.binance.me' : 'ws-api.binance.me';
+        const primaryUrl = isFutures ? 'wss://ws-fapi.binance.com/ws-fapi/v1' : 'wss://ws-api.binance.com/ws-api/v3';
+        const backupUrl = isFutures ? 'wss://ws-fapi.binance.me/ws-fapi/v1' : 'wss://ws-api.binance.me/ws-api/v3';
         
         let ws: WebSocket;
-        let activeDomain = primaryDomain;
+        let activeDomain = isFutures ? 'ws-fapi.binance.com' : 'ws-api.binance.com';
         
         try {
-            ws = new WebSocket(`wss://${primaryDomain}/ws-api/v3`);
+            ws = new WebSocket(primaryUrl);
         } catch (e) {
             try {
-                activeDomain = backupDomain;
-                ws = new WebSocket(`wss://${backupDomain}/ws-api/v3`);
+                activeDomain = isFutures ? 'ws-fapi.binance.me' : 'ws-api.binance.me';
+                ws = new WebSocket(backupUrl);
             } catch (e2: any) {
                 reject(e2);
                 return;

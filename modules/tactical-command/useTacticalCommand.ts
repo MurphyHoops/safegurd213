@@ -5,7 +5,7 @@ import { ActionConfig } from '../../components/Scanner/scannerTypes';
 
 const DEFAULT_CONFIG: ActionConfig = { 
     enabled: true, 
-    openAmount: 100, 
+    openAmount: 10, 
     maxOpenSymbols: 200, // Increased from 100
     maxTotalValue: 100000, // Increased from 10000
     breakoutBuffer: 0.2, 

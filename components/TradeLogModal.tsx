@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { X, FileText, Activity, Code, Clock, ArrowRight, ArrowLeft, Search, TrendingUp, TrendingDown, AlertCircle, Calculator, Link, Shield, PieChart, BarChart2, History, Filter, RotateCcw, Layers, Banknote, List, LayoutGrid, Trash2, Brain } from 'lucide-react';
 import { TradeLog, SystemEvent, PositionSide, Position } from '../types';
 import { normalizeSymbol } from '../services/symbolUtils';
+import { getCoinChineseName, resolveSymbolFromInput } from '../services/coinNames';
 
 interface Props {
   tradeLogs: TradeLog[];
@@ -10,6 +11,7 @@ interface Props {
   onClose: () => void;
   initialSearch?: string; 
   onClearHistory?: () => void;
+  onRefresh?: () => Promise<void> | void;
   onOpenChart?: (symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string) => void;
 }
 
@@ -30,7 +32,8 @@ const FilterChip = ({ type, label, icon: Icon, colorClass, activeFilter, handleF
     </button>
 );
 
-const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: rawPositions, systemEvents, onClose, initialSearch = '', onClearHistory, onOpenChart }) => {
+const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: rawPositions, systemEvents, onClose, initialSearch = '', onClearHistory, onRefresh, onOpenChart }) => {
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const tradeLogs = useMemo(() => {
       if (!Array.isArray(rawTradeLogs)) return [];
       const mapped = rawTradeLogs.map((l, index) => ({
@@ -39,12 +42,14 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
           entry_id: l.entry_id ? String(l.entry_id) : `manual_fallback_${l.symbol || 'coin'}_${index}_${l.exit_timestamp || l.entry_timestamp || Date.now()}`
       }));
 
-      // 🔒【开仓唯一性防护】确保每个进行中的活跃仓位仅显示一条唯一的 OPEN 记录
+      // 🔒【开仓唯一性防护】确保每个进行中的活跃仓位或独立订单开仓真实呈现，绝不误杀手机APP/外部开仓
       const seenOpenKeys = new Set<string>();
       return mapped.filter(l => {
           if (l.status === 'OPEN') {
               const normSym = normalizeSymbol(l.symbol);
-              const openKey = l.entry_id ? `OPEN_ID_${l.entry_id}` : `OPEN_SYM_${normSym}_${l.direction}`;
+              const openKey = l.binance_order_id 
+                  ? `OPEN_ORDER_${l.binance_order_id}` 
+                  : (l.entry_id ? `OPEN_ID_${l.entry_id}` : `OPEN_SYM_${normSym}_${l.direction}_${l.entry_timestamp || 0}`);
               if (seenOpenKeys.has(openKey)) return false;
               seenOpenKeys.add(openKey);
               return true;
@@ -64,7 +69,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
   const [selectedLog, setSelectedLog] = useState<TradeLog | null>(null); 
   const [selectedRecoveryId, setSelectedRecoveryId] = useState<string | null>(null);
   const [selectedDebtId, setSelectedDebtId] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState(initialSearch);
+  const [searchTerm, setSearchTerm] = useState(initialSearch || '');
   const [activeFilter, setActiveFilter] = useState<FilterType>('ALL');
   const [isGroupedView, setIsGroupedView] = useState(false); // Default to List View
   const [groupSortConfig, setGroupSortConfig] = useState<{ key: 'TIME' | 'AMOUNT', direction: 'DESC' | 'ASC' }>({ key: 'TIME', direction: 'DESC' });
@@ -89,8 +94,11 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
   };
 
   useEffect(() => {
-      if (initialSearch) {
-          setIsGroupedView(false);
+      if (initialSearch !== undefined) {
+          setSearchTerm(initialSearch || '');
+          if (initialSearch) {
+              setIsGroupedView(false);
+          }
       }
   }, [initialSearch]);
 
@@ -115,12 +123,11 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
               ids.add(l.main_entry_id);
               ids.add(l.entry_id);
           }
-          if (l.parent_entry_id) {
-              ids.add(l.parent_entry_id);
-              ids.add(l.entry_id);
-          }
           if (l.is_hedge) {
               ids.add(l.entry_id);
+              if (l.parent_entry_id) {
+                  ids.add(l.parent_entry_id);
+              }
           }
       });
 
@@ -146,7 +153,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                       added = true;
                   }
               }
-              if (l.parent_entry_id && (ids.has(l.parent_entry_id) || ids.has(l.entry_id))) {
+              if (l.is_hedge && l.parent_entry_id && (ids.has(l.parent_entry_id) || ids.has(l.entry_id))) {
                   if (!ids.has(l.parent_entry_id) || !ids.has(l.entry_id)) {
                       ids.add(l.parent_entry_id);
                       ids.add(l.entry_id);
@@ -452,7 +459,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
 
       // C. 常规止盈 (Regular Take Profit) - Closed, never hedged, Profit > 0 (excluding AI closes)
       const normalWinLogs = filteredTradeLogs.filter(l => {
-          const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id));
+          const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id)) || l.is_hedge;
           const isAiClose = l.exit_reason?.includes('AI 智能') || l.exit_reason?.includes('AI智能') || l.exit_reason?.includes('AI逃顶') || l.exit_reason?.toUpperCase().includes('AI');
           return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) > 0 && !isHedged && !isAiClose;
       });
@@ -460,7 +467,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
 
       // AI 智能止盈 (AI Smart Take Profit) - Closed, never hedged, Profit > 0 (AI closes)
       const aiWinLogs = filteredTradeLogs.filter(l => {
-          const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id));
+          const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id)) || l.is_hedge;
           const isAiClose = l.exit_reason?.includes('AI 智能') || l.exit_reason?.includes('AI智能') || l.exit_reason?.includes('AI逃顶') || l.exit_reason?.toUpperCase().includes('AI');
           return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) > 0 && !isHedged && isAiClose;
       });
@@ -468,7 +475,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
 
       // C2. 常规止损 (Regular Stop Loss) - Closed, never hedged, Profit < 0
       const normalLossLogs = filteredTradeLogs.filter(l => {
-          const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id));
+          const isHedged = everHedgedIds.has(l.entry_id) || (l.parent_entry_id && everHedgedIds.has(l.parent_entry_id)) || l.is_hedge;
           return l.status === 'CLOSED' && !l.main_entry_id && (l.profit_usdt || 0) < 0 && !isHedged;
       });
       const totalNormalLoss = normalLossLogs.reduce((acc, l) => acc + (l.profit_usdt || 0), 0);
@@ -530,14 +537,32 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
 
   // --- 2. FILTER LOGIC ---
   const filteredLogs = useMemo(() => {
-      const term = searchTerm.toLowerCase();
+      const trimmedTerm = searchTerm.trim();
+      const term = trimmedTerm.toLowerCase();
+      const resolved = resolveSymbolFromInput(trimmedTerm);
+      const normSearch = normalizeSymbol(resolved.symbol || trimmedTerm);
       const startMs = startTime ? new Date(startTime).getTime() : 0;
       const endMs = endTime ? new Date(endTime).getTime() : Infinity;
       
       // 1. Base Filter (Search Text & Time Range)
       let filtered = tradeLogs.filter(log => {
-          const matchesTerm = (log.symbol || '').toLowerCase().includes(term) ||
-              String(log.entry_id || '').toLowerCase().includes(term);
+          let matchesTerm = true;
+          if (trimmedTerm) {
+              const logNorm = normalizeSymbol(log.symbol || '');
+              const zhName = getCoinChineseName(log.symbol || '');
+              // If searching by a coin symbol, strictly match the exact normalized coin symbol
+              if (normSearch && logNorm === normSearch) {
+                  matchesTerm = true;
+              } else if (zhName && zhName.toLowerCase().includes(term)) {
+                  matchesTerm = true;
+              } else if (normSearch && !log.entry_id?.toLowerCase().includes(term)) {
+                  // If term normalizes to a non-empty symbol and doesn't match entry_id, strictly reject
+                  matchesTerm = false;
+              } else {
+                  matchesTerm = (log.symbol || '').toLowerCase().includes(term) ||
+                      String(log.entry_id || '').toLowerCase().includes(term);
+              }
+          }
           
           if (!matchesTerm) return false;
           
@@ -582,7 +607,8 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                       // Show all related logs for the selected recovery symbol
                       const mainLog = tradeLogs.find(l => l.entry_id === selectedRecoveryId);
                       if (mainLog) {
-                          const relatedIds = recoveryStats.relatedIdsMap.get(mainLog.symbol);
+                          const sym = normalizeSymbol(mainLog.symbol);
+                          const relatedIds = recoveryStats.relatedIdsMap.get(sym) || recoveryStats.relatedIdsMap.get(mainLog.symbol);
                           return relatedIds ? relatedIds.has(log.entry_id) : false;
                       }
                       return false;
@@ -595,46 +621,46 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
 
               // NORMAL_WIN: Never hedged, normal profit closed (excluding AI)
               if (activeFilter === 'NORMAL_WIN') {
-                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id)) || log.is_hedge;
                   const isAiClose = log.exit_reason?.includes('AI 智能') || log.exit_reason?.includes('AI智能') || log.exit_reason?.includes('AI逃顶') || log.exit_reason?.toUpperCase().includes('AI');
                   return !log.main_entry_id && log.status === 'CLOSED' && (log.profit_usdt || 0) > 0 && !isHedged && !isAiClose;
               }
 
               // AI_WIN: Never hedged, AI profit closed (specifically AI)
               if (activeFilter === 'AI_WIN') {
-                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id)) || log.is_hedge;
                   const isAiClose = log.exit_reason?.includes('AI 智能') || log.exit_reason?.includes('AI智能') || log.exit_reason?.includes('AI逃顶') || log.exit_reason?.toUpperCase().includes('AI');
                   return !log.main_entry_id && log.status === 'CLOSED' && (log.profit_usdt || 0) > 0 && !isHedged && isAiClose;
               }
 
               // NORMAL_LOSS: Never hedged, normal loss closed
               if (activeFilter === 'NORMAL_LOSS') {
-                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id)) || log.is_hedge;
                   return !log.main_entry_id && log.status === 'CLOSED' && (log.profit_usdt || 0) < 0 && !isHedged;
               }
 
               // UNHEDGED_WIN: Active, never hedged, PnL > 0
               if (activeFilter === 'UNHEDGED_WIN') {
-                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id)) || log.is_hedge;
                   if (log.status !== 'OPEN' || !!log.main_entry_id || isHedged) return false;
                   const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
-                  return pos ? (pos.unrealizedPnL > 0 && !pos.isHedged) : false;
+                  return pos ? (pos.unrealizedPnL > 0 && !pos.isHedged) : ((log.profit_usdt || 0) > 0);
               }
 
               // UNHEDGED_LOSS: Active, never hedged, PnL < 0
               if (activeFilter === 'UNHEDGED_LOSS') {
-                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id)) || log.is_hedge;
                   if (log.status !== 'OPEN' || !!log.main_entry_id || isHedged) return false;
                   const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
-                  return pos ? (pos.unrealizedPnL < 0 && !pos.isHedged) : false;
+                  return pos ? (pos.unrealizedPnL < 0 && !pos.isHedged) : ((log.profit_usdt || 0) < 0);
               }
 
               // NEW_OPEN: Active, never hedged
               if (activeFilter === 'NEW_OPEN') {
-                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id));
+                  const isHedged = everHedgedIds.has(log.entry_id) || (log.parent_entry_id && everHedgedIds.has(log.parent_entry_id)) || log.is_hedge;
                   if (log.status !== 'OPEN' || !!log.main_entry_id || isHedged) return false;
                   const pos = positions.find(p => p.entryId === log.entry_id || p.entryId === log.parent_entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction));
-                  return pos ? !pos.isHedged : false;
+                  return pos ? !pos.isHedged : true;
               }
 
               if (activeFilter === 'LONG') {
@@ -852,6 +878,24 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                         </button>
                     </div>
                     <div className="flex items-center gap-2">
+                        {onRefresh && (
+                            <button 
+                                onClick={async () => {
+                                    setIsRefreshing(true);
+                                    try {
+                                        await onRefresh();
+                                    } finally {
+                                        setTimeout(() => setIsRefreshing(false), 600);
+                                    }
+                                }} 
+                                disabled={isRefreshing}
+                                className={`p-1.5 bg-blue-900/20 hover:bg-blue-900/50 text-blue-400 border border-blue-500/20 rounded transition-colors flex items-center gap-1 text-xs font-bold ${isRefreshing ? 'opacity-70 cursor-not-allowed' : ''}`} 
+                                title="主动同步币安最新开平仓流水 (包含手机APP与外部开仓)"
+                            >
+                                <RotateCcw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+                                <span className="hidden sm:inline">同步币安流水</span>
+                            </button>
+                        )}
                         {onClearHistory && (
                             <button onClick={onClearHistory} className="p-1.5 bg-red-900/20 hover:bg-red-900/50 text-red-400 border border-red-500/20 rounded transition-colors" title="清空所有历史记录">
                                 <Trash2 size={14} />
@@ -1087,7 +1131,10 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                 className="cursor-pointer hover:text-indigo-400 transition-colors"
                                                 onClick={() => onOpenChart?.(group.symbol)}
                                             >
-                                                {group.symbol}
+                                                <span>{group.symbol}</span>
+                                                {getCoinChineseName(group.symbol) && (
+                                                    <span className="text-[11px] text-amber-300/80 font-normal ml-1">({getCoinChineseName(group.symbol)})</span>
+                                                )}
                                             </span>
                                             {activeFilter === 'DEBT' && <Banknote size={12} className="text-red-400"/>}
                                             {activeFilter === 'RECOVERY' && <RotateCcw size={12} className="text-emerald-400"/>}
@@ -1211,8 +1258,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 const realizedPnLPct = log.profit_percent || 0;
 
                                 let recoveryInfo: { netProfit: number, grossProfit: number, totalLoss: number, hedgeCount: number, lastStopLossTime: number } | null = null;
-                                if (activeFilter === 'RECOVERY' && !selectedRecoveryId && recoveryStats.map.has(log.symbol)) {
-                                    recoveryInfo = recoveryStats.map.get(log.symbol)!;
+                                if (activeFilter === 'RECOVERY' && !selectedRecoveryId) {
+                                    const normSym = normalizeSymbol(log.symbol);
+                                    recoveryInfo = recoveryStats.map.get(normSym) || recoveryStats.map.get(log.symbol) || null;
                                 }
 
                                     if (activeFilter === 'RECOVERY' && !selectedRecoveryId) {
@@ -1220,7 +1268,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         return (
                                             <tr key={uniqueKey} className="hover:bg-slate-800/30 transition-colors border-b border-slate-800/50">
                                                 <td className="px-4 py-4 font-bold text-slate-200 text-sm">
-                                                    {log.symbol}
+                                                    <div className="flex items-baseline gap-1">
+                                                        <span>{log.symbol}</span>
+                                                        {getCoinChineseName(log.symbol) && (
+                                                            <span className="text-[11px] text-amber-300/80 font-normal">({getCoinChineseName(log.symbol)})</span>
+                                                        )}
+                                                    </div>
                                                 </td>
                                                 <td className="px-4 py-4 text-slate-300 font-mono">
                                                     <span className="bg-indigo-900/40 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/20">
@@ -1267,12 +1320,18 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                     }
 
                                     if (activeFilter === 'DEBT' && !selectedDebtId) {
-                                        const debtInfo = activeHedgeStats.map.get(log.symbol);
+                                        const normSym = normalizeSymbol(log.symbol);
+                                        const debtInfo = activeHedgeStats.map.get(normSym) || activeHedgeStats.map.get(log.symbol);
                                         if (!debtInfo) return null;
                                         return (
                                             <tr key={uniqueKey} className="hover:bg-slate-800/30 transition-colors border-b border-slate-800/50">
                                                 <td className="px-4 py-4 font-bold text-slate-200 text-sm">
-                                                    {log.symbol}
+                                                    <div className="flex items-baseline gap-1">
+                                                        <span>{log.symbol}</span>
+                                                        {getCoinChineseName(log.symbol) && (
+                                                            <span className="text-[11px] text-amber-300/80 font-normal">({getCoinChineseName(log.symbol)})</span>
+                                                        )}
+                                                    </div>
                                                 </td>
                                                 <td className="px-4 py-4 text-slate-300 font-mono">
                                                     <span className="bg-indigo-900/40 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/20">
@@ -1339,8 +1398,14 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 );
 
                                 // 判定当前日志属于对冲仓位还是原仓位：
-                                // 对冲仓位的核心特征：有 main_entry_id、或者 entry_id/exit_reason 明确包含对冲/HEDGE
-                                const isHedgeSide = !!log.main_entry_id || log.entry_id?.startsWith('HEDGE_') || (log.exit_reason?.includes('对冲') && !log.exit_reason?.includes('原仓位'));
+                                // 对冲仓位的核心特征：有 main_entry_id、或者 entry_id/is_hedge/exit_reason 明确属于防爆对冲单且非原仓位
+                                const isHedgeSide = (
+                                    log.is_hedge === true ||
+                                    !!log.main_entry_id ||
+                                    log.entry_id?.startsWith('HEDGE_') ||
+                                    (log.events?.some(e => e.action?.includes('防爆对冲') && !e.action?.includes('原仓位'))) ||
+                                    (log.exit_reason?.startsWith('防爆对冲') && !log.exit_reason?.includes('原仓位'))
+                                ) && !(log.exit_reason?.includes('原仓位') || log.events?.some(e => e.action?.includes('原仓位') || e.action?.includes('实盘开仓') || e.action?.includes('主仓开仓')));
 
                                 // 检查该币种在历史上或当前是否开启过防爆对冲
                                 const normSym = normalizeSymbol(log.symbol);
@@ -1363,6 +1428,9 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         } else if (isRefill) {
                                             actionLabel = '防爆对冲补仓';
                                             actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
+                                        } else if (log.profit_usdt !== undefined && log.profit_usdt >= 0) {
+                                            actionLabel = '防爆对冲盈利出局';
+                                            actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
                                         } else {
                                             actionLabel = '防爆对冲清仓';
                                             actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
@@ -1376,8 +1444,10 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             actionLabel = '原仓位补仓';
                                             actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
                                         } else if (hasEverTriggeredHedge) {
-                                            actionLabel = '原仓位清仓';
-                                            actionBadgeClass = 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20';
+                                            actionLabel = (log.exit_reason?.includes('清仓') || log.exit_reason?.includes('解套')) ? '原仓位清仓' : ((log.profit_usdt !== undefined && log.profit_usdt >= 0) ? '原仓位止盈' : '原仓位止损');
+                                            actionBadgeClass = (log.profit_usdt !== undefined && log.profit_usdt >= 0)
+                                                ? 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20'
+                                                : 'bg-red-900/40 text-red-400 border-red-500/20';
                                         } else {
                                             actionLabel = (log.profit_usdt !== undefined && log.profit_usdt >= 0) ? '盈利平仓' : '止损平仓';
                                             actionBadgeClass = (log.profit_usdt !== undefined && log.profit_usdt >= 0) 
@@ -1400,7 +1470,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             actionLabel = '原仓位补仓';
                                             actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
                                         } else if (hasEverTriggeredHedge) {
-                                            // 开启对冲后，原新开仓标记自动更新为【原仓位】
+                                            // 开启对冲后，原新开仓标记明确展示为【原仓位】
                                             actionLabel = '原仓位';
                                             actionBadgeClass = 'bg-indigo-900/40 text-indigo-300 border-indigo-500/20';
                                         } else {
@@ -1458,12 +1528,15 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                     className="cursor-pointer hover:text-indigo-400 transition-colors"
                                                     onClick={() => onOpenChart?.(log.symbol, log.entry_price, log.entry_timestamp, log.timeframe)}
                                                 >
-                                                    {log.symbol}
+                                                    <span>{log.symbol}</span>
+                                                    {getCoinChineseName(log.symbol) && (
+                                                        <span className="text-[11px] text-amber-300/80 font-normal ml-1">({getCoinChineseName(log.symbol)})</span>
+                                                    )}
                                                     <span className="text-[10px] text-slate-400 ml-1">
                                                         ({isRefill ? (isHedgeSide ? '防爆对冲补仓' : '原仓位补仓') : (isCut ? (isHedgeSide ? '防爆对冲砍仓' : '原仓位砍仓') : (isHedgeSide ? '防爆对冲仓位' : (hasEverTriggeredHedge ? '原仓位' : '新开仓位')))})
                                                     </span>
                                                 </span>
-                                                <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><History size={12} /></button>
+                                                <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><Clock size={12} /></button>
                                             </div>
                                             <div className="text-[10px] text-slate-500 font-mono font-normal">{String(log.entry_id || '').slice(-6)}</div>
                                         </td>
@@ -1608,35 +1681,57 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             ) : <span className="text-slate-600">-</span>}
                                         </td>
                                         <td className="px-4 py-3 text-xs">
-                                            {isClosed ? (
-                                                <div className="flex flex-col gap-1">
-                                                    <div className="flex items-center gap-1">
-                                                        {isGrouped && <Link size={10} className="text-indigo-400" />}
-                                                        {recoveryInfo !== null && (
-                                                            <span className="text-[10px] bg-amber-900/40 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap font-bold">
-                                                                最终解套盈利: {recoveryInfo.netProfit.toFixed(2)} U
-                                                            </span>
-                                                        )}
-                                                        <span className="text-slate-300 bg-slate-800/50 px-1.5 py-0.5 rounded border border-slate-700/50" title={log.exit_reason}>
-                                                            {log.exit_reason ? (log.exit_reason.length > 15 ? log.exit_reason.substring(0, 15) + '...' : log.exit_reason) : '-'}
-                                                        </span>
-                                                    </div>
-                                                    <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
-                                                </div>
-                                            ) : hasActivePosition ? (
-                                                <div className="flex items-center gap-1">
-                                                    <span className="bg-emerald-900/30 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/30 font-bold text-[10px] animate-pulse">
-                                                        运行中
-                                                    </span>
-                                                </div>
-                                            ) : (
-                                                <div className="flex flex-col gap-1">
-                                                    <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700 text-[10px]">
-                                                        历史开仓 (已结案)
-                                                    </span>
-                                                    <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
-                                                </div>
-                                            )}
+                                            {(() => {
+                                                const displayReason = isClosed 
+                                                    ? (log.exit_reason || log.events?.[0]?.reason || (log.profit_usdt !== undefined && log.profit_usdt >= 0 ? '止盈平仓' : '止损平仓'))
+                                                    : (log.exit_reason || log.events?.[0]?.reason || (isHedgeSide ? '防爆对冲开仓' : '初始开仓进场'));
+                                                
+                                                if (isClosed) {
+                                                    return (
+                                                        <div className="flex flex-col gap-1">
+                                                            <div className="flex items-center gap-1">
+                                                                {isGrouped && <Link size={10} className="text-indigo-400" />}
+                                                                {recoveryInfo !== null && (
+                                                                    <span className="text-[10px] bg-amber-900/40 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap font-bold">
+                                                                        最终解套盈利: {recoveryInfo.netProfit.toFixed(2)} U
+                                                                    </span>
+                                                                )}
+                                                                <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
+                                                                    {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
+                                                                </span>
+                                                            </div>
+                                                            <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
+                                                        </div>
+                                                    );
+                                                } else if (hasActivePosition) {
+                                                    return (
+                                                        <div className="flex flex-col gap-1">
+                                                            <div className="flex items-center gap-1">
+                                                                <span className="bg-emerald-900/30 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold text-[10px] animate-pulse whitespace-nowrap">
+                                                                    运行中
+                                                                </span>
+                                                                <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
+                                                                    {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                } else {
+                                                    return (
+                                                        <div className="flex flex-col gap-1">
+                                                            <div className="flex items-center gap-1">
+                                                                <span className="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded border border-slate-700 text-[10px] whitespace-nowrap">
+                                                                    历史开仓
+                                                                </span>
+                                                                <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
+                                                                    {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
+                                                                </span>
+                                                            </div>
+                                                            <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
+                                                        </div>
+                                                    );
+                                                }
+                                            })()}
                                         </td>
                                         <td className="px-4 py-3 text-right">
                                             <div className="flex items-center justify-end gap-2">

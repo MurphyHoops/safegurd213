@@ -162,11 +162,17 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
             }
             if (response.ok && data.success) {
                 if (!silent) {
+                    const msgTitle = data.message || 'API 校验连接成功！';
+                    const walletVal = typeof data.walletBalance === 'number' ? data.walletBalance.toFixed(2) : '0.00';
+                    const marginVal = typeof data.marginBalance === 'number' ? data.marginBalance.toFixed(2) : '0.00';
+                    const rateLimitNote = data.rateLimited 
+                        ? `\n⚠️ [出口限频提示] 当前网络出口受限，已使用本地缓存数据 (${data.remainingSeconds || 0} 秒后解封)` 
+                        : '';
                     setValidationResult({
                         show: true,
                         success: true,
-                        message: `🟢 ${data.message}\n• 钱包总可用余额: ${data.walletBalance?.toFixed(2)} USDT\n• 币安合约保证金: ${data.marginBalance?.toFixed(2)} USDT`,
-                        marginBalance: data.marginBalance
+                        message: `🟢 ${msgTitle}\n• 钱包总可用余额: ${walletVal} USDT\n• 币安合约保证金: ${marginVal} USDT${rateLimitNote}`,
+                        marginBalance: typeof data.marginBalance === 'number' ? data.marginBalance : 0
                     });
                     audioService.speak('API 校验成功！');
                 } else {
@@ -179,10 +185,13 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
                 }
             } else {
                 if (!silent) {
+                    const failReason = data.error || (response.status === 418 || response.status === 429 
+                        ? '币安官方出口限频保护中 (HTTP 418)，请稍候再试' 
+                        : '网络通信中断或密钥无效');
                     setValidationResult({
                         show: true,
                         success: false,
-                        message: `❌ 校验失败: ${data.error || '未知网络错误'}`
+                        message: `❌ 校验未通过: ${failReason}`
                     });
                     audioService.speak('API 校验失败', true);
                 }

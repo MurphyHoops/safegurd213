@@ -3,6 +3,7 @@ import React, { useEffect } from 'react';
 import { Shield, ShieldAlert, ShieldCheck, Hourglass, Zap, Trash2 } from 'lucide-react';
 import { ScannerItem, List2Config } from '../../../components/Scanner/scannerTypes';
 import { verifyAndFixSymbolPrice } from '../../../services/priceVerifier';
+import { getCoinChineseName } from '../../../services/coinNames';
 
 const getTfMinutes = (tf: string) => {
     const unit = tf.slice(-1);
@@ -62,6 +63,9 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                         <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
                     )}
                     <span>{item.symbol.replace('USDT', '')}</span>
+                    {getCoinChineseName(item.symbol) && (
+                        <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
+                    )}
                 </span>
                 <div className="flex items-center gap-2">
                     <span className="text-slate-500">{Number(item.price || 0).toFixed(8)}</span>

@@ -370,7 +370,7 @@ const _fetchWithFallbackInner = async (
                 hostname = new URL(proxyUrl).hostname;
             } catch (e) {}
 
-            if (blacklistedProxies.has(hostname) && hostname !== 'localhost' && !hostname.startsWith('127.0.0.1')) {
+            if (blacklistedProxies.has(hostname) && hostname !== 'localhost' && !hostname.startsWith('127.0.0.1') && !hostname.includes('binance')) {
                 if (Date.now() - lastBlacklistReset > 300000) {
                     blacklistedProxies.clear();
                     lastBlacklistReset = Date.now();
@@ -383,10 +383,10 @@ const _fetchWithFallbackInner = async (
             try {
                 const controller = new AbortController();
                 const isLocalProxy = proxyUrl.startsWith('/api/proxy');
-                // Give local server proxy enough time (25s) while capping external public proxies to 8-10s to prevent hanging
+                // Give local server proxy enough time (30s) while capping external public proxies appropriately
                 const proxyTimeout = isLocalProxy
-                    ? Math.min(TIMEOUT_MS, isHeavyPayload ? 25000 : 15000)
-                    : (priority === 'HIGH' ? 6000 : (isHeavyPayload ? 10000 : 8000));
+                    ? Math.min(TIMEOUT_MS, isHeavyPayload ? 30000 : 15000)
+                    : (isHeavyPayload ? 15000 : (priority === 'HIGH' ? 8000 : 10000));
                 timeoutId = setTimeout(() => {
                     if (!controller.signal.aborted) {
                         try {
@@ -409,7 +409,7 @@ const _fetchWithFallbackInner = async (
                         throw new Error(`HTTP ${res.status}: Invalid symbol or resource`);
                     }
                     if (res.status === 403 || res.status === 429) {
-                        if (hostname && hostname !== 'localhost' && !hostname.startsWith('127.0.0.1')) {
+                        if (hostname && hostname !== 'localhost' && !hostname.startsWith('127.0.0.1') && !hostname.includes('binance')) {
                             blacklistedProxies.add(hostname);
                         }
                     }

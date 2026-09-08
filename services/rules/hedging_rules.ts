@@ -14,6 +14,12 @@ export function checkHedgingRules(
     
     // 1. 基础开关检查
     if (!hedgeSettings.enabled) return false;
+
+    // 🔒 [在途平仓物理绝对拦截 (In-Flight Closing Guard)]
+    // 若该仓位正处于平仓在途中 (已向币安发出平仓指令但尚未收到最终成交确认)，100% 物理绝对拦截任何对冲开仓！
+    if (position.isClosing || position.isBeingClosed || (position as any).pendingClose) {
+        return false;
+    }
     
     // 2. 已对冲检查与单次信号锁
     if (position.isHedged || position.hedgeSignalTriggered || position.hedgeOrderInFlight) return false;
@@ -265,12 +271,26 @@ export function checkHedgingRules(
 export function checkSafeClearRules(
     position: Position,
     settings: AppSettings,
-    closePosition: (symbol: string, side: PositionSide, reason: string) => void
+    closePosition: (symbol: string, side: PositionSide, reason: string) => void,
+    allPositions?: Position[]
 ): boolean {
     const hedgeSettings = settings.hedging;
     
     // 必须开启对冲模块总开关，且开启安全清仓开关
     if (!hedgeSettings.enabled || !hedgeSettings.safeClearEnabled) return false;
+
+    // 🔒【对冲与救世周期绝对禁止单边平仓铁律】：
+    // 凡是启动了防爆对冲、存在反向持仓、处于对冲状态、作为对冲从仓、或处于被砍仓待补仓状态时，常规单边安全清仓 100% 物理失效，绝对严禁单平一方导致孤儿单！
+    const hasOpposingInAll = Array.isArray(allPositions) && allPositions.some(p => 
+        p.symbol && position.symbol &&
+        p.symbol.replace(/USDT$/i, '').toUpperCase() === position.symbol.replace(/USDT$/i, '').toUpperCase() &&
+        p.side !== position.side &&
+        p.amount > 0.0001
+    );
+
+    if ((position.isHedged && !position.isUnshackled) || hasOpposingInAll || position.mainPositionId || position.isAmputated || (position.amputatedAmount || 0) > 0) {
+        return false;
+    }
 
     const pnlPercent = position.unrealizedPnLPercentage;
 

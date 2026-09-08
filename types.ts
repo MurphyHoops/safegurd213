@@ -19,6 +19,7 @@ export interface AccountData {
     maintenanceMargin: number;
     marginRatio: number;
     binanceRealBalance?: number;
+    unrealizedPnL?: number;
 }
 
 export interface Position {
@@ -36,6 +37,7 @@ export interface Position {
     amputationTriggered?: boolean;
     maxPnLAfterAmputationTrigger?: number;
     maxPnLPercentAfterAmputationTrigger?: number;
+    lastLoggedPeakPercent?: number;
     maxPnLPercent?: number;
     isHedged?: boolean;
     lastHedgeClosedAt?: number;
@@ -91,12 +93,16 @@ export interface Position {
     isPendingSync?: boolean;
     isAmputatedToZero?: boolean;
     isBeingClosed?: boolean;
+    isClosing?: boolean; // 🔒 在途平仓状态锁 (向币安发出平仓请求中，尚未收到最终成交确认)
+    isOrphanHedge?: boolean; // 🛡️ 孤儿对冲单标记 (主仓已平仓但对冲仓位意外残留)
     lastAmputationTime?: number;
     lastRefillTime?: number;
     leverage?: number; // Added: Locked leverage for position and matching hedge
     cost_usdt?: number;
     refillCount?: number; // 震荡磨损补仓累计次数
     isOscillationLocked?: boolean; // 震荡熔断锁定状态
+    amputationEntryPrice?: number; // 砍仓时的基准入场均价（用于回踩补仓精确判定）
+    originalEntryPrice?: number; // 原始开仓基准价格
 }
 
 export interface LogEntry {

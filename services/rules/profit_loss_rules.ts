@@ -12,11 +12,20 @@ export { checkGlobalRules } from './profit/global';
 export function checkIndividualPositionRules(
     position: Position, 
     settings: AppSettings, 
-    closePosition: (symbol: string, side: PositionSide, reason: string, ratio: number) => void
+    closePosition: (symbol: string, side: PositionSide, reason: string, ratio: number) => void,
+    allPositions?: Position[]
 ): boolean {
-    // 核心修改：如果该仓位当前正处于对冲状态（作为主仓被对冲，或作为对冲仓），模块1的止盈止损功能失效
-    // 但如果只是有历史对冲记录且当前已解套（isHedged 为 false），或已标记为主仓续航（isUnshackled），则允许止盈止损继续工作
-    if ((position.isHedged && !position.isUnshackled) || position.mainPositionId) {
+    // 核心铁律：凡是启动了防爆对冲的交易对，’止盈止损‘平仓规则绝对物理失效！
+    // 无论是否存在反向持仓、处于对冲状态、作为对冲从仓、或处于被砍仓待补仓状态，
+    // 模块1的常规止盈止损功能 100% 物理失效，全部由防爆对冲救世策略接管，绝对严禁单平任何一方导致出现孤儿单！
+    const hasOpposingInAll = Array.isArray(allPositions) && allPositions.some(p => 
+        p.symbol && position.symbol &&
+        p.symbol.replace(/USDT$/i, '').toUpperCase() === position.symbol.replace(/USDT$/i, '').toUpperCase() &&
+        p.side !== position.side &&
+        p.amount > 0.0001
+    );
+
+    if ((position.isHedged && !position.isUnshackled) || hasOpposingInAll || position.mainPositionId || position.isAmputated || (position.amputatedAmount || 0) > 0) {
         return false;
     }
 

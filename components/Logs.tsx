@@ -1,12 +1,37 @@
 import React from 'react';
 import { LogEntry } from '../types';
 import { Terminal } from 'lucide-react';
+import { getCoinChineseName } from '../services/coinNames';
 
 interface Props {
   logs: LogEntry[];
 }
 
 const Logs: React.FC<Props> = ({ logs }) => {
+  const renderLogMessage = (message: string) => {
+    const symbolRegex = /[A-Z0-9]+USDT/g;
+    const parts = message.split(symbolRegex);
+    const matches = message.match(symbolRegex);
+    if (!matches) return message;
+    return (
+      <>
+        {parts.map((part, i) => (
+          <React.Fragment key={i}>
+            {part}
+            {matches[i] && (
+              <span className="font-bold inline-flex items-baseline gap-0.5">
+                <span>{matches[i]}</span>
+                {getCoinChineseName(matches[i]) && (
+                  <span className="text-amber-300 font-normal">({getCoinChineseName(matches[i])})</span>
+                )}
+              </span>
+            )}
+          </React.Fragment>
+        ))}
+      </>
+    );
+  };
+
   return (
     <div className="bg-black/50 rounded-lg border border-slate-700 p-4 h-full overflow-hidden flex flex-col">
         <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
@@ -24,7 +49,7 @@ const Logs: React.FC<Props> = ({ logs }) => {
                         ${log.type === 'WARNING' ? 'text-amber-400' : ''}
                         ${log.type === 'DANGER' ? 'text-red-500 font-bold' : ''}
                     `}>
-                        {log.message}
+                        {renderLogMessage(log.message)}
                     </span>
                 </div>
             ))}

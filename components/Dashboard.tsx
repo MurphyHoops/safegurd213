@@ -22,6 +22,9 @@ interface Props {
     onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number) => void;
     onVerifyPosition: (position: Position) => void;
     onManualHedge?: (position: Position) => void;
+    onManualAmputate?: (position: Position) => void;
+    onManualRefill?: (position: Position) => void;
+    onManualClosePair?: (position: Position) => void;
     onOpenLogs: () => void;
     onOpenTradeModal: () => void;
     isSimulating: boolean;
@@ -51,6 +54,9 @@ const Dashboard: React.FC<Props> = ({
     onOpenChart,
     onVerifyPosition,
     onManualHedge,
+    onManualAmputate,
+    onManualRefill,
+    onManualClosePair,
     settings,
     onOpenScanner,
     onRowLongPress,
@@ -89,6 +95,9 @@ const Dashboard: React.FC<Props> = ({
                 onOpenChart={onOpenChart}
                 onVerifyPosition={onVerifyPosition}
                 onManualHedge={onManualHedge}
+                onManualAmputate={onManualAmputate}
+                onManualRefill={onManualRefill}
+                onManualClosePair={onManualClosePair}
                 onOpenScanner={onOpenScanner}
                 onOpenTradeModal={onOpenTradeModal}
                 onBatchClose={onBatchClose}

@@ -311,7 +311,8 @@ export interface StartTrendGroup {
 export interface MajorTrendConfig {
     enabled: boolean;
     updateIntervalHours: number; // 默认 4 小时
-    intervalMinutes?: number; // 访问行情启动底池速度(分钟)，默认 4
+    intervalMinutes?: number; // 兼容旧字段
+    intervalSeconds?: number; // 单币扫描间隔时间(秒)，默认 3 秒
     requestPerMinute: number; // 默认 20
     lookbackDays: number; // 默认 300
     minHistoryDrop: number; // 默认 50%

@@ -113,21 +113,27 @@ const LiveMarketScannerModule: React.FC<Props> = ({
 
     // --- EFFECT: Trigger Scan When Allowed transitions to true ---
     const hasScannedOnMountRef = React.useRef(false);
+    const prevIsScanAllowedRef = React.useRef(isScanAllowed);
+    const scanConfigRef = React.useRef(scanConfig);
+    scanConfigRef.current = scanConfig;
+
     useEffect(() => {
         if (isScanAllowed && !isPaused) {
+            const becameAllowed = !prevIsScanAllowedRef.current && isScanAllowed;
             if (!hasScannedOnMountRef.current) {
                 hasScannedOnMountRef.current = true;
                 if (!list1 || list1.length === 0) {
-                    refreshList1Candidates(scanConfig, true);
+                    refreshList1Candidates(scanConfigRef.current, true);
                 } else {
                     console.log(`[ScannerUI] Found cached list1 with ${list1.length} items. Skipping immediate scan on mount.`);
                 }
-            } else {
-                console.log(`[ScannerUI] isScanAllowed became true for strategy ${selectedStrategyId}. Running scan immediately.`);
-                refreshList1Candidates(scanConfig, false);
+            } else if (becameAllowed) {
+                console.log(`[ScannerUI] isScanAllowed transitioned to true for strategy ${selectedStrategyId}. Running scan.`);
+                refreshList1Candidates(scanConfigRef.current, false);
             }
         }
-    }, [isScanAllowed, isPaused, scanConfig, refreshList1Candidates, selectedStrategyId, list1]);
+        prevIsScanAllowedRef.current = isScanAllowed;
+    }, [isScanAllowed, isPaused, refreshList1Candidates, selectedStrategyId]);
 
     // --- EFFECT: Interval ---
     const isScanningRef = React.useRef(isScanning);

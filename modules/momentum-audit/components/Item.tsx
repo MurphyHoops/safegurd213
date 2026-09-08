@@ -4,6 +4,7 @@ import { Zap, Lock, Ban, Activity, AlertTriangle, Trash2 } from 'lucide-react';
 import { ScannerItem } from '../../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../../types';
 import { formatPrice } from '../../../services/symbolUtils';
+import { getCoinChineseName } from '../../../services/coinNames';
 
 interface Props {
     item: ScannerItem;
@@ -87,7 +88,12 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                         {idx !== undefined && (
                             <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
                         )}
-                        <span className="text-xs font-bold text-white">{item.symbol ? item.symbol.replace('USDT','') : 'UNKNOWN'}</span>
+                        <span className="text-xs font-bold text-white flex items-baseline gap-1">
+                            <span>{item.symbol ? item.symbol.replace('USDT','') : 'UNKNOWN'}</span>
+                            {item.symbol && getCoinChineseName(item.symbol) && (
+                                <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
+                            )}
+                        </span>
                     </div>
                     <span className="text-[8px] text-slate-500 font-bold uppercase flex items-center gap-1">现价: <span className="text-white">{formatPrice(item.price)}</span></span>
                 </div>

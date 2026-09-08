@@ -2,13 +2,17 @@ import { useMemo, useRef } from 'react';
 import { Position, PositionSide } from '../../types';
 
 export function usePositionsListLogic(
-    positions: Position[], 
+    rawPositions: Position[], 
     realPrices: Record<string, number>, 
     sortKey: 'PNL_PCT' | 'AMOUNT' | 'PNL_AMOUNT',
     sortMode: 'DESC' | 'ASC', 
     settings: any,
     isHoverLocked: boolean = false
 ) {
+    const positions = useMemo(() => {
+        return (rawPositions || []).filter(p => p && (p.amount || 0) > 0.0001);
+    }, [rawPositions]);
+
     const lockedPositionsOrderRef = useRef<Position[]>([]);
     const prevSortKeyRef = useRef(sortKey);
     const prevSortModeRef = useRef(sortMode);

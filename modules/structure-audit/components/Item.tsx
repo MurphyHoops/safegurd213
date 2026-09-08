@@ -3,6 +3,7 @@ import React from 'react';
 import { ScannerItem, List3SignalResult } from '../../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../../types';
 import { AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
+import { getCoinChineseName } from '../../../services/coinNames';
 
 interface Props {
     item: ScannerItem;
@@ -56,6 +57,9 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                         <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
                     )}
                     <span>{item.symbol.replace('USDT', '')}</span>
+                    {getCoinChineseName(item.symbol) && (
+                        <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
+                    )}
                 </span>
                 <span className="text-slate-500">{item.price.toFixed(8)}</span>
             </div>

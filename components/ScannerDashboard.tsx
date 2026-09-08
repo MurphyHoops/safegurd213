@@ -37,6 +37,19 @@ import { MomentumAuditModule } from "../modules/momentum-audit";
 import { LiveBattlefieldModule } from "../modules/live-battlefield";
 import { TacticalCommandModule } from "../modules/tactical-command";
 
+const MemoizedMarketScannerModule = React.memo(MarketScannerModule, (prev, next) => {
+  return prev.scanConfig === next.scanConfig &&
+         prev.directMode === next.directMode &&
+         prev.mode === next.mode &&
+         prev.selectedStrategyId === next.selectedStrategyId &&
+         prev.isScanAllowed === next.isScanAllowed &&
+         prev.isRotationEnabled === next.isRotationEnabled &&
+         prev.rotationIntervalMinutes === next.rotationIntervalMinutes &&
+         prev.rotationTimeLeft === next.rotationTimeLeft &&
+         prev.activeStrategyId === next.activeStrategyId &&
+         prev.isSyncing === next.isSyncing;
+});
+
 const MemoizedGrandCrossingModule = React.memo(GrandCrossingModule, (prev, next) => {
   return prev.networkStatus === next.networkStatus && 
          prev.candidates === next.candidates && 
@@ -200,7 +213,18 @@ const ScannerDashboardInner: React.FC<
   const [scannerMode, setScannerMode] = usePersistedState<
     "LIVE" | "BACKTEST" | "SMART"
   >("SCANNER_GLOBAL_MODE", "LIVE");
-  const [actionConfig, setActionConfig] = useState<ActionConfig | null>(null);
+  const [actionConfig, setActionConfig] = useState<ActionConfig | null>(() => {
+    try {
+      const activeId = localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID")
+        ? JSON.parse(localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID") as string)
+        : "strat-1";
+      const raw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${activeId}`) || localStorage.getItem("SCANNER_ACTION_CONFIG");
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    } catch {}
+    return null;
+  });
 
   const lastPositionsRef = useRef<string>("");
 
@@ -261,6 +285,15 @@ const ScannerDashboardInner: React.FC<
   );
   const [rotationTimeLeft, setRotationTimeLeft] = useState<number>(5 * 60);
 
+  const strategiesRef = useRef(strategies);
+  strategiesRef.current = strategies;
+  const rotationActiveStrategyIdRef = useRef(rotationActiveStrategyId);
+  rotationActiveStrategyIdRef.current = rotationActiveStrategyId;
+  const rotationIntervalMinutesRef = useRef(rotationIntervalMinutes);
+  rotationIntervalMinutesRef.current = rotationIntervalMinutes;
+  const onLogRef = useRef(onLog);
+  onLogRef.current = onLog;
+
   // --- AUTOMATIC STRATEGY ROTATION TIMER ---
   useEffect(() => {
     if (!isRotationEnabled) {
@@ -268,45 +301,36 @@ const ScannerDashboardInner: React.FC<
       return;
     }
 
-    // Initialize or adjust time left if it is 0 or invalid
-    setRotationTimeLeft((prev) => (prev <= 0 ? rotationIntervalMinutes * 60 : prev));
+    setRotationTimeLeft(rotationIntervalMinutesRef.current * 60);
 
     const intervalId = setInterval(() => {
       setRotationTimeLeft((prev) => {
         if (prev <= 1) {
           // Time's up! Trigger rotation to next active strategy (include all configured strategies)
-          const activeStrats = strategies.filter(s => !s.unconfigured);
+          const activeStrats = strategiesRef.current.filter(s => !s.unconfigured);
           if (activeStrats.length > 0) {
-            const currentIndex = activeStrats.findIndex(s => s.id === rotationActiveStrategyId);
+            const currentId = rotationActiveStrategyIdRef.current;
+            const currentIndex = activeStrats.findIndex(s => s.id === currentId);
             const nextIndex = (currentIndex === -1 || currentIndex === activeStrats.length - 1) ? 0 : currentIndex + 1;
             const nextStrat = activeStrats[nextIndex];
 
-            // Update active scanning strategy
-            setRotationActiveStrategyId(nextStrat.id);
-            
-            // Log rotation info
-            if (onLog) {
-              onLog("INFO", `[策略轮循] 切换扫描线程至: "${nextStrat.name}" 进行大盘初筛。`);
-            }
-            audioService.speak(`开始扫描${nextStrat.name}`);
-            
-            return rotationIntervalMinutes * 60;
+            // Defer rotation update outside state reducer loop
+            setTimeout(() => {
+              setRotationActiveStrategyId(nextStrat.id);
+              if (onLogRef.current) {
+                onLogRef.current("INFO", `[策略轮循] 切换扫描线程至: "${nextStrat.name}" 进行大盘初筛。`);
+              }
+              audioService.speak(`开始扫描${nextStrat.name}`);
+            }, 0);
           }
-          return rotationIntervalMinutes * 60;
+          return rotationIntervalMinutesRef.current * 60;
         }
         return prev - 1;
       });
     }, 1000);
 
     return () => clearInterval(intervalId);
-  }, [
-    isRotationEnabled,
-    rotationIntervalMinutes,
-    rotationActiveStrategyId,
-    strategies,
-    onLog,
-    setRotationActiveStrategyId
-  ]);
+  }, [isRotationEnabled, setRotationActiveStrategyId]);
 
   // Keep rotationActiveStrategyId valid
   useEffect(() => {
@@ -473,7 +497,6 @@ const ScannerDashboardInner: React.FC<
   useEffect(() => {
     isBreakerActiveRef.current = isBreakerActive;
   }, [isBreakerActive]);
-  const onLogRef = useRef(onLog);
   useEffect(() => {
     onLogRef.current = onLog;
   }, [onLog]);
@@ -1113,7 +1136,7 @@ const ScannerDashboardInner: React.FC<
 
       const DEFAULT_ACTION_CONFIG: ActionConfig = {
         enabled: true,
-        openAmount: 100,
+        openAmount: 10,
         maxOpenSymbols: 200,
         maxTotalValue: 100000,
         breakoutBuffer: 0.2,
@@ -1132,8 +1155,16 @@ const ScannerDashboardInner: React.FC<
         }
       };
 
-      const userConfig = (actionConfigRef.current ||
-        {}) as Partial<ActionConfig>;
+      const targetStratId = (extraProps as any)?.strategyId || selectedStrategyId || 'strat-1';
+      const userConfig = ((extraProps as any)?.customActionConfig ||
+        actionConfigRef.current ||
+        (() => {
+          try {
+            const raw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${targetStratId}`) || localStorage.getItem("SCANNER_ACTION_CONFIG");
+            if (raw) return JSON.parse(raw);
+          } catch {}
+          return {};
+        })()) as Partial<ActionConfig>;
       const config: ActionConfig = {
         enabled:
           typeof userConfig.enabled === "boolean"
@@ -1255,7 +1286,7 @@ const ScannerDashboardInner: React.FC<
               balance * (config.variablePercentage / 100),
               config.variableMaxLimit || Infinity,
             )
-          : config.openAmount || 100;
+          : (typeof config.openAmount === "number" && config.openAmount > 0 ? config.openAmount : 10);
 
       // List 6: Total Capital Limit Check
       const currentTotalValue = activePositions.reduce((sum, p) => {
@@ -1610,48 +1641,59 @@ const ScannerDashboardInner: React.FC<
       batchCloseAll();
       if (onLog) onLog("SUCCESS", "[回测] 全部清仓执行完毕");
     } else {
-      filteredPositions.forEach((p) =>
-        handleClosePositionInternal(p.symbol, p.side),
-      );
+      if (onBatchClose) {
+        onBatchClose();
+      } else {
+        const positionsToClose = currentPositions.length > 0 ? currentPositions : filteredPositions;
+        positionsToClose.forEach((p) =>
+          handleClosePositionInternal(p.symbol, p.side),
+        );
+      }
       if (onLog) onLog("SUCCESS", "战术执行: 全部清仓 (PANIC SELL)");
     }
   }, [
     scannerMode,
     batchCloseAll,
+    onBatchClose,
+    currentPositions,
     filteredPositions,
     handleClosePositionInternal,
     onLog,
   ]);
 
   const handleSecureProfit = useCallback(() => {
-    const profitable = filteredPositions.filter((p) => p.unrealizedPnL > 0);
+    const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
+    const profitable = targets.filter((p) => p.unrealizedPnL > 0);
     profitable.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (profitable.length > 0 && onLog)
       onLog("INFO", `战术执行: 止盈落袋 (${profitable.length} 个仓位)`);
-  }, [filteredPositions, handleClosePositionInternal, onLog]);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
 
   const handleCutLosses = useCallback(() => {
-    const losing = filteredPositions.filter((p) => p.unrealizedPnL < 0);
+    const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
+    const losing = targets.filter((p) => p.unrealizedPnL < 0);
     losing.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (losing.length > 0 && onLog)
       onLog("INFO", `战术执行: 一键止损 (${losing.length} 个仓位)`);
-  }, [filteredPositions, handleClosePositionInternal, onLog]);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
 
   const handleCloseLongs = useCallback(() => {
-    const longs = filteredPositions.filter((p) => p.side === PositionSide.LONG);
+    const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
+    const longs = targets.filter((p) => p.side === PositionSide.LONG);
     longs.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (longs.length > 0 && onLog)
       onLog("INFO", `战术执行: 平多 (${longs.length} 个仓位)`);
-  }, [filteredPositions, handleClosePositionInternal, onLog]);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
 
   const handleCloseShorts = useCallback(() => {
-    const shorts = filteredPositions.filter(
+    const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
+    const shorts = targets.filter(
       (p) => p.side === PositionSide.SHORT,
     );
     shorts.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
     if (shorts.length > 0 && onLog)
       onLog("INFO", `战术执行: 平空 (${shorts.length} 个仓位)`);
-  }, [filteredPositions, handleClosePositionInternal, onLog]);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
 
   const setScanConfig = useCallback(
     (update: React.SetStateAction<ScanConfig>) => {
@@ -1898,7 +1940,7 @@ const ScannerDashboardInner: React.FC<
 
           <div className="flex-1 flex gap-1 overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
             <ErrorBoundary moduleName="1. 市场初筛">
-              <MarketScannerModule
+              <MemoizedMarketScannerModule
                 key={selectedStrategyId}
                 onCandidatesUpdate={handleList1Results}
                 setChartData={safeSetChartData}
@@ -2342,11 +2384,17 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     saveState(`SCANNER_LIST3_${strategyId}`, list3Results);
   }, [list3Results, strategyId]);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
-  const [actionConfig, setActionConfig] = useState<ActionConfig | null>(null);
+  const [actionConfig, setActionConfig] = useState<ActionConfig | null>(() => {
+    try {
+      const raw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${strategyId}`) || localStorage.getItem("SCANNER_ACTION_CONFIG");
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return null;
+  });
 
   // Load action config
   useEffect(() => {
-    const raw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${strategyId}`);
+    const raw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${strategyId}`) || localStorage.getItem("SCANNER_ACTION_CONFIG");
     if (raw) {
       try {
         setActionConfig(JSON.parse(raw));
@@ -2403,10 +2451,10 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
         signalTf,
         signalCandle,
         entryEmas,
-        { strategyId, ...extraProps }
+        { strategyId, customActionConfig: actionConfig, ...extraProps } as any
       );
     },
-    [executeTradeSafe, strategyId]
+    [executeTradeSafe, strategyId, actionConfig]
   );
 
   // We filter positions only for this strategyId so that structure / momentum audits run correctly!

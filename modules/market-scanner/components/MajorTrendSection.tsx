@@ -14,7 +14,6 @@ interface Props {
         stage?: string, 
         group1Passed?: number, 
         group2Passed?: number, 
-        group3Passed?: number, 
         currentSymbol?: string 
     };
     onRunDiscovery?: (isManual?: boolean) => void;
@@ -129,10 +128,10 @@ export const MajorTrendSection: React.FC<Props> = ({
                         </button>
                     </div>
 
-                    {/* 访问行情启动底池速度按钮 (默认4分钟) */}
+                    {/* 单币扫描间隔时间按钮 (默认3秒) */}
                     <div 
                         className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 hover:border-indigo-500/60 text-[9px] text-slate-300 cursor-pointer transition-colors"
-                        title="点击调整访问行情启动底池的速度(分钟)"
+                        title="点击调整每个币扫描间隔时间(秒)"
                         onClick={(e) => {
                             e.stopPropagation();
                             setIsEditingInterval(!isEditingInterval);
@@ -144,8 +143,11 @@ export const MajorTrendSection: React.FC<Props> = ({
                                 type="number"
                                 min={1}
                                 max={60}
-                                value={activeConfig.intervalMinutes ?? 4}
-                                onChange={(e) => updateField('intervalMinutes', Math.max(1, parseInt(e.target.value) || 1))}
+                                value={activeConfig.intervalSeconds ?? (activeConfig.intervalMinutes ? Math.min(activeConfig.intervalMinutes, 60) : 3)}
+                                onChange={(e) => {
+                                    const val = Math.max(1, parseInt(e.target.value) || 1);
+                                    updateField('intervalSeconds', val);
+                                }}
                                 onBlur={() => setIsEditingInterval(false)}
                                 autoFocus
                                 onClick={(e) => e.stopPropagation()}
@@ -153,7 +155,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                             />
                         ) : (
                             <span className="font-mono font-bold text-indigo-300">
-                                ({activeConfig.intervalMinutes ?? 4})分钟
+                                ({activeConfig.intervalSeconds ?? (activeConfig.intervalMinutes ? Math.min(activeConfig.intervalMinutes, 60) : 3)})秒
                             </span>
                         )}
                     </div>
@@ -449,12 +451,12 @@ export const MajorTrendSection: React.FC<Props> = ({
                                 <div className="flex items-center gap-1">
                                     {majorProgress.stage === 'group1' ? (
                                         <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
-                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'group3') ? (
+                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
                                         <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
                                     ) : (
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
-                                    <span className={majorProgress.stage === 'group1' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'group2' || majorProgress.stage === 'group3') ? 'text-slate-400' : 'text-slate-500'}>
+                                    <span className={majorProgress.stage === 'group1' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? 'text-slate-400' : 'text-slate-500'}>
                                         第一组: 横盘蓄势过滤 (优先访问底池)
                                     </span>
                                 </div>
@@ -464,7 +466,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             ({majorProgress.current}/{majorProgress.total}) 
                                             <span className="ml-1 text-emerald-400">过:{majorProgress.group1Passed || 0}</span>
                                         </span>
-                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'group3') ? (
+                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
                                         <span className="text-emerald-400">✅ 通过 {majorProgress.group1Passed || 0}</span>
                                     ) : (
                                         <span className="text-slate-600">⏳ 等待中</span>
@@ -477,47 +479,23 @@ export const MajorTrendSection: React.FC<Props> = ({
                                 <div className="flex items-center gap-1">
                                     {majorProgress.stage === 'group2' ? (
                                         <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
-                                    ) : majorProgress.stage === 'group3' ? (
+                                    ) : majorProgress.stage === 'completed' ? (
                                         <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
                                     ) : (
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
-                                    <span className={majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : majorProgress.stage === 'group3' ? 'text-slate-400' : 'text-slate-500'}>
+                                    <span className={majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : majorProgress.stage === 'completed' ? 'text-slate-400' : 'text-slate-500'}>
                                         第二组: 回溯周期过滤 (空间与极值)
                                     </span>
                                 </div>
                                 <div className="font-mono text-right shrink-0">
                                     {majorProgress.stage === 'group2' ? (
-                                        <span className="text-indigo-400">
-                                            ({majorProgress.current}/{majorProgress.total})
-                                            <span className="ml-1 text-emerald-400">过:{majorProgress.group2Passed || 0}</span>
-                                        </span>
-                                    ) : majorProgress.stage === 'group3' ? (
-                                        <span className="text-emerald-400">✅ 通过 {majorProgress.group2Passed || 0}</span>
-                                    ) : (
-                                        <span className="text-slate-600">⏳ 等待中</span>
-                                    )}
-                                </div>
-                            </div>
-
-                            {/* Step 3: Start Trend Filter */}
-                            <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
-                                <div className="flex items-center gap-1">
-                                    {majorProgress.stage === 'group3' ? (
-                                        <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
-                                    ) : (
-                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
-                                    )}
-                                    <span className={majorProgress.stage === 'group3' ? 'text-indigo-300 font-bold' : 'text-slate-500'}>
-                                        第三组: 行情启动趋势
-                                    </span>
-                                </div>
-                                <div className="font-mono text-right shrink-0">
-                                    {majorProgress.stage === 'group3' ? (
                                         <span className="text-indigo-400 flex items-center gap-1 justify-end">
                                             <span>({majorProgress.current}/{majorProgress.total})</span>
-                                            <span className="text-emerald-400">选:{majorProgress.group3Passed || 0}</span>
+                                            <span className="text-emerald-400">选:{majorProgress.group2Passed || 0}</span>
                                         </span>
+                                    ) : majorProgress.stage === 'completed' ? (
+                                        <span className="text-emerald-400">✅ 通过 {majorProgress.group2Passed || 0}</span>
                                     ) : (
                                         <span className="text-slate-600">⏳ 等待中</span>
                                     )}

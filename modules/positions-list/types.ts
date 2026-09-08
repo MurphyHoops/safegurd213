@@ -17,6 +17,9 @@ export interface PositionsListProps {
     onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
     onVerifyPosition: (position: Position) => void;
     onManualHedge?: (position: Position) => void;
+    onManualAmputate?: (position: Position) => void;
+    onManualRefill?: (position: Position) => void;
+    onManualClosePair?: (position: Position) => void;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;
     manuallyClosedSymbols: Set<string>;

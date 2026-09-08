@@ -6,6 +6,8 @@ import { COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { normalizeSymbol, resolvePrice, isMajorCoin } from '../../../services/symbolUtils';
 import { LivePositionRow } from './PositionRow';
 import { fetchWithFallback } from '../../../services/apiService';
+import { resolveSymbolFromInput, CHINESE_TO_SYMBOL_MAP as CHINESE_COIN_MAP } from '../../../services/coinNames';
+export { CHINESE_COIN_MAP, resolveSymbolFromInput };
 
 /**
  * 🔒 [CODE LOCK - MANUAL TRADING ENGINE FOR LIST 5]
@@ -83,7 +85,10 @@ const List5_Live: React.FC<List5Props> = ({
         setVerifiedPrice(null);
         setMatchedSymbols([]);
         
-        const clean = inputSymbol.trim().toUpperCase();
+        // 智能解析中文币名或英文代码
+        const resolved = resolveSymbolFromInput(inputSymbol);
+        const resolvedSymbol = resolved.symbol || inputSymbol;
+        const clean = resolvedSymbol.trim().toUpperCase();
         const fullFormatted = clean.endsWith('USDT') ? clean : clean + 'USDT';
         const baseCoinName = clean.replace(/USDT$/, '');
 
@@ -146,17 +151,39 @@ const List5_Live: React.FC<List5Props> = ({
             }
         }
         
-        // 3. Fallback: Search in local pricing list or allTickers if user typed a partial match
+        // 3. Fallback: Search in local pricing list, window registry, or allTickers if user typed a partial match
         let allTickers: { symbol: string; price: number }[] = [];
+        const seenSymbols = new Set<string>();
+
+        // 3.1 Load from realPrices
         if (realPrices) {
             Object.entries(realPrices).forEach(([sym, price]) => {
                 const upperSym = sym.toUpperCase();
                 const formatted = upperSym.endsWith('USDT') ? upperSym : upperSym + 'USDT';
-                allTickers.push({ symbol: formatted, price: price || 0 });
+                if (!seenSymbols.has(formatted)) {
+                    seenSymbols.add(formatted);
+                    allTickers.push({ symbol: formatted, price: price || 0 });
+                }
             });
         }
+
+        // 3.2 Load from memory priceRegistry if available
+        if (typeof (window as any).getPriceRegistry === 'function') {
+            const reg = (window as any).getPriceRegistry();
+            if (reg) {
+                Object.entries(reg).forEach(([sym, price]: [string, any]) => {
+                    const upperSym = sym.toUpperCase();
+                    const formatted = upperSym.endsWith('USDT') ? upperSym : upperSym + 'USDT';
+                    if (!seenSymbols.has(formatted) && typeof price === 'number' && price > 0) {
+                        seenSymbols.add(formatted);
+                        allTickers.push({ symbol: formatted, price });
+                    }
+                });
+            }
+        }
         
-        if (allTickers.length === 0) {
+        // 3.3 If still insufficient, query Binance 24hr/ticker list with cached fallback
+        if (allTickers.length < 10) {
             try {
                 const url = `https://fapi.binance.com/fapi/v1/ticker/price`;
                 const response = await fetchWithFallback(url);
@@ -167,7 +194,8 @@ const List5_Live: React.FC<List5Props> = ({
                             const sym = item.symbol;
                             const price = parseFloat(item.price);
                             if (sym && price && !isNaN(price)) {
-                                if (!allTickers.some(t => t.symbol === sym)) {
+                                if (!seenSymbols.has(sym)) {
+                                    seenSymbols.add(sym);
                                     allTickers.push({ symbol: sym, price });
                                 }
                             }
@@ -198,10 +226,18 @@ const List5_Live: React.FC<List5Props> = ({
             return;
         }
         
-        // Partial match
+        // High-precision Fuzzy Match Algorithm:
+        // Support: Prefix matching, Substring matching, 1000x coin matching, and character-sequence matching
         const matches = usdtTickers.filter(t => {
             const base = getBaseCoin(t.symbol);
-            return base.includes(clean) || t.symbol.includes(clean);
+            if (base.includes(clean) || t.symbol.includes(clean)) return true;
+            if (base.replace(/^1000/, '').includes(clean)) return true;
+            // Subsequence match: every character in 'clean' appears in 'base' in order
+            let cIdx = 0;
+            for (let i = 0; i < base.length && cIdx < clean.length; i++) {
+                if (base[i] === clean[cIdx]) cIdx++;
+            }
+            return cIdx === clean.length;
         });
         
         if (matches.length === 0) {
@@ -213,17 +249,21 @@ const List5_Live: React.FC<List5Props> = ({
         const sortedMatches = [...matches].sort((a, b) => {
             const baseA = getBaseCoin(a.symbol);
             const baseB = getBaseCoin(b.symbol);
-            let scoreA = 0;
-            if (baseA === clean) scoreA = 100;
-            else if (baseA === '1000' + clean || clean === '1000' + baseA) scoreA = 90;
-            else if (baseA.startsWith(clean)) scoreA = 80;
-            else if (baseA.includes(clean)) scoreA = 70;
-            
-            let scoreB = 0;
-            if (baseB === clean) scoreB = 100;
-            else if (baseB === '1000' + clean || clean === '1000' + baseB) scoreB = 90;
-            else if (baseB.startsWith(clean)) scoreB = 80;
-            else if (baseB.includes(clean)) scoreB = 70;
+            const cleanBaseA = baseA.replace(/^1000/, '');
+            const cleanBaseB = baseB.replace(/^1000/, '');
+
+            const calcScore = (base: string, cleanB: string) => {
+                if (base === clean) return 1000;
+                if (cleanB === clean) return 900;
+                if (base.startsWith(clean)) return 800 - (base.length - clean.length) * 10;
+                if (cleanB.startsWith(clean)) return 750 - (cleanB.length - clean.length) * 10;
+                if (base.includes(clean)) return 600 - (base.length - clean.length) * 5;
+                if (cleanB.includes(clean)) return 550 - (cleanB.length - clean.length) * 5;
+                return 400;
+            };
+
+            const scoreA = calcScore(baseA, cleanBaseA);
+            const scoreB = calcScore(baseB, cleanBaseB);
             
             if (scoreA !== scoreB) {
                 return scoreB - scoreA;
@@ -238,7 +278,7 @@ const List5_Live: React.FC<List5Props> = ({
         setVerifyStatus('verified');
         
         if (sortedMatches.length > 1) {
-            const matchedList = sortedMatches.slice(0, 12).map(t => ({
+            const matchedList = sortedMatches.slice(0, 16).map(t => ({
                 symbol: t.symbol,
                 price: t.price,
                 base: getBaseCoin(t.symbol)
@@ -247,7 +287,7 @@ const List5_Live: React.FC<List5Props> = ({
         } else {
             setMatchedSymbols([]);
         }
-    };
+    }; // 🔒 [LOCKED - FUZZY SYMBOL SEARCH & MULTI-TIER RECOGNITION]
 
 
     // Fast order execution
@@ -256,13 +296,20 @@ const List5_Live: React.FC<List5Props> = ({
             alert('请输入币名！');
             return;
         }
+        // 智能解析可能输入的中文币名
+        const resolved = resolveSymbolFromInput(manualSymbol);
+        const symbolToOpen = resolved.symbol || manualSymbol;
+        if (!symbolToOpen.trim()) {
+            alert('未能识别币名，请输入正确的币名或英文代码！');
+            return;
+        }
         if (!manualAmount || manualAmount <= 0) {
             alert(`请输入合法的${manualInputMode === 'USDT' ? '金额(U)' : '数量(币)'}！`);
             return;
         }
 
-        const cleanSymbol = normalizeSymbol(manualSymbol);
-        const price = verifiedPrice || realPrices[cleanSymbol] || realPrices[manualSymbol];
+        const cleanSymbol = normalizeSymbol(symbolToOpen);
+        const price = verifiedPrice || realPrices[cleanSymbol] || realPrices[symbolToOpen] || realPrices[manualSymbol];
         
         if (!price || price <= 0) {
             alert('未能获取当前价格，无法进行计算，请先核验币种！');
@@ -354,8 +401,8 @@ const List5_Live: React.FC<List5Props> = ({
                                     setManualSymbol(e.target.value);
                                     setVerifyStatus('unverified');
                                 }}
-                                placeholder="代币 (如: BTC, SOL)"
-                                className="w-full bg-slate-950/80 border border-slate-800 focus:border-slate-700 rounded px-2.5 py-1 text-xs text-white uppercase placeholder-slate-600 font-bold tracking-wide"
+                                placeholder="输入币名 (如: BTC, SOL 或中文: 比特币, 以太坊, 狗狗币)"
+                                className="w-full bg-slate-950/80 border border-slate-800 focus:border-slate-700 rounded px-2.5 py-1 text-xs text-white placeholder-slate-600 font-bold tracking-wide"
                             />
                             {verifyStatus === 'verifying' && (
                                 <span className="absolute right-2 top-2 text-[9px] text-amber-500 animate-pulse font-sans">检测中...</span>
@@ -376,6 +423,16 @@ const List5_Live: React.FC<List5Props> = ({
                             {verifyStatus === 'verified' ? '已确认' : verifyStatus === 'failed' ? '未找到' : '核验'}
                         </button>
                     </div>
+
+                    {/* Chinese coin detection badge */}
+                    {manualSymbol && resolveSymbolFromInput(manualSymbol).matchedName && (
+                        <div className="text-[10px] text-cyan-300 flex items-center gap-1 px-2 py-0.5 bg-cyan-950/40 rounded border border-cyan-500/30">
+                            <span>💡 已识别中文币名:</span>
+                            <span className="font-bold text-white">{resolveSymbolFromInput(manualSymbol).matchedName}</span>
+                            <span>➔</span>
+                            <span className="font-bold font-mono text-emerald-400">{resolveSymbolFromInput(manualSymbol).symbol}</span>
+                        </div>
+                    )}
 
                     {/* Show verified price or warning */}
                     {verifyStatus === 'verified' && verifiedPrice !== null && (

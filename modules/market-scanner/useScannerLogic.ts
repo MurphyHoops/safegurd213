@@ -356,9 +356,13 @@ export const useScannerLogic = (
                     return stats;
                 });
 
-                if (JSON.stringify(finalFiltered) !== JSON.stringify(list1Ref.current)) {
-                    setList1(finalFiltered);
-                    list1Ref.current = finalFiltered;
+                if (finalFiltered.length > 0) {
+                    if (JSON.stringify(finalFiltered) !== JSON.stringify(list1Ref.current)) {
+                        setList1(finalFiltered);
+                        list1Ref.current = finalFiltered;
+                    }
+                } else if (list1Ref.current.length === 0) {
+                    setList1([]);
                 }
                 
                 // Update status text to reflect new count if not currently scanning
@@ -589,9 +593,13 @@ export const useScannerLogic = (
                 marketStatsRef.current = stats;
             }
             
-            if (JSON.stringify(finalFiltered) !== JSON.stringify(list1Ref.current)) {
-                setList1(finalFiltered);
-                list1Ref.current = finalFiltered;
+            if (finalFiltered.length > 0) {
+                if (JSON.stringify(finalFiltered) !== JSON.stringify(list1Ref.current)) {
+                    setList1(finalFiltered);
+                    list1Ref.current = finalFiltered;
+                }
+            } else if (list1Ref.current.length === 0) {
+                setList1([]);
             }
             
             setScanStatusText(finalFiltered.length > 0 ? (modeRef.current === 'SMART' ? `智能分析完成 (${finalFiltered.length}个)` : `行情就绪 (${finalFiltered.length}个)`) : "无符合条件的币种");
@@ -614,7 +622,9 @@ export const useScannerLogic = (
             const isBenignNetworkNoise = errMsg.includes('Failed to fetch') || 
                                          errMsg.includes('NetworkError') || 
                                          errMsg.includes('aborted') || 
-                                         errMsg.includes('AbortError');
+                                         errMsg.includes('AbortError') ||
+                                         errMsg.includes('timed out') ||
+                                         errMsg.includes('TimeoutError');
             
             if (!isBenignNetworkNoise) {
                 console.error("Scanner Fetch Failed:", errMsg); 
@@ -742,8 +752,19 @@ export const useScannerLogic = (
             setIsMajorScanning(false);
             return;
         }
+
+        // 🔒 [时间先后·互斥安全锁]: 若行情启动底池正在扫描，大行情等待让行，绝不同时工作
+        if ((window as any).IS_START_TREND_SCANNING) {
+            if (isManual) {
+                alert('“行情启动底池”正在扫描中，两个引擎实行时间先后分开作业，请等待底池扫描完成后自动接力运行！');
+            } else {
+                console.log("[MajorTrend] Start trend pool is currently scanning. Waiting for pool scan completion before starting major trend...");
+            }
+            return;
+        }
         
         setIsMajorScanning(true);
+        (window as any).IS_MAJOR_TREND_SCANNING = true;
         majorScanAbortRef.current = false;
 
         try {
@@ -859,6 +880,16 @@ export const useScannerLogic = (
             targetSymbols = primaryCandidates.map(i => i.symbol);
         }
 
+        // 🔒 确保既有候选币种也被纳入审计回溯，若已不再符合过滤条件则自动删除，同时保持存留币种持续无缝供给
+        const targetSet = new Set(targetSymbols);
+        majorTrendCandidatesRef.current.forEach(cand => {
+            const sym = cand.replace('_LONG', '').replace('_SHORT', '');
+            if (sym && !blacklistRef.current.has(sym)) {
+                targetSet.add(sym);
+            }
+        });
+        targetSymbols = Array.from(targetSet);
+
         if (targetSymbols.length === 0) {
             setIsMajorScanning(false);
             return;
@@ -873,17 +904,17 @@ export const useScannerLogic = (
         }
         
         // -------------------------------------------------------------
-        // STEP 1: 横盘波幅整理过滤 (Group 1 - Sideways Consolidation Filter: 优先访问行情启动底池)
+        // 🔒 [零空隙与持续存留铁律]: 保留现有候选集合作为基准，绝不初始清空，确保为列表2提供0空隙数据源
         // -------------------------------------------------------------
-        const passedStage1: Array<{
-            symbol: string;
-            highs: number[];
-            lows: number[];
-            prices: number[];
-            closes: number[];
-            currentPrice: number;
-        }> = [];
-        const limitsMap: Record<string, { maxZ: number, minZ: number }> = {};
+        const validSymbols = new Set<string>(majorTrendCandidatesRef.current);
+        const limitsMap: Record<string, { maxZ: number, minZ: number }> = { ...majorTrendLimits };
+
+        const enableLong = cfg.enableLong !== false;
+        const enableShort = cfg.enableShort !== false;
+        const enableSideways = cfg.enableSideways !== false;
+
+        let stage1PassedCount = 0;
+        let stage2PassedCount = 0;
 
         setMajorProgress({
             current: 0,
@@ -891,390 +922,289 @@ export const useScannerLogic = (
             stage: 'group1',
             group1Passed: 0,
             group2Passed: 0,
-            group3Passed: 0,
             currentSymbol: ''
         } as any);
 
-        const limitConcurrency = async (tasks: (() => Promise<any>)[], concurrency: number) => {
-            const executing: Promise<any>[] = [];
-            for (const task of tasks) {
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
-                const p = task();
-                executing.push(p);
-                p.then(() => {
-                    const idx = executing.indexOf(p);
-                    if (idx !== -1) executing.splice(idx, 1);
-                });
-                if (executing.length >= concurrency) {
-                    await Promise.race(executing);
-                }
-            }
-            await Promise.all(executing);
-        };
+        const perCoinDelayMs = Math.max(1, cfg.intervalSeconds ?? (cfg.intervalMinutes ? Math.min(cfg.intervalMinutes, 60) : 3)) * 1000;
+        const KLINE_LIMIT_CACHE = ((window as any).KLINE_LIMIT_CACHE = (window as any).KLINE_LIMIT_CACHE || {});
 
-        const tasks = targetSymbols.map((symbol) => async () => {
-            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) return;
+        for (let idx = 0; idx < targetSymbols.length; idx++) {
+            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
+            if (majorScanAbortRef.current) break;
+            const symbol = targetSymbols[idx];
+            const coinCycleStart = Date.now();
+            const targetIntervalMs = perCoinDelayMs;
+            const maxWorkTime = Math.min(2800, Math.max(500, targetIntervalMs - 100));
+
+            // 实时更新当前正在扫描的币种与序号，保证每枚币进度条绝对不卡住
+            setMajorProgress({
+                current: idx + 1,
+                total: targetSymbols.length,
+                stage: 'group2',
+                group1Passed: stage1PassedCount,
+                group2Passed: stage2PassedCount,
+                currentSymbol: symbol
+            } as any);
+
+            let coinTimeoutId: any = null;
             try {
-                const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
-                const limit = timeParam + 20; 
-                const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${cfg.filterKLinePeriod || '1d'}&limit=${limit}`;
-                const res = await fetchWithFallback(url, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
-                const klines = await res.json();
-                
-                if (!Array.isArray(klines) || klines.length < timeParam * 0.5) return;
+                await Promise.race([
+                    (async () => {
+                        const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
+                        const limit = timeParam + 20;
+                        let klines: any[] | null = null;
 
-                const prices = klines.map((k: any) => parseFloat(k[4])); 
-                const periodKlines = klines.slice(-timeParam);
-                const highs = periodKlines.map((k: any) => parseFloat(k[2]));
-                const lows = periodKlines.map((k: any) => parseFloat(k[3]));
-                const closes = periodKlines.map((k: any) => parseFloat(k[4]));
-
-                const currentPrice = closes[closes.length - 1];
-                const enableSideways = cfg.enableSideways !== false;
-
-                // Priority Step 1: Sideways Consolidation Filter
-                let maxZ = currentPrice;
-                let minZ = currentPrice;
-                let sidewaysMatch = true;
-
-                if (enableSideways && cfg.sidewaysDays > 0) {
-                    const sidewaysHighs = highs.slice(-cfg.sidewaysDays);
-                    const sidewaysLows = lows.slice(-cfg.sidewaysDays);
-                    maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
-                    minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
-
-                    const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
-                    const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
-
-                    if (dropFromMax >= cfg.sidewaysMaxDrop || riseFromMin >= cfg.sidewaysMaxPump) {
-                        sidewaysMatch = false;
-                    }
-                }
-
-                if (!sidewaysMatch) return;
-
-                limitsMap[symbol] = { maxZ, minZ };
-                passedStage1.push({
-                    symbol,
-                    highs,
-                    lows,
-                    prices,
-                    closes,
-                    currentPrice
-                });
-            } catch (e) {
-                console.warn(`[MajorTrend] Stage 1 error for ${symbol}:`, e);
-            } finally {
-                setMajorProgress(prev => ({
-                    ...prev,
-                    current: prev.current + 1,
-                    group1Passed: passedStage1.length,
-                    currentSymbol: symbol
-                }));
-            }
-        });
-
-        await limitConcurrency(tasks, 15);
-
-        setMajorProgress(prev => ({
-            ...prev,
-            current: targetSymbols.length,
-            group1Passed: passedStage1.length
-        }));
-
-        if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) {
-            setIsMajorScanning(false);
-            return;
-        }
-
-        // -------------------------------------------------------------
-        // STEP 2: 回溯周期过滤 (Group 2 - Lookback Period & Extreme Space Filter)
-        // -------------------------------------------------------------
-        setMajorProgress(prev => ({
-            ...prev,
-            current: 0,
-            total: passedStage1.length,
-            stage: 'group2',
-            group2Passed: 0
-        }));
-
-        const passedStage2: Array<{
-            symbol: string;
-            isLongMatch: boolean;
-            isShortMatch: boolean;
-            highs: number[];
-            lows: number[];
-            prices: number[];
-            closes: number[];
-            currentPrice: number;
-        }> = [];
-
-        const enableLong = cfg.enableLong !== false;
-        const enableShort = cfg.enableShort !== false;
-        const enableSideways = cfg.enableSideways !== false;
-
-        for (let i = 0; i < passedStage1.length; i++) {
-            const item = passedStage1[i];
-            const { symbol, highs, lows, prices, closes, currentPrice } = item;
-
-            let histHighs = highs;
-            let histLows = lows;
-            if (enableSideways && highs.length > cfg.sidewaysDays) {
-                const endIdx = Math.max(1, highs.length - cfg.sidewaysDays);
-                histHighs = highs.slice(0, endIdx);
-                histLows = lows.slice(0, endIdx);
-            }
-
-            const maxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
-            const minPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
-
-            const dropFromMaxToMin = ((maxPrice - minPrice) / maxPrice) * 100;
-            const pumpFromMinToMax = ((maxPrice - minPrice) / minPrice) * 100;
-
-            const distLong = ((currentPrice - minPrice) / minPrice) * 100;
-            const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
-
-            const minLowIdx = histLows.indexOf(minPrice);
-            const maxHighIdx = histHighs.indexOf(maxPrice);
-            const lowDaysAgo = minLowIdx !== -1 ? (histLows.length - 1 - minLowIdx) : 0;
-            const highDaysAgo = maxHighIdx !== -1 ? (histHighs.length - 1 - maxHighIdx) : 0;
-
-            const isLongMatch = enableLong && 
-                (dropFromMaxToMin >= cfg.minHistoryDrop) && 
-                (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
-                (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance)) &&
-                (lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
-                (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300));
-
-            const isShortMatch = enableShort && 
-                (pumpFromMinToMax >= cfg.minHistoryPump) && 
-                (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
-                (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance)) &&
-                (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
-                (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
-
-            const stage2Match = (!enableLong && !enableShort) || isLongMatch || isShortMatch;
-            if (!stage2Match) {
-                setMajorProgress(prev => ({
-                    ...prev,
-                    current: i + 1,
-                    group2Passed: passedStage2.length
-                }));
-                continue;
-            }
-
-            // Advanced EMA filter
-            let emaFailed = false;
-            if (cfg.filterEmaPeriod > 0) {
-                if (prices.length < cfg.filterEmaPeriod) {
-                    emaFailed = true;
-                } else {
-                    const ema = calculateEMA(prices, cfg.filterEmaPeriod);
-                    let crossCount = 0;
-                    let lastDirection: 'UP' | 'DOWN' | null = null;
-                    let lastCrossIndex = -1;
-
-                    for (let j = cfg.filterEmaPeriod - 1; j < prices.length; j++) {
-                        const emaVal = ema[j - (cfg.filterEmaPeriod - 1)];
-                        const currentDirection = prices[j] > emaVal ? 'UP' : 'DOWN';
-                        if (lastDirection && currentDirection !== lastDirection) {
-                            crossCount++;
-                            lastCrossIndex = j;
+                        const nowTime = Date.now();
+                        // ⚡ [日K极速扫描方案]: 10分钟长效缓存 + 跨模块日K复用，零冗余拉取
+                        if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < 600000)) {
+                            klines = KLINE_LIMIT_CACHE[symbol][timeParam].klines;
+                        } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= timeParam) {
+                            klines = KLINE_LIMIT_CACHE[`${symbol}_1d`];
+                        } else if (KLINE_LIMIT_CACHE[symbol]?.['1d']?.klines && KLINE_LIMIT_CACHE[symbol]['1d'].klines.length >= timeParam && (nowTime - (KLINE_LIMIT_CACHE[symbol]['1d'].timestamp || 0) < 600000)) {
+                            klines = KLINE_LIMIT_CACHE[symbol]['1d'].klines;
                         }
-                        lastDirection = currentDirection;
+
+                        if (!klines || !Array.isArray(klines) || klines.length === 0) {
+                            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=${limit}`;
+                            const res = await fetchWithFallback(url, { timeout: 2500 }, (d) => Array.isArray(d), directModeRef.current);
+                            klines = await res.json();
+                        }
+                
+                if (Array.isArray(klines) && klines.length >= 2) {
+                    if (!KLINE_LIMIT_CACHE[symbol]) KLINE_LIMIT_CACHE[symbol] = {};
+                    KLINE_LIMIT_CACHE[symbol][timeParam] = { timestamp: Date.now(), klines };
+                    KLINE_LIMIT_CACHE[symbol]['1d'] = { timestamp: Date.now(), klines };
+                    KLINE_LIMIT_CACHE[`${symbol}_1d`] = klines;
+
+                    const prices = klines.map((k: any) => parseFloat(k[4])); 
+                    const periodKlines = klines.slice(-timeParam);
+                    const highs = periodKlines.map((k: any) => parseFloat(k[2]));
+                    const lows = periodKlines.map((k: any) => parseFloat(k[3]));
+                    const closes = periodKlines.map((k: any) => parseFloat(k[4]));
+                    const currentPrice = closes[closes.length - 1];
+
+                    // 1. Stage 1: 横盘蓄势过滤
+                    let maxZ = currentPrice;
+                    let minZ = currentPrice;
+                    let sidewaysMatch = true;
+
+                    if (enableSideways && cfg.sidewaysDays > 0) {
+                        const sidewaysHighs = highs.slice(-cfg.sidewaysDays);
+                        const sidewaysLows = lows.slice(-cfg.sidewaysDays);
+                        maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
+                        minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
+
+                        const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
+                        const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
+
+                        if (dropFromMax >= cfg.sidewaysMaxDrop || riseFromMin >= cfg.sidewaysMaxPump) {
+                            sidewaysMatch = false;
+                        }
                     }
 
-                    if (crossCount >= cfg.filterCrossingCount) {
-                        emaFailed = true;
-                    } else if (lastCrossIndex !== -1 && lastCrossIndex < prices.length - 1) {
-                        const crossPrice = prices[lastCrossIndex];
-                        const maxFuturePrice = Math.max(...prices.slice(lastCrossIndex + 1));
-                        const minFuturePrice = Math.min(...prices.slice(lastCrossIndex + 1));
+                    // 2. Stage 2: 回溯周期与空间极值过滤
+                    let stage2Match = false;
+                    let isLongMatch = false;
+                    let isShortMatch = false;
+                    let emaFailed = false;
 
-                        const maxPumpAfterCross = ((maxFuturePrice - crossPrice) / crossPrice) * 100;
-                        const maxDropAfterCross = ((minFuturePrice - crossPrice) / crossPrice) * 100;
+                    if (sidewaysMatch) {
+                        let histHighs = highs;
+                        let histLows = lows;
+                        if (enableSideways && highs.length > cfg.sidewaysDays) {
+                            const endIdx = Math.max(1, highs.length - cfg.sidewaysDays);
+                            histHighs = highs.slice(0, endIdx);
+                            histLows = lows.slice(0, endIdx);
+                        }
 
-                        if (lastDirection === 'UP' && maxPumpAfterCross > cfg.filterLongMaxPump) emaFailed = true;
-                        if (lastDirection === 'DOWN' && maxDropAfterCross < cfg.filterShortMinDrop) emaFailed = true;
-                    }
-                }
-            }
+                        const maxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
+                        const minPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
 
-            if (!emaFailed) {
-                passedStage2.push({
-                    symbol,
-                    isLongMatch,
-                    isShortMatch,
-                    highs,
-                    lows,
-                    prices,
-                    closes,
-                    currentPrice
-                });
-            }
+                        const dropFromMaxToMin = ((maxPrice - minPrice) / maxPrice) * 100;
+                        const pumpFromMinToMax = ((maxPrice - minPrice) / minPrice) * 100;
 
-            setMajorProgress(prev => ({
-                ...prev,
-                current: i + 1,
-                group2Passed: passedStage2.length
-            }));
-        }
+                        const distLong = ((currentPrice - minPrice) / minPrice) * 100;
+                        const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
 
-        if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) {
-            setIsMajorScanning(false);
-            return;
-        }
+                        const minLowIdx = histLows.indexOf(minPrice);
+                        const maxHighIdx = histHighs.indexOf(maxPrice);
+                        const lowDaysAgo = minLowIdx !== -1 ? (histLows.length - 1 - minLowIdx) : 0;
+                        const highDaysAgo = maxHighIdx !== -1 ? (histHighs.length - 1 - maxHighIdx) : 0;
 
-        // -------------------------------------------------------------
-        // STEP 3: 行情启动趋势确认 (Group 3 - Start Trend Filter)
-        // -------------------------------------------------------------
-        setMajorProgress(prev => ({
-            ...prev,
-            current: 0,
-            total: passedStage2.length,
-            stage: 'group3',
-            group3Passed: 0
-        }));
+                        isLongMatch = enableLong && 
+                            (dropFromMaxToMin >= cfg.minHistoryDrop) && 
+                            (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
+                            (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance)) &&
+                            (lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
+                            (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300));
 
-        const validSymbols = new Set<string>();
+                        isShortMatch = enableShort && 
+                            (pumpFromMinToMax >= cfg.minHistoryPump) && 
+                            (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
+                            (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance)) &&
+                            (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
+                            (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300));
 
-        const allGroups = cfg.startTrendGroups || [];
-        const activeGroupsWithIdx = allGroups
-            .map((g, idx) => ({ ...g, idx }))
-            .filter(g => g.enabled);
+                        stage2Match = (!enableLong && !enableShort) || isLongMatch || isShortMatch;
 
-        if (activeGroupsWithIdx.length > 0) {
-            const limit1h = 100; // Fixed large limit to maximize cache hits
+                        if (stage2Match && cfg.filterEmaPeriod > 0) {
+                            if (prices.length < cfg.filterEmaPeriod) {
+                                emaFailed = true;
+                            } else {
+                                const ema = calculateEMA(prices, cfg.filterEmaPeriod);
+                                let crossCount = 0;
+                                let lastDirection: 'UP' | 'DOWN' | null = null;
+                                let lastCrossIndex = -1;
 
-            const step3Tasks = passedStage2.map((item, i) => async () => {
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) return;
-
-                const { symbol, isLongMatch, isShortMatch } = item;
-                const shouldCheckLong = isLongMatch && cfg.enableStartTrendLong;
-                const shouldCheckShort = isShortMatch && cfg.enableStartTrendShort;
-
-                let isLongTrendValid = false;
-                let isShortTrendValid = false;
-
-                if (shouldCheckLong || shouldCheckShort) {
-                    try {
-                        const url1h = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=${limit1h}`;
-                        const res1h = await fetchWithFallback(url1h, { timeout: 10000 }, (d) => Array.isArray(d), directModeRef.current);
-                        const klines1h = await res1h.json();
-
-                        if (Array.isArray(klines1h) && klines1h.length > 0) {
-                            const currentPrice = parseFloat(klines1h[klines1h.length - 1][4]);
-                            if (!isNaN(currentPrice) && currentPrice > 0) {
-                                for (const group of activeGroupsWithIdx) {
-                                    const groupDays = group.days !== undefined ? group.days : (group.idx === 0 ? 1 : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7)));
-                                    const requiredHours = groupDays * 24;
-
-                                    if (klines1h.length < requiredHours) {
-                                        continue;
+                                for (let j = cfg.filterEmaPeriod - 1; j < prices.length; j++) {
+                                    const emaVal = ema[j - (cfg.filterEmaPeriod - 1)];
+                                    const currentDirection = prices[j] > emaVal ? 'UP' : 'DOWN';
+                                    if (lastDirection && currentDirection !== lastDirection) {
+                                        crossCount++;
+                                        lastCrossIndex = j;
                                     }
+                                    lastDirection = currentDirection;
+                                }
 
-                                    const lastHCandles = klines1h.slice(-requiredHours);
+                                if (crossCount >= cfg.filterCrossingCount) {
+                                    emaFailed = true;
+                                } else if (lastCrossIndex !== -1 && lastCrossIndex < prices.length - 1) {
+                                    const crossPrice = prices[lastCrossIndex];
+                                    const maxFuturePrice = Math.max(...prices.slice(lastCrossIndex + 1));
+                                    const minFuturePrice = Math.min(...prices.slice(lastCrossIndex + 1));
 
-                                    if (shouldCheckLong) {
-                                        const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                        const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                        if (periodLows.length > 0 && periodHighs.length > 0) {
-                                            const periodMinLow = Math.min(...periodLows);
-                                            const periodMaxHigh = Math.max(...periodHighs);
-                                            const baseOpen = parseFloat(lastHCandles[0][1]);
-                                            
-                                            const changePct = ((currentPrice - baseOpen) / baseOpen) * 100;
-                                            const changePctFromLow = ((currentPrice - periodMinLow) / periodMinLow) * 100;
-                                            const effectiveChange = Math.max(changePct, changePctFromLow);
-                                            
-                                            const pullbackPct = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
-                                            const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
-                                            
-                                            if (!isNaN(effectiveChange) && effectiveChange >= group.minLong && effectiveChange <= group.maxLong && !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
-                                                isLongTrendValid = true;
-                                            }
-                                        }
-                                    }
+                                    const maxPumpAfterCross = ((maxFuturePrice - crossPrice) / crossPrice) * 100;
+                                    const maxDropAfterCross = ((minFuturePrice - crossPrice) / crossPrice) * 100;
 
-                                    if (shouldCheckShort) {
-                                        const periodHighs = lastHCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                        const periodLows = lastHCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                        if (periodHighs.length > 0 && periodLows.length > 0) {
-                                            const periodMaxHigh = Math.max(...periodHighs);
-                                            const periodMinLow = Math.min(...periodLows);
-                                            const baseOpen = parseFloat(lastHCandles[0][1]);
-                                            
-                                            const dropPct = ((baseOpen - currentPrice) / baseOpen) * 100;
-                                            const dropPctFromHigh = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
-                                            const effectiveDrop = Math.max(dropPct, dropPctFromHigh);
-                                            
-                                            const bouncePct = ((currentPrice - periodMinLow) / periodMinLow) * 100;
-                                            const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
-                                            
-                                            if (!isNaN(effectiveDrop) && effectiveDrop >= group.minShort && effectiveDrop <= group.maxShort && !isNaN(bouncePct) && bouncePct <= maxPullbackShort) {
-                                                isShortTrendValid = true;
-                                            }
-                                        }
-                                    }
+                                    if (lastDirection === 'UP' && maxPumpAfterCross > cfg.filterLongMaxPump) emaFailed = true;
+                                    if (lastDirection === 'DOWN' && maxDropAfterCross < cfg.filterShortMinDrop) emaFailed = true;
                                 }
                             }
                         }
-                    } catch (err) {
-                        console.warn(`[StartTrend] Warning checking ${symbol}:`, err);
                     }
-                }
 
-                const finalLongMatch = isLongMatch && (!shouldCheckLong || isLongTrendValid);
-                const finalShortMatch = isShortMatch && (!shouldCheckShort || isShortTrendValid);
+                    // 2. Stage 2 极值与回溯周期判定
+                    const stage2Passed = sidewaysMatch && stage2Match && !emaFailed;
+                    const finalLongMatch = stage2Passed && isLongMatch;
+                    const finalShortMatch = stage2Passed && isShortMatch;
 
-                if (finalLongMatch) {
-                    validSymbols.add(`${symbol}_LONG`);
-                }
-                if (finalShortMatch) {
-                    validSymbols.add(`${symbol}_SHORT`);
-                }
+                    // 🔒 [实时加入与自动删除]:
+                    // 1. 发现符合条件的新币时实时加入列表
+                    // 2. 当列表中的币种不再符合过滤条件时自动删除
+                    let itemChanged = false;
 
-                setMajorProgress(prev => ({
-                    ...prev,
-                    current: prev.current + 1,
-                    group3Passed: validSymbols.size,
-                    currentSymbol: symbol
-                }));
-            });
+                    if (finalLongMatch || finalShortMatch) {
+                        limitsMap[symbol] = { maxZ, minZ };
+                        if (finalLongMatch && !validSymbols.has(`${symbol}_LONG`)) {
+                            validSymbols.add(`${symbol}_LONG`);
+                            itemChanged = true;
+                        }
+                        if (finalShortMatch && !validSymbols.has(`${symbol}_SHORT`)) {
+                            validSymbols.add(`${symbol}_SHORT`);
+                            itemChanged = true;
+                        }
+                        if (!finalLongMatch && validSymbols.has(`${symbol}_LONG`)) {
+                            validSymbols.delete(`${symbol}_LONG`);
+                            itemChanged = true;
+                        }
+                        if (!finalShortMatch && validSymbols.has(`${symbol}_SHORT`)) {
+                            validSymbols.delete(`${symbol}_SHORT`);
+                            itemChanged = true;
+                        }
+                    } else {
+                        if (validSymbols.has(`${symbol}_LONG`)) {
+                            validSymbols.delete(`${symbol}_LONG`);
+                            itemChanged = true;
+                        }
+                        if (validSymbols.has(`${symbol}_SHORT`)) {
+                            validSymbols.delete(`${symbol}_SHORT`);
+                            itemChanged = true;
+                        }
+                        if (validSymbols.has(symbol)) {
+                            validSymbols.delete(symbol);
+                            itemChanged = true;
+                        }
+                    }
 
-            await limitConcurrency(step3Tasks, 15);
-        } else {
-            passedStage2.forEach((item, i) => {
-                const { symbol, isLongMatch, isShortMatch } = item;
-                if (isLongMatch) {
-                    validSymbols.add(`${symbol}_LONG`);
+                    if (itemChanged && isMountedRef.current) {
+                        const nextSet = new Set(validSymbols);
+                        setMajorTrendCandidates(nextSet);
+                        majorTrendCandidatesRef.current = nextSet;
+                        localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(nextSet)));
+                        setMajorTrendLimits({ ...limitsMap });
+                        localStorage.setItem(majorTrendLimitsKey, JSON.stringify(limitsMap));
+                        window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated'));
+                    }
+
+                    if (sidewaysMatch) stage1PassedCount++;
+                    if (stage2Passed) stage2PassedCount++;
+
+                    setMajorProgress({
+                        current: idx + 1,
+                        total: targetSymbols.length,
+                        stage: 'group2',
+                        group1Passed: stage1PassedCount,
+                        group2Passed: stage2PassedCount,
+                        currentSymbol: symbol
+                    } as any);
                 }
-                if (isShortMatch) {
-                    validSymbols.add(`${symbol}_SHORT`);
-                }
-                setMajorProgress(prev => ({
-                    ...prev,
-                    current: i + 1,
-                    group3Passed: validSymbols.size,
-                    currentSymbol: symbol
-                }));
-            });
+            })(),
+            new Promise((_, reject) => {
+                coinTimeoutId = setTimeout(() => reject(new Error('TIMEOUT_EXCEEDED')), maxWorkTime);
+            })
+        ]);
+    } catch (coinErr) {
+        console.warn(`[MajorTrend] Skipping ${symbol} (exceeded ${maxWorkTime}ms or network error)`);
+    } finally {
+        if (coinTimeoutId) clearTimeout(coinTimeoutId);
+        // 确保无论单币是否失败或超时，进度计数与通过数均得到最终确权
+        if (isMountedRef.current) {
+            setMajorProgress({
+                current: idx + 1,
+                total: targetSymbols.length,
+                stage: 'group2',
+                group1Passed: stage1PassedCount,
+                group2Passed: stage2PassedCount,
+                currentSymbol: symbol
+            } as any);
         }
+    }
+
+    // 精准补齐单币总时间预算：每个币从开始到跳至下一个币严格对齐为目标秒数(默认3秒)
+    const elapsed = Date.now() - coinCycleStart;
+    const remainingWait = Math.max(0, targetIntervalMs - elapsed);
+    if (idx < targetSymbols.length - 1 && remainingWait > 0 && isMountedRef.current && !majorScanAbortRef.current) {
+        await new Promise(resolve => setTimeout(resolve, remainingWait));
+    }
+}
 
         if (isMountedRef.current) {
-            setMajorTrendCandidates(validSymbols);
+            const finalSet = new Set(validSymbols);
+            setMajorTrendCandidates(finalSet);
+            majorTrendCandidatesRef.current = finalSet;
             setMajorTrendLimits(limitsMap);
-            localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(validSymbols)));
+            localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(finalSet)));
             localStorage.setItem(majorTrendLimitsKey, JSON.stringify(limitsMap));
             localStorage.setItem(`SCANNER_HAS_RUN_MAJOR${suffix}`, 'true');
             setHasRunMajorTrend(true);
             setIsMajorScanning(false);
-            setMajorProgress({ current: targetSymbols.length, total: targetSymbols.length });
+            setMajorProgress({
+                current: targetSymbols.length,
+                total: targetSymbols.length,
+                stage: 'completed',
+                group1Passed: stage1PassedCount,
+                group2Passed: stage2PassedCount,
+                currentSymbol: ''
+            } as any);
+            window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated'));
+            window.dispatchEvent(new CustomEvent('scanner_major_trend_completed'));
             audioService.speak("大行情发现任务完成");
         }
         } catch (err) {
             console.error("[MajorTrendDiscovery] Error:", err);
         } finally {
+            (window as any).IS_MAJOR_TREND_SCANNING = false;
+            window.dispatchEvent(new CustomEvent('scanner_major_trend_completed'));
             if (isMountedRef.current) {
                 setIsMajorScanning(false);
             }
@@ -1293,9 +1223,11 @@ export const useScannerLogic = (
 
         // Trigger initial discovery through Pipeline Coordinator only if candidates completely empty
         if (majorTrendCandidates.size === 0 && !hasRunMajorTrend && !isMajorScanning) {
-            pipelineCoordinator.enqueue('major_trend', async () => {
-                await runMajorTrendDiscovery(false);
-            });
+            if (!(window as any).IS_START_TREND_SCANNING) {
+                pipelineCoordinator.enqueue('major_trend', async () => {
+                    await runMajorTrendDiscovery(false);
+                });
+            }
         }
 
         // Auto interval (Default: 4 minutes, or configured updateIntervalHours if > 0)
@@ -1305,6 +1237,11 @@ export const useScannerLogic = (
         // Auto background runs with pipeline coordinator
         const timer = setInterval(() => {
             if (isMountedRef.current && initialConfig.majorTrend?.enabled && initialConfig.majorTrend?.autoMode !== false) {
+                // 🔒 [时间先后·互斥安全锁]: 若行情启动底池正在扫描，错开时间，绝不同时工作
+                if ((window as any).IS_START_TREND_SCANNING) {
+                    console.log("[MajorTrend] Background interval skipped: Start Trend Pool is currently scanning.");
+                    return;
+                }
                 pipelineCoordinator.enqueue('major_trend', async () => {
                     await runMajorTrendDiscovery(false);
                 });
@@ -1360,26 +1297,26 @@ export const useScannerLogic = (
     }, [initialConfig.majorTrend, runMajorTrendDiscovery]);
     // 🔒 [END_SECURITY_LOCK]
 
-    // --- AUTO-RUN WHEN START TREND POOL UPDATES (If Major Trend autoMode is true) ---
+    // --- 🔒 [时间先后·接力赛]: 行情启动底池整轮全部扫描完毕后，接力唤醒大行情发现扫描 ---
     useEffect(() => {
         const cfg = initialConfig.majorTrend;
         if (!cfg?.enabled || !cfg?.autoMode) return;
 
-        const handleStartTrendUpdate = () => {
-            if (isMountedRef.current && !isMajorScanning) {
-                console.log("[useScannerLogic] Start Trend Pool updated. Queuing Major Trend Discovery in Pipeline...");
-                pipelineCoordinator.enqueue('major_trend', async () => {
-                    await runMajorTrendDiscovery(false);
-                });
-            }
+        const handleStartTrendCompleted = () => {
+            if (!isMountedRef.current || isMajorScanning) return;
+            // 确保底池已完全扫描完毕且未在扫描中
+            if ((window as any).IS_START_TREND_SCANNING) return;
+
+            console.log("[useScannerLogic] Start Trend Pool scan COMPLETED. Handing over baton: Starting Major Trend Discovery now (接力启动)...");
+            pipelineCoordinator.enqueue('major_trend', async () => {
+                await runMajorTrendDiscovery(false);
+            });
         };
 
-        window.addEventListener('storage', handleStartTrendUpdate);
-        window.addEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
+        window.addEventListener('scanner_start_trend_pool_completed', handleStartTrendCompleted);
 
         return () => {
-            window.removeEventListener('storage', handleStartTrendUpdate);
-            window.removeEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
+            window.removeEventListener('scanner_start_trend_pool_completed', handleStartTrendCompleted);
         };
     }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, isMajorScanning, runMajorTrendDiscovery]);
 

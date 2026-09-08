@@ -1,0 +1,398 @@
+/**
+ * 全球主流加密货币中英文名称对照字典与智能解析器
+ * 用于支持系统全流程（列表1-5、持仓列表、系统日志、交易日志）中文币名友好展示与智能识别
+ */
+
+// 英文代码 -> 中文标准名称映射
+export const SYMBOL_TO_CHINESE_MAP: Record<string, string> = {
+    'BTC': '比特币',
+    'ETH': '以太坊',
+    'BNB': '币安币',
+    'SOL': '索拉纳',
+    'XRP': '瑞波币',
+    'DOGE': '狗狗币',
+    'ADA': '艾达币',
+    'AVAX': '雪崩币',
+    'DOT': '波卡',
+    'LINK': '链环',
+    'TRX': '波场',
+    'NEAR': '近邻',
+    'MATIC': '多边形',
+    'POL': '多边形',
+    'SHIB': '柴犬币',
+    '1000SHIB': '柴犬币',
+    'PEPE': '佩佩',
+    '1000PEPE': '佩佩',
+    'BONK': '邦克',
+    '1000BONK': '邦克',
+    'FLOKI': '弗洛基',
+    '1000FLOKI': '弗洛基',
+    'SATS': '聪',
+    '1000SATS': '聪',
+    'ORDI': '奥迪',
+    'RATS': '老鼠',
+    '1000RATS': '老鼠',
+    'WIF': '戴帽狗',
+    'LTC': '莱特币',
+    'BCH': '比特现金',
+    'ETC': '以太经典',
+    'FIL': '文件币',
+    'ATOM': '阿童木',
+    'UNI': '统一',
+    'SUI': '水币',
+    'APT': '阿普托斯',
+    'ARB': '仲裁',
+    'OP': '乐观',
+    'INJ': '注入',
+    'RENDER': '渲染',
+    'RNDR': '渲染',
+    'FET': '费特',
+    'WLD': '世界币',
+    'JUP': '木星',
+    'PYTH': '派斯',
+    'ONDO': '安多',
+    'ENA': '埃纳',
+    'TON': '电报币',
+    'NOT': '诺特',
+    'CATI': '猫币',
+    'HMSTR': '仓鼠',
+    'DOGS': '小狗',
+    'NEIRO': '奈罗',
+    'TURBO': '涡轮',
+    'BANANA': '香蕉',
+    'PEOPLE': '人民',
+    'BOME': '佩佩书',
+    'MEME': '模因',
+    'BLUR': '模糊',
+    'STRK': '斯塔克',
+    'TIA': '模块化',
+    'RUNE': '符文',
+    'KAS': '卡斯',
+    'SEI': '圣徒',
+    'ALGO': '算法',
+    'ICP': '电脑',
+    'XLM': '恒星',
+    'VET': '唯链',
+    'THETA': '希塔',
+    'EGLD': '金宝',
+    'FLOW': '心流',
+    'MINA': '米纳',
+    'KAVA': '卡瓦',
+    'ROSE': '玫瑰',
+    'CFX': '树图',
+    'NEO': '小蚁',
+    'ONT': '本体',
+    'ONG': '本体燃气',
+    'QTUM': '量子',
+    'ZIL': '齐利卡',
+    'IOST': '艾斯特',
+    'WAVES': '波浪',
+    'EOS': '柚子',
+    'DASH': '达世',
+    'XMR': '门罗',
+    'ZEC': '大零',
+    'PENDLE': '潘多拉',
+    'GMT': '跑鞋',
+    'GALA': '伽拉',
+    'SAND': '沙盒',
+    'MANA': '法力',
+    'CHZ': '奇利斯',
+    'FTM': '幻影',
+    'IMX': '神秘',
+    'AAVE': '阿维',
+    'CRV': '曲线',
+    'MKR': '创客',
+    'SNX': '合成资产',
+    'COMP': '复利',
+    'DYDX': '戴克斯',
+    'SUSHI': '寿司',
+    'CAKE': '煎饼',
+    'RVN': '乌鸦',
+    'LUNA': '露娜',
+    'LUNC': '经典露娜',
+    'AXS': '阿蟹',
+    'KNC': '京伯',
+    'ZRX': '零币',
+    'ENJ': '恩金',
+    'BAT': '蝙蝠',
+    'BAL': '平衡',
+    'YFI': '大姨夫',
+    '1INCH': '一寸',
+    'ANKR': '锚定',
+    'CELO': '赛罗',
+    'AUDIO': '奥迪欧',
+    'COTI': '柯蒂',
+    'CTSI': '笛卡尔',
+    'DGB': '极特',
+    'HOT': '全息',
+    'IOTA': '埃欧塔',
+    'LRC': '路印',
+    'NKN': '新型网络',
+    'OCEAN': '海洋',
+    'OMG': '嫩模',
+    'ONE': '和谐',
+    'REEF': '暗礁',
+    'SC': '云储',
+    'SKL': '天网',
+    'STORJ': '云储存储',
+    'XTZ': '绿币',
+    'ZEN': '禅币',
+    'XEM': '新经',
+    'MASK': '面具',
+    'ALPHA': '阿尔法',
+    'AR': '阿维尔',
+    'KLAY': '克莱',
+    'LPT': '直播',
+    'BAKE': '烤面包',
+    'HBAR': '哈希达',
+    'WOO': '沃欧',
+    'JASMY': '日本币',
+    'ENS': '以太域名',
+    'GMX': '永续去中心',
+    'STG': '星际门',
+    'APTOS': '阿普托斯',
+    'MAGIC': '魔法',
+    'ACH': '炼金术',
+    'SSV': '质押验证',
+    'ID': '太空身份',
+    'EDU': '开放校园',
+    'SUIUSDT': '水币',
+    'MAV': '独行侠',
+    'ARKM': '方舟',
+    'WLDUSDT': '世界币',
+    'SEIUSDT': '圣徒',
+    'CYBER': '赛博',
+    'TIAUSDT': '模块化',
+    'BEAMX': '光束',
+    'ACE': '核动力',
+    'NFP': '非同质提示',
+    'AI': '人工智能',
+    'XAI': '游戏公链',
+    'MANTA': '蝠鲼',
+    'ALT': '阿尔特',
+    'JUPUSDT': '木星',
+    'DYM': '戴维森',
+    'PIXEL': '像素',
+    'STRKUSDT': '斯塔克',
+    'PORTAL': '传送门',
+    'AXL': '全链网',
+    'METIS': '墨提斯',
+    'AEVO': '期权',
+    'BOMEUSDT': '佩佩书',
+    'ETHFI': '以太质押',
+    'ENAUSDT': '埃纳',
+    'W': '虫洞',
+    'TNSR': '张量',
+    'SAGA': '传奇',
+    'TAO': '位元张量',
+    'OMNI': '全链',
+    'REZ': '再质押',
+    'BB': '跳弹',
+    'NOTUSDT': '诺特',
+    'IO': '云算力',
+    'ZK': '零知识',
+    'ZRO': '第零层',
+    'BLAST': '冲击波',
+    'DOGSUSDT': '小狗',
+    'EURI': '欧元稳定',
+    'POLUSDT': '多边形',
+    'NEIROUSDT': '奈罗',
+    'TURBOUSDT': '涡轮',
+    '1MBABYDOGE': '宝贝狗',
+    'CATIUSDT': '猫币',
+    'HMSTRUSDT': '仓鼠',
+    'EIGEN': '艾根',
+    'SCR': '卷轴',
+    'GOAT': '山羊',
+    'MOODENG': '小河马',
+    'GRASS': '小草',
+    'COW': '奶牛',
+    'CETUS': '鲸鱼',
+    'PNUT': '松鼠',
+    'ACT': '小人',
+    'USUAL': '寻常',
+    'THE': '塞纳',
+    'ME': '魔法地毯',
+    'VELODROME': '单车',
+    'VIRTUAL': '虚拟空间',
+    'SPX': '五百指数',
+    'PENGU': '企鹅',
+    'MOVE': '移动链',
+    'SONIC': '声速',
+    'TRUMP': '川普',
+    'MELANIA': '梅拉尼娅',
+    'ANIME': '二次元',
+    'BERA': '熊链'
+};
+
+// 中文别称/简称/行话 -> 英文代码映射
+export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
+    // 顶级主流别称
+    '比特币': 'BTC', '大饼': 'BTC', '比特': 'BTC',
+    '以太坊': 'ETH', '以太': 'ETH', '二饼': 'ETH',
+    '币安币': 'BNB', '平台币': 'BNB',
+    '索拉纳': 'SOL', '阳光': 'SOL', '索罗娜': 'SOL',
+    '狗狗币': 'DOGE', '狗币': 'DOGE', '狗子': 'DOGE',
+    '瑞波币': 'XRP', '瑞波': 'XRP',
+    '艾达币': 'ADA', '卡尔达诺': 'ADA', '艾达': 'ADA',
+    '雪崩币': 'AVAX', '雪崩': 'AVAX',
+    '波卡': 'DOT', '波卡币': 'DOT',
+    '链环': 'LINK', '预言机': 'LINK',
+    '近邻': 'NEAR', '近邻协议': 'NEAR',
+    '波场': 'TRX', '孙哥': 'TRX', '孙宇晨': 'TRX',
+    '多边形': 'MATIC', '马蹄': 'MATIC', '马蹄币': 'MATIC', 'POL': 'POL',
+    '柴犬币': '1000SHIB', '柴犬': '1000SHIB', '屎币': '1000SHIB', 'SHIB': '1000SHIB',
+    '佩佩': '1000PEPE', '佩佩蛙': '1000PEPE', '青蛙': '1000PEPE', 'PEPE': '1000PEPE',
+    '邦克': '1000BONK', '棒克': '1000BONK', 'BONK': '1000BONK',
+    '弗洛基': '1000FLOKI', '佛罗基': '1000FLOKI', 'FLOKI': '1000FLOKI',
+    '聪': '1000SATS', '萨茨': '1000SATS', 'SATS': '1000SATS',
+    '奥迪': 'ORDI', '铭文': 'ORDI',
+    '老鼠': '1000RATS', '鼠币': '1000RATS',
+    '戴帽狗': 'WIF', '帽子狗': 'WIF', '狗帽': 'WIF',
+    '莱特币': 'LTC', '莱特': 'LTC', '辣条': 'LTC',
+    '比特现金': 'BCH', '太子': 'BCH', '皇太子': 'BCH',
+    '以太经典': 'ETC', '经典以太': 'ETC', '原链': 'ETC', '末日战车': 'ETC',
+    '文件币': 'FIL', '飞尔': 'FIL',
+    '宇宙': 'ATOM', '阿童木': 'ATOM',
+    '统一': 'UNI', '独角兽': 'UNI',
+    '隋': 'SUI', '水币': 'SUI', '水': 'SUI',
+    '阿普托斯': 'APT', '兔子': 'APT',
+    '仲裁': 'ARB', '仲裁者': 'ARB',
+    '乐观': 'OP', '乐观者': 'OP',
+    '注入': 'INJ', '注射协议': 'INJ',
+    '渲染': 'RENDER', '渲染币': 'RENDER', 'RNDR': 'RENDER',
+    '费特': 'FET', '人工超级智能': 'FET', '人工智能': 'FET',
+    '世界币': 'WLD', '奥特曼': 'WLD',
+    '木星': 'JUP', '朱庇特': 'JUP',
+    '派斯': 'PYTH', '神谕': 'PYTH',
+    '安多': 'ONDO',
+    '埃纳': 'ENA',
+    '通': 'TON', '电报币': 'TON',
+    '诺特': 'NOT', '点点币': 'NOT',
+    '猫币': 'CATI', '猫咪': 'CATI',
+    '仓鼠': 'HMSTR', '仓鼠快打': 'HMSTR',
+    '狗子币': 'DOGS',
+    '奈罗': 'NEIRO', '小狗': 'NEIRO',
+    '涡轮': 'TURBO', '涡轮增压': 'TURBO',
+    '香蕉': 'BANANA',
+    '人民': 'PEOPLE', '宪法': 'PEOPLE', '人民币': 'PEOPLE',
+    '佩佩书': 'BOME', '书币': 'BOME', '蠢蛋': 'BOME',
+    '模因': 'MEME',
+    '模糊': 'BLUR',
+    '斯塔克': 'STRK',
+    '模块化': 'TIA', '提亚': 'TIA',
+    '符文': 'RUNE',
+    '卡斯': 'KAS', '卡斯帕': 'KAS',
+    '圣徒': 'SEI',
+    '算法': 'ALGO', '艾尔格': 'ALGO',
+    '电脑': 'ICP', '互联网计算机': 'ICP',
+    '恒星': 'XLM', '恒星币': 'XLM',
+    '唯链': 'VET',
+    '希塔': 'THETA', '西塔': 'THETA',
+    '金宝': 'EGLD',
+    '心流': 'FLOW',
+    '米纳': 'MINA',
+    '卡瓦': 'KAVA',
+    '玫瑰': 'ROSE',
+    '树图': 'CFX', '康弗克斯': 'CFX',
+    '小蚁': 'NEO', '小蚁币': 'NEO',
+    '本体': 'ONT',
+    '本体燃气': 'ONG', '本体分叉': 'ONG',
+    '量子': 'QTUM', '量子链': 'QTUM',
+    '齐利卡': 'ZIL',
+    '艾斯特': 'IOST',
+    '波浪': 'WAVES',
+    '柚子': 'EOS',
+    '达世': 'DASH', '达世币': 'DASH',
+    '门罗': 'XMR', '门罗币': 'XMR',
+    '大零': 'ZEC', '大零币': 'ZEC',
+    '潘多拉': 'PENDLE', '本德尔': 'PENDLE',
+    '跑鞋': 'GMT', '绿鞋': 'GMT',
+    '伽拉': 'GALA',
+    '沙盒': 'SAND',
+    '法力': 'MANA',
+    '奇利斯': 'CHZ',
+    '幻影': 'FTM',
+    '神秘': 'IMX', '不可变': 'IMX',
+    '阿维': 'AAVE',
+    '曲线': 'CRV',
+    '创客': 'MKR',
+    '合成资产': 'SNX',
+    '复利': 'COMP',
+    '戴克斯': 'DYDX',
+    '寿司': 'SUSHI',
+    '煎饼': 'CAKE',
+    '乌鸦': 'RVN', '乌鸦币': 'RVN',
+    '露娜': 'LUNA', '经典露娜': 'LUNC',
+    '松鼠': 'PNUT', '小松鼠': 'PNUT',
+    '河马': 'MOODENG', '小河马': 'MOODENG',
+    '山羊': 'GOAT',
+    '小草': 'GRASS',
+    '奶牛': 'COW',
+    '川普': 'TRUMP', '特朗普': 'TRUMP',
+    '熊链': 'BERA',
+    '二次元': 'ANIME'
+};
+
+/**
+ * 获取指定代币代码的中文名称
+ * @param symbol 如 "BTC", "BTCUSDT", "1000PEPE", "ONG"
+ * @returns 中文名如 "比特币", "本体燃气"，若无则返回 null
+ */
+export function getCoinChineseName(symbol: string): string | null {
+    if (!symbol) return null;
+    const clean = symbol.toUpperCase().trim().replace(/USDT$/, '');
+    const without1000 = clean.replace(/^1000/, '');
+    
+    return SYMBOL_TO_CHINESE_MAP[clean] || 
+           SYMBOL_TO_CHINESE_MAP[without1000] || 
+           SYMBOL_TO_CHINESE_MAP[symbol.toUpperCase().trim()] || 
+           null;
+}
+
+/**
+ * 格式化代币显示名称（含中文）
+ * @example formatCoinWithChinese("BTC") => "BTC (比特币)"
+ * @example formatCoinWithChinese("ONGUSDT") => "ONG (本体燃气)"
+ */
+export function formatCoinWithChinese(symbol: string): string {
+    if (!symbol) return '';
+    const clean = symbol.toUpperCase().trim().replace(/USDT$/, '');
+    const zh = getCoinChineseName(symbol);
+    return zh ? `${clean} (${zh})` : clean;
+}
+
+/**
+ * 智能中文/英文输入解析器（支持模糊包含与智能匹配）
+ */
+export function resolveSymbolFromInput(raw: string): { symbol: string; matchedName?: string } {
+    if (!raw) return { symbol: '' };
+    const trimmed = raw.trim();
+    
+    // 1. 完全精确匹配中文字典
+    if (CHINESE_TO_SYMBOL_MAP[trimmed]) {
+        return { symbol: CHINESE_TO_SYMBOL_MAP[trimmed], matchedName: trimmed };
+    }
+
+    // 2. 包含匹配中文字典（优先最长匹配，如“比特币合约”优先匹配“比特币”）
+    const matchedKeys = Object.keys(CHINESE_TO_SYMBOL_MAP)
+        .filter(k => trimmed.includes(k))
+        .sort((a, b) => b.length - a.length);
+
+    if (matchedKeys.length > 0) {
+        const bestKey = matchedKeys[0];
+        return { symbol: CHINESE_TO_SYMBOL_MAP[bestKey], matchedName: bestKey };
+    }
+
+    // 3. 反向包含（例如输入“狗”匹配“狗狗币”）
+    if (/[\u4e00-\u9fa5]/.test(trimmed)) {
+        const reverseKey = Object.keys(CHINESE_TO_SYMBOL_MAP).find(k => k.includes(trimmed));
+        if (reverseKey) {
+            return { symbol: CHINESE_TO_SYMBOL_MAP[reverseKey], matchedName: reverseKey };
+        }
+    }
+
+    // 4. 标准英文代码清洗
+    const cleaned = trimmed.toUpperCase().replace(/\s+/g, '');
+    return { symbol: cleaned };
+}

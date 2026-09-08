@@ -29,6 +29,9 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     onUpdateCustomSettings,
     onVerifyPosition,
     onManualHedge,
+    onManualAmputate,
+    onManualRefill,
+    onManualClosePair,
     networkStatus,
     isOnline,
     manuallyClosedSymbols
@@ -41,8 +44,39 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const [settingsTargetPosition, setSettingsTargetPosition] = useState<Position | null>(null);
     const [isHoveredOnList, setIsHoveredOnList] = useState(false);
     const [isPinLocked, setIsPinLocked] = useState(false);
+    const [isManualSyncing, setIsManualSyncing] = useState(false);
+    const [syncTip, setSyncTip] = useState<string | null>(null);
     const confirmTimeoutRef = React.useRef<any>(null);
     const confirmRecordsTimeoutRef = React.useRef<any>(null);
+
+    const handleManualSync = async () => {
+        if (isManualSyncing) return;
+        setIsManualSyncing(true);
+        setSyncTip('正在同步...');
+        try {
+            if ((window as any).triggerApiSync) {
+                const res = await (window as any).triggerApiSync(true);
+                if (res && res.rateLimited) {
+                    setSyncTip('出口限频中');
+                    audioService.speak('网络出口限频中，已载入最新快照', true);
+                } else if (res && res.success === false) {
+                    setSyncTip('同步未通过');
+                } else {
+                    setSyncTip('已同步最新');
+                    audioService.speak('已同步币安最新交易数据');
+                }
+            }
+        } catch (e: any) {
+            setSyncTip('同步异常');
+        } finally {
+            setTimeout(() => {
+                setIsManualSyncing(false);
+            }, 1200);
+            setTimeout(() => {
+                setSyncTip(null);
+            }, 3500);
+        }
+    };
 
     const isListOrderLocked = isHoveredOnList || isPinLocked;
 
@@ -74,8 +108,8 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const [activeTab, setActiveTab] = useState<'LIVE' | 'BACKTEST'>('LIVE');
     const [latestReport, setLatestReport] = useState<any>(null);
 
-    const btPositions = positions.filter(p => p.isBacktestRecord);
-    const livePositionsFiltered = positions.filter(p => !p.isBacktestRecord);
+    const btPositions = positions.filter(p => p.isBacktestRecord && (p.amount || 0) > 0.0001);
+    const livePositionsFiltered = positions.filter(p => !p.isBacktestRecord && (p.amount || 0) > 0.0001);
     const hasBacktestPositions = btPositions.length > 0;
 
     // Auto-switch to BACKTEST tab if there are active backtest positions
@@ -195,7 +229,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
             
             {/* Top Tabs Bar */}
             <div className="flex items-center justify-between border-b border-slate-800 bg-[#0d1015] p-1.5 shrink-0 select-none z-20">
-                <div className="flex gap-1.5">
+                <div className="flex gap-1.5 items-center">
                     <button 
                         onClick={() => setActiveTab('LIVE')}
                         className={`px-3 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 ${
@@ -218,6 +252,24 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                         <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'BACKTEST' ? 'bg-indigo-400 animate-pulse' : 'bg-slate-500'}`} />
                         回测仿真 监控
                     </button>
+
+                    {/* 手动获取刷新币安交易数据按钮 */}
+                    {activeTab === 'LIVE' && (
+                        <button
+                            id="manual-binance-sync-btn"
+                            onClick={handleManualSync}
+                            disabled={isManualSyncing}
+                            title="强制手动向币安获取最新持仓、保证金与交易流水（绕过缓存）"
+                            className={`ml-2 px-2.5 py-1 text-[11px] font-bold rounded-md transition-all flex items-center gap-1.5 border shadow-sm select-none ${
+                                isManualSyncing 
+                                    ? 'bg-amber-950/50 text-amber-300 border-amber-500/50 cursor-wait' 
+                                    : 'bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border-slate-700 hover:border-slate-600 active:scale-95'
+                            }`}
+                        >
+                            <RefreshCw size={12} className={isManualSyncing ? 'animate-spin text-amber-400' : 'text-slate-400'} />
+                            <span>{syncTip || '刷新币安数据'}</span>
+                        </button>
+                    )}
                 </div>
                 
                 {activeTab === 'BACKTEST' && (
@@ -480,12 +532,13 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                         let hedgePos: Position | undefined;
                         
                         const pNormSym = normalizeSymbol(p.symbol);
-                        if (p.mainPositionId) {
+                        const isThisHedge = !!p.mainPositionId || p.entryId?.startsWith('HEDGE_');
+                        if (isThisHedge) {
                             hedgePos = p;
-                            mainPos = positions.find(x => x.entryId === p.mainPositionId || (normalizeSymbol(x.symbol) === pNormSym && x.side !== p.side && !x.mainPositionId));
+                            mainPos = positions.find(x => x.entryId === p.mainPositionId || (normalizeSymbol(x.symbol) === pNormSym && x.side !== p.side && !x.mainPositionId && !x.entryId?.startsWith('HEDGE_')));
                         } else {
                             mainPos = p;
-                            hedgePos = positions.find(x => x.mainPositionId === p.entryId || (normalizeSymbol(x.symbol) === pNormSym && x.side !== p.side && (x.mainPositionId || x.isHedged || x.amount > 0)));
+                            hedgePos = positions.find(x => x.mainPositionId === p.entryId || (normalizeSymbol(x.symbol) === pNormSym && x.side !== p.side && (x.mainPositionId || x.entryId?.startsWith('HEDGE_') || x.isHedged)));
                         }
 
                         // 判定是否处于正在防爆对冲状态：
@@ -576,6 +629,9 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                 onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
                                 onVerifyPosition={onVerifyPosition}
                                 onManualHedge={onManualHedge}
+                                onManualAmputate={onManualAmputate}
+                                onManualRefill={onManualRefill}
+                                onManualClosePair={onManualClosePair}
                                 aiSmartMasterEnabled={settings?.profit?.aiSmartMasterEnabled}
                                 globalProfitSettings={settings?.profit}
                                 globalHedgingSettings={settings?.hedging}

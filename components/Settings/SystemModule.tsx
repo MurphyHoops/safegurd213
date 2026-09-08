@@ -1,7 +1,7 @@
 
 import React, { useRef } from 'react';
 import { SystemSettings } from '../../types';
-import { Crown, Key, Download, Upload, Code, AlertTriangle, Zap } from 'lucide-react';
+import { Crown, Key, Download, Upload, Code, AlertTriangle, Zap, ShieldCheck } from 'lucide-react';
 import { subscriptionService } from '../../services/subscriptionService';
 import { audioService } from '../../services/audioService';
 
@@ -230,6 +230,13 @@ const SystemModule: React.FC<Props> = ({ settings, onChange, onOpenManual, onVie
                         <Upload size={12} /> 📥 导入恢复配置
                     </button>
                 </div>
+
+                <button 
+                    onClick={() => window.dispatchEvent(new CustomEvent('open_security_lock'))}
+                    className="w-full py-2 flex items-center justify-center gap-2 text-[10px] bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-400 rounded transition-colors border border-emerald-800/50 font-bold"
+                >
+                    <ShieldCheck size={12} /> 🔒 安全授权锁 / 实名认证 (Security Lock)
+                </button>
 
                 <button 
                     onClick={onViewSource}

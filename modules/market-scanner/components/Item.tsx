@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Zap, CheckSquare, Square, Trash2, Download, Loader2, Sparkles, Brain, TrendingUp } from 'lucide-react';
 import { ScannerItem, ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { fetchWithFallback } from '../../../services/apiService';
+import { getCoinChineseName } from '../../../services/coinNames';
 
 interface Props {
     item: ScannerItem;
@@ -377,8 +378,11 @@ export const List1Item: React.FC<Props> = ({
                         {isSmart && <span className="text-[6.5px] bg-purple-600 text-white px-0.5 rounded font-bold shrink-0">S</span>}
                     </div>
 
-                    <div className="text-[11.5px] font-black text-slate-100 shrink-0" title={item.symbol}>
-                        {item.symbol.replace('USDT','')}
+                    <div className="text-[11.5px] font-black text-slate-100 shrink-0 flex items-baseline gap-1" title={item.symbol}>
+                        <span>{item.symbol.replace('USDT','')}</span>
+                        {getCoinChineseName(item.symbol) && (
+                            <span className="text-[9.5px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
+                        )}
                     </div>
 
                     {(() => {

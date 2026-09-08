@@ -1,71 +1,55 @@
 /**
- * Pipeline Execution Queue Coordinator
- * Ensures strict top-to-bottom execution order when timers overlap:
- * Step 1: 交易额过滤底池 (Volume Pool from Binance)
- * Step 2: 行情启动底池 (Start Trend Pool from Volume Pool)
- * Step 3: 大行情发现 (Major Trend Discovery from Start Trend Pool)
+ * Pipeline Execution Queue Coordinator - Channel-based Independent Pipelines
+ * 确保各业务线各行其道、互不干扰、互不阻塞：
+ * Channel 1: volume_pool (交易额过滤底池)
+ * Channel 2: start_trend (行情启动底池)
+ * Channel 3: major_trend (大行情发现)
+ * 
+ * 🔒 铁律保障：每个通道各自独立运行，启动底池扫描与大行情扫描各行其道，绝不互相排队阻塞死锁！
  */
 
-type TaskId = 'volume_pool' | 'start_trend' | 'major_trend';
-
-interface PipelineTask {
-    id: TaskId;
-    priority: number; // 1: highest (volume_pool), 2: start_trend, 3: major_trend
-    fn: () => Promise<any>;
-}
+export type TaskId = 'volume_pool' | 'start_trend' | 'major_trend';
 
 class PipelineCoordinator {
-    private queue: PipelineTask[] = [];
-    private isRunning: boolean = false;
-    private runningTaskId: TaskId | null = null;
+    private runningTasks: Set<TaskId> = new Set();
+    private pendingTasks: Map<TaskId, () => Promise<any>> = new Map();
 
+    /**
+     * 将任务加入指定独立通道，不同通道完全并发运行（各行其道）
+     */
     public enqueue(id: TaskId, fn: () => Promise<any>) {
-        const priority = id === 'volume_pool' ? 1 : id === 'start_trend' ? 2 : 3;
-
-        // If task with same ID already in queue, replace with latest fn
-        const existingIdx = this.queue.findIndex(t => t.id === id);
-        if (existingIdx >= 0) {
-            this.queue[existingIdx].fn = fn;
-        } else {
-            this.queue.push({ id, priority, fn });
-        }
-
-        // Sort queue by priority ascending (1 -> 2 -> 3)
-        this.queue.sort((a, b) => a.priority - b.priority);
-
-        this.processNext();
-    }
-
-    private async processNext() {
-        if (this.isRunning || this.queue.length === 0) return;
-
-        this.isRunning = true;
-        const task = this.queue.shift();
-        if (!task) {
-            this.isRunning = false;
+        // 如果该通道当前正在执行中，更新该通道的待执行任务为最新函数（保鲜），防止同一通道内部重入混乱
+        if (this.runningTasks.has(id)) {
+            this.pendingTasks.set(id, fn);
             return;
         }
 
-        this.runningTaskId = task.id;
+        this.executeChannel(id, fn);
+    }
+
+    private async executeChannel(id: TaskId, fn: () => Promise<any>) {
+        this.runningTasks.add(id);
         try {
-            console.log(`[PipelineQueue] Executing Step ${task.priority}: ${task.id}...`);
-            await task.fn();
-            console.log(`[PipelineQueue] Finished Step ${task.priority}: ${task.id}`);
+            console.log(`[PipelineQueue] Executing independent track: ${id}...`);
+            await fn();
+            console.log(`[PipelineQueue] Finished independent track: ${id}`);
         } catch (err) {
-            console.error(`[PipelineQueue] Error in Step ${task.priority} (${task.id}):`, err);
+            console.error(`[PipelineQueue] Error in track (${id}):`, err);
         } finally {
-            this.runningTaskId = null;
-            this.isRunning = false;
-            // Process next task in queue
-            if (this.queue.length > 0) {
-                setTimeout(() => this.processNext(), 50);
+            this.runningTasks.delete(id);
+            // 检查该通道是否有排队的最新待执行任务，若有则在微小间隔后平滑执行
+            const nextFn = this.pendingTasks.get(id);
+            if (nextFn) {
+                this.pendingTasks.delete(id);
+                setTimeout(() => this.executeChannel(id, nextFn), 50);
             }
         }
     }
 
     public isTaskRunning(id: TaskId): boolean {
-        return this.runningTaskId === id;
+        return this.runningTasks.has(id);
     }
 }
 
 export const pipelineCoordinator = new PipelineCoordinator();
+

@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { LogCenterProps } from './types';
 import { Terminal, ExternalLink, Search, Clock, RotateCcw, X, Trash2, HardDrive, Sparkles, CheckCircle2, ShieldCheck, HelpCircle, RefreshCw, AlertTriangle } from 'lucide-react';
 import { cacheManager, StorageEstimateInfo } from '../../services/cacheManager';
+import { getCoinChineseName, resolveSymbolFromInput } from '../../services/coinNames';
 
 export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, onClearLogs }) => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -74,12 +75,15 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
   };
 
   const filteredLogs = useMemo(() => {
-    const term = searchTerm.toLowerCase();
+    const term = searchTerm.trim().toLowerCase();
+    const resolved = resolveSymbolFromInput(searchTerm);
+    const resolvedSymbol = resolved.symbol ? resolved.symbol.toLowerCase() : '';
     const startMs = startTime ? new Date(startTime).getTime() : 0;
     const endMs = endTime ? new Date(endTime).getTime() : Infinity;
 
     return logs.filter(log => {
-      const matchesTerm = log.message.toLowerCase().includes(term);
+      const msg = log.message.toLowerCase();
+      const matchesTerm = !term || msg.includes(term) || (resolvedSymbol && msg.includes(resolvedSymbol));
       if (!matchesTerm) return false;
 
       const logTime = log.timestamp instanceof Date ? log.timestamp.getTime() : new Date(log.timestamp).getTime();
@@ -113,7 +117,10 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
                 onClick={() => onOpenChart(matches[i], price, time)}
                 className="text-indigo-400 hover:text-indigo-300 hover:underline inline-flex items-center gap-0.5 mx-1 font-bold"
               >
-                {matches[i]}
+                <span>{matches[i]}</span>
+                {getCoinChineseName(matches[i]) && (
+                  <span className="text-amber-300/80 font-normal">({getCoinChineseName(matches[i])})</span>
+                )}
                 <ExternalLink size={10} />
               </button>
             )}

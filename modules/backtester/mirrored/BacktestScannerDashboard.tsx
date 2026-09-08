@@ -116,7 +116,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
   const executeTradeSafe = useCallback((symbol: string, side: PositionSide, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => {
       const DEFAULT_ACTION_CONFIG: ActionConfig = { 
           enabled: true, 
-          openAmount: 100, 
+          openAmount: 10, 
           maxOpenSymbols: 200, 
           maxTotalValue: 100000, 
           breakoutBuffer: 0.2, 
@@ -172,7 +172,7 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
 
       const amount = config.positionSizeMode === 'VARIABLE' 
           ? Math.min(balanceRef.current * (config.variablePercentage / 100), config.variableMaxLimit || Infinity)
-          : (config.openAmount || 100);
+          : (config.openAmount || 10);
       
       onOpenPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas);
       if (onLog) onLog('SUCCESS', `[回测] 执行交易: ${cleanSymbol} ${side} | 原因: ${reason}`);

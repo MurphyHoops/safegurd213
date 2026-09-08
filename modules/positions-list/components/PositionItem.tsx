@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Position, PositionSide } from '../../../types';
-import { Shield, Target, Zap, History, BarChart2, Settings, Brain, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Shield, Target, Zap, History, Clock, BarChart2, Settings, Brain, RefreshCw, AlertTriangle } from 'lucide-react';
 import { formatPrice } from '../../../services/symbolUtils';
 import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
 import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
 import { RealtimeClockSpan } from '../../../components/RealtimeClockSpan';
+import { getCoinChineseName } from '../../../services/coinNames';
 
 /**
  * 本地获取 AI 智能开启的真实百分比阈值，避免循环依赖
@@ -171,6 +172,9 @@ interface Props {
     onVerifyPosition: (position: Position) => void;
     onOpenSettings?: (position: Position) => void;
     onManualHedge?: (position: Position) => void;
+    onManualAmputate?: (position: Position) => void;
+    onManualRefill?: (position: Position) => void;
+    onManualClosePair?: (position: Position) => void;
     aiSmartMasterEnabled?: boolean;
     globalProfitSettings?: any;
     globalHedgingSettings?: any;
@@ -180,10 +184,11 @@ interface Props {
 }
 
 // @LOCKED: PositionItem logic
-export const PositionItem: React.FC<Props> = ({
+export const PositionItem: React.FC<Props> = React.memo(({
     p, idx, livePrice, currentPnl, currentPnlPct, showHedgeStats, totalDebt, isHedgedMode, isModule1Active, hasAmmo,
-    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings, hedgeTriggerReason
+    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, onManualAmputate, onManualRefill, onManualClosePair, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings, hedgeTriggerReason
 }) => {
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const isHedgedActive = p.isHedged || !!p.mainPositionId;
 
     // AI Dynamic Status & Activation Checks
@@ -296,7 +301,12 @@ export const PositionItem: React.FC<Props> = ({
             {/* 1. Symbol, Direction & Tags */}
             <div className="w-[15%] flex items-center gap-2 pr-2">
                 <div className="flex items-center gap-1.5 shrink-0">
-                    <span className="font-black text-sm text-white tracking-tight">{p.symbol.replace('USDT','')}</span>
+                    <div className="flex items-baseline gap-1">
+                        <span className="font-black text-sm text-white tracking-tight">{p.symbol.replace('USDT','')}</span>
+                        {getCoinChineseName(p.symbol) && (
+                            <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(p.symbol)})</span>
+                        )}
+                    </div>
                     <span className={`text-[9px] px-1.5 rounded-sm font-bold ${p.side === PositionSide.LONG ? 'text-emerald-500 bg-emerald-500/10' : 'text-red-500 bg-red-500/10'}`}>
                         {p.side === PositionSide.LONG ? '多' : '空'}
                     </span>
@@ -330,14 +340,14 @@ export const PositionItem: React.FC<Props> = ({
                         </div>
                     )}
                     {isHedgedMode ? (
-                        <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${p.mainPositionId ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' : 'bg-indigo-900/30 text-indigo-300 border-indigo-500/30'}`} title="模块4已接管">
+                        <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${(p.mainPositionId || p.entryId?.startsWith('HEDGE_')) ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' : 'bg-indigo-900/30 text-indigo-300 border-indigo-500/30'}`} title="模块4已接管">
                             <Shield size={8} fill="currentColor"/>
-                            <span>{p.mainPositionId ? (p.reopenCount ? `对冲仓位 (编号${p.reopenCount})` : '对冲仓位') : '原仓位'}</span>
+                            <span>{(p.mainPositionId || p.entryId?.startsWith('HEDGE_')) ? (p.reopenCount ? `对冲仓位 (编号${p.reopenCount})` : '对冲仓位') : '原仓位'}</span>
                         </div>
                     ) : (
                         <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${isModule1Active ? 'bg-emerald-900/20 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-600'}`}>
                             <Target size={8} />
-                            <span>{isModule1Active ? (isHedgedActive ? '对冲仓位' : '标准风控') : '手动模式'}</span>
+                            <span>{isModule1Active ? ((p.mainPositionId || p.entryId?.startsWith('HEDGE_')) ? '对冲仓位' : (p.isHedged ? '原仓位' : '标准风控')) : '手动模式'}</span>
                         </div>
                     )}
                     {hasAmmo && (
@@ -487,11 +497,20 @@ export const PositionItem: React.FC<Props> = ({
                 )}
                 <div className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity relative">
                     <button 
-                        onClick={(e) => { e.stopPropagation(); onVerifyPosition(p); }} 
+                        onClick={(e) => { 
+                            e.stopPropagation(); 
+                            if (isRefreshing) return;
+                            setIsRefreshing(true);
+                            try {
+                                onVerifyPosition(p);
+                            } finally {
+                                setTimeout(() => setIsRefreshing(false), 1200);
+                            }
+                        }} 
                         className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-emerald-400 transition-colors" 
-                        title="核对/刷新开仓价格"
+                        title="主动刷新：读取币安实际持仓与最新成交数据"
                     >
-                        <RefreshCw size={12}/>
+                        <RefreshCw size={12} className={isRefreshing ? "animate-spin text-emerald-400" : ""}/>
                     </button>
                     {isHedgedActive ? (
                         <div 
@@ -586,11 +605,39 @@ export const PositionItem: React.FC<Props> = ({
                             </button>
                         );
                     })()}
-                    <button onClick={(e) => { e.stopPropagation(); onShowHistory(p.symbol); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="历史记录"><History size={12}/></button>
+                    <button onClick={(e) => { e.stopPropagation(); onShowHistory(p.symbol); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="交易记录"><Clock size={12}/></button>
                     <button onClick={(e) => { e.stopPropagation(); onOpenChart(p.symbol, p.entryPrice, p.entryTime); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="K线图"><BarChart2 size={12}/></button>
+                    {onManualAmputate && (
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onManualAmputate(p); }} 
+                            className="px-1.5 py-0.5 bg-amber-950/50 hover:bg-amber-600 text-amber-300 hover:text-white rounded text-[10px] font-bold border border-amber-800/70 hover:border-amber-400 transition-all relative whitespace-nowrap shadow-sm"
+                            title="手动断臂砍仓：按设定比例削减持仓止损，亏损完整计入负债池并开启回踩补仓等待"
+                        >
+                            砍仓
+                        </button>
+                    )}
+                    {onManualRefill && (
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onManualRefill(p); }} 
+                            className="px-1.5 py-0.5 bg-emerald-950/50 hover:bg-emerald-600 text-emerald-300 hover:text-white rounded text-[10px] font-bold border border-emerald-800/70 hover:border-emerald-400 transition-all relative whitespace-nowrap shadow-sm"
+                            title="手动回踩补仓：精准补回此前被砍掉的数量，恢复双向平衡"
+                        >
+                            补仓
+                        </button>
+                    )}
+                    {onManualClosePair && (
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onManualClosePair(p); }} 
+                            className="px-1.5 py-0.5 bg-purple-950/50 hover:bg-purple-600 text-purple-300 hover:text-white rounded text-[10px] font-bold border border-purple-800/70 hover:border-purple-400 transition-all relative whitespace-nowrap shadow-sm"
+                            title="手动成对清仓：同时全平主仓与对冲单，核算总负债出局，彻底杜绝孤儿单"
+                        >
+                            清仓
+                        </button>
+                    )}
                     <button 
                         onClick={(e) => { e.stopPropagation(); onClosePosition(p.symbol, p.side); }} 
-                        className="px-2 py-0.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white rounded text-[10px] font-bold border border-slate-600 hover:border-red-500 transition-all relative"
+                        className="px-2 py-0.5 bg-slate-800 hover:bg-red-600 text-slate-300 hover:text-white rounded text-[10px] font-bold border border-slate-600 hover:border-red-500 transition-all relative whitespace-nowrap"
+                        title="单边平仓：平掉当前指定方向的仓位"
                     >
                         平仓
                     </button>
@@ -598,4 +645,4 @@ export const PositionItem: React.FC<Props> = ({
             </div>
         </div>
     );
-};
+});
