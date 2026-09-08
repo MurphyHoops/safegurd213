@@ -1,0 +1,11 @@
+{
+  "machineId": "",
+  "phone": "",
+  "name": "",
+  "idCard": "",
+  "senderEmail": "",
+  "photo": "",
+  "fullPhoto": "",
+  "createdAt": 0,
+  "isActivated": false
+}

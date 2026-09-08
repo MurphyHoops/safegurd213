@@ -1094,6 +1094,8 @@ const ScannerDashboardInner: React.FC<
   const currentPricesRef = useRef<Record<string, number>>({});
   const scanConfigRef = useRef<ScanConfig | null>(null);
   const list1CandidatesRef = useRef<ScannerItem[]>([]);
+  // 🔒 [调度执行器防并发重复开仓在途保护表]
+  const inFlightTradeSymbolsRef = useRef<Map<string, number>>(new Map());
 
   // Render-phase Ref Synchronization: Synchronously assigns incoming props/state to mutable refs
   // during the render cycle itself. This bypasses React's asynchronous commit phase (useEffect)
@@ -1255,6 +1257,19 @@ const ScannerDashboardInner: React.FC<
         return false;
       }
 
+      // 🛡️ [在途并发与短时防重锁：防止多周期同时突破在持仓同步前穿透]
+      const lastInFlightTime = inFlightTradeSymbolsRef.current.get(cleanSymbol) || 0;
+      if (Date.now() - lastInFlightTime < 10000 && !isManual && !(extraProps as any)?.isReopened) {
+        if (onLog) {
+          onLog(
+            "WARNING",
+            `🛡️ [防并发重复开仓拦截] ${cleanSymbol} 在 10 秒内已触发过开仓 (${((Date.now() - lastInFlightTime)/1000).toFixed(1)}s 前)，在途锁保护中，拒绝重复执行。`
+          );
+        }
+        console.warn(`[Trade Reject] Concurrency duplicate open blocked: ${cleanSymbol} triggered ${Date.now() - lastInFlightTime}ms ago.`);
+        return false;
+      }
+
       const balance =
         scannerMode === "BACKTEST"
           ? backtestAccountRef.current?.marginBalance || 0
@@ -1364,6 +1379,10 @@ const ScannerDashboardInner: React.FC<
         reason: reason,
         ...extraProps,
       };
+
+      if (!isManual) {
+        inFlightTradeSymbolsRef.current.set(cleanSymbol, Date.now());
+      }
 
       if (scannerMode === "BACKTEST") {
         const qty = amount / price;

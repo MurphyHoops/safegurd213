@@ -873,6 +873,7 @@ const AppContent: React.FC = () => {
     const recentlyOpenedHedgesRef = useRef<Map<string, number>>(new Map());
     const recentlyClosedPositionsRef = useRef<Map<string, number>>(new Map());
     const recentlyOpenedPositionsRef = useRef<Map<string, number>>(new Map());
+    const pendingOpenPositionsRef = useRef<Set<string>>(new Set());
     const lastHedgeAttemptRef = useRef<Map<string, number>>(new Map());
     const lastAutoTransferTimeRef = useRef<number>(0);
     // 🔒 [第二层：前端自动补仓10秒防抖硬锁]
@@ -1809,7 +1810,14 @@ const AppContent: React.FC = () => {
             }
         }
 
-        // 🛡️ [Replication Lag Protection for Standard Positions]
+        // 🛡️ [Anti-Double Open: In-Flight Request & Replication Lag Guard]
+        if (pendingOpenPositionsRef.current.has(cleanSymbol) && !extraProps?.isReopened) {
+            if (simulatorRef.current) {
+                simulatorRef.current.addLog("WARNING", `🛡️ [开仓在途拦截] ${cleanSymbol} 当前正有开仓指令在向币安发送处理中，严禁并发重复开仓！`);
+            }
+            return;
+        }
+
         const lastOpenTime = recentlyOpenedPositionsRef.current.get(cleanSymbol);
         if (lastOpenTime && Date.now() - lastOpenTime < 10000 && !extraProps?.isReopened) {
             if (simulatorRef.current) {
@@ -1872,6 +1880,10 @@ const AppContent: React.FC = () => {
                 });
                 simulatorRef.current.addLog("INFO", `[实盘自动开仓] 策略/信号触发开仓: ${cleanSymbol} ${side} | 杠杆: ${extraProps?.leverage || 20}x | 金额: ${amount} U`);
             }
+
+            // 🛡️ [前置打入在途锁与防重冷却锁，杜绝异步等待期并发穿透]
+            pendingOpenPositionsRef.current.add(cleanSymbol);
+            recentlyOpenedPositionsRef.current.set(cleanSymbol, Date.now());
 
             try {
                 const fetchPromise = fetch("/api/binance/order", {
@@ -1996,6 +2008,11 @@ const AppContent: React.FC = () => {
                     if (typeof (window as any).triggerApiSync === "function") {
                         (window as any).triggerApiSync(true, cleanSymbol);
                     }
+                } else if (resData.intercepted) {
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("WARNING", resData.error || `🛡️ [防重复开仓] 服务端拦截了 ${cleanSymbol} 的重复开仓请求`);
+                    }
+                    return;
                 } else {
                     const errMsg = resData.error || resData.message || "未知交易所错误";
                     if (simulatorRef.current) {
@@ -2014,6 +2031,8 @@ const AppContent: React.FC = () => {
                     (window as any).triggerApiSync(true, cleanSymbol);
                 }
                 audioService.speak("自动开仓网络异常");
+            } finally {
+                pendingOpenPositionsRef.current.delete(cleanSymbol);
             }
         } else {
             simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas, extraProps);

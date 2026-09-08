@@ -621,6 +621,11 @@ async function startServer() {
     const accountStateCache = new Map<string, { data: any, timestamp: number }>();
     const userTradesCache = new Map<string, { data: any, timestamp: number }>();
 
+    // 🔒 [服务端底层防并发重复开仓互斥锁与在途保护表]
+    // 杜绝任何毫秒级并发、多周期同时突破、网络重试导致的同一币种重复下达币安市价开仓单
+    const serverOpeningPositionsInFlight = new Map<string, number>(); // 正在向币安下单在途中的锁 (最长保护15秒)
+    const serverRecentOpenedPositions = new Map<string, number>();   // 10秒内成功开仓完成的记录
+
     app.post("/api/binance/order", async (req, res) => {
         const { apiKey, apiSecret, symbol, side, action, quantity, amountUsdt, leverage } = req.body;
         if (!apiKey || !apiSecret || !symbol || !side || !action) {
@@ -629,6 +634,38 @@ async function startServer() {
 
         const formattedSymbol = formatBinanceSymbol(symbol);
         let appliedLeverage: number = parseInt(leverage || "20");
+
+        // 🔒 [服务端第一道绝对硬锁：单币在途并发互斥与10秒防重锁]
+        const isRefillOrHedge = req.body.isRefill === true || req.body.allowExisting === true || req.body.isHedge === true;
+        const openSymbolLockKey = `${apiKey.slice(-6)}_${formattedSymbol}`;
+
+        if (action === "OPEN" && !isRefillOrHedge) {
+            const now = Date.now();
+            const inFlightTime = serverOpeningPositionsInFlight.get(openSymbolLockKey);
+            if (inFlightTime && now - inFlightTime < 15000) {
+                console.warn(`[Binance Order] 🛡️ [服务端在途硬锁拦截] ${formattedSymbol} 开仓指令正在向币安执行在途中，严禁并发重复开仓！`);
+                return res.json({
+                    success: false,
+                    intercepted: true,
+                    orderId: "IN_FLIGHT_OPEN_INTERCEPTED",
+                    error: `🛡️ [服务端在途硬锁拦截] ${formattedSymbol} 开仓指令正在向币安处理中（耗时: ${now - inFlightTime}ms），严禁并发重复开仓！`
+                });
+            }
+
+            const lastOpenedTime = serverRecentOpenedPositions.get(openSymbolLockKey);
+            if (lastOpenedTime && now - lastOpenedTime < 10000) {
+                console.warn(`[Binance Order] 🛡️ [服务端防重开冷却拦截] ${formattedSymbol} 在 ${((now - lastOpenedTime)/1000).toFixed(1)} 秒前已成功开仓，严禁重复开仓！`);
+                return res.json({
+                    success: false,
+                    intercepted: true,
+                    orderId: "RECENT_OPEN_INTERCEPTED",
+                    error: `🛡️ [服务端防重开冷却拦截] ${formattedSymbol} 在 ${((now - lastOpenedTime)/1000).toFixed(1)} 秒前已成功开仓，严禁重复开仓！`
+                });
+            }
+
+            // 立即打入服务端在途互斥锁
+            serverOpeningPositionsInFlight.set(openSymbolLockKey, now);
+        }
 
         try {
             // 1. Set leverage ONLY if action is OPEN and NOT an auto-hedge order
@@ -1163,6 +1200,9 @@ async function startServer() {
 
             if (orderResponseOk && orderData) {
                 console.log(`[Binance Order] Success! Order ID: ${orderData.orderId}`);
+                if (action === "OPEN" && !isRefillOrHedge) {
+                    serverRecentOpenedPositions.set(openSymbolLockKey, Date.now());
+                }
                 const rawAvgPrice = parseFloat(orderData.avgPrice || "0");
                 const rawExecQty = parseFloat(orderData.executedQty || "0");
                 const rawCumQuote = parseFloat(orderData.cumQuote || "0");
@@ -1363,6 +1403,10 @@ async function startServer() {
                 success: false,
                 error: `下单执行异常: ${e.message || e}`
             });
+        } finally {
+            if (action === "OPEN" && !isRefillOrHedge) {
+                serverOpeningPositionsInFlight.delete(openSymbolLockKey);
+            }
         }
     });
 

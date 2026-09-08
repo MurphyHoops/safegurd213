@@ -57,6 +57,8 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
     // Track executed signals to prevent duplicate orders for the same signal event
     // Map stores signalId -> status ('SUCCESS' | lastFailureTime)
     const executionStatusRef = useRef<Map<string, 'SUCCESS' | number>>(new Map());
+    // 🔒 [单币多周期防并发锁] 杜绝同一币种在 15m、30m、1h 等多个周期同时突破时连续开仓
+    const symbolLastExecutedRef = useRef<Map<string, number>>(new Map());
     const list4Ref = useRef(list4);
     const activePositionsRef = useRef(activePositions);
     const executeTradeSafeRef = useRef(executeTradeSafe);
@@ -109,8 +111,16 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                 // Check 2: Do we ALREADY have an open position for this symbol + direction?
                 const alreadyHasPosition = currentPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === item.direction);
 
+                // Check 3: 🔒 [单币多周期防并发锁] 该币种在 10 秒内是否已有周期触发过开仓
+                const lastExecutedTime = symbolLastExecutedRef.current.get(cleanSym) || 0;
+                if (now - lastExecutedTime < 10000) {
+                    return;
+                }
+
                 if (!alreadyHasPosition) {
                     console.log(`[List4 Auto] 🚀 突破确认！立即开仓 ${cleanSym} @ ${item.price} Reason: ${item.tf} Momentum Breakout`);
+                    // 立即对该币种加锁，阻断同一轮遍历中后续周期（如 15m/30m/1h）的并发穿透
+                    symbolLastExecutedRef.current.set(cleanSym, now);
                     
                     const signalCandle = item.structure ? {
                         high: item.structure.signalHigh,

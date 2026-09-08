@@ -117,6 +117,8 @@ const List3_Structure: React.FC<Props> = ({
 
   // --- AUTO EXECUTE LOGIC ---
   const executedRef = useRef<Set<string>>(new Set());
+  // 🔒 [单币多周期防并发锁] 杜绝同一币种在不同周期同时被触发开仓
+  const symbolLastExecutedRef = useRef<Map<string, number>>(new Map());
   const activePositionsRef = useRef(activePositions);
   const executeTradeSafeRef = useRef(executeTradeSafe);
 
@@ -162,7 +164,13 @@ const List3_Structure: React.FC<Props> = ({
           (p) => p.symbol === item.symbol && p.side === side,
         );
 
-        if (!alreadyExecutedSession && !alreadyHasPosition) {
+        // Check 3: 🔒 [单币多周期防并发锁] 该币种在 10 秒内是否已有周期触发过开仓
+        const cleanSym = item.symbol.replace(/USDT$/, '') + 'USDT';
+        const lastExecutedTime = symbolLastExecutedRef.current.get(cleanSym) || 0;
+        const isRecentlyExecuted = Date.now() - lastExecutedTime < 10000;
+
+        if (!alreadyExecutedSession && !alreadyHasPosition && !isRecentlyExecuted) {
+          symbolLastExecutedRef.current.set(cleanSym, Date.now());
           console.log(
             `[List3 Auto] Triggering executeTradeSafe for ${uniqueId} @ ${item.price}`,
           );

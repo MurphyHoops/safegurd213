@@ -50,21 +50,46 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
     }
   });
 
-  // Form State with user's specific defaults
+  // Form State (安全处理：新用户注册时的基本信息默认全部清空，并自动清理旧有残留)
   const [senderEmail, setSenderEmail] = useState<string>(() => {
-    return localStorage.getItem('SAVIOR_AUTH_EMAIL') || '541232585@qq.com';
+    const saved = localStorage.getItem('SAVIOR_AUTH_EMAIL') || '';
+    if (saved === '541232585@qq.com') {
+      try { localStorage.removeItem('SAVIOR_AUTH_EMAIL'); } catch {}
+      return '';
+    }
+    return saved;
   });
   const [senderPassword, setSenderPassword] = useState<string>(() => {
-    return localStorage.getItem('SAVIOR_AUTH_PWD') || '••••••••••••••••';
+    const saved = localStorage.getItem('SAVIOR_AUTH_PWD') || '';
+    if (saved === '••••••••••••••••' || saved.includes('•••')) {
+      try { localStorage.removeItem('SAVIOR_AUTH_PWD'); } catch {}
+      return '';
+    }
+    return saved;
   });
   const [name, setName] = useState<string>(() => {
-    return localStorage.getItem('SAVIOR_AUTH_NAME') || '钱方';
+    const saved = localStorage.getItem('SAVIOR_AUTH_NAME') || '';
+    if (saved === '钱方') {
+      try { localStorage.removeItem('SAVIOR_AUTH_NAME'); } catch {}
+      return '';
+    }
+    return saved;
   });
   const [phone, setPhone] = useState<string>(() => {
-    return localStorage.getItem('SAVIOR_AUTH_PHONE') || '13882768653';
+    const saved = localStorage.getItem('SAVIOR_AUTH_PHONE') || '';
+    if (saved === '13882768653') {
+      try { localStorage.removeItem('SAVIOR_AUTH_PHONE'); } catch {}
+      return '';
+    }
+    return saved;
   });
   const [idCard, setIdCard] = useState<string>(() => {
-    return localStorage.getItem('SAVIOR_AUTH_IDCARD') || '510502198003060735';
+    const saved = localStorage.getItem('SAVIOR_AUTH_IDCARD') || '';
+    if (saved === '510502198003060735') {
+      try { localStorage.removeItem('SAVIOR_AUTH_IDCARD'); } catch {}
+      return '';
+    }
+    return saved;
   });
   const [photo, setPhoto] = useState<string>(() => {
     return localStorage.getItem('SAVIOR_AUTH_PHOTO') || '';
@@ -99,15 +124,15 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
       <line x1="40" y1="125" x2="110" y2="125" stroke="%23b45309" stroke-width="2"/>
       <line x1="75" y1="100" x2="75" y2="150" stroke="%23b45309" stroke-width="2"/>
       <text x="40" y="190" fill="%2394a3b8" font-family="sans-serif" font-size="14">姓名</text>
-      <text x="100" y="190" fill="%23ffffff" font-family="sans-serif" font-size="18" font-weight="bold">${encodeURIComponent(name || '钱方')}</text>
+      <text x="100" y="190" fill="%23ffffff" font-family="sans-serif" font-size="18" font-weight="bold">${encodeURIComponent(name || '姓名示例')}</text>
       <text x="40" y="230" fill="%2394a3b8" font-family="sans-serif" font-size="14">性别</text>
       <text x="100" y="230" fill="%23ffffff" font-family="sans-serif" font-size="16">男</text>
       <text x="180" y="230" fill="%2394a3b8" font-family="sans-serif" font-size="14">民族</text>
       <text x="240" y="230" fill="%23ffffff" font-family="sans-serif" font-size="16">汉</text>
       <text x="40" y="270" fill="%2394a3b8" font-family="sans-serif" font-size="14">住址</text>
-      <text x="100" y="270" fill="%23e2e8f0" font-family="sans-serif" font-size="14">四川省成都市高新区天府大道北段</text>
+      <text x="100" y="270" fill="%23e2e8f0" font-family="sans-serif" font-size="14">北京市海淀区示范园区1号</text>
       <text x="40" y="330" fill="%2394a3b8" font-family="sans-serif" font-size="14">公民身份号码</text>
-      <text x="160" y="332" fill="%2338bdf8" font-family="monospace" font-size="20" font-weight="bold" letter-spacing="2">${encodeURIComponent(idCard || '510502198003060735')}</text>
+      <text x="160" y="332" fill="%2338bdf8" font-family="monospace" font-size="20" font-weight="bold" letter-spacing="2">${encodeURIComponent(idCard || '110101199003072345')}</text>
       <rect x="420" y="100" width="140" height="180" rx="12" fill="%23334155" stroke="%23475569" stroke-width="2"/>
       <circle cx="490" cy="160" r="36" fill="%2364748b"/>
       <path d="M440 260 C440 210, 540 210, 540 260 Z" fill="%2364748b"/>
@@ -394,7 +419,7 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
                 type="email"
                 value={senderEmail}
                 onChange={(e) => setSenderEmail(e.target.value)}
-                placeholder="例如: 541232585@qq.com"
+                placeholder="请输入发件邮箱 (例如: user@example.com)"
                 className="w-full bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-600"
               />
             </div>
@@ -406,7 +431,7 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
                 type="password"
                 value={senderPassword}
                 onChange={(e) => setSenderPassword(e.target.value)}
-                placeholder="QQ邮箱授权码 / 密码"
+                placeholder="请输入邮箱授权码或密码"
                 className="w-full bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-600 font-mono"
               />
             </div>
@@ -421,7 +446,7 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="请输入真实姓名 (如: 钱方)"
+              placeholder="请输入您的真实姓名"
               className="w-full bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-600"
             />
           </div>
@@ -435,7 +460,7 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="请输入11位手机号码 (如: 13882768653)"
+              placeholder="请输入11位手机号码"
               className="w-full bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-600 font-mono"
             />
           </div>
@@ -449,7 +474,7 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
               type="text"
               value={idCard}
               onChange={(e) => setIdCard(e.target.value)}
-              placeholder="请输入18位二代居民身份证号 (如: 510502198003060735)"
+              placeholder="请输入18位二代居民身份证号码"
               className="w-full bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder-slate-600 font-mono uppercase"
             />
           </div>
