@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/remove-legacy-ui-once.cjs
       - .github/workflows/remove-legacy-ui-once.yml
+      - modules/user-guide/UserGuideModule.tsx
 
 permissions:
   contents: write
