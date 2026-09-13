@@ -4,9 +4,14 @@ import { Zap, ShieldCheck, ZapOff, ChevronUp, ChevronDown } from 'lucide-react';
 import { ActionConfig } from '../../../components/Scanner/scannerTypes';
 
 export const RiskStatsRow: React.FC<{ stats: { symbolCount: number, totalValue: number, totalPnl: number }, config: ActionConfig }> = ({ stats, config }) => {
-    const usagePct = config.maxTotalValue > 0 ? (stats.totalValue / config.maxTotalValue) * 100 : 0;
-    const exposureLimit = config.maxExposurePercent || 50;
+    const totalVal = stats?.totalValue ?? 0;
+    const maxVal = config?.maxTotalValue ?? 0;
+    const usagePct = maxVal > 0 ? (totalVal / maxVal) * 100 : 0;
+    const exposureLimit = config?.maxExposurePercent || 50;
     const isOverLimit = usagePct >= exposureLimit;
+    const symCount = stats?.symbolCount ?? 0;
+    const maxSyms = config?.maxOpenSymbols ?? 5;
+    const pnl = stats?.totalPnl ?? 0;
     
     return (
         <div className="flex items-center justify-between gap-1 text-[9px] mt-2 bg-[#12161f] p-2 rounded border border-slate-800">
@@ -19,16 +24,16 @@ export const RiskStatsRow: React.FC<{ stats: { symbolCount: number, totalValue: 
             {/* 2. Position Count */}
             <div className="flex-1 flex flex-col items-center justify-center p-1 rounded border bg-slate-800 border-slate-700">
                 <span className="text-slate-500 font-bold uppercase mb-0.5">持仓数</span>
-                <span className={`font-mono font-bold ${stats.symbolCount >= config.maxOpenSymbols ? 'text-red-400' : 'text-white'}`}>
-                    {stats.symbolCount}/{config.maxOpenSymbols}
+                <span className={`font-mono font-bold ${symCount >= maxSyms ? 'text-red-400' : 'text-white'}`}>
+                    {symCount}/{maxSyms}
                 </span>
             </div>
 
             {/* 3. Floating PnL */}
             <div className="flex-1 flex flex-col items-center justify-center p-1 rounded border bg-slate-800 border-slate-700">
                 <span className="text-slate-500 font-bold uppercase mb-0.5">浮动盈亏</span>
-                <span className={`font-mono font-bold ${stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {stats.totalPnl > 0 ? '+' : ''}{stats.totalPnl.toFixed(1)}
+                <span className={`font-mono font-bold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {pnl > 0 ? '+' : ''}{pnl.toFixed(1)}
                 </span>
             </div>
         </div>

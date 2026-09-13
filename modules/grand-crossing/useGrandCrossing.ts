@@ -86,18 +86,14 @@ export const useGrandCrossing = (
     return [];
   });
 
-  // Initial update of sorted candidates from list2 on mount
+  // Initial update of sorted candidates from list1 candidates on mount
   useEffect(() => {
-    const cacheItems = Array.from(cacheRef.current.values());
-    const combined = [...candidatesRef.current];
-    const symbols = new Set(combined.map((c) => c.symbol));
-    cacheItems.forEach((item) => {
-      if (!symbols.has(item.symbol)) combined.push(item);
-    });
-    if (combined.length > 0) {
-      sortedCandidatesRef.current = combined.sort(
+    if (candidatesRef.current && candidatesRef.current.length > 0) {
+      sortedCandidatesRef.current = [...candidatesRef.current].sort(
         (a, b) => parseFloat(b.volume || "0") - parseFloat(a.volume || "0"),
       );
+    } else {
+      sortedCandidatesRef.current = [];
     }
   }, []);
   const [status, setStatus] = useState<"IDLE" | "SCANNING">("IDLE");
@@ -869,24 +865,17 @@ export const useGrandCrossing = (
   useEffect(() => {
     candidatesRef.current = candidates;
 
-    // 🔒 [ATOMIC CODE LOCK - 列表2独立生命周期与列表1物理级切断]
-    // 列表1市场初筛里的币一旦进入列表2，立即切断与列表1的上下级关联。
-    // 即使该币在列表1中因条件变化而退出，绝对不连带从列表2退出！
-    // 列表2币的存留完全由【信号存续】寿命根数(retention)以及列表3/4的反向清除指令唯一决定。
-    const combined = [...candidates];
-    const existingSymbols = new Set(candidates.map((c) => c.symbol));
-    cacheRef.current.forEach((item) => {
-      if (item && item.symbol && !existingSymbols.has(item.symbol)) {
-        combined.push(item);
-      }
-    });
-
-    if (combined.length > 0) {
-      sortedCandidatesRef.current = combined.sort((a, b) => {
+    // 🔒 [ATOMIC CODE LOCK - 扫描目标严格且绝对只来源于列表1当前市场初筛列表中的币种]
+    // 列表2后台轮询扫描队列严格只对列表1传入的币种执行穿越与发散分析，绝不引入任何外部或历史残留币种。
+    // 已生成的列表2信号则保留在 cacheRef 中由【信号存续】寿命独立管理。
+    if (candidates.length > 0) {
+      sortedCandidatesRef.current = [...candidates].sort((a, b) => {
         const volA = parseFloat(a.volume || "0");
         const volB = parseFloat(b.volume || "0");
         return volB - volA;
       });
+    } else {
+      sortedCandidatesRef.current = [];
     }
 
     // Rapid response for candidates

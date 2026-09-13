@@ -264,31 +264,31 @@ export const List1Item: React.FC<Props> = ({
 
     // Core item metrics have been calculated and are ready for presentation.
 
-    const renderPercent = (val: number | null) => {
-        if (val === null) return <span className="text-slate-600 font-bold">--</span>;
+    const renderPercent = (val: number | null | undefined) => {
+        if (val === null || val === undefined || isNaN(val)) return <span className="text-slate-600 font-bold">--</span>;
         const formatted = val > 0 ? `+${val.toFixed(1)}%` : `${val.toFixed(1)}%`;
         const colorClass = val > 0 ? 'text-emerald-400' : val < 0 ? 'text-red-400' : 'text-slate-400';
         return <span className={`${colorClass} font-extrabold`}>{formatted}</span>;
     };
 
-    const renderRatio = (val: number | null) => {
-        if (val === null) return <span className="text-slate-600 font-bold">--</span>;
+    const renderRatio = (val: number | null | undefined) => {
+        if (val === null || val === undefined || isNaN(val)) return <span className="text-slate-600 font-bold">--</span>;
         const formatted = val.toFixed(2);
         const colorClass = val >= 1.5 ? 'text-amber-400 font-extrabold' : val <= 0.5 ? 'text-slate-500' : 'text-slate-300';
         return <span className={`${colorClass}`}>{formatted}</span>;
     };
 
     const renderCombinedRatio = (r1: number | null | undefined, r2: number | null | undefined) => {
-        if (r1 == null || r2 == null) return <span className="text-slate-600">--</span>;
-        const f1 = r1.toFixed(1);
-        const f2 = r2.toFixed(1);
+        if (r1 == null || r2 == null || isNaN(r1) || isNaN(r2)) return <span className="text-slate-600">--</span>;
+        const f1 = (r1 ?? 0).toFixed(1);
+        const f2 = (r2 ?? 0).toFixed(1);
         
         const getRatioColor = (val: number) => {
             return val >= 1.5 ? 'text-amber-400 font-extrabold' : val <= 0.5 ? 'text-slate-500' : 'text-slate-300';
         };
         
         return (
-            <span className="text-slate-400" title={`量比1 (最后1根K线): ${r1.toFixed(2)} | 量比2 (最后4根平均): ${r2.toFixed(2)}`}>
+            <span className="text-slate-400" title={`量比1 (最后1根K线): ${(r1 ?? 0).toFixed(2)} | 量比2 (最后4根平均): ${(r2 ?? 0).toFixed(2)}`}>
                 <span className={getRatioColor(r1)}>{f1}</span>
                 <span className="text-slate-600 font-normal mx-0.5">/</span>
                 <span className={getRatioColor(r2)}>{f2}</span>
@@ -297,19 +297,19 @@ export const List1Item: React.FC<Props> = ({
     };
 
     const renderBuyRatio = (br1: number | null | undefined, br2: number | null | undefined) => {
-        if (br1 == null) return <span className="text-slate-600">--</span>;
-        const f1 = br1.toFixed(0);
-        const f2 = br2 != null ? br2.toFixed(0) : '--';
+        if (br1 == null || isNaN(br1)) return <span className="text-slate-600">--</span>;
+        const f1 = (br1 ?? 0).toFixed(0);
+        const f2 = (br2 != null && !isNaN(br2)) ? br2.toFixed(0) : '--';
         
         const getBuyColor = (val: number) => {
             return val >= 53 ? 'text-emerald-400 font-extrabold' : val <= 47 ? 'text-rose-400 font-bold' : 'text-slate-300';
         };
 
         return (
-            <span className="text-slate-400" title={`主动买占比 (最后1根K线: ${br1.toFixed(1)}% | 最后4根K线平均: ${br2 != null ? br2.toFixed(1) : '--'}%)`}>
+            <span className="text-slate-400" title={`主动买占比 (最后1根K线: ${(br1 ?? 0).toFixed(1)}% | 最后4根K线平均: ${(br2 != null && !isNaN(br2)) ? br2.toFixed(1) : '--'}%)`}>
                 <span className={getBuyColor(br1)}>{f1}%</span>
                 <span className="text-slate-600 font-normal mx-[1px]">/</span>
-                <span className={getBuyColor(br2 != null ? br2 : 50)}>{f2}%</span>
+                <span className={getBuyColor(br2 != null && !isNaN(br2) ? br2 : 50)}>{f2}%</span>
             </span>
         );
     };
@@ -447,25 +447,25 @@ export const List1Item: React.FC<Props> = ({
                         <div className="flex justify-between items-center gap-0.5">
                             <span className="text-slate-500 font-bold">极值最大跌幅</span>
                             <span className="text-red-400 font-extrabold">
-                                {loadingHistory ? '...' : `${maxDeclinePct.toFixed(1)}%`}
+                                {loadingHistory ? '...' : `${(maxDeclinePct ?? 0).toFixed(1)}%`}
                             </span>
                         </div>
                         <div className="flex justify-between items-center gap-0.5">
                             <span className="text-slate-500 font-bold">极值当前涨幅</span>
                             <span className="text-emerald-400 font-extrabold">
-                                {loadingHistory ? '...' : `+${lowToCurrentIncreasePct.toFixed(1)}%`}
+                                {loadingHistory ? '...' : `+${(lowToCurrentIncreasePct ?? 0).toFixed(1)}%`}
                             </span>
                         </div>
                         <div className="flex justify-between items-center gap-0.5">
                             <span className="text-slate-500 font-bold">极值最大涨幅</span>
                             <span className="text-emerald-400 font-extrabold">
-                                {loadingHistory ? '...' : `+${maxIncreasePct.toFixed(1)}%`}
+                                {loadingHistory ? '...' : `+${(maxIncreasePct ?? 0).toFixed(1)}%`}
                             </span>
                         </div>
                         <div className="flex justify-between items-center gap-0.5">
                             <span className="text-slate-500 font-bold">极值当前跌幅</span>
                             <span className="text-rose-400 font-extrabold">
-                                {loadingHistory ? '...' : `${highToCurrentDeclinePct.toFixed(1)}%`}
+                                {loadingHistory ? '...' : `${(highToCurrentDeclinePct ?? 0).toFixed(1)}%`}
                             </span>
                         </div>
                     </div>

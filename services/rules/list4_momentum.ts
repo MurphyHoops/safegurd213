@@ -58,6 +58,9 @@ export function analyzeList4Momentum(
                 if (extreme < (midPoint - epsilon)) {
                     momentumStatus = 'INVALID';
                     invalidReason = `结构破坏: 回撤(${extreme.toFixed(4)}) 跌破防守线(${midPoint.toFixed(4)})`;
+                } else if (item.structure.postSignalMaxHigh !== undefined && item.structure.postSignalMaxHigh >= entryTrigger) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = `过期突破: 信号后历史最高价(${item.structure.postSignalMaxHigh.toFixed(4)})已达到进攻突破线(${entryTrigger.toFixed(4)})，拒绝二次开仓`;
                 } else if (currentPrice >= entryTrigger) {
                     momentumStatus = 'TRIGGERED';
                 }
@@ -65,6 +68,9 @@ export function analyzeList4Momentum(
                 if (extreme > (midPoint + epsilon)) {
                     momentumStatus = 'INVALID';
                     invalidReason = `结构破坏: 反弹(${extreme.toFixed(4)}) 突破防守线(${midPoint.toFixed(4)})`;
+                } else if (item.structure.postSignalMinLow !== undefined && item.structure.postSignalMinLow <= entryTrigger) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = `过期突破: 信号后历史最低价(${item.structure.postSignalMinLow.toFixed(4)})已达到进攻突破线(${entryTrigger.toFixed(4)})，拒绝二次开仓`;
                 } else if (currentPrice <= entryTrigger) {
                     momentumStatus = 'TRIGGERED';
                 }

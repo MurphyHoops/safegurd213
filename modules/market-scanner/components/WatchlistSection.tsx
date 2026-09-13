@@ -155,7 +155,7 @@ export const WatchlistSection: React.FC<Props> = ({
                                 const isAdded = scanConfig.customSymbols.split(',').map(s => s.trim()).filter(Boolean).includes(rawSym);
                                 return (
                                     <option key={item.symbol} value={rawSym}>
-                                        {isAdded ? '✅ ' : '➕ '}{rawSym} ({item.change > 0 ? '+' : ''}{item.change.toFixed(1)}%)
+                                        {isAdded ? '✅ ' : '➕ '}{rawSym} ({(item.change ?? 0) > 0 ? '+' : ''}{(item.change ?? 0).toFixed(1)}%)
                                     </option>
                                 );
                             })}
@@ -503,7 +503,7 @@ export const WatchlistSection: React.FC<Props> = ({
                                             const isAdded = scanConfig.customSymbols.split(',').map(s => s.trim()).filter(Boolean).includes(rawSym);
                                             return (
                                                 <option key={item.symbol} value={rawSym}>
-                                                    {isAdded ? '🔴 [已选] ' : '🟢 [未选] '}{rawSym} ({item.change > 0 ? '+' : ''}{item.change.toFixed(1)}%)
+                                                    {isAdded ? '🔴 [已选] ' : '🟢 [未选] '}{rawSym} ({(item.change ?? 0) > 0 ? '+' : ''}{(item.change ?? 0).toFixed(1)}%)
                                                 </option>
                                             );
                                         })}

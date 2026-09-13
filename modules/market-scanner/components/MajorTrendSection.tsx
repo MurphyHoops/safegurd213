@@ -9,12 +9,16 @@ interface Props {
     setConfig: (cfg: MajorTrendConfig) => void;
     isMajorScanning?: boolean;
     majorProgress?: { 
-        current: number, 
-        total: number, 
-        stage?: string, 
-        group1Passed?: number, 
-        group2Passed?: number, 
-        currentSymbol?: string 
+        current: number; 
+        total: number; 
+        stage?: string; 
+        group1Total?: number;
+        group1Current?: number;
+        group1Passed?: number; 
+        group2Total?: number;
+        group2Current?: number;
+        group2Passed?: number; 
+        currentSymbol?: string; 
     };
     onRunDiscovery?: (isManual?: boolean) => void;
     onCancelDiscovery?: () => void;
@@ -37,6 +41,7 @@ const DEFAULT_CONFIG: MajorTrendConfig = {
     enableLong: true,
     enableShort: true,
     enableSideways: true,
+    enableLookbackFilter: true,
     maxExtremeDistanceLong: 5,
     maxExtremeDistanceShort: 5,
     minExtremeDistanceLong: 0,
@@ -246,7 +251,17 @@ export const MajorTrendSection: React.FC<Props> = ({
                     <div className="bg-black/20 p-2 rounded border border-slate-800/50 space-y-2.5">
                         {/* Header Row */}
                         <div className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Stage 2: 回溯周期过滤</span>
+                            <div className="flex items-center gap-2">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Stage 2: 回溯周期过滤</span>
+                                <button 
+                                    type="button"
+                                    onClick={() => updateField('enableLookbackFilter', activeConfig.enableLookbackFilter !== false ? false : true)}
+                                    className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableLookbackFilter !== false ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                                    title="开启/关闭 回溯周期过滤"
+                                >
+                                    <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform duration-200 ${activeConfig.enableLookbackFilter !== false ? 'translate-x-[19px]' : 'translate-x-[3px]'}`} />
+                                </button>
+                            </div>
                             <div className="flex items-center gap-1.5 bg-black/40 border border-slate-800 px-2 py-0.5 rounded">
                                 <span className="text-[8.5px] text-slate-500 font-medium">回溯周期</span>
                                 <SmartNumberInput 
@@ -457,24 +472,33 @@ export const MajorTrendSection: React.FC<Props> = ({
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
                                     <span className={majorProgress.stage === 'group1' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? 'text-slate-400' : 'text-slate-500'}>
-                                        第一组: 横盘蓄势过滤 (优先访问底池)
+                                        第一组: 横盘蓄势过滤 (行情启动底池)
                                     </span>
                                 </div>
                                 <div className="font-mono text-right shrink-0">
                                     {majorProgress.stage === 'group1' ? (
-                                        <span className="text-indigo-400">
-                                            ({majorProgress.current}/{majorProgress.total}) 
-                                            <span className="ml-1 text-emerald-400">过:{majorProgress.group1Passed || 0}</span>
+                                        <span className="text-indigo-300 font-bold">
+                                            <span className="text-slate-400" title="行情启动底池总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-indigo-300 font-bold" title="当前筛选进度">{majorProgress.group1Current ?? majorProgress.current ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-emerald-400 font-bold" title="已符合横盘蓄势规则个数">{majorProgress.group1Passed || 0}</span>
                                         </span>
                                     ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
-                                        <span className="text-emerald-400">✅ 通过 {majorProgress.group1Passed || 0}</span>
+                                        <span className="text-emerald-400 font-bold">
+                                            <span className="text-slate-400" title="行情启动底池总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-slate-400" title="全部已筛选完成">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-emerald-400 font-bold" title="已符合横盘蓄势规则个数">{majorProgress.group1Passed || 0}</span>
+                                        </span>
                                     ) : (
                                         <span className="text-slate-600">⏳ 等待中</span>
                                     )}
                                 </div>
                             </div>
 
-                            {/* Step 2: Lookback Space Filter (回溯周期过滤) */}
+                            {/* Step 2: Lookback Space Filter (回溯周期过滤 - 扫描横盘蓄势底池) */}
                             <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
                                 <div className="flex items-center gap-1">
                                     {majorProgress.stage === 'group2' ? (
@@ -485,17 +509,34 @@ export const MajorTrendSection: React.FC<Props> = ({
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
                                     <span className={majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : majorProgress.stage === 'completed' ? 'text-slate-400' : 'text-slate-500'}>
-                                        第二组: 回溯周期过滤 (空间与极值)
+                                        第二组: 回溯周期过滤 (横盘蓄势底池)
                                     </span>
                                 </div>
                                 <div className="font-mono text-right shrink-0">
                                     {majorProgress.stage === 'group2' ? (
-                                        <span className="text-indigo-400 flex items-center gap-1 justify-end">
-                                            <span>({majorProgress.current}/{majorProgress.total})</span>
-                                            <span className="text-emerald-400">选:{majorProgress.group2Passed || 0}</span>
+                                        <span className="text-indigo-300 font-bold">
+                                            <span className="text-slate-400" title="横盘蓄势底池总数">{majorProgress.group2Total ?? majorProgress.group1Passed ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-indigo-300 font-bold" title="当前回溯筛选进度">{majorProgress.group2Current ?? majorProgress.current ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-emerald-400 font-bold" title="已符合回溯周期规则个数">{majorProgress.group2Passed || 0}</span>
                                         </span>
                                     ) : majorProgress.stage === 'completed' ? (
-                                        <span className="text-emerald-400">✅ 通过 {majorProgress.group2Passed || 0}</span>
+                                        <span className="text-emerald-400 font-bold">
+                                            <span className="text-slate-400" title="横盘蓄势底池总数">{majorProgress.group2Total ?? majorProgress.group1Passed ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-slate-400" title="全部已筛选完成">{majorProgress.group2Total ?? majorProgress.group1Passed ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-emerald-400 font-bold" title="已符合回溯周期规则个数">{majorProgress.group2Passed || 0}</span>
+                                        </span>
+                                    ) : majorProgress.stage === 'group1' ? (
+                                        <span className="text-slate-500 font-mono text-[8.5px]">
+                                            <span>{majorProgress.group1Passed || 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-slate-600">0</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-slate-600">0</span>
+                                        </span>
                                     ) : (
                                         <span className="text-slate-600">⏳ 等待中</span>
                                     )}

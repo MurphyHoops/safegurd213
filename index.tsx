@@ -151,13 +151,51 @@ const reportPanic = (message: string, source?: string, lineno?: number) => {
                  window.__SYSTEM_MONITOR_STORE__.getState().addLog('ERROR', 'SHIELD', `启动异常: ${displayMsg}`, { source, lineno });
             }
         } catch (e) {}
+
+        // 🛡️ 立即呈现恢复操作面板，杜绝用户在程序修改/升级重启时长时间面对蓝屏等待
+        triggerPanicUI(displayMsg);
     }
 };
 
+const triggerPanicUI = (lastErrorMsg: string) => {
+    if ((window as any).__MAIN_APP_MOUNTED__) return;
+    if (document.getElementById('panic-ui')) return;
+
+    const panic = document.createElement('div');
+    panic.id = 'panic-ui';
+    panic.style.cssText = 'position:fixed;inset:0;background:radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);color:#fff;display:flex;align-items:center;justify-content:center;padding:20px;z-index:9999999;font-family:system-ui,sans-serif;text-align:center;overflow-y:auto';
+    panic.innerHTML = `
+        <div style="max-width:480px;width:100%;background:rgba(30,41,59,0.85);backdrop-filter:blur(20px);padding:30px;border-radius:28px;border:1px solid #334155;box-shadow:0 25px 50px -12px rgba(0,0,0,0.8);box-sizing:border-box">
+            <div style="width:56px;height:56px;background:#ef4444;border-radius:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px auto;font-size:28px;line-height:56px">🛡️</div>
+            <h1 style="margin:0 0 8px 0;font-size:18px;font-weight:900;letter-spacing:-0.025em;color:#f8fafc">系统引导自愈守护 (BOOT SHIELD)</h1>
+            <p style="font-size:12px;color:#94a3b8;line-height:1.5;margin-bottom:16px">
+                检测到渲染引擎载入受阻。为彻底杜绝修改升级后的“蓝屏/白屏”卡滞，守护引擎已自动为您激活安全修复通道：
+            </p>
+            <div style="background:rgba(15,23,42,0.8);padding:12px;border-radius:12px;font-family:monospace;font-size:10px;color:#fca5a5;margin-bottom:20px;text-align:left;border:1px solid rgba(239, 68, 68, 0.2);word-break:break-all;max-height:80px;overflow-y:auto">
+                <span style="color:#64748b">DIAGNOSTIC:</span><br/>
+                ${lastErrorMsg || 'Render process hung or initial javascript download timed out.'}
+            </div>
+            
+            <div style="display:flex;flex-direction:column;gap:10px">
+                <button onclick="location.reload()" style="width:100%;background:#4f46e5;color:white;border:none;padding:12px;border-radius:10px;font-weight:800;font-size:11px;cursor:pointer;box-shadow:0 4px 10px rgba(79, 70, 229, 0.3)">
+                    🔄 仅尝试刷新页面 / 重载内核
+                </button>
+                
+                <button onclick="localStorage.removeItem('SAVIOR_LOGS');localStorage.removeItem('SAVIOR_SYSTEM_MONITOR_LOGS');localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');alert('已清理系统日志与临时扫描器缓存，保留所有持仓与个人设置，正在重载...');location.reload()" style="width:100%;background:rgba(59, 130, 246, 0.15);color:#60a5fa;border:1px solid rgba(59, 130, 246, 0.3);padding:12px;border-radius:10px;font-weight:800;font-size:11px;cursor:pointer">
+                    🧹 执行修复：清理临时缓存 (保留所有持仓与设置)
+                </button>
+                
+                <button onclick="if(confirm('确定要清除所有系统设置和账户缓存恢复出厂配置吗？此操作不可逆。')){localStorage.clear();alert('出厂设置已还原，正在重连...');location.reload()}" style="width:100%;background:rgba(148, 163, 184, 0.1);color:#94a3b8;border:1px solid rgba(148, 163, 184, 0.2);padding:10px;border-radius:10px;font-weight:700;font-size:10px;cursor:pointer">
+                    ⚙️ 最终对策：完全清除缓存恢复出厂设置 (慎用)
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(panic);
+};
+
 // --- 2.5 UNCONDITIONAL BOOT GUARDIAN TIMER ---
-// Instead of scheduling emergency recovery page on individual transient background errors during boot,
-// we employ an unconditional, highly stable Boot Guardian Timer.
-// If after 25 seconds, the main React application has not successfully mounted,
+// If after 6 seconds, the main React application has not successfully mounted,
 // and the root element remains blank/empty, we trigger the emergency recovery screen.
 setTimeout(() => {
     if ((window as any).__MAIN_APP_MOUNTED__) {
@@ -168,9 +206,9 @@ setTimeout(() => {
     const root = document.getElementById('root');
     const isPanicVisible = !!document.getElementById('panic-ui');
     
-    // Critical Check: If root element is near-empty after 25s AND the app hasn't mounted, it's a true white screen scenario
+    // Critical Check: If the app hasn't mounted within 6 seconds, trigger panic recovery UI
     if (!isPanicVisible && (!root || root.innerHTML.trim().length < 150)) {
-        console.error("🛡️ [System Shield] Boot Guardian: Triggering emergency recovery screen due to unmounted blank screen after 25s.");
+        console.error("🛡️ [System Shield] Boot Guardian: Triggering emergency recovery screen due to unmounted blank screen after 6s.");
         
         let lastErrorMsg = 'Render process hung or initial javascript download timed out.';
         try {
@@ -186,39 +224,9 @@ setTimeout(() => {
             }
         } catch (_) {}
 
-        const panic = document.createElement('div');
-        panic.id = 'panic-ui';
-        panic.style.cssText = 'position:fixed;inset:0;background:radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);color:#fff;display:flex;align-items:center;justify-content:center;padding:20px;z-index:9999999;font-family:system-ui,sans-serif;text-align:center;overflow-y:auto';
-        panic.innerHTML = `
-            <div style="max-width:480px;width:100%;background:rgba(30,41,59,0.8);backdrop-filter:blur(20px);padding:30px;border-radius:28px;border:1px solid #334155;box-shadow:0 25px 50px -12px rgba(0,0,0,0.8);box-sizing:border-box">
-                <div style="width:56px;height:56px;background:#ef4444;border-radius:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px auto;font-size:28px;line-height:56px">🛡️</div>
-                <h1 style="margin:0 0 8px 0;font-size:18px;font-weight:900;letter-spacing:-0.025em;color:#f8fafc">系统内核受阻 (KERNEL_FAIL)</h1>
-                <p style="font-size:12px;color:#94a3b8;line-height:1.5;margin-bottom:16px">
-                    检测到渲染引擎无法正常载入。这可能是由于缓存冲突或网络延迟。您可以在下方直接操作修复或恢复出厂配置，避免主程序白屏锁定。
-                </p>
-                <div style="background:rgba(15,23,42,0.8);padding:12px;border-radius:12px;font-family:monospace;font-size:10px;color:#fca5a5;margin-bottom:20px;text-align:left;border:1px solid rgba(239, 68, 68, 0.2);word-break:break-all;max-height:80px;overflow-y:auto">
-                    <span style="color:#64748b">DIAGNOSTIC:</span><br/>
-                    ${lastErrorMsg}
-                </div>
-                
-                <div style="display:flex;flex-direction:column;gap:10px">
-                    <button onclick="location.reload()" style="width:100%;background:#4f46e5;color:white;border:none;padding:12px;border-radius:10px;font-weight:800;font-size:11px;cursor:pointer;box-shadow:0 4px 10px rgba(79, 70, 229, 0.3)">
-                        仅尝试刷新页面 / 重载内核
-                    </button>
-                    
-                    <button onclick="localStorage.removeItem('SAVIOR_LOGS');localStorage.removeItem('SAVIOR_SYSTEM_MONITOR_LOGS');localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');alert('已清理系统日志与扫描器缓存，正在重载...');location.reload()" style="width:100%;background:rgba(59, 130, 246, 0.15);color:#60a5fa;border:1px solid rgba(59, 130, 246, 0.3);padding:12px;border-radius:10px;font-weight:800;font-size:11px;cursor:pointer">
-                        执行修复：清理臃肿缓存 (保留个人设置)
-                    </button>
-                    
-                    <button onclick="if(confirm('确定要清除所有系统设置和账户缓存恢复出厂配置吗？此操作不可逆。')){localStorage.clear();alert('出厂设置已还原，正在重连...');location.reload()}" style="width:100%;background:rgba(148, 163, 184, 0.1);color:#94a3b8;border:1px solid rgba(148, 163, 184, 0.2);padding:10px;border-radius:10px;font-weight:700;font-size:10px;cursor:pointer">
-                        最终对策：完全清除缓存恢复出厂设置 (慎用)
-                    </button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(panic);
+        triggerPanicUI(lastErrorMsg);
     }
-}, 25000);
+}, 6000);
 
 // --- 3. REGISTER LISTENERS IMMEDIATELY ---
 window.addEventListener('error', (event) => {

@@ -28,7 +28,7 @@ export const List1Control = React.memo<{
     setScannerMode?: (mode: 'LIVE' | 'BACKTEST' | 'SMART') => void;
     // Major Trend Props
     isMajorScanning?: boolean;
-    majorProgress?: { current: number, total: number };
+    majorProgress?: any;
     runMajorTrendDiscovery?: () => void;
     cancelMajorScan?: () => void;
     backtestProps?: {

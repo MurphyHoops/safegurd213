@@ -16,7 +16,7 @@ let lastMessageTime = Date.now();
 let watchdogTimer = null;
 let isConnected = false;
 let activePositionSymbols = new Set();
-let positionDirectWsMap = new Map(); // symbol -> WebSocket for direct dedicated stream
+let positionDirectWsMap = new Map(); // Kept clean to avoid multiple socket exhaustion
 
 function cleanSymbol(s) {
     if (!s) return '';
@@ -31,64 +31,8 @@ function rotateUrl() {
     currentUrlIndex = (currentUrlIndex + 1) % urls.length;
 }
 
-function connectDedicatedPositionWs(cleanSym) {
-    if (!cleanSym || positionDirectWsMap.has(cleanSym)) return;
-    try {
-        const binanceSym = cleanSym.toLowerCase() + 'usdt';
-        // Stream bookTicker + aggTrade for ultra-high frequency updates
-        const url = 'wss://fstream.binance.com/stream?streams=' + binanceSym + '@bookTicker/' + binanceSym + '@aggTrade';
-        const dedicatedWs = new WebSocket(url);
-        
-        dedicatedWs.onopen = () => {
-            // Dedicated connection open
-        };
-        
-        dedicatedWs.onmessage = (event) => {
-            try {
-                const json = JSON.parse(event.data);
-                const item = json.data || json;
-                if (!item) return;
-                
-                let priceVal = null;
-                if (item.b !== undefined && item.a !== undefined) {
-                    const b = parseFloat(item.b);
-                    const a = parseFloat(item.a);
-                    if (!isNaN(b) && !isNaN(a) && b > 0 && a > 0) {
-                        priceVal = (b + a) / 2;
-                    }
-                }
-                if (priceVal === null && (item.p !== undefined || item.c !== undefined)) {
-                    priceVal = parseFloat(item.p || item.c);
-                }
-                
-                if (priceVal !== null && !isNaN(priceVal) && priceVal > 0) {
-                    const update = {};
-                    update[cleanSym] = priceVal;
-                    postMessage({ type: 'prices', prices: update, isPositionDirect: true });
-                }
-            } catch(e) {}
-        };
-        
-        dedicatedWs.onerror = () => {
-            try { dedicatedWs.close(); } catch(e){}
-        };
-        
-        dedicatedWs.onclose = () => {
-            positionDirectWsMap.delete(cleanSym);
-            // Auto-reconnect if still active
-            if (activePositionSymbols.has(cleanSym)) {
-                setTimeout(() => {
-                    if (activePositionSymbols.has(cleanSym)) {
-                        connectDedicatedPositionWs(cleanSym);
-                    }
-                }, 1000);
-            }
-        };
-        
-        positionDirectWsMap.set(cleanSym, dedicatedWs);
-    } catch(e) {}
-}
-
+// Optimized: All position symbols are seamlessly and continuously covered by the main multiplexed stream (!bookTicker / !miniTicker).
+// We strictly avoid opening individual dedicated WebSockets per position to prevent TCP connection exhaustion.
 function syncDedicatedStreams(symbols) {
     const nextSet = new Set();
     if (Array.isArray(symbols)) {
@@ -99,20 +43,11 @@ function syncDedicatedStreams(symbols) {
     }
     activePositionSymbols = nextSet;
     
-    // Close removed streams
+    // Safely close any remaining legacy streams if any existed
     for (const [sym, dws] of positionDirectWsMap.entries()) {
-        if (!activePositionSymbols.has(sym)) {
-            try { dws.close(); } catch(e){}
-            positionDirectWsMap.delete(sym);
-        }
+        try { dws.close(); } catch(e){}
     }
-    
-    // Open new streams for active positions
-    for (const sym of activePositionSymbols) {
-        if (!positionDirectWsMap.has(sym)) {
-            connectDedicatedPositionWs(sym);
-        }
-    }
+    positionDirectWsMap.clear();
 }
 
 function connect() {

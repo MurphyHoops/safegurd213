@@ -74,7 +74,6 @@ export interface Position {
     isBacktestRecord?: boolean;
     periodExtremePrice?: number;
     extremeHedgeTriggerPrice?: number;
-    shortTermExtremeTriggerPrice?: number;
     backtestEntryTime?: number;
     currentIndicators?: {
         rsi: number;
@@ -291,12 +290,6 @@ export interface HedgingSettings {
     breakKLineRatio: number;
     combinedLossLimitEnabled?: boolean;
     combinedLossLimitPercent?: number;
-    extremeHedgeEnabled?: boolean;
-    extremeHedgeDays?: number;
-    extremeHedgeTriggerRatio?: number;
-    shortTermExtremeEnabled?: boolean;
-    shortTermExtremeDays?: number;
-    shortTermExtremeRatio?: number;
 }
 
 export interface AdvisorSettings {
@@ -348,6 +341,9 @@ export interface SystemSettings {
     enableAutoTransfer?: boolean;
     autoTransferThreshold?: number;
     autoTransferAmount?: number;
+    autoSyncEnabled?: boolean;
+    autoSyncIntervalMinutes?: number;
+    syncHistoryLookbackHours?: number;
 }
 
 export interface ScannerSettings {

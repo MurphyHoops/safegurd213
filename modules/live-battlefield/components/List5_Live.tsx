@@ -309,6 +309,10 @@ const List5_Live: React.FC<List5Props> = ({
         }
 
         const cleanSymbol = normalizeSymbol(symbolToOpen);
+        if (!cleanSymbol || cleanSymbol.trim() === '') {
+            alert(`⚠️ 未能识别币种 "${manualSymbol}"，请输入英文币种代码（如 LOBSTER 或 BTC）或受支持的中文币名！`);
+            return;
+        }
         const price = verifiedPrice || realPrices[cleanSymbol] || realPrices[symbolToOpen] || realPrices[manualSymbol];
         
         if (!price || price <= 0) {
@@ -364,8 +368,8 @@ const List5_Live: React.FC<List5Props> = ({
                     </button>
                 </div>
                 <div className="bg-slate-800/50 p-2 rounded border border-slate-700 flex justify-between items-center text-[10px]">
-                    <span className="text-slate-500">总持仓: <span className="text-white font-bold">{moduleStats.symbolCount}</span></span>
-                    <span className="text-slate-500">浮盈: <span className={`font-bold ${moduleStats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{moduleStats.totalPnl.toFixed(1)}</span></span>
+                    <span className="text-slate-500">总持仓: <span className="text-white font-bold">{moduleStats?.symbolCount ?? 0}</span></span>
+                    <span className="text-slate-500">浮盈: <span className={`font-bold ${(moduleStats?.totalPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(moduleStats?.totalPnl ?? 0).toFixed(1)}</span></span>
                 </div>
                 {moduleStats.symbolsWithNoPrice && moduleStats.symbolsWithNoPrice > 0 && (
                     <div className="bg-red-900/20 text-red-500 text-[10px] p-1.5 rounded border border-red-500/30 flex flex-col gap-1 animate-pulse">

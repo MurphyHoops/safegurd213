@@ -22,7 +22,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [copied, setCopied] = useState(false);
     const [isScanning, setIsScanning] = useState(false);
-    const [progress, setProgress] = useState({ current: 0, total: 0 });
+    const [progress, setProgress] = useState({ current: 0, total: 0, passed: 0 });
     const [isAutoScan, setIsAutoScan] = usePersistedState<boolean>('SCANNER_START_TREND_AUTO_SCAN', true);
     const [syncIntervalSec, setSyncIntervalSec] = usePersistedState<number>('SCANNER_START_TREND_SYNC_INTERVAL_SEC', 3);
     const [isEditingInterval, setIsEditingInterval] = useState(false);
@@ -42,6 +42,36 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         isMountedRef.current = true;
         return () => { isMountedRef.current = false; };
     }, []);
+
+    // 监听交易额底池更新与挂载对齐：即时从行情启动底池中剔除已不在交易额白名单内的孤儿币种
+    useEffect(() => {
+        const handleVolumePoolSync = () => {
+            const currentCandidates = getCandidateSymbols();
+            if (currentCandidates.length === 0) return;
+            const validSet = new Set(currentCandidates);
+            
+            try {
+                const raw = localStorage.getItem('SCANNER_START_TREND_POOL');
+                const prevPool: StartTrendPoolItem[] = raw ? JSON.parse(raw) : [];
+                if (Array.isArray(prevPool)) {
+                    const filtered = prevPool.filter(item => validSet.has(item.symbol));
+                    if (filtered.length !== prevPool.length) {
+                        localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify(filtered));
+                        setPool(filtered);
+                        setTimeout(() => {
+                            window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: filtered }));
+                        }, 0);
+                    }
+                }
+            } catch (_) {}
+        };
+
+        window.addEventListener('scanner_volume_pool_updated', handleVolumePoolSync);
+        handleVolumePoolSync();
+        return () => {
+            window.removeEventListener('scanner_volume_pool_updated', handleVolumePoolSync);
+        };
+    }, [setPool]);
 
     // Directly read candidate coins from "交易额过滤底池" (SCANNER_VOLUME_FILTERED_POOL or SCANNER_RAW_DATA_CACHE)
     const getCandidateSymbols = (): string[] => {
@@ -69,8 +99,8 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         .filter((d: any) => {
                             if (!d || !d.symbol || !d.symbol.endsWith('USDT')) return false;
                             if (!enableVol) return true;
-                            const quoteVol = parseFloat(d.quoteVolume || '0');
-                            const volM = quoteVol > 10000 ? quoteVol / 1000000 : quoteVol;
+                            const rawQuoteVol = parseFloat(d.quoteVolume || '0');
+                            const volM = rawQuoteVol / 1000000;
                             if (minVol > 0 && volM < minVol) return false;
                             if (maxVol > 0 && volM > maxVol) return false;
                             return true;
@@ -130,9 +160,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             }
         };
 
-        // Fetch 60 daily candles (interval=1d&limit=60) - ultra lightweight (~3KB)
+        // Fetch 60 daily candles (interval=1d&limit=60) - ultra lightweight (~3KB) via high-speed parallel proxy
         const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=60`;
-        const klinesData = await safeFetchWithTimeout(futuresUrl, 2000);
+        const klinesData = await safeFetchWithTimeout(futuresUrl, 2500);
         if (klinesData && Array.isArray(klinesData) && klinesData.length > 0) {
             klinesCacheRef.current.set(symbol, { klines: klinesData, timestamp: Date.now() });
             globalCache[`${symbol}_1d`] = klinesData;
@@ -193,11 +223,24 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         isScanningRef.current = true;
         (window as any).IS_START_TREND_SCANNING = true;
         setIsScanning(true);
-        setProgress({ current: 1, total: candidates.length });
 
-        // 🔒 [零空隙与持续存留铁律]: 保留现有底池币种，绝不初始清空，确保列表1与列表2零空隙无缝衔接
+        // 🔒【永不清零·增量差量动态更新铁律】:
+        // 扫描启动时绝不清空底池（保留当前既有符合币种），只能在扫描过程中根据实际结果动态增加或删减！
         const poolMap = new Map<string, StartTrendPoolItem>();
-        pool.forEach(item => poolMap.set(item.symbol, item));
+        if (pool && pool.length > 0) {
+            pool.forEach(item => poolMap.set(item.symbol, item));
+        } else {
+            try {
+                const cached = localStorage.getItem('SCANNER_START_TREND_POOL');
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    if (Array.isArray(parsed)) {
+                        parsed.forEach((item: StartTrendPoolItem) => poolMap.set(item.symbol, item));
+                    }
+                }
+            } catch (_) {}
+        }
+        setProgress({ current: 1, total: candidates.length, passed: poolMap.size });
 
         try {
             // Process sequentially with user-configured interval (default 3s) so progress counter increments smoothly and visibly
@@ -207,14 +250,14 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 const coinCycleStart = Date.now();
 
                 if (isMountedRef.current) {
-                    setProgress({ current: i + 1, total: candidates.length });
+                    setProgress({ current: i + 1, total: candidates.length, passed: poolMap.size });
                 }
 
-                // 目标单币节拍（默认 3 秒）：总处理+等待严格等于目标时间
+                // 目标单币节拍（用户设定秒数，如 4 秒）：总处理+等待严格等于目标时间
                 const stepIntervalSec = Math.max(0.1, syncIntervalSecRef.current ?? 3);
                 const targetIntervalMs = Math.round(stepIntervalSec * 1000);
-                // 单币最大允许执行时间：硬性看门狗不得超过 2.8 秒或 (targetIntervalMs - 100ms)
-                const maxWorkTime = Math.min(2800, Math.max(500, targetIntervalMs - 100));
+                // 单币最大允许网络执行时间：看门狗设为 targetIntervalMs - 100ms
+                const maxWorkTime = Math.max(500, targetIntervalMs - 100);
 
                 let coinTimeoutId: any = null;
                 try {
@@ -244,64 +287,60 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
 
                                         // Check Long Start Trend
                                         if (enableLong) {
-                                            const periodLows = lastCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
                                             const periodHighs = lastCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                            if (periodLows.length > 0 && periodHighs.length > 0) {
-                                                const periodMinLow = Math.min(...periodLows);
+                                            if (periodHighs.length > 0) {
                                                 const periodMaxHigh = Math.max(...periodHighs);
                                                 const baseOpen = parseFloat(lastCandles[0][1]);
 
-                                                const changePct = ((currentPrice - baseOpen) / baseOpen) * 100;
-                                                const changePctFromLow = ((currentPrice - periodMinLow) / periodMinLow) * 100;
-                                                const effectiveChange = Math.max(changePct, changePctFromLow);
+                                                // 🔒 严格基于基准开盘价计算涨幅，且必须当前价格高于基准开盘价（日K或多日周期收涨/阳线），彻底杜绝最低点插针反弹误判
+                                                if (baseOpen > 0 && currentPrice > baseOpen) {
+                                                    const changePct = ((currentPrice - baseOpen) / baseOpen) * 100;
+                                                    const pullbackPct = periodMaxHigh > 0 ? ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100 : 0;
+                                                    const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
 
-                                                const pullbackPct = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
-                                                const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
-
-                                                if (!isNaN(effectiveChange) && effectiveChange >= group.minLong && effectiveChange <= group.maxLong &&
-                                                    !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
-                                                    matchedItem = {
-                                                        symbol,
-                                                        direction: 'LONG',
-                                                        changePct: +effectiveChange.toFixed(2),
-                                                        pullbackPct: +pullbackPct.toFixed(2),
-                                                        matchedGroup: group.idx,
-                                                        price: currentPrice
-                                                    };
-                                                    matched = true;
-                                                    break;
+                                                    if (!isNaN(changePct) && changePct >= group.minLong && changePct <= group.maxLong &&
+                                                        !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
+                                                        matchedItem = {
+                                                            symbol,
+                                                            direction: 'LONG',
+                                                            changePct: +changePct.toFixed(2),
+                                                            pullbackPct: +pullbackPct.toFixed(2),
+                                                            matchedGroup: group.idx,
+                                                            price: currentPrice
+                                                        };
+                                                        matched = true;
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
 
                                         // Check Short Start Trend
                                         if (enableShort) {
-                                            const periodHighs = lastCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
                                             const periodLows = lastCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                            if (periodHighs.length > 0 && periodLows.length > 0) {
-                                                const periodMaxHigh = Math.max(...periodHighs);
+                                            if (periodLows.length > 0) {
                                                 const periodMinLow = Math.min(...periodLows);
                                                 const baseOpen = parseFloat(lastCandles[0][1]);
 
-                                                const dropPct = ((baseOpen - currentPrice) / baseOpen) * 100;
-                                                const dropPctFromHigh = ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100;
-                                                const effectiveDrop = Math.max(dropPct, dropPctFromHigh);
+                                                // 🔒 严格基于基准开盘价计算跌幅，且必须当前价格低于基准开盘价（日K或多日周期收跌/阴线），彻底杜绝最高点插针回落误判
+                                                if (baseOpen > 0 && currentPrice < baseOpen) {
+                                                    const dropPct = ((baseOpen - currentPrice) / baseOpen) * 100;
+                                                    const pullbackPct = periodMinLow > 0 ? ((currentPrice - periodMinLow) / periodMinLow) * 100 : 0;
+                                                    const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
 
-                                                const pullbackPct = ((currentPrice - periodMinLow) / periodMinLow) * 100;
-                                                const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
-
-                                                if (!isNaN(effectiveDrop) && effectiveDrop >= group.minShort && effectiveDrop <= group.maxShort &&
-                                                    !isNaN(pullbackPct) && pullbackPct <= maxPullbackShort) {
-                                                    matchedItem = {
-                                                        symbol,
-                                                        direction: 'SHORT',
-                                                        changePct: -Math.abs(+effectiveDrop.toFixed(2)),
-                                                        pullbackPct: +pullbackPct.toFixed(2),
-                                                        matchedGroup: group.idx,
-                                                        price: currentPrice
-                                                    };
-                                                    matched = true;
-                                                    break;
+                                                    if (!isNaN(dropPct) && dropPct >= group.minShort && dropPct <= group.maxShort &&
+                                                        !isNaN(pullbackPct) && pullbackPct <= maxPullbackShort) {
+                                                        matchedItem = {
+                                                            symbol,
+                                                            direction: 'SHORT',
+                                                            changePct: -Math.abs(+dropPct.toFixed(2)),
+                                                            pullbackPct: +pullbackPct.toFixed(2),
+                                                            matchedGroup: group.idx,
+                                                            price: currentPrice
+                                                        };
+                                                        matched = true;
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
@@ -321,6 +360,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                                     if (hasChanged && isMountedRef.current) {
                                         const currentList = Array.from(poolMap.values());
                                         setPool(currentList);
+                                        setProgress(prev => ({ ...prev, passed: currentList.length }));
                                         try {
                                             localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify(currentList));
                                             window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: currentList }));
@@ -350,6 +390,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             if (isMountedRef.current) {
                 const finalList = Array.from(poolMap.values());
                 setPool(finalList);
+                setProgress({ current: candidates.length, total: candidates.length, passed: finalList.length });
                 try {
                     localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify(finalList));
                     window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: finalList }));
@@ -426,6 +467,10 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         return pool.filter(item => item.symbol.includes(term));
     }, [pool, searchTerm]);
 
+    const candidateCount = useMemo(() => {
+        return getCandidateSymbols().length;
+    }, [pool, isScanning]);
+
     const handleCopyAll = (e: React.MouseEvent) => {
         e.stopPropagation();
         if (pool.length === 0) return;
@@ -446,12 +491,18 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                     <div className="p-1 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
                         <Flame size={13} />
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                         <span className="text-[10px] font-bold text-white tracking-wide">
                             行情启动底池
                         </span>
-                        <span className="px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/60 text-amber-300 font-mono font-bold text-[9px]">
-                            {pool.length} 个币
+                        {/* 三段式显示: 左边交易额过滤底池数量 / 中间正在扫描位置 / 右边已筛选过滤出数量 */}
+                        <span 
+                            className="px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/60 text-amber-300 font-mono font-bold text-[9px] tracking-tight"
+                            title="【交易额过滤底池数量 / 正在扫描位置 / 已筛选过滤出数量】"
+                        >
+                            {progress.total > 0 
+                                ? `${progress.total} / ${isScanning ? progress.current : progress.total} / ${pool.length}` 
+                                : `${candidateCount || pool.length} / ${candidateCount || pool.length} / ${pool.length}`}
                         </span>
                     </div>
                 </div>
@@ -530,7 +581,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         {isScanning ? (
                             <>
                                 <RefreshCw size={10} className="animate-spin" />
-                                <span>{progress.current}/{progress.total}</span>
+                                <span>{progress.total}/{progress.current}/{pool.length}</span>
                             </>
                         ) : (
                             <>

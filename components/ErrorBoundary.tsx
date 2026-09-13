@@ -48,11 +48,11 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
         localStorage.setItem(crashKey, String(count));
         localStorage.setItem('SAVIOR_LAST_CRASH_TIME', String(now));
 
-        // Automatically purge scanner and config cache keys on crash
+        // Automatically purge ONLY scanner and volatile memory cache keys on crash, NEVER wipe user SETTINGS or POSITIONS
         const keysToRemove: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
             const k = localStorage.key(i);
-            if (k && (k.includes('SCANNER_') || k.includes('CACHE') || k.includes('LOGS') || k.includes('MAP') || k.includes('GRAND_') || k.includes('SETTINGS'))) {
+            if (k && (k.startsWith('SCANNER_CACHE_') || k.includes('CACHE_MAP') || k === 'SAVIOR_LOGS')) {
                 keysToRemove.push(k);
             }
         }
@@ -60,11 +60,12 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
             try { localStorage.removeItem(k); } catch (e) {}
         });
 
-        if (count <= 4) {
-            console.warn('[ErrorBoundary] Auto-healing: clearing corrupted cache & reloading instantly...');
+        // 仅在首次偶发异常时尝试一次安全自愈重载；若连续异常(count > 1)，立即停止重载并展现恢复界面，杜绝连续蓝屏闪烁
+        if (count === 1) {
+            console.warn('[ErrorBoundary] Auto-healing: clearing volatile scanner cache & reloading once...');
             setTimeout(() => {
                 window.location.reload();
-            }, 300);
+            }, 500);
             return;
         }
     } catch (e) {

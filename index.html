@@ -28,7 +28,75 @@
     </style>
 </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- 🛡️ 系统极速启动屏障：消除任何重启/升级后的蓝屏等待，毫秒级响应并自带自愈修复 -->
+      <div id="boot-shield" style="position:fixed;inset:0;background:radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;z-index:9999999;padding:24px;box-sizing:border-box;">
+        <div style="max-width:440px;width:100%;background:rgba(30,41,59,0.7);backdrop-filter:blur(16px);border:1px solid #334155;border-radius:24px;padding:32px 24px;text-align:center;box-shadow:0 20px 40px -15px rgba(0,0,0,0.7);">
+          <!-- 动态呼吸光环 -->
+          <div style="position:relative;width:64px;height:64px;margin:0 auto 20px auto;">
+            <div style="position:absolute;inset:0;border-radius:50%;border:2px solid #6366f1;animation:boot-spin 1.5s linear infinite;border-top-color:transparent;"></div>
+            <div style="position:absolute;inset:4px;border-radius:50%;background:#4f46e5;display:flex;align-items:center;justify-content:center;font-size:26px;box-shadow:0 0 20px rgba(99,102,241,0.5);">
+              🛡️
+            </div>
+          </div>
+          <h2 style="margin:0 0 8px 0;font-size:18px;font-weight:900;color:#f8fafc;letter-spacing:-0.02em;">防爆仓救世之星</h2>
+          <p id="boot-status-text" style="margin:0 0 20px 0;font-size:12px;color:#94a3b8;font-family:monospace;">正在载入风控核心引擎与交易系统...</p>
+          
+          <!-- 启动进度条 -->
+          <div style="width:100%;height:4px;background:#1e293b;border-radius:999px;overflow:hidden;margin-bottom:20px;border:1px solid #334155;">
+            <div id="boot-progress-bar" style="width:25%;height:100%;background:linear-gradient(90deg,#4f46e5,#38bdf8);border-radius:999px;transition:width 0.6s ease;"></div>
+          </div>
+
+          <!-- 诊断与超时自愈选项 (在等待超过5秒或异常时自动展现) -->
+          <div id="boot-fallback-tools" style="display:none;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid #334155;">
+            <div id="boot-diag-msg" style="display:none;font-size:11px;color:#f87171;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);padding:8px 12px;border-radius:8px;margin-bottom:8px;text-align:left;word-break:break-all;"></div>
+            <button onclick="window.location.reload()" style="background:#4f46e5;color:#fff;border:none;padding:10px;border-radius:10px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+              🔄 立即重新加载
+            </button>
+            <button onclick="localStorage.removeItem('SAVIOR_LOGS');localStorage.removeItem('SAVIOR_SYSTEM_MONITOR_LOGS');localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');alert('已清理系统扫描缓存，保留所有持仓与配置，正在重启...');window.location.reload();" style="background:rgba(59,130,246,0.15);color:#60a5fa;border:1px solid rgba(59,130,246,0.3);padding:10px;border-radius:10px;font-size:12px;font-weight:bold;cursor:pointer;">
+              🧹 快速修复缓存并重启 (保留持仓与设置)
+            </button>
+          </div>
+        </div>
+      </div>
+      <style>
+        @keyframes boot-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      </style>
+      <script>
+        (function() {
+          var step = 0;
+          var bar = document.getElementById('boot-progress-bar');
+          var text = document.getElementById('boot-status-text');
+          var tools = document.getElementById('boot-fallback-tools');
+          var diag = document.getElementById('boot-diag-msg');
+          
+          var interval = setInterval(function() {
+            step++;
+            if (step === 1 && bar && text) {
+              bar.style.width = '55%';
+              text.innerText = '正在初始化高频行情与核心策略引擎...';
+            } else if (step === 3 && bar && text) {
+              bar.style.width = '85%';
+              text.innerText = '正在校验持仓状态与风控防御防线...';
+            } else if (step >= 5) {
+              clearInterval(interval);
+              if (bar) bar.style.width = '95%';
+              if (text) text.innerText = '系统正在就绪，如遇卡顿可使用下方工具：';
+              if (tools) tools.style.display = 'flex';
+            }
+          }, 1200);
+
+          // 捕获早期脚本语法或载入异常，杜绝任何蓝屏静默
+          window.addEventListener('error', function(e) {
+            if (tools) tools.style.display = 'flex';
+            if (diag && e && e.message) {
+              diag.style.display = 'block';
+              diag.innerText = '启动提示: ' + e.message;
+            }
+          });
+        })();
+      </script>
+    </div>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>

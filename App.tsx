@@ -22,7 +22,7 @@ import { BackgroundTimer } from './services/backgroundTask';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { usePersistedState } from './hooks/usePersistedState';
 import { binanceWs } from './services/binanceWs';
-import { normalizeSymbol, resolvePrice, isMajorCoin } from './services/symbolUtils';
+import { normalizeSymbol, resolvePrice, isMajorCoin, isMemeScaledCoin } from './services/symbolUtils';
 import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
 import { ActivationModal } from './components/ActivationModal';
@@ -82,7 +82,14 @@ const AppContent: React.FC = () => {
             const isReal = savedSettings?.system?.realTrading;
             const key = isReal ? 'SAVIOR_ACCOUNT_LIVE' : 'SAVIOR_ACCOUNT_SIM';
             const fallbackKey = 'SAVIOR_ACCOUNT';
-            return loadState(key, loadState(fallbackKey, { marginBalance: 10000, totalBalance: 10000, maintenanceMargin: 0, marginRatio: 999 }));
+            const raw = loadState<any>(key, loadState<any>(fallbackKey, { marginBalance: 10000, totalBalance: 10000, maintenanceMargin: 0, marginRatio: 999 }));
+            return {
+                ...raw,
+                marginBalance: typeof raw?.marginBalance === 'number' && !isNaN(raw.marginBalance) ? raw.marginBalance : 10000,
+                totalBalance: typeof raw?.totalBalance === 'number' && !isNaN(raw.totalBalance) ? raw.totalBalance : 10000,
+                maintenanceMargin: typeof raw?.maintenanceMargin === 'number' && !isNaN(raw.maintenanceMargin) ? raw.maintenanceMargin : 0,
+                marginRatio: typeof raw?.marginRatio === 'number' && !isNaN(raw.marginRatio) ? raw.marginRatio : 999
+            };
         } catch (e) {
             console.error("[Boot] Account load crash", e);
             return { marginBalance: 10000, totalBalance: 10000, maintenanceMargin: 0, marginRatio: 999 };
@@ -102,7 +109,14 @@ const AppContent: React.FC = () => {
                 .filter(p => p && typeof p === 'object' && p.symbol && (p.amount || 0) > 0.0001)
                 .map(p => ({
                     ...p,
-                    symbol: normalizeSymbol(p.symbol || '')
+                    symbol: normalizeSymbol(p.symbol || ''),
+                    amount: Number(p.amount) || 0,
+                    entryPrice: Number(p.entryPrice) || 0,
+                    markPrice: Number(p.markPrice) || Number(p.entryPrice) || 0,
+                    unrealizedPnL: Number(p.unrealizedPnL) || 0,
+                    unrealizedPnLPercentage: Number(p.unrealizedPnLPercentage) || 0,
+                    cumulativeAmputationLoss: Number(p.cumulativeAmputationLoss) || 0,
+                    cumulativeHedgeLoss: Number(p.cumulativeHedgeLoss) || 0,
                 }));
         } catch (e) {
             console.error("[Boot] Positions load crash", e);
@@ -139,19 +153,18 @@ const AppContent: React.FC = () => {
             return [];
         }
     });
-    const [isSystemActivated, setIsSystemActivated] = useState<boolean>(() => {
-        try {
-            return localStorage.getItem('SAVIOR_ACTIVATED') === 'true';
-        } catch {
-            return true;
-        }
-    });
-    const [showSecurityLockModal, setShowSecurityLockModal] = useState<boolean>(true);
+    // 🔒 暂时取消“防爆仓救世之星，安全授权锁”验证（打包安装直接放行，无需实名验证）
+    const [isSystemActivated, setIsSystemActivated] = useState<boolean>(true);
+    const [showSecurityLockModal, setShowSecurityLockModal] = useState<boolean>(false);
 
     useEffect(() => {
+        try {
+            localStorage.setItem('SAVIOR_ACTIVATED', 'true');
+        } catch {}
         const handleOpen = () => setShowSecurityLockModal(true);
         window.addEventListener('open_security_lock', handleOpen);
         (window as any).openSecurityLock = () => setShowSecurityLockModal(true);
+
         return () => {
             window.removeEventListener('open_security_lock', handleOpen);
         };
@@ -160,6 +173,9 @@ const AppContent: React.FC = () => {
     const handleSystemActivated = useCallback(() => {
         setIsSystemActivated(true);
         setShowSecurityLockModal(false);
+        try {
+            localStorage.setItem('SAVIOR_ACTIVATED', 'true');
+        } catch {}
     }, []);
     const [systemEvents, setSystemEvents] = useState<SystemEvent[]>([]);
     const [realPrices, setRealPrices] = useState<Record<string, number>>({});
@@ -313,6 +329,14 @@ const AppContent: React.FC = () => {
         // @ts-ignore
         window.openPositionManual = async (symbol: string, side: PositionSide, qty: number, customPrice?: number, amountUsdt?: number, leverage?: number) => {
             const cleanSymbol = normalizeSymbol(symbol);
+            if (!cleanSymbol || cleanSymbol.trim() === '') {
+                alert(`⚠️ 币种识别错误: 无法识别币种 "${symbol}"，请输入有效英文代码（如 LOBSTER 或 BTC）！`);
+                handleLog("DANGER", `⚠️ 手动开仓失败: 无法识别币种 "${symbol}"`, true);
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("DANGER", `⚠️ 手动开仓失败: 无法识别币种 "${symbol}"`);
+                }
+                return;
+            }
             const blacklist = settingsRef.current.system.symbolBlacklist || [];
             if (blacklist.includes(cleanSymbol)) {
                 alert(`⚠️ 币种拦截: ${cleanSymbol} 处于黑名单中，拒绝手动开仓！`);
@@ -1312,9 +1336,9 @@ const AppContent: React.FC = () => {
                                 simulatorRef.current.emitUpdate(true);
                             }
                             
-                            // 收到平仓事件后，触发真实持仓对账同步，确保持仓数量与交易所完全一致
+                            // 收到平仓事件后，触发真实持仓与资金对账同步（无需重复启动已被WS确认的流水抓取轮询）
                             if (typeof (window as any).triggerApiSync === "function") {
-                                (window as any).triggerApiSync(false, tradeData.symbol);
+                                (window as any).triggerApiSync(false);
                             }
                         } else if (msg.type === "BINANCE_ACCOUNT_UPDATE" && msg.data) {
                             const accData = msg.data;
@@ -1440,49 +1464,58 @@ const AppContent: React.FC = () => {
                         }
 
                         // --- 🔒 REAL TRADES RECONCILIATION FROM BINANCE (userTrades) ---
-                        // Fetch official executed trades from Binance (throttled to at most once per 30s to preserve rate limits)
-                        const shouldFetchTrades = force || (Date.now() - lastUserTradesFetchTime > 30000);
+                        // Fetch official executed trades from Binance (throttled to once per 180s in background to preserve rate limits, instant on force)
+                        const shouldFetchTrades = force || (Date.now() - lastUserTradesFetchTime > 180000);
                         if (shouldFetchTrades) {
                             lastUserTradesFetchTime = Date.now();
-                            try {
-                                const recentLogSymbols = simulatorRef.current 
-                                    ? simulatorRef.current.tradeLogs.slice(0, 15).map(l => l.symbol).filter(Boolean)
-                                    : [];
-                                const activeSymbols = Array.from(new Set([
-                                    ...realPositions.map((p: any) => p.symbol),
-                                    ...recentLogSymbols,
-                                    ...(tradeLogSearchSymbol ? [tradeLogSearchSymbol] : [])
-                                ].filter(Boolean))).slice(0, 25);
+                            // 异步非阻塞执行流水核对，让基础持仓与资金状态先行秒级响应完成，彻底杜绝转圈卡死
+                            (async () => {
+                                try {
+                                    const lookbackHours = settingsRef.current?.system?.syncHistoryLookbackHours || 1;
+                                    const lookbackMs = lookbackHours * 3600 * 1000;
+                                    const recentLogSymbols = simulatorRef.current 
+                                        ? simulatorRef.current.tradeLogs.slice(0, 10).map(l => l.symbol).filter(Boolean)
+                                        : [];
+                                    const activeSymbols = Array.from(new Set([
+                                        ...realPositions.map((p: any) => p.symbol),
+                                        ...recentLogSymbols,
+                                        ...(tradeLogSearchSymbol ? [tradeLogSearchSymbol] : [])
+                                    ].filter(Boolean))).slice(0, 15);
 
-                                if (activeSymbols.length > 0) {
-                                    const tradeResp = await fetch("/api/binance/user-trades", {
-                                        method: "POST",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({
-                                            apiKey,
-                                            apiSecret,
-                                            symbols: activeSymbols,
-                                            startTime: Math.max(
-                                                simulatorRef.current?.clearedTradeLogsTimestamp || 0,
-                                                Date.now() - 86400000 // 24 hours lookback，确保手机APP/外部开平仓记录绝不丢失
-                                            ),
-                                            limit: 50
-                                        })
-                                    });
-                                    if (tradeResp.ok) {
-                                        const tradeJson = await tradeResp.json();
-                                        if (tradeJson && tradeJson.success && Array.isArray(tradeJson.trades)) {
-                                            if (simulatorRef.current) {
-                                                simulatorRef.current.reconcileRealTradesFromBinance(tradeJson.trades);
-                                                setTradeLogs([...simulatorRef.current.tradeLogs]);
-                                                tradeLogsRef.current = [...simulatorRef.current.tradeLogs];
+                                    if (activeSymbols.length > 0) {
+                                        const controller = new AbortController();
+                                        const fetchTimeout = setTimeout(() => controller.abort(), 6000);
+                                        const tradeResp = await fetch("/api/binance/user-trades", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({
+                                                apiKey,
+                                                apiSecret,
+                                                symbols: activeSymbols,
+                                                startTime: Math.max(
+                                                    simulatorRef.current?.clearedTradeLogsTimestamp || 0,
+                                                    Date.now() - lookbackMs // 可配置流水回溯（默认1小时），数据精炼响应极速
+                                                ),
+                                                limit: 50
+                                            }),
+                                            signal: controller.signal
+                                        });
+                                        clearTimeout(fetchTimeout);
+                                        if (tradeResp.ok) {
+                                            const tradeJson = await tradeResp.json();
+                                            if (tradeJson && tradeJson.success && Array.isArray(tradeJson.trades)) {
+                                                if (simulatorRef.current) {
+                                                    simulatorRef.current.reconcileRealTradesFromBinance(tradeJson.trades);
+                                                    setTradeLogs([...simulatorRef.current.tradeLogs]);
+                                                    tradeLogsRef.current = [...simulatorRef.current.tradeLogs];
+                                                }
                                             }
                                         }
                                     }
+                                } catch (tradeErr) {
+                                    console.warn("[Binance Background Sync] userTrades reconcile warning:", tradeErr);
                                 }
-                            } catch (tradeErr) {
-                                console.warn("[Binance Background Sync] userTrades reconcile warning:", tradeErr);
-                            }
+                            })();
                         }
 
                         // --- AUTO TRANSFER TRIGGER ---
@@ -1611,8 +1644,19 @@ const AppContent: React.FC = () => {
             return false;
         };
 
+        // 存储当前正在轮询中的币种定时器，严格防止单币或并发重复创建定时器风暴
+        const activePollingSymbols = new Map<string, any>();
+
         const triggerInstantTradeFetch = (targetSymbol: string, orderId?: string | number, action?: string) => {
             if (!targetSymbol) return;
+            const cleanSym = normalizeSymbol(targetSymbol);
+
+            // 🛡️ 防重机制：如果该币种已存在轮询定时器，先清除旧定时器，防止多个并发定时器轰炸交易所
+            if (activePollingSymbols.has(cleanSym)) {
+                clearInterval(activePollingSymbols.get(cleanSym));
+                activePollingSymbols.delete(cleanSym);
+            }
+
             // 阶段 1：0ms 立即执行首轮快速主动抓取
             fetchInstantTradeRecords(targetSymbol, orderId, action);
             
@@ -1635,9 +1679,9 @@ const AppContent: React.FC = () => {
                 }
             }, 500);
 
-            // 阶段 4：【双通道抓到为止铁律】每隔 1 秒主动向币安抓取一次成交记录，抓到即停（最长 20 秒安全防抖防死锁）
+            // 阶段 4：【双通道抓到为止铁律】每隔 1 秒主动向币安抓取一次成交记录，抓到即停（严格遵守 5 秒安全上限，杜绝网络拥塞）
             let secCount = 0;
-            const maxSeconds = 20;
+            const maxSeconds = 5;
             const secTimer = setInterval(async () => {
                 secCount++;
                 try {
@@ -1648,6 +1692,7 @@ const AppContent: React.FC = () => {
                         );
                         if (isConfirmed) {
                             clearInterval(secTimer);
+                            activePollingSymbols.delete(cleanSym);
                             return;
                         }
                     }
@@ -1655,13 +1700,17 @@ const AppContent: React.FC = () => {
                     const success = await fetchInstantTradeRecords(targetSymbol, orderId, action);
                     if (success || secCount >= maxSeconds) {
                         clearInterval(secTimer);
+                        activePollingSymbols.delete(cleanSym);
                     }
                 } catch (err) {
                     if (secCount >= maxSeconds) {
                         clearInterval(secTimer);
+                        activePollingSymbols.delete(cleanSym);
                     }
                 }
             }, 1000);
+
+            activePollingSymbols.set(cleanSym, secTimer);
         };
 
         (window as any).fetchInstantTradeRecords = triggerInstantTradeFetch;
@@ -1687,18 +1736,46 @@ const AppContent: React.FC = () => {
             fetchRealState(false, true);
         }, 100);
 
-        // Low-frequency heartbeat sync every 15 seconds to prevent rate limits while WS handles instant trade events
+        // Low-frequency heartbeat sync every 60 seconds (extended from 15s) to preserve rate limits while WS handles instant trade events
         const interval = setInterval(() => {
             fetchRealState(true);
-        }, 15000);
+        }, 60000);
 
         return () => {
             clearTimeout(timer);
             clearInterval(interval);
+            for (const [, t] of activePollingSymbols.entries()) {
+                clearInterval(t);
+            }
+            activePollingSymbols.clear();
             delete (window as any).triggerApiSync;
             delete (window as any).fetchInstantTradeRecords;
         };
     }, [settings.system.realTrading, settings.system.binanceApiKey, settings.system.binanceApiSecret]);
+
+    // 🔒【全账户定时自动对账引擎（默认1小时可调）】
+    useEffect(() => {
+        const isReal = settings.system.realTrading;
+        const autoSyncEnabled = settings.system.autoSyncEnabled ?? true;
+        const intervalMinutes = settings.system.autoSyncIntervalMinutes ?? 60;
+        const lookbackHours = settings.system.syncHistoryLookbackHours ?? 1;
+
+        if (!isReal || !autoSyncEnabled || intervalMinutes <= 0) return;
+
+        const intervalMs = intervalMinutes * 60 * 1000;
+        const autoSyncTimer = setInterval(() => {
+            try {
+                simulatorRef.current?.addLog('INFO', `⏰ [自动定时同步] 触发 ${intervalMinutes} 分钟周期实盘对账 (覆盖手机APP/外部开平仓，回溯 ${lookbackHours} 小时流水)...`);
+                if (typeof (window as any).triggerApiSync === 'function') {
+                    (window as any).triggerApiSync(true);
+                }
+            } catch (err) {
+                console.warn('[AutoSync] Periodic sync warning:', err);
+            }
+        }, intervalMs);
+
+        return () => clearInterval(autoSyncTimer);
+    }, [settings.system.realTrading, settings.system.autoSyncEnabled, settings.system.autoSyncIntervalMinutes, settings.system.syncHistoryLookbackHours]);
 
     const handleSettingsChange = (section: keyof AppSettings, key: string, value: any) => {
         if (section === 'system' && key === 'realTrading') {
@@ -1934,7 +2011,6 @@ const AppContent: React.FC = () => {
                         }]
                     };
 
-                    setTradeLogs(prev => [openLogItem, ...prev]);
                     if (simulatorRef.current) {
                         const finalPrice = resData.price || price || priceBufferRef.current[cleanSymbol] || 0;
                         const finalCost = resData.cumQuote || amount || (resData.qty * finalPrice);
@@ -1963,7 +2039,22 @@ const AppContent: React.FC = () => {
                             ...extraProps
                         };
 
-                        simulatorRef.current.tradeLogs.unshift(openLogItem);
+                        // 🔒【双通道竞速幂等防重】检查是否已被 WebSocket 极速流抢先记录
+                        const existingOpenLog = simulatorRef.current.tradeLogs.find(l =>
+                            (resData.orderId && l.binance_order_id && String(l.binance_order_id) === String(resData.orderId)) ||
+                            (l.entry_id === positionEntryId) ||
+                            (normalizeSymbol(l.symbol) === cleanSymbol && l.direction === side && l.status === 'OPEN' && Math.abs((l.entry_timestamp || 0) - tradeTime) < 10000)
+                        );
+
+                        if (existingOpenLog) {
+                            existingOpenLog.binance_order_id = String(resData.orderId || "");
+                            if (finalPrice > 0) existingOpenLog.entry_price = finalPrice;
+                            if (finalQty > 0) existingOpenLog.current_amount = finalQty;
+                            existingOpenLog.cost_usdt = finalCost;
+                        } else {
+                            simulatorRef.current.tradeLogs.unshift(openLogItem);
+                        }
+                        setTradeLogs([...simulatorRef.current.tradeLogs]);
                         simulatorRef.current.registerPendingRealOpenProps(cleanSymbol, side, {
                             signalTf,
                             signalCandle,
@@ -2287,8 +2378,26 @@ const AppContent: React.FC = () => {
                         }]
                     };
 
-                    simulatorRef.current.tradeLogs.unshift(hedgeLogItem);
-                    setTradeLogs(prev => [hedgeLogItem, ...prev]);
+                    // 🔒【双通道竞速幂等防重】检查是否已被 WebSocket 极速流抢先记录
+                    const existingOpenLog = simulatorRef.current.tradeLogs.find(l =>
+                        (resData.orderId && l.binance_order_id && String(l.binance_order_id) === String(resData.orderId)) ||
+                        (l.entry_id === entryId) ||
+                        (normalizeSymbol(l.symbol) === cleanSymbol && l.direction === side && l.status === 'OPEN' && Math.abs((l.entry_timestamp || 0) - hedgeTradeTime) < 10000)
+                    );
+
+                    if (existingOpenLog) {
+                        existingOpenLog.binance_order_id = hedgeOrderId;
+                        if (finalHedgePrice > 0) existingOpenLog.entry_price = finalHedgePrice;
+                        if (finalHedgeQty > 0) existingOpenLog.current_amount = finalHedgeQty;
+                        existingOpenLog.cost_usdt = finalHedgeCost;
+                        if (reason && existingOpenLog.events?.[0]) {
+                            existingOpenLog.events[0].reason = reason;
+                            existingOpenLog.events[0].action = `防爆对冲开仓 (${side})`;
+                        }
+                    } else {
+                        simulatorRef.current.tradeLogs.unshift(hedgeLogItem);
+                    }
+                    setTradeLogs([...simulatorRef.current.tradeLogs]);
                     simulatorRef.current.addTradeEvent(position, `开启对冲单 (${side})`, finalHedgePrice, finalHedgeQty, reason || '自动防爆对冲');
 
                     const existingHedgeIdx = simPositions.findIndex(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side === side);
@@ -2414,6 +2523,10 @@ const AppContent: React.FC = () => {
         }
 
         let isSuccess = false;
+        const clientOrderId = (ratio !== undefined
+            ? `AMP_${cleanSymbol}_${position.side}_${Date.now()}`
+            : `CLS_${cleanSymbol}_${position.side}_${Date.now()}`).slice(0, 36);
+
         try {
             // Set up fetch with 25000ms timeout to support backend multi-node fallbacks
             const fetchPromise = fetch("/api/binance/order", {
@@ -2428,7 +2541,8 @@ const AppContent: React.FC = () => {
                     quantity: closeQty,
                     price: position.markPrice || position.entryPrice,
                     isAmputation: ratio !== undefined,
-                    amputationRatio: ratio
+                    amputationRatio: ratio,
+                    clientOrderId
                 })
             }).then(async res => {
                 const ok = res.ok;
@@ -2442,7 +2556,8 @@ const AppContent: React.FC = () => {
                 const onTrade = (e: Event) => {
                     const trade = (e as CustomEvent).detail;
                     if (!trade || normalizeSymbol(trade.symbol) !== cleanSymbol) return;
-                    const isClose = trade.action === "CLOSE" || trade.reduceOnly || trade.closePosition || (trade.realizedPnl !== 0) || (trade.orderStatus === "FILLED");
+                    const isMatchClientOrder = trade.clientOrderId && trade.clientOrderId === clientOrderId;
+                    const isClose = isMatchClientOrder || trade.action === "CLOSE" || trade.reduceOnly || trade.closePosition || (trade.realizedPnl !== 0) || (trade.orderStatus === "FILLED");
                     if (isClose) {
                         resolve({
                             isFromWs: true,
@@ -2490,9 +2605,9 @@ const AppContent: React.FC = () => {
                         // 🔒 [断臂求生实盘成功回调] 精确计算砍仓亏损金额并100%计入单币独立负债
                         const currentMark = resData.price || realPrices[cleanSymbol] || position.markPrice || position.entryPrice;
                         const priceDiff = position.side === 'LONG' ? currentMark - position.entryPrice : position.entryPrice - currentMark;
-                        const calculatedPnl = priceDiff * position.amount;
-                        const effectivePnl = (position.unrealizedPnL !== undefined && position.unrealizedPnL !== 0) ? position.unrealizedPnL : calculatedPnl;
-                        const realizedPnL = (resData.realizedPnl !== undefined && resData.realizedPnl !== 0) ? resData.realizedPnl : effectivePnl * (ratio / 100);
+                        const cutAmount = customQty;
+                        const calculatedPnl = priceDiff * cutAmount;
+                        const realizedPnL = (resData.realizedPnl !== undefined && resData.realizedPnl !== 0) ? resData.realizedPnl : calculatedPnl;
                         const isLoss = realizedPnL < 0;
                         const lossAmount = isLoss ? Math.abs(realizedPnL) : 0;
                         simulatorRef.current.handleRealAmputationSuccess(
@@ -2568,6 +2683,19 @@ const AppContent: React.FC = () => {
                         if (simulatorRef.current) {
                             simulatorRef.current.addLog("WARNING", `⚠️ [平仓未获确认] 正在启动对账通道核查币安实盘执行状态: ${cleanSymbol}...`);
                         }
+                        // 🛡️ 探针 1: 按 clientOrderId 精确反查币安订单成交状态
+                        let queriedOrder: any = null;
+                        try {
+                            const qResp = await fetch("/api/binance/query-order", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ apiKey, apiSecret, symbol: cleanSymbol, origClientOrderId: clientOrderId })
+                            }).then(r => r.json()).catch(() => null);
+                            if (qResp && qResp.success && qResp.order && qResp.order.status === "FILLED") {
+                                queriedOrder = qResp.order;
+                            }
+                        } catch (qErr) {}
+
                         const fastResp = await fetch("/api/binance/fast-user-trades", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
@@ -2596,13 +2724,13 @@ const AppContent: React.FC = () => {
                         const currentLiveAmount = livePos ? livePos.amount : 0;
                         const amountDecreased = (position.amount - currentLiveAmount) >= (closeQty * 0.7);
 
-                        if (matchingTrade || amountDecreased) {
+                        if (queriedOrder || matchingTrade || amountDecreased) {
                             reconciled = true;
                             isSuccess = true;
-                            const execPrice = matchingTrade ? parseFloat(matchingTrade.price || '0') : (position.markPrice || position.entryPrice);
-                            const execQty = matchingTrade ? parseFloat(matchingTrade.qty || '0') : (position.amount - currentLiveAmount);
+                            const execPrice = queriedOrder ? parseFloat(queriedOrder.avgPrice || queriedOrder.price || '0') : (matchingTrade ? parseFloat(matchingTrade.price || '0') : (position.markPrice || position.entryPrice));
+                            const execQty = queriedOrder ? parseFloat(queriedOrder.executedQty || closeQty) : (matchingTrade ? parseFloat(matchingTrade.qty || '0') : (position.amount - currentLiveAmount));
                             const tradePnl = matchingTrade ? parseFloat(matchingTrade.realizedPnl || '0') : 0;
-                            const execOrderId = matchingTrade ? String(matchingTrade.orderId || matchingTrade.id || '') : undefined;
+                            const execOrderId = queriedOrder ? String(queriedOrder.orderId) : (matchingTrade ? String(matchingTrade.orderId || matchingTrade.id || '') : undefined);
 
                             const reconData = {
                                 success: true,
@@ -2623,9 +2751,9 @@ const AppContent: React.FC = () => {
                                 if (customQty !== undefined && ratio !== undefined) {
                                     const currentMark = execPrice || realPrices[cleanSymbol] || position.markPrice || position.entryPrice;
                                     const priceDiff = position.side === 'LONG' ? currentMark - position.entryPrice : position.entryPrice - currentMark;
-                                    const calculatedPnl = priceDiff * position.amount;
-                                    const effectivePnl = (position.unrealizedPnL !== undefined && position.unrealizedPnL !== 0) ? position.unrealizedPnL : calculatedPnl;
-                                    const realizedPnL = tradePnl !== 0 ? tradePnl : effectivePnl * (ratio / 100);
+                                    const cutAmount = customQty;
+                                    const calculatedPnl = priceDiff * cutAmount;
+                                    const realizedPnL = tradePnl !== 0 ? tradePnl : calculatedPnl;
 
                                     simulatorRef.current.handleRealAmputationSuccess(
                                         cleanSymbol,
@@ -2695,6 +2823,19 @@ const AppContent: React.FC = () => {
                     if (simulatorRef.current) {
                         simulatorRef.current.addLog("WARNING", `⚠️ [平仓网络超时/异常] 正在启动对账通道核查币安实盘执行状态: ${cleanSymbol} (${e.message || e})...`);
                     }
+                    // 🛡️ 探针 1: 按 clientOrderId 精确反查币安订单成交状态
+                    let queriedOrder: any = null;
+                    try {
+                        const qResp = await fetch("/api/binance/query-order", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ apiKey, apiSecret, symbol: cleanSymbol, origClientOrderId: clientOrderId })
+                        }).then(r => r.json()).catch(() => null);
+                        if (qResp && qResp.success && qResp.order && qResp.order.status === "FILLED") {
+                            queriedOrder = qResp.order;
+                        }
+                    } catch (qErr) {}
+
                     const fastResp = await fetch("/api/binance/fast-user-trades", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -2723,13 +2864,13 @@ const AppContent: React.FC = () => {
                     const currentLiveAmount = livePos ? livePos.amount : 0;
                     const amountDecreased = (position.amount - currentLiveAmount) >= (closeQty * 0.7);
 
-                    if (matchingTrade || amountDecreased) {
+                    if (queriedOrder || matchingTrade || amountDecreased) {
                         reconciled = true;
                         isSuccess = true;
-                        const execPrice = matchingTrade ? parseFloat(matchingTrade.price || '0') : (position.markPrice || position.entryPrice);
-                        const execQty = matchingTrade ? parseFloat(matchingTrade.qty || '0') : (position.amount - currentLiveAmount);
+                        const execPrice = queriedOrder ? parseFloat(queriedOrder.avgPrice || queriedOrder.price || '0') : (matchingTrade ? parseFloat(matchingTrade.price || '0') : (position.markPrice || position.entryPrice));
+                        const execQty = queriedOrder ? parseFloat(queriedOrder.executedQty || closeQty) : (matchingTrade ? parseFloat(matchingTrade.qty || '0') : (position.amount - currentLiveAmount));
                         const tradePnl = matchingTrade ? parseFloat(matchingTrade.realizedPnl || '0') : 0;
-                        const execOrderId = matchingTrade ? String(matchingTrade.orderId || matchingTrade.id || '') : undefined;
+                        const execOrderId = queriedOrder ? String(queriedOrder.orderId) : (matchingTrade ? String(matchingTrade.orderId || matchingTrade.id || '') : undefined);
 
                         const reconData = {
                             success: true,
@@ -2750,9 +2891,9 @@ const AppContent: React.FC = () => {
                             if (customQty !== undefined && ratio !== undefined) {
                                 const currentMark = execPrice || realPrices[cleanSymbol] || position.markPrice || position.entryPrice;
                                 const priceDiff = position.side === 'LONG' ? currentMark - position.entryPrice : position.entryPrice - currentMark;
-                                const calculatedPnl = priceDiff * position.amount;
-                                const effectivePnl = (position.unrealizedPnL !== undefined && position.unrealizedPnL !== 0) ? position.unrealizedPnL : calculatedPnl;
-                                const realizedPnL = tradePnl !== 0 ? tradePnl : effectivePnl * (ratio / 100);
+                                const cutAmount = customQty;
+                                const calculatedPnl = priceDiff * cutAmount;
+                                const realizedPnL = tradePnl !== 0 ? tradePnl : calculatedPnl;
 
                                 simulatorRef.current.handleRealAmputationSuccess(
                                     cleanSymbol,
@@ -2866,6 +3007,9 @@ const AppContent: React.FC = () => {
             simulatorRef.current.addLog("INFO", `⚡ [自动补仓触发] 策略触发补位，正在向币安发送开仓请求: ${cleanSymbol} ${position.side} | 数量: ${qty.toFixed(4)} (约 ${refillUsdt} USDT) | 原因: ${reason}`);
         }
 
+        const clientOrderId = `REF_${cleanSymbol}_${position.side}_${Date.now()}`.slice(0, 36);
+        let cleanupTradeListener: (() => void) | null = null;
+
         try {
             const fetchPromise = fetch("/api/binance/order", {
                 method: "POST",
@@ -2879,30 +3023,133 @@ const AppContent: React.FC = () => {
                     quantity: qty,
                     amountUsdt: qty * (position.markPrice || position.entryPrice || 0),
                     isRefill: true,
-                    allowExisting: true
+                    allowExisting: true,
+                    clientOrderId
                 })
+            }).then(async res => {
+                const ok = res.ok;
+                const json = await res.json().catch(() => null);
+                return { isFromWs: false, ok, data: json };
+            }).catch(err => ({ isFromWs: false, ok: false, data: null, error: err }));
+
+            // ⚡ 双通道毫秒级竞速确认：只要 WebSocket 监听到成交 (通常仅需 20~50ms)，立即抢先完成补仓确认！
+            const wsFastTrackPromise = new Promise<any>((resolve) => {
+                const onTrade = (e: Event) => {
+                    const trade = (e as CustomEvent).detail;
+                    if (!trade || normalizeSymbol(trade.symbol) !== cleanSymbol) return;
+                    const isMatchClientOrder = trade.clientOrderId && trade.clientOrderId === clientOrderId;
+                    const targetSide = position.side === 'LONG' ? 'BUY' : 'SELL';
+                    const isMatchSide = (trade.side === targetSide) || (trade.positionSide === position.side && trade.side === targetSide);
+                    const isFill = trade.orderStatus === "FILLED" || trade.executionType === "TRADE" || (trade.lastFilledQty && trade.lastFilledQty > 0);
+                    if ((isMatchClientOrder || isMatchSide) && isFill) {
+                        resolve({
+                            isFromWs: true,
+                            ok: true,
+                            data: {
+                                success: true,
+                                orderId: trade.orderId,
+                                price: trade.lastFilledPrice || trade.avgPrice,
+                                qty: trade.cumFilledQty || trade.lastFilledQty || qty,
+                                isFromWs: true,
+                                tradeData: trade
+                            }
+                        });
+                    }
+                };
+                window.addEventListener("BINANCE_TRADE_CONFIRMED", onTrade);
+                cleanupTradeListener = () => window.removeEventListener("BINANCE_TRADE_CONFIRMED", onTrade);
             });
 
-            const timeoutPromise = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("Timeout")), 20000)
+            const timeoutPromise = new Promise<{ isFromWs: false, ok: false, data: null, error: any }>((_, reject) =>
+                setTimeout(() => reject(new Error("Timeout")), 4000)
             );
 
-            const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+            // Race fetch, WS fast-track, and fast 4000ms timeout
+            let raceResult: any = null;
+            try {
+                raceResult = await Promise.race([fetchPromise, wsFastTrackPromise, timeoutPromise]);
+            } catch (err) {
+                raceResult = { isFromWs: false, ok: false, data: null, error: err };
+            }
+            if (cleanupTradeListener) cleanupTradeListener();
 
-            const resData = await response.json();
-            if (response.ok && resData.success && resData.orderId && resData.orderId !== "EXISTING_POSITION_INTERCEPTED") {
+            const resData = raceResult?.data || {};
+            let isRefillConfirmed = raceResult?.ok && resData?.success && resData?.orderId && resData?.orderId !== "EXISTING_POSITION_INTERCEPTED";
+
+            // 🛡️【方案1+方案2：超时/未获确认启动主动精准探针反查】
+            let reconData: any = resData;
+            let execRefillQty = Number(resData?.qty || qty || 0);
+            let execRefillPrice = Number(resData?.price || position.markPrice || position.entryPrice || 0);
+            let execOrderId = resData?.orderId;
+
+            if (!isRefillConfirmed) {
                 if (simulatorRef.current) {
-                    simulatorRef.current.registerExecutedOrderId(resData.orderId);
-                    const finalRefillPrice = resData.price || position.markPrice || position.entryPrice || 0;
-                    const finalRefillQty = Number(resData.qty || qty || 0);
-                    const finalRefillUsdt = (finalRefillQty * finalRefillPrice).toFixed(2);
-                    simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动补位成功: ${cleanSymbol} ${position.side} | 补仓数量: ${finalRefillQty.toFixed(4)} (约 ${finalRefillUsdt} USDT) | ID: ${resData.orderId}`);
-                    if (resData.trades && Array.isArray(resData.trades) && resData.trades.length > 0) {
-                        simulatorRef.current.reconcileRealTradesFromBinance(resData.trades);
-                    } else if (resData.latestTrade) {
-                        simulatorRef.current.reconcileRealTradesFromBinance([resData.latestTrade]);
+                    simulatorRef.current.addLog("WARNING", `⚠️ [补仓探针启动] 正在向币安反查订单(${clientOrderId})与实盘持仓以确认补仓状态: ${cleanSymbol}...`);
+                }
+
+                // 探针途径 1: 按 clientOrderId 精准反查币安订单状态
+                try {
+                    const queryResp = await fetch("/api/binance/query-order", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ apiKey, apiSecret, symbol: cleanSymbol, origClientOrderId: clientOrderId })
+                    }).then(r => r.json()).catch(() => null);
+
+                    if (queryResp && queryResp.success && queryResp.order && queryResp.order.status === "FILLED") {
+                        isRefillConfirmed = true;
+                        execOrderId = queryResp.order.orderId;
+                        execRefillQty = parseFloat(queryResp.order.executedQty || qty);
+                        execRefillPrice = parseFloat(queryResp.order.avgPrice || position.markPrice || position.entryPrice);
+                        reconData = queryResp.order;
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("SUCCESS", `⚡ [订单精准反查证实] 币安官方证实补仓订单已完全成交 (ID: ${execOrderId}, 数量: ${execRefillQty})！`);
+                        }
                     }
-                    simulatorRef.current.handleRealRefillSuccess(position.symbol, position.side, qty, reason);
+                } catch (qErr) {}
+
+                // 探针途径 2: 若订单查询未果，查询单币实盘持仓是否已增加或恢复平衡
+                if (!isRefillConfirmed) {
+                    try {
+                        const balResp = await fetch("/api/binance/symbol-position", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ apiKey, apiSecret, symbol: cleanSymbol })
+                        }).then(r => r.json()).catch(() => null);
+
+                        if (balResp && balResp.success && Array.isArray(balResp.positions)) {
+                            const liveSidePos = balResp.positions.find((p: any) => p.side === position.side);
+                            const currentLiveAmt = liveSidePos ? parseFloat(liveSidePos.amount || '0') : 0;
+                            const opposingSidePos = balResp.positions.find((p: any) => p.side !== position.side);
+                            const opposingLiveAmt = opposingSidePos ? parseFloat(opposingSidePos.amount || '0') : 0;
+                            const isBalanced = opposingLiveAmt > 0 && Math.abs(currentLiveAmt - opposingLiveAmt) <= Math.max(currentLiveAmt, opposingLiveAmt) * 0.05;
+                            const amountIncreased = (currentLiveAmt - position.amount) >= (qty * 0.7);
+
+                            if (isBalanced || amountIncreased) {
+                                isRefillConfirmed = true;
+                                execRefillQty = qty;
+                                execRefillPrice = position.markPrice || position.entryPrice || 0;
+                                if (simulatorRef.current) {
+                                    simulatorRef.current.addLog("SUCCESS", `⚡ [实盘持仓对账证实] 币安实盘持仓已增加至 ${currentLiveAmt}，权威证实补仓已成功！`);
+                                }
+                            }
+                        }
+                    } catch (bErr) {}
+                }
+            }
+
+            if (isRefillConfirmed) {
+                if (simulatorRef.current) {
+                    if (execOrderId) {
+                        simulatorRef.current.registerExecutedOrderId(execOrderId);
+                    }
+                    const finalRefillUsdt = (execRefillQty * execRefillPrice).toFixed(2);
+                    simulatorRef.current.addLog("SUCCESS", `⚡ [币安实盘] 自动补位成功${raceResult?.isFromWs ? ' (WebSocket极速直通)' : ''}: ${cleanSymbol} ${position.side} | 补仓数量: ${execRefillQty.toFixed(4)} (约 ${finalRefillUsdt} USDT) | ID: ${execOrderId || clientOrderId}`);
+                    if (reconData?.trades && Array.isArray(reconData.trades) && reconData.trades.length > 0) {
+                        simulatorRef.current.reconcileRealTradesFromBinance(reconData.trades);
+                    } else if (reconData?.latestTrade) {
+                        simulatorRef.current.reconcileRealTradesFromBinance([reconData.latestTrade]);
+                    }
+                    simulatorRef.current.handleRealRefillSuccess(position.symbol, position.side, execRefillQty, reason);
                     const updatedSimPositions = simulatorRef.current.getPositions();
                     setPositions(updatedSimPositions);
                 }
@@ -2914,14 +3161,14 @@ const AppContent: React.FC = () => {
                     (window as any).triggerApiSync(true, cleanSymbol);
                 }
             } else {
-                const errMsg = resData.error || (resData.orderId === "EXISTING_POSITION_INTERCEPTED" ? "币安持仓拦截" : "未知交易所错误");
+                const errMsg = resData.error || (resData.orderId === "EXISTING_POSITION_INTERCEPTED" ? "币安持仓拦截" : "未获交易所成交确认");
                 if (simulatorRef.current) {
                     simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动补位未获确认: ${errMsg}，正在启动对账同步...`);
                 }
                 if (typeof (window as any).triggerApiSync === "function") {
                     (window as any).triggerApiSync(true, cleanSymbol);
                 }
-                audioService.speak("自动补仓失败");
+                audioService.speak("自动补仓未获确认");
             }
         } catch (e: any) {
             if (simulatorRef.current) {
@@ -2931,6 +3178,7 @@ const AppContent: React.FC = () => {
                 (window as any).triggerApiSync(true, cleanSymbol);
             }
         } finally {
+            if (cleanupTradeListener) cleanupTradeListener();
             // ⚡【一键清仓级极速释放】立即清理补仓在途锁
             inFlightRefillRef.current.delete(refillLockKey);
         }
@@ -3077,10 +3325,33 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                             simulatorRef.current.registerExecutedOrderId(finalOrderId);
                         }
                         const channelTag = winner.isFromWs ? "⚡ [极速流通道]" : "⚡ [API直通]";
-                        const closePrice = posToClose.markPrice || posToClose.entryPrice || 0;
+                        const closePrice = (winner.tradeData?.price || winner.resData?.price) || posToClose.markPrice || posToClose.entryPrice || 0;
                         const closeUsdt = (posToClose.amount * closePrice).toFixed(2);
-                        simulatorRef.current.addLog("SUCCESS", `${channelTag} 平仓成功: ${cleanSymbol} ${side} | 数量: ${posToClose.amount.toFixed(4)} (约 ${closeUsdt} USDT) | ID: ${finalOrderId}`);
-                        simulatorRef.current.recordRealTradeLog(posToClose, '手动平仓', winner.resData || winner.tradeData || {});
+
+                        let calcPnl = (winner.tradeData?.realizedPnl !== undefined && winner.tradeData.realizedPnl !== 0)
+                            ? winner.tradeData.realizedPnl
+                            : ((winner.resData?.realizedPnl !== undefined && winner.resData.realizedPnl !== 0)
+                                ? winner.resData.realizedPnl
+                                : (posToClose.unrealizedPnL || 0));
+
+                        if (calcPnl === 0 && posToClose.entryPrice > 0 && closePrice > 0) {
+                            if (side === PositionSide.LONG) {
+                                calcPnl = (closePrice - posToClose.entryPrice) * posToClose.amount;
+                            } else {
+                                calcPnl = (posToClose.entryPrice - closePrice) * posToClose.amount;
+                            }
+                        }
+
+                        const pnlFormatted = calcPnl >= 0 ? `+${calcPnl.toFixed(4)}` : `${calcPnl.toFixed(4)}`;
+                        simulatorRef.current.addLog("SUCCESS", `${channelTag} 手动平仓成功: ${cleanSymbol} ${side} | 数量: ${posToClose.amount.toFixed(4)} (约 ${closeUsdt} USDT) | 实际盈亏: ${pnlFormatted} USDT | ID: ${finalOrderId}`);
+                        
+                        const execPayload = {
+                            ...(winner.resData || winner.tradeData || {}),
+                            price: closePrice,
+                            qty: posToClose.amount,
+                            realizedPnl: calcPnl
+                        };
+                        simulatorRef.current.recordRealTradeLog(posToClose, '手动平仓', execPayload);
                         if (winner.resData?.trades && Array.isArray(winner.resData.trades) && winner.resData.trades.length > 0) {
                             simulatorRef.current.reconcileRealTradesFromBinance(winner.resData.trades);
                         } else if (winner.resData?.latestTrade) {
@@ -3239,10 +3510,33 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                                     simulatorRef.current.registerExecutedOrderId(finalOrderId);
                                 }
                                 const channelTag = winner.isFromWs ? "⚡ [极速流通道]" : "⚡ [API直通]";
-                                const posMark = pos.markPrice || pos.entryPrice || 0;
+                                const posMark = (winner.tradeData?.price || winner.resData?.price) || pos.markPrice || pos.entryPrice || 0;
                                 const posUsdt = (pos.amount * posMark).toFixed(2);
-                                simulatorRef.current.addLog("SUCCESS", `${channelTag} 平仓成功: ${cleanSymbol} ${pos.side} | 数量: ${pos.amount.toFixed(4)} (约 ${posUsdt} USDT) | ID: ${finalOrderId}`);
-                                simulatorRef.current.recordRealTradeLog(pos, '一键全平', winner.resData || winner.tradeData || {});
+                                
+                                let calcPnl = (winner.tradeData?.realizedPnl !== undefined && winner.tradeData.realizedPnl !== 0)
+                                    ? winner.tradeData.realizedPnl
+                                    : ((winner.resData?.realizedPnl !== undefined && winner.resData.realizedPnl !== 0)
+                                        ? winner.resData.realizedPnl
+                                        : (pos.unrealizedPnL || 0));
+
+                                if (calcPnl === 0 && pos.entryPrice > 0 && posMark > 0) {
+                                    if (pos.side === PositionSide.LONG) {
+                                        calcPnl = (posMark - pos.entryPrice) * pos.amount;
+                                    } else {
+                                        calcPnl = (pos.entryPrice - posMark) * pos.amount;
+                                    }
+                                }
+
+                                const pnlFormatted = calcPnl >= 0 ? `+${calcPnl.toFixed(4)}` : `${calcPnl.toFixed(4)}`;
+                                simulatorRef.current.addLog("SUCCESS", `${channelTag} 平仓成功: ${cleanSymbol} ${pos.side} | 数量: ${pos.amount.toFixed(4)} (约 ${posUsdt} USDT) | 实际盈亏: ${pnlFormatted} USDT | ID: ${finalOrderId}`);
+                                
+                                const execPayload = {
+                                    ...(winner.resData || winner.tradeData || {}),
+                                    price: posMark,
+                                    qty: pos.amount,
+                                    realizedPnl: calcPnl
+                                };
+                                simulatorRef.current.recordRealTradeLog(pos, '一键全平', execPayload);
                                 if (winner.resData?.trades && Array.isArray(winner.resData.trades) && winner.resData.trades.length > 0) {
                                     simulatorRef.current.reconcileRealTradesFromBinance(winner.resData.trades);
                                 } else if (winner.resData?.latestTrade) {
@@ -3344,14 +3638,27 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
     };
 
     // 🔒【单币主动刷新与币安实际持仓/流水对账引擎】
-    const handleVerifyPosition = async (position: Position) => {
-        const cleanSymbol = normalizeSymbol(position.symbol);
+    const handleVerifyPosition = async (position: Position | string) => {
+        let cleanSymbol = typeof position === 'string' ? normalizeSymbol(position) : normalizeSymbol(position.symbol);
+        if (isMemeScaledCoin(cleanSymbol) && !cleanSymbol.startsWith('1000')) {
+            cleanSymbol = '1000' + cleanSymbol;
+        }
         const isReal = settingsRef.current.system.realTrading;
 
         if (!isReal) {
             // 模拟模式：核对本地交易记录与持仓开仓价
-            simulatorRef.current?.verifyPosition(position, tradeLogs);
-            simulatorRef.current?.addLog('INFO', `ℹ️ [模拟模式] 已核验 ${cleanSymbol} 模拟仓位开仓均价与本地交易记录`);
+            if (typeof position !== 'string') {
+                simulatorRef.current?.verifyPosition(position, tradeLogs);
+                simulatorRef.current?.addLog('INFO', `ℹ️ [模拟模式] 已核验 ${cleanSymbol} 模拟仓位开仓均价与本地交易记录`);
+            } else {
+                const simPos = simulatorRef.current?.getPositions().find(p => normalizeSymbol(p.symbol) === cleanSymbol || normalizeSymbol(p.symbol) === normalizeSymbol(position));
+                if (simPos) {
+                    simulatorRef.current?.verifyPosition(simPos, tradeLogs);
+                    simulatorRef.current?.addLog('INFO', `ℹ️ [模拟模式] 已核验 ${cleanSymbol} 模拟仓位开仓均价与本地交易记录`);
+                } else {
+                    simulatorRef.current?.addLog('INFO', `ℹ️ [模拟模式] 已查询 ${cleanSymbol}：当前本地无此币模拟持仓记录`);
+                }
+            }
             return;
         }
 
@@ -3376,7 +3683,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 fetch("/api/binance/fast-user-trades", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ apiKey, apiSecret, symbol: cleanSymbol, limit: 15 })
+                    body: JSON.stringify({ apiKey, apiSecret, symbol: cleanSymbol, limit: 50 })
                 }).then(r => r.json()).catch(err => ({ success: false, error: err.message || err }))
             ]);
 
@@ -3502,7 +3809,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     symbols: targetSymbols,
                     startTime: Math.max(
                         simulatorRef.current?.clearedTradeLogsTimestamp || 0,
-                        Date.now() - 86400000 // 24小时回溯，确保全天手机APP开仓记录均能完整同步
+                        Date.now() - ((settingsRef.current.system.syncHistoryLookbackHours || 1) * 3600000) // 可配置流水回溯（默认1小时），提升对账速度
                     ),
                     limit: 50
                 })
@@ -3950,14 +4257,16 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
 
     return (
         <div className="flex h-screen bg-slate-950 text-slate-200 overflow-hidden font-sans relative">
-            <ActivationModal 
-                isActivated={isSystemActivated}
-                isOpen={showSecurityLockModal || !isSystemActivated}
-                onClose={() => setShowSecurityLockModal(false)}
-                onActivated={handleSystemActivated} 
-            />
+            {showSecurityLockModal && (
+                <ActivationModal 
+                    isActivated={isSystemActivated}
+                    isOpen={showSecurityLockModal}
+                    onClose={() => setShowSecurityLockModal(false)}
+                    onActivated={handleSystemActivated} 
+                />
+            )}
             
-            <div className={`flex flex-1 min-w-0 transition-all duration-300 ${!isSystemActivated ? 'filter blur-2xl opacity-10' : ''}`}>
+            <div className="flex flex-1 min-w-0 transition-all duration-300">
             <div className="w-80 border-r border-slate-800 flex-shrink-0">
                 <SettingsPanel 
                     settings={settings} 
@@ -3979,16 +4288,17 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     onBatchOpen={handleBatchOpen}
                     onOpenSaviorLab={openSaviorLab}
                     onUpdateBinanceRealBalance={(balance, realPositions) => {
+                        const safeBalance = typeof balance === 'number' && !isNaN(balance) ? balance : (Number(balance) || 0);
                         if (simulatorRef.current) {
-                            simulatorRef.current.updateRealBalance(balance);
+                            simulatorRef.current.updateRealBalance(safeBalance);
                         }
                         setAccount(prev => ({
                             ...prev,
-                            binanceRealBalance: balance,
-                            marginBalance: balance,
-                            totalBalance: balance,
+                            binanceRealBalance: safeBalance,
+                            marginBalance: safeBalance,
+                            totalBalance: safeBalance,
                             maintenanceMargin: realPositions ? realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0) : 0,
-                            marginRatio: realPositions && realPositions.length > 0 ? (realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0) / balance * 100) : 0
+                            marginRatio: realPositions && realPositions.length > 0 && safeBalance > 0 ? (realPositions.reduce((sum: number, p: any) => sum + (p.maintMargin || 0), 0) / safeBalance * 100) : 0
                         }));
                         if (realPositions) {
                             setBinanceRealPositions(realPositions);
@@ -4057,6 +4367,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                             onOpenScanner={() => setShowScanner(true)}
                             settings={settings}
                             onUpdateCustomSettings={handleUpdateCustomSettings}
+                            onUpdateSettings={handleSettingsChange}
                         />
                     </ErrorBoundary>
                 </div>

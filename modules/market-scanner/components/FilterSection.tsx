@@ -7,6 +7,7 @@ import { MajorTrendSection } from './MajorTrendSection';
 import { VolumePoolBox } from './VolumePoolBox';
 import { StartTrendSection } from './StartTrendSection';
 import { StartTrendPoolBox } from './StartTrendPoolBox';
+import { SidewaysPoolBox } from './SidewaysPoolBox';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -14,7 +15,7 @@ interface Props {
     marketStats: any;
     // Major Trend Props
     isMajorScanning?: boolean;
-    majorProgress?: { current: number, total: number };
+    majorProgress?: any;
     runMajorTrendDiscovery?: () => void;
     cancelMajorScan?: () => void;
 }
@@ -358,6 +359,13 @@ export const FilterSection: React.FC<Props> = ({
 
                     {/* Start Trend Pool Box - Directly reads from Volume Pool Box */}
                     <StartTrendPoolBox scanConfig={scanConfig} />
+
+                    {/* Sideways Filter Pool Box - Holds Stage 1 passed coins */}
+                    <SidewaysPoolBox 
+                        scanConfig={scanConfig} 
+                        onRunDiscovery={runMajorTrendDiscovery} 
+                        isMajorScanning={isMajorScanning} 
+                    />
 
                     {/* Major Trend Section - Primary Focus here */}
                     <MajorTrendSection 

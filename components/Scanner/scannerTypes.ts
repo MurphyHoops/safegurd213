@@ -49,6 +49,8 @@ export interface List3SignalResult {
         signalTime?: number;
         signalPrice?: number;
         postSignalExtreme?: number;
+        postSignalMaxHigh?: number;
+        postSignalMinLow?: number;
         periodChange?: number; 
     };
 }
@@ -113,6 +115,8 @@ export interface ScannerItem {
         signalTime?: number; 
         signalPrice?: number; 
         postSignalExtreme?: number; 
+        postSignalMaxHigh?: number;
+        postSignalMinLow?: number;
         periodChange?: number; 
         isReverse3K?: boolean;
     };
@@ -328,6 +332,7 @@ export interface MajorTrendConfig {
     enableLong?: boolean;   // "多"选项开关
     enableShort?: boolean;  // "空"选项开关
     enableSideways?: boolean; // "横盘蓄势"功能开关
+    enableLookbackFilter?: boolean; // "回溯周期过滤"功能开关
     maxExtremeDistanceLong?: number;  // 多单最低点到当前价格涨幅低于 (设定值)%
     minExtremeDistanceLong?: number;  // 多单最低点到当前价格涨幅高于 (设定值)%
     maxExtremeDistanceShort?: number; // 空单最高点到当前价格跌幅低于 (设定值)%

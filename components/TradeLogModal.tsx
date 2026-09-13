@@ -42,16 +42,20 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
           entry_id: l.entry_id ? String(l.entry_id) : `manual_fallback_${l.symbol || 'coin'}_${index}_${l.exit_timestamp || l.entry_timestamp || Date.now()}`
       }));
 
-      // 🔒【开仓唯一性防护】确保每个进行中的活跃仓位或独立订单开仓真实呈现，绝不误杀手机APP/外部开仓
-      const seenOpenKeys = new Set<string>();
+      // 🔒【交易流水全局唯一性呈现】按 binance_order_id 或 entry_id 严格幂等去重，彻底消除双通道并发产生的重复展示
+      const seenKeys = new Set<string>();
       return mapped.filter(l => {
-          if (l.status === 'OPEN') {
-              const normSym = normalizeSymbol(l.symbol);
-              const openKey = l.binance_order_id 
-                  ? `OPEN_ORDER_${l.binance_order_id}` 
-                  : (l.entry_id ? `OPEN_ID_${l.entry_id}` : `OPEN_SYM_${normSym}_${l.direction}_${l.entry_timestamp || 0}`);
-              if (seenOpenKeys.has(openKey)) return false;
-              seenOpenKeys.add(openKey);
+          const normSym = normalizeSymbol(l.symbol);
+          if (l.binance_order_id && l.binance_order_id.trim() !== '') {
+              const orderKey = `${l.status}_${l.binance_order_id}_${normSym}_${l.direction}`;
+              if (seenKeys.has(orderKey)) return false;
+              seenKeys.add(orderKey);
+              return true;
+          }
+          if (l.entry_id) {
+              const idKey = `${l.status}_${l.entry_id}`;
+              if (seenKeys.has(idKey)) return false;
+              seenKeys.add(idKey);
               return true;
           }
           return true;
@@ -1417,7 +1421,22 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                     (p.isHedged || !!p.mainPositionId || (p.hedgeRetries || 0) > 0)
                                 );
 
-                                let actionLabel = '新开仓';
+                                // 计算当前币种在该对冲周期内的累计平仓/砍仓总亏损与总盈利
+                                const hedgeCycleStats = (() => {
+                                    if (!hasEverTriggeredHedge) return null;
+                                    const relatedLogs = tradeLogs.filter(l => normalizeSymbol(l.symbol) === normSym && l.status === 'CLOSED');
+                                    let grossProfit = 0;
+                                    let totalLoss = 0;
+                                    relatedLogs.forEach(l => {
+                                        const p = l.profit_usdt || 0;
+                                        if (p > 0) grossProfit += p;
+                                        else if (p < 0) totalLoss += Math.abs(p);
+                                    });
+                                    const netProfit = grossProfit - totalLoss;
+                                    return { grossProfit, totalLoss, netProfit };
+                                })();
+
+                                let actionLabel = '单仓位运行中';
                                 let actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
 
                                 if (isClosed) {
@@ -1444,7 +1463,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             actionLabel = '原仓位补仓';
                                             actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
                                         } else if (hasEverTriggeredHedge) {
-                                            actionLabel = (log.exit_reason?.includes('清仓') || log.exit_reason?.includes('解套')) ? '原仓位清仓' : ((log.profit_usdt !== undefined && log.profit_usdt >= 0) ? '原仓位止盈' : '原仓位止损');
+                                            actionLabel = '已解套盈利清仓';
                                             actionBadgeClass = (log.profit_usdt !== undefined && log.profit_usdt >= 0)
                                                 ? 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20'
                                                 : 'bg-red-900/40 text-red-400 border-red-500/20';
@@ -1462,7 +1481,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             actionLabel = '防爆对冲补仓';
                                             actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
                                         } else {
-                                            actionLabel = '防爆对冲开仓';
+                                            actionLabel = '对冲运行中';
                                             actionBadgeClass = 'bg-purple-900/40 text-purple-400 border-purple-500/20';
                                         }
                                     } else {
@@ -1470,11 +1489,11 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             actionLabel = '原仓位补仓';
                                             actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
                                         } else if (hasEverTriggeredHedge) {
-                                            // 开启对冲后，原新开仓标记明确展示为【原仓位】
-                                            actionLabel = '原仓位';
+                                            // 开启对冲后，原新开仓标记明确展示为【对冲运行中】
+                                            actionLabel = '对冲运行中';
                                             actionBadgeClass = 'bg-indigo-900/40 text-indigo-300 border-indigo-500/20';
                                         } else {
-                                            actionLabel = '新开仓';
+                                            actionLabel = '单仓位运行中';
                                             actionBadgeClass = 'bg-cyan-900/40 text-cyan-400 border-cyan-500/20';
                                         }
                                     }
@@ -1578,16 +1597,34 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             ) : null}
                                         </td>
                                         <td className="px-4 py-3 text-xs font-mono">
-                                            <div className="font-bold text-slate-200">{log.cost_usdt.toFixed(2)} U</div>
-                                            {log.current_amount !== undefined && (
-                                                <div className="text-[10px] text-slate-500 mt-0.5">
-                                                    最新持仓: {log.current_amount.toFixed(4)}
-                                                </div>
-                                            )}
+                                            <div className="font-bold text-slate-200">
+                                                {(() => {
+                                                    if (activePos && log.status === 'OPEN') {
+                                                        const remainingCost = (activePos.amount ?? 0) * (activePos.entryPrice || log.entry_price || 1);
+                                                        return `${remainingCost.toFixed(2)} U`;
+                                                    }
+                                                    if (log.status === 'OPEN' && log.current_amount !== undefined && log.entry_price) {
+                                                        const remainingCost = log.current_amount * log.entry_price;
+                                                        return `${remainingCost.toFixed(2)} U`;
+                                                    }
+                                                    return `${(log.cost_usdt ?? 0).toFixed(2)} U`;
+                                                })()}
+                                            </div>
+                                            {(() => {
+                                                const displayAmount = (activePos && log.status === 'OPEN') ? activePos.amount : log.current_amount;
+                                                if (displayAmount !== undefined && displayAmount !== null) {
+                                                    return (
+                                                        <div className="text-[10px] text-slate-500 mt-0.5">
+                                                            最新持仓: {(displayAmount ?? 0).toFixed(4)}
+                                                        </div>
+                                                    );
+                                                }
+                                                return null;
+                                            })()}
                                         </td>
-                                        <td className="px-4 py-3 font-mono text-xs">{log.entry_price.toFixed(8)}</td>
+                                        <td className="px-4 py-3 font-mono text-xs">{(log.entry_price ?? 0).toFixed(8)}</td>
                                         <td className="px-4 py-3 font-mono text-xs text-slate-300">{currentPrice > 0 ? currentPrice.toFixed(8) : '-'}</td>
-                                        <td className={`px-4 py-3 font-mono font-bold ${log.status === 'CLOSED' ? ((activeFilter === 'RECOVERY' && recoveryInfo !== null) ? (recoveryInfo.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400') : (realizedPnL > 0 ? 'text-emerald-400' : 'text-red-400')) : (activePos ? (activePos.unrealizedPnL > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500')}`}>
+                                        <td className={`px-4 py-3 font-mono font-bold ${log.status === 'CLOSED' ? ((activeFilter === 'RECOVERY' && recoveryInfo !== null) ? (recoveryInfo.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400') : ((isClear && hasEverTriggeredHedge && hedgeCycleStats) ? (hedgeCycleStats.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400') : (realizedPnL > 0 ? 'text-emerald-400' : 'text-red-400'))) : (activePos ? (activePos.unrealizedPnL > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500')}`}>
                                             {log.status === 'CLOSED' ? (
                                                 <>
                                                     {activeFilter === 'RECOVERY' && recoveryInfo !== null ? (
@@ -1605,6 +1642,32 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                                 <span className={`text-[9px] px-1 rounded border font-normal ${recoveryInfo.netProfit >= 0 ? 'bg-emerald-900/40 text-emerald-400 border-emerald-500/20' : 'bg-red-900/40 text-red-400 border-red-500/20'}`}>净盈利</span>
                                                             </div>
                                                         </div>
+                                                    ) : (isClear && hasEverTriggeredHedge && hedgeCycleStats) ? (
+                                                        realizedPnL >= 0 ? (
+                                                            <div className="flex flex-col items-start gap-1">
+                                                                <div className="text-emerald-400 font-bold text-xs whitespace-nowrap">
+                                                                    总盈利: +{hedgeCycleStats.grossProfit.toFixed(2)} U
+                                                                </div>
+                                                                <div className="flex items-center gap-1 text-[10px] font-mono whitespace-nowrap">
+                                                                    <span className="text-slate-400">净盈利:</span>
+                                                                    <span className={`font-bold ${hedgeCycleStats.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                        {hedgeCycleStats.netProfit > 0 ? '+' : ''}{hedgeCycleStats.netProfit.toFixed(2)} U
+                                                                    </span>
+                                                                </div>
+                                                                <div className={`text-[9px] font-normal ${realizedPnLPct > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                                    ROE: {realizedPnLPct > 0 ? '+' : ''}{realizedPnLPct.toFixed(2)}%
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex flex-col items-start gap-1">
+                                                                <div className="text-red-400 font-bold text-xs whitespace-nowrap">
+                                                                    总亏损: -{hedgeCycleStats.totalLoss.toFixed(2)} U
+                                                                </div>
+                                                                <div className={`text-[9px] font-normal ${realizedPnLPct > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                                    ROE: {realizedPnLPct > 0 ? '+' : ''}{realizedPnLPct.toFixed(2)}%
+                                                                </div>
+                                                            </div>
+                                                        )
                                                     ) : (
                                                         <>
                                                             <div>{realizedPnL > 0 ? '+' : ''}{realizedPnL.toFixed(2)}</div>
@@ -1640,16 +1703,18 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                                 );
                                                                 const cumulativeLoss = (mainPos.cumulativeHedgeLoss || 0) + symbolAmpLoss;
                                                                 
+                                                                const mainUnrealized = mainPos.unrealizedPnL ?? 0;
+                                                                const hedgeUnrealized = hedgePos ? (hedgePos.unrealizedPnL ?? 0) : 0;
                                                                 let currentFloatingLoss = 0;
-                                                                if (mainPos.unrealizedPnL < 0) currentFloatingLoss += Math.abs(mainPos.unrealizedPnL);
-                                                                if (hedgePos && hedgePos.unrealizedPnL < 0) currentFloatingLoss += Math.abs(hedgePos.unrealizedPnL);
+                                                                if (mainUnrealized < 0) currentFloatingLoss += Math.abs(mainUnrealized);
+                                                                if (hedgeUnrealized < 0) currentFloatingLoss += Math.abs(hedgeUnrealized);
                                                                 
                                                                 const totalDebt = currentFloatingLoss + cumulativeLoss;
-                                                                const mainCost = (mainPos.amount * mainPos.entryPrice);
-                                                                const hedgeCost = hedgePos ? (hedgePos.amount * hedgePos.entryPrice) : 0;
+                                                                const mainCost = ((mainPos.amount || 0) * (mainPos.entryPrice || 0));
+                                                                const hedgeCost = hedgePos ? ((hedgePos.amount || 0) * (hedgePos.entryPrice || 0)) : 0;
                                                                 const totalCost = mainCost + hedgeCost;
                                                                 
-                                                                const pairPnL = mainPos.unrealizedPnL + (hedgePos ? hedgePos.unrealizedPnL : 0);
+                                                                const pairPnL = mainUnrealized + hedgeUnrealized;
                                                                 const pairPnLPct = totalCost > 0 ? (pairPnL / totalCost * 100) : 0;
 
                                                                 return (
@@ -1658,17 +1723,17 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                                             <span className="text-slate-400 font-bold">组合盈亏:</span>
                                                                             <div className="text-right">
                                                                                 <div className={pairPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                                                                                    {pairPnL >= 0 ? '+' : ''}{pairPnL.toFixed(2)} U
+                                                                                    {pairPnL >= 0 ? '+' : ''}{(pairPnL ?? 0).toFixed(2)} U
                                                                                 </div>
                                                                                 <div className={`text-[9px] ${pairPnLPct >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                                                                                    {pairPnLPct >= 0 ? '+' : ''}{pairPnLPct.toFixed(2)}%
+                                                                                    {pairPnLPct >= 0 ? '+' : ''}{(pairPnLPct ?? 0).toFixed(2)}%
                                                                                 </div>
                                                                             </div>
                                                                         </div>
                                                                         <div className="flex items-center justify-between text-[10px] text-amber-500">
                                                                             <span className="font-bold">负债金额:</span>
                                                                             <div className="text-right">
-                                                                                <div className="font-bold">{totalDebt.toFixed(2)} U</div>
+                                                                                <div className="font-bold">{(totalDebt ?? 0).toFixed(2)} U</div>
                                                                                 <div className="text-[9px] opacity-80">({(totalCost > 0 ? (totalDebt / totalCost * 100) : 0).toFixed(2)}%)</div>
                                                                             </div>
                                                                         </div>
@@ -1693,7 +1758,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                                 {isGrouped && <Link size={10} className="text-indigo-400" />}
                                                                 {recoveryInfo !== null && (
                                                                     <span className="text-[10px] bg-amber-900/40 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap font-bold">
-                                                                        最终解套盈利: {recoveryInfo.netProfit.toFixed(2)} U
+                                                                        最终解套盈利: {((recoveryInfo?.netProfit) ?? 0).toFixed(2)} U
                                                                     </span>
                                                                 )}
                                                                 <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
@@ -1876,7 +1941,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                             <div><span className="text-xs text-slate-500">方向</span><div className={`flex items-center gap-1 font-bold ${selectedLog.direction === PositionSide.LONG ? 'text-emerald-400' : 'text-red-400'}`}>{selectedLog.direction === PositionSide.LONG ? <TrendingUp size={16}/> : <TrendingDown size={16}/>}{selectedLog.direction === PositionSide.LONG ? '多' : '空'}</div></div>
                         </div>
                         <div className="grid grid-cols-2 gap-4 bg-slate-800/50 p-2 rounded">
-                             <div><span className="text-xs text-slate-500">开仓均价</span><p className="font-mono text-white">{selectedLog.entry_price.toFixed(8)}</p></div>
+                             <div><span className="text-xs text-slate-500">开仓均价</span><p className="font-mono text-white">{(selectedLog.entry_price ?? 0).toFixed(8)}</p></div>
                              <div><span className="text-xs text-slate-500">平仓价</span><p className="font-mono text-white">{selectedLog.exit_price?.toFixed(8) || '-'}</p></div>
                         </div>
                         {selectedLog.status === 'CLOSED' && (
@@ -1887,11 +1952,11 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         {selectedLog.profit_usdt && selectedLog.profit_usdt >= 0 ? '+' : ''}{selectedLog.profit_usdt?.toFixed(2) || '0.00'} U
                                     </p>
                                 </div>
-                                {activeFilter === 'RECOVERY' && recoveryStats.map.has(selectedLog.symbol) && (
+                                {activeFilter === 'RECOVERY' && recoveryStats.map.get(selectedLog.symbol) && (
                                     <div>
                                         <span className="text-xs text-indigo-300">最终解套净赚</span>
-                                        <p className={`font-mono font-bold ${recoveryStats.map.get(selectedLog.symbol)!.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                            {recoveryStats.map.get(selectedLog.symbol)!.netProfit >= 0 ? '+' : ''}{recoveryStats.map.get(selectedLog.symbol)!.netProfit.toFixed(2)} U
+                                        <p className={`font-mono font-bold ${(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                            {(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0) >= 0 ? '+' : ''}{(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0).toFixed(2)} U
                                         </p>
                                     </div>
                                 )}

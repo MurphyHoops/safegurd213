@@ -146,46 +146,10 @@ export function checkHedgingRules(
         }
     }
 
-    // D. 300天极值比例对冲
-    let extremeHedgeTriggered = false;
-    if (hedgeSettings.extremeHedgeEnabled && position.extremeHedgeTriggerPrice !== undefined) {
-        const extremeHedgeTriggerPriceValue = Number(position.extremeHedgeTriggerPrice);
-        if (position.side === PositionSide.LONG) {
-            if (position.markPrice <= extremeHedgeTriggerPriceValue) {
-                 extremeHedgeTriggered = true;
-            }
-        } else {
-            if (position.markPrice >= extremeHedgeTriggerPriceValue) {
-                 extremeHedgeTriggered = true;
-            }
-        }
-    }
-
-    // E. 5:短期极值比例对冲 (Short-term Extreme Ratio Hedge)
-    let shortTermExtremeTriggered = false;
-    if (hedgeSettings.shortTermExtremeEnabled && position.shortTermExtremeTriggerPrice !== undefined) {
-        const stPrice = Number(position.shortTermExtremeTriggerPrice);
-        if (position.side === PositionSide.LONG) {
-            if (position.markPrice <= stPrice) {
-                 shortTermExtremeTriggered = true;
-            }
-        } else {
-            if (position.markPrice >= stPrice) {
-                 shortTermExtremeTriggered = true;
-            }
-        }
-    }
-
     // Compile triggers and construct transparent reason representation
     const triggeredReasonsList: string[] = [];
     if (lossHedgeTriggered) {
         triggeredReasonsList.push(`亏损达到 ${hedgeSettings.triggerLossPercent}%`);
-    }
-    if (extremeHedgeTriggered && position.extremeHedgeTriggerPrice !== undefined) {
-        triggeredReasonsList.push(`价格${position.side === PositionSide.LONG ? '跌破' : '突破'}300天极值对冲启动价 ${position.extremeHedgeTriggerPrice.toFixed(4)}`);
-    }
-    if (shortTermExtremeTriggered && position.shortTermExtremeTriggerPrice !== undefined) {
-        triggeredReasonsList.push(`价格${position.side === PositionSide.LONG ? '跌破' : '突破'}短期极值对冲启动价 ${position.shortTermExtremeTriggerPrice.toFixed(4)}`);
     }
     if (trendHedgeTriggered) {
         triggeredReasonsList.push(`价格${position.side === PositionSide.LONG ? '跌破' : '突破'} EMA${trendHedgePeriod} 防火墙`);
@@ -214,8 +178,6 @@ export function checkHedgingRules(
     // Skip historical extreme check for new positions, extreme hedge triggers, or when oscillationCheck is disabled
     if (isNewPositionWithoutPriorHedge) {
         isWorseThanExtreme = true;
-    } else if ((hedgeSettings.extremeHedgeEnabled || hedgeSettings.shortTermExtremeEnabled) && (triggerReason.includes('极值') || extremeHedgeTriggered || shortTermExtremeTriggered)) {
-        isWorseThanExtreme = true;
     } else if (hedgeSettings.oscillationCheck !== true) {
         // If oscillation check is disabled, do not block hedging based on historical extreme price
         isWorseThanExtreme = true;
@@ -228,7 +190,7 @@ export function checkHedgingRules(
     }
 
     if (isWorseThanExtreme) {
-        if (position.extremePrice !== undefined && !triggerReason.includes('极值') && !extremeHedgeTriggered) {
+        if (position.extremePrice !== undefined && !triggerReason.includes('极值')) {
             triggerReason += ` 且突破历史极值`;
         }
         

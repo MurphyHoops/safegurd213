@@ -406,10 +406,59 @@ export class MarketSimulator {
                 
                 // 🔒 精确识别被砍仓位本方：只要该方向自身处于砍仓标记或有砍仓扣减数量，且两边不处于等量对冲时即保持 isAmputatedState
                 const opposingInOld = symbolAllOld.find(p => p.side !== newPos.side);
-                const isOpposingEqual = opposingInOld && Math.abs(newPos.amount - opposingInOld.amount) <= Math.max(newPos.amount, opposingInOld.amount) * 0.05;
+                const opposingInNew = filteredNewPositions.find(p => normalizeSymbol(p.symbol) === cleanSym && p.side !== newPos.side);
+                const effectiveOpposingAmt = opposingInNew ? opposingInNew.amount : (opposingInOld ? opposingInOld.amount : 0);
+                const isOpposingEqual = effectiveOpposingAmt > 0 && Math.abs(newPos.amount - effectiveOpposingAmt) <= Math.max(newPos.amount, effectiveOpposingAmt) * 0.05;
 
                 let mySideAmpAmount = matchingOldPositions.find(p => (p.amputatedAmount || 0) > 0)?.amputatedAmount || (primaryOldPos.isAmputated ? (primaryOldPos.amputatedAmount || 0) : 0);
                 let isAmputatedState = !isOpposingEqual && (primaryOldPos.isAmputated && mySideAmpAmount > 0);
+
+                // 🔒 [方案3：实盘持仓恢复平衡权威自愈引擎]
+                // 当币安实盘双向持仓数量已对称平衡，但本地仍残留被砍标记时，权威证实补仓已成交，立即自愈解除待补状态！
+                if (isOpposingEqual && (primaryOldPos.isAmputated || mySideAmpAmount > 0)) {
+                    console.log(`[MarketSimulator GroundTruth Self-Heal] 🛡️ 权威检测到币安实盘 ${cleanSym} 双向持仓已恢复平衡 (${newPos.amount})，证实补仓已成功！自动解除待补状态。`);
+                    primaryOldPos.isAmputated = false;
+                    primaryOldPos.amputatedAmount = 0;
+                    delete primaryOldPos.amputationEntryPrice;
+                    mySideAmpAmount = 0;
+                    isAmputatedState = false;
+                    this.inFlightRefillPool.delete(`${cleanSym}_${newPos.side}`);
+                    this.lastRefillTimestampMap.set(`${cleanSym}_${newPos.side}`, Date.now());
+                    this.amputatedSymbolsInCycle.delete(cleanSym);
+
+                    const hasRecentRefillLog = this.tradeLogs.some(l => 
+                        normalizeSymbol(l.symbol) === cleanSym && 
+                        l.direction === newPos.side && 
+                        (l.exit_reason?.includes('补仓') || l.events?.some(e => e.action?.includes('补仓'))) &&
+                        (Date.now() - (l.entry_timestamp || 0) < 120000)
+                    );
+                    if (!hasRecentRefillLog) {
+                        const now = Date.now();
+                        const isHedgePos = this.isHedgePosition(primaryOldPos);
+                        const refillActionName = isHedgePos ? '防爆对冲补仓' : '原仓位补仓';
+                        const refillLogEntry: TradeLog = {
+                            symbol: newPos.symbol,
+                            entry_id: `${primaryOldPos.entryId || newPos.symbol}_heal_refill_${now}`,
+                            parent_entry_id: primaryOldPos.entryId,
+                            status: 'OPEN',
+                            is_hedge: isHedgePos,
+                            entry_timestamp: now,
+                            direction: newPos.side,
+                            cost_usdt: newPos.amount * (newPos.markPrice || newPos.entryPrice),
+                            entry_price: newPos.markPrice || newPos.entryPrice,
+                            current_amount: newPos.amount,
+                            exit_reason: `${refillActionName} (实盘持仓平衡自愈对账)`,
+                            events: [{
+                                timestamp: now,
+                                action: refillActionName,
+                                price: newPos.markPrice || newPos.entryPrice,
+                                amount: newPos.amount,
+                                reason: '实盘持仓平衡自愈对账'
+                            }]
+                        };
+                        this.tradeLogs.unshift(refillLogEntry);
+                    }
+                }
 
                 // 🔒 [自愈兜底恢复]：如果原标记因网络重连或重启刷新丢失，严格比对最新砍仓与最新补仓流水时间
                 if (!isAmputatedState && !primaryOldPos.isAmputated && opposingInOld && (opposingInOld.amount - newPos.amount) > (opposingInOld.amount * 0.2)) {
@@ -1009,16 +1058,8 @@ export class MarketSimulator {
 
     public updateSettings(settings: AppSettings) {
         const oldRealTrading = this.settings.system?.realTrading;
-        let oldRawRatio = this.settings.hedging?.extremeHedgeTriggerRatio;
-        if (typeof oldRawRatio !== 'number' || isNaN(oldRawRatio)) oldRawRatio = 50;
-        const oldRatio = oldRawRatio;
-        
         this.settings = this.deepMerge(this.settings, settings);
-        
         const newRealTrading = this.settings.system?.realTrading;
-        let newRawRatio = this.settings.hedging?.extremeHedgeTriggerRatio;
-        if (typeof newRawRatio !== 'number' || isNaN(newRawRatio)) newRawRatio = 50;
-        const newRatio = newRawRatio;
         
         if (oldRealTrading !== newRealTrading) {
             if (newRealTrading) {
@@ -1031,26 +1072,6 @@ export class MarketSimulator {
             } else {
                 this.addLog('INFO', '⚪ 已切回标准模拟交易模式。');
             }
-        }
-        
-        if (oldRatio !== newRatio) {
-            // Recalculate trigger prices for all positions that already have periodExtremePrice
-            for (const pos of this.positions) {
-                if (pos.periodExtremePrice !== undefined && !pos.mainPositionId) {
-                    const entry = pos.entryPrice;
-                    const ratio = newRatio / 100;
-                    if (pos.side === PositionSide.LONG) {
-                        const distPercent = ((entry - pos.periodExtremePrice) / entry) * 100;
-                        const triggerLossPercent = distPercent * ratio;
-                        pos.extremeHedgeTriggerPrice = entry * (1 - triggerLossPercent / 100);
-                    } else {
-                        const distPercent = ((pos.periodExtremePrice - entry) / entry) * 100;
-                        const triggerLossPercent = distPercent * ratio;
-                        pos.extremeHedgeTriggerPrice = entry * (1 + triggerLossPercent / 100);
-                    }
-                }
-            }
-            this.emitUpdate(true);
         }
     }
 
@@ -1810,8 +1831,12 @@ export class MarketSimulator {
             opposingPos.isHedged = true;
         }
         
-        // 记录砍仓的实际盈亏
-        const realizedPnL = position.unrealizedPnL * (ratio / 100);
+        // 记录砍仓的实际盈亏 (严格基于实际被砍数量 cutAmount 及基准开仓价与最新标记价之差精确核算)
+        const isLong = position.side === PositionSide.LONG;
+        const currentMark = position.markPrice || position.entryPrice;
+        const priceDiff = isLong ? (currentMark - position.entryPrice) : (position.entryPrice - currentMark);
+        const cutProfitPercent = position.entryPrice > 0 ? (priceDiff / position.entryPrice) * 100 : (position.unrealizedPnLPercentage || 0);
+        const realizedPnL = priceDiff * cutAmount;
         
         position.amount -= cutAmount;
         if (position.amount <= 0.0001) {
@@ -1848,7 +1873,7 @@ export class MarketSimulator {
             parent_entry_id: position.entryId,
             status: 'CLOSED',
             profit_usdt: realizedPnL,
-            profit_percent: position.unrealizedPnLPercentage || 0,
+            profit_percent: cutProfitPercent,
             exit_reason: reason || cutActionName,
             is_hedge: isHedgePos,
             entry_timestamp: position.entryTime || now,
@@ -1949,6 +1974,11 @@ export class MarketSimulator {
         const cutActionName = isHedgePos ? `防爆对冲砍仓 (${ratio}%)` : `原仓位砍仓 (${ratio}%)`;
 
         // 🔒 [实盘独立记录止损砍仓流水铁律]
+        const isLong = position.side === PositionSide.LONG;
+        const execMark = execData?.price || position.markPrice || position.entryPrice;
+        const priceDiff = isLong ? (execMark - position.entryPrice) : (position.entryPrice - execMark);
+        const cutProfitPercent = position.entryPrice > 0 ? (priceDiff / position.entryPrice) * 100 : (position.unrealizedPnLPercentage || 0);
+
         const cutCostUsdt = cutAmount * position.entryPrice;
         const cutLogEntry: TradeLog = {
             symbol: position.symbol,
@@ -1957,7 +1987,7 @@ export class MarketSimulator {
             parent_entry_id: position.entryId,
             status: 'CLOSED',
             profit_usdt: realizedPnL,
-            profit_percent: position.unrealizedPnLPercentage || 0,
+            profit_percent: cutProfitPercent,
             exit_reason: reason || cutActionName,
             is_hedge: isHedgePos,
             entry_timestamp: position.entryTime || now,
@@ -1965,7 +1995,7 @@ export class MarketSimulator {
             direction: position.side,
             cost_usdt: cutCostUsdt,
             entry_price: position.entryPrice,
-            exit_price: execData?.price || position.markPrice || position.entryPrice,
+            exit_price: execMark,
             current_amount: cutAmount,
             timeframe: (position as any).timeframe
         };
@@ -2521,9 +2551,22 @@ export class MarketSimulator {
         }
 
         const now = (execData as any)?.updateTime || Date.now();
-        const execPrice = execData?.price || p.markPrice || p.entryPrice;
-        const execQty = execData?.qty || p.amount;
-        const pnl = execData?.realizedPnl !== undefined ? execData.realizedPnl : p.unrealizedPnL;
+        const execPrice = (execData?.price && execData.price > 0) ? execData.price : (p.markPrice || p.entryPrice || 0);
+        const execQty = (execData?.qty && execData.qty > 0) ? execData.qty : (p.amount || 0);
+
+        // 🔒【真实盈亏核算铁律】若交易所即时回报无 realizedPnl 或为 0，严格以开仓均价与平仓价及持仓量现场精准核算真实 USDT 盈亏
+        let pnl = (execData?.realizedPnl !== undefined && execData.realizedPnl !== 0)
+            ? execData.realizedPnl
+            : (p.unrealizedPnL !== undefined && p.unrealizedPnL !== 0 ? p.unrealizedPnL : 0);
+
+        if (pnl === 0 && p.entryPrice > 0 && execPrice > 0) {
+            if (p.side === PositionSide.LONG) {
+                pnl = (execPrice - p.entryPrice) * execQty;
+            } else {
+                pnl = (p.entryPrice - execPrice) * execQty;
+            }
+        }
+
         const finalReason = reason || (pnl >= 0 ? '实盘止盈平仓' : '实盘止损平仓');
         const isStopLoss = finalReason.includes('止损') || finalReason.includes('砍仓') || pnl < 0;
 
@@ -2804,10 +2847,11 @@ export class MarketSimulator {
                 const inferredDirection = (positionSide === "LONG" || (positionSide === "BOTH" && side === "BUY")) ? PositionSide.LONG : PositionSide.SHORT;
                 
                 // 🔒【开仓唯一性与外部开仓全保全铁律】
-                // 精准根据 orderId 检查是否已有该开仓记录
+                // 精准根据 orderId 或 10秒内同币同向匹配检查是否已有该开仓记录
                 const existingOpenLog = this.tradeLogs.find(l => 
                     (orderId && l.binance_order_id && String(l.binance_order_id) === orderId && l.status === 'OPEN') ||
-                    (orderId && this.knownOrderIds.has(orderId) && l.binance_order_id && String(l.binance_order_id) === orderId)
+                    (orderId && this.knownOrderIds.has(orderId) && l.binance_order_id && String(l.binance_order_id) === orderId) ||
+                    (normalizeSymbol(l.symbol) === normSym && l.direction === inferredDirection && l.status === 'OPEN' && Math.abs((l.entry_timestamp || 0) - tradeTime) < 10000)
                 );
 
                 const activePos = this.positions.find(p => 
@@ -3023,11 +3067,24 @@ export class MarketSimulator {
                 normalizeSymbol(p.symbol) === normSym && 
                 (p.side === inferredDirection || positionSide === "BOTH")
             );
+
+            // 🔒【真实盈亏核算铁律】若 WebSocket 即时回报 realizedPnl 为 0，根据开平仓价差精确核算 USDT 真实盈亏
+            let finalPnl = (realizedPnl !== undefined && realizedPnl !== 0) ? realizedPnl : 0;
+            if (finalPnl === 0 && entryPrice > 0 && avgPrice > 0) {
+                if (inferredDirection === PositionSide.LONG) {
+                    finalPnl = (avgPrice - entryPrice) * qty;
+                } else {
+                    finalPnl = (entryPrice - avgPrice) * qty;
+                }
+            } else if (finalPnl === 0 && targetPos && targetPos.unrealizedPnL !== 0) {
+                finalPnl = targetPos.unrealizedPnL;
+            }
+
             const isPartialClose = !!targetPos && (targetPos.amount - qty > 0.0001);
             const exitReason = isPartialClose
                 ? "实盘减仓(部分平仓) / 手机APP/外部/系统平仓"
-                : (trade.action === "CLOSE" ? "实盘完全平仓 / 手机APP/外部/系统平仓" : (realizedPnl >= 0 ? "实盘止盈平仓 / 手机APP/外部/系统平仓" : "实盘止损平仓 / 手机APP/外部/系统平仓"));
-            const profitPercent = costUsdt > 0 ? (realizedPnl / costUsdt) * 100 : (entryPrice > 0 ? ((avgPrice - entryPrice) / entryPrice) * (inferredDirection === PositionSide.LONG ? 100 : -100) : 0);
+                : (trade.action === "CLOSE" ? "实盘完全平仓 / 手机APP/外部/系统平仓" : (finalPnl >= 0 ? "实盘止盈平仓 / 手机APP/外部/系统平仓" : "实盘止损平仓 / 手机APP/外部/系统平仓"));
+            const profitPercent = costUsdt > 0 ? (finalPnl / costUsdt) * 100 : (entryPrice > 0 ? ((avgPrice - entryPrice) / entryPrice) * (inferredDirection === PositionSide.LONG ? 100 : -100) : 0);
 
             // 生成完全独立的 CLOSED 交易流水
             this.tradeLogs.unshift({
@@ -3035,7 +3092,7 @@ export class MarketSimulator {
                 entry_id: matchingOpenLog?.entry_id || `instant_close_${orderId || Date.now()}`,
                 binance_order_id: orderId || undefined,
                 status: 'CLOSED',
-                profit_usdt: realizedPnl,
+                profit_usdt: finalPnl,
                 exit_reason: exitReason,
                 is_hedge: isHedgeLog,
                 main_entry_id: mainEntryId,
@@ -3050,11 +3107,11 @@ export class MarketSimulator {
                 commission: trade.commission || 0,
                 events: [{
                     timestamp: tradeTime,
-                    action: isPartialClose ? `部分减仓 (${realizedPnl >= 0 ? '盈利' : '亏损'})` : (realizedPnl >= 0 ? '盈利平仓' : '止损平仓'),
+                    action: isPartialClose ? `部分减仓 (${finalPnl >= 0 ? '盈利' : '亏损'})` : (finalPnl >= 0 ? '盈利平仓' : '止损平仓'),
                     price: avgPrice,
                     amount: qty,
                     reason: exitReason,
-                    pnl: realizedPnl
+                    pnl: finalPnl
                 }]
             });
 
@@ -3092,15 +3149,16 @@ export class MarketSimulator {
                 this.amputatedSymbolsInCycle.delete(normSym);
             }
 
+            const pnlFormatted = finalPnl >= 0 ? `+${finalPnl.toFixed(4)}` : `${finalPnl.toFixed(4)}`;
             if (isPartialClose) {
                 this.addLog(
-                    realizedPnl >= 0 ? 'SUCCESS' : 'WARNING',
-                    `🟡 [减仓成交] 收到减仓(部分平仓)成交回报: ${rawSymbol} ${inferredDirection} | 减仓价: ${avgPrice.toFixed(4)} | 数量: ${qty} | 减仓价值: ${(qty * avgPrice).toFixed(2)} USDT | 实现盈亏: ${realizedPnl >= 0 ? '+' : ''}${realizedPnl.toFixed(4)} USDT | 剩余持仓: ${remainingAmount} (来源: 手机APP/外部/系统)`
+                    finalPnl >= 0 ? 'SUCCESS' : 'WARNING',
+                    `🟡 [减仓成交] 收到减仓(部分平仓)成交回报: ${rawSymbol} ${inferredDirection} | 减仓价: ${avgPrice.toFixed(4)} | 数量: ${qty} | 减仓价值: ${(qty * avgPrice).toFixed(2)} USDT | 实现盈亏: ${pnlFormatted} USDT | 剩余持仓: ${remainingAmount} (来源: 手机APP/外部/系统)`
                 );
             } else {
                 this.addLog(
-                    realizedPnl >= 0 ? 'SUCCESS' : 'WARNING',
-                    `${realizedPnl >= 0 ? '🟢' : '🔴'} [完全平仓] 收到完全平仓成交回报: ${rawSymbol} ${inferredDirection} | 平仓价: ${avgPrice.toFixed(4)} | 数量: ${qty} | 平仓价值: ${(qty * avgPrice).toFixed(2)} USDT | 实现盈亏: ${realizedPnl >= 0 ? '+' : ''}${realizedPnl.toFixed(4)} USDT | 仓位已完全平仓出局 (来源: 手机APP/外部/系统)`
+                    finalPnl >= 0 ? 'SUCCESS' : 'WARNING',
+                    `${finalPnl >= 0 ? '🟢' : '🔴'} [完全平仓] 收到完全平仓成交回报: ${rawSymbol} ${inferredDirection} | 平仓价: ${avgPrice.toFixed(4)} | 数量: ${qty} | 平仓价值: ${(qty * avgPrice).toFixed(2)} USDT | 实现盈亏: ${pnlFormatted} USDT | 仓位已完全平仓出局 (来源: 手机APP/外部/系统)`
                 );
             }
 
@@ -3117,9 +3175,10 @@ export class MarketSimulator {
             );
             const isRefill = existingPosIdx >= 0;
 
-            // 检查该 orderId 是否已存在开仓流水记录
+            // 检查该 orderId 或 10秒内同币同向是否已存在开仓流水记录
             const alreadyHasOpen = this.tradeLogs.find(l => 
-                (orderId && l.binance_order_id && String(l.binance_order_id) === orderId) &&
+                ((orderId && l.binance_order_id && String(l.binance_order_id) === orderId) ||
+                 (normalizeSymbol(l.symbol) === normSym && l.direction === inferredDirection && Math.abs((l.entry_timestamp || 0) - tradeTime) < 10000)) &&
                 l.status === 'OPEN'
             );
 
@@ -3447,55 +3506,62 @@ export class MarketSimulator {
         try {
             const symbols = Array.from(new Set(this.positions.map(p => p.symbol)));
             
-            // 并行请求，提高效率
-            await Promise.all(symbols.map(async (symbol) => {
-                try {
-                    const safeSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
-                    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1h&limit=100`;
-                    const res = await fetchWithFallback(url, {}, undefined, this.settings.system.directMode);
-                    const data = await res.json();
-                    
-                    if (Array.isArray(data) && data.length >= 80) {
-                        const closes = data.map((d: any) => parseFloat(d[4]));
-                        const rsi = calculateRSI(closes, 14).pop() || 50;
-                        const ema80 = getLatestEMA(closes, 80);
-                        const currentPrice = this.realPrices[symbol] || closes[closes.length - 1];
+            // 分小批 (每批最多3个币) 发起请求，彻底避免瞬间并发打满浏览器/服务端网络连接池
+            const BATCH_SIZE = 3;
+            for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+                const batch = symbols.slice(i, i + BATCH_SIZE);
+                await Promise.all(batch.map(async (symbol) => {
+                    try {
+                        const rawSafe = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
+                        const spotSafe = rawSafe.startsWith('1000') ? rawSafe.slice(4) : rawSafe;
+                        const url = `https://data-api.binance.vision/api/v3/klines?symbol=${spotSafe}&interval=1h&limit=100`;
+                        const res = await fetchWithFallback(url, {}, undefined, this.settings.system.directMode);
+                        const data = await res.json();
                         
-                        const emaDist = ((currentPrice - ema80) / ema80) * 100;
-                        const deviation = ((currentPrice - getLatestEMA(closes, 20)) / getLatestEMA(closes, 20)) * 100;
-                        
-                        const highs = data.map((d: any) => parseFloat(d[2]));
-                        const lows = data.map((d: any) => parseFloat(d[3]));
-                        const atrs = calculateATR(highs, lows, closes, 14);
-                        const atr = atrs[atrs.length - 1] || 0;
-                        const volatility = (atr / currentPrice) * 100;
+                        if (Array.isArray(data) && data.length >= 80) {
+                            const closes = data.map((d: any) => parseFloat(d[4]));
+                            const rsi = calculateRSI(closes, 14).pop() || 50;
+                            const ema80 = getLatestEMA(closes, 80);
+                            const currentPrice = this.realPrices[symbol] || closes[closes.length - 1];
+                            
+                            const emaDist = ((currentPrice - ema80) / ema80) * 100;
+                            const deviation = ((currentPrice - getLatestEMA(closes, 20)) / getLatestEMA(closes, 20)) * 100;
+                            
+                            const highs = data.map((d: any) => parseFloat(d[2]));
+                            const lows = data.map((d: any) => parseFloat(d[3]));
+                            const atrs = calculateATR(highs, lows, closes, 14);
+                            const atr = atrs[atrs.length - 1] || 0;
+                            const volatility = (atr / currentPrice) * 100;
 
-                        const volumes = data.map((d: any) => parseFloat(d[5]));
-                        const avgVol = volumes.slice(-20, -1).reduce((a: number, b: number) => a + b, 0) / 19;
-                        const volumeSwell = volumes[volumes.length - 1] / avgVol;
+                            const volumes = data.map((d: any) => parseFloat(d[5]));
+                            const avgVol = volumes.slice(-20, -1).reduce((a: number, b: number) => a + b, 0) / 19;
+                            const volumeSwell = volumes[volumes.length - 1] / avgVol;
 
-                        this.positions.forEach(p => {
-                            if (p.symbol === symbol) {
-                                p.currentIndicators = {
-                                    rsi,
-                                    volatility,
-                                    deviation,
-                                    emaDistance: emaDist,
-                                    volumeSwell
-                                };
-                            }
-                        });
+                            this.positions.forEach(p => {
+                                if (p.symbol === symbol) {
+                                    p.currentIndicators = {
+                                        rsi,
+                                        volatility,
+                                        deviation,
+                                        emaDistance: emaDist,
+                                        volumeSwell
+                                    };
+                                }
+                            });
+                        }
+                    } catch (e) {
+                        // 单个币种失败不影响其他
                     }
-                } catch (e) {
-                    // 单个币种失败不影响其他
-                }
-            }));
+                }));
+            }
         } catch (err) {
             console.error('Failed to update indicators:', err);
         } finally {
             this.isUpdatingIndicators = false;
         }
     }
+
+    private emaCacheMap = new Map<string, { value: number, time: number }>();
 
     private async updateEmaCache() {
         if (this.positions.length === 0 || this.isUpdatingEma) return;
@@ -3512,6 +3578,7 @@ export class MarketSimulator {
 
         this.isUpdatingEma = true;
         try {
+            const now = Date.now();
             for (const pos of this.positions) {
                 if (!pos.symbol || pos.symbol === 'USDT' || pos.symbol.trim() === '') continue;
                 // Skip if it's a hedge position (optional, but usually trend exit is for main positions)
@@ -3524,7 +3591,16 @@ export class MarketSimulator {
                     }
 
                     const safeSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
-                    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=500`;
+                    const spotSafe = safeSymbol.startsWith('1000') ? safeSymbol.slice(4) : safeSymbol;
+                    const cacheKey = `${safeSymbol}_${tf}_${atrSettings.emaPeriod}`;
+                    
+                    const cached = this.emaCacheMap.get(cacheKey);
+                    if (cached && (now - cached.time < 60000)) {
+                        pos.currentEmaValue = cached.value;
+                        continue;
+                    }
+
+                    const url = `https://data-api.binance.vision/api/v3/klines?symbol=${spotSafe}&interval=${tf}&limit=120`;
                     const res = await fetchWithFallback(url, {}, undefined, this.settings.system.directMode);
                     const data = await res.json();
                     
@@ -3533,6 +3609,7 @@ export class MarketSimulator {
                         const closes = data.slice(0, -1).map((d: any) => parseFloat(d[4]));
                         const emaValue = getLatestEMA(closes, atrSettings.emaPeriod);
                         pos.currentEmaValue = emaValue;
+                        this.emaCacheMap.set(cacheKey, { value: emaValue, time: now });
                     }
                 } catch (error) {
                     // Silent fail to avoid spamming logs
@@ -3544,202 +3621,13 @@ export class MarketSimulator {
     }
 
     private async fetchExtreme300Price(pos: Position) {
-        if (!pos.symbol || pos.symbol === 'USDT' || pos.symbol.trim() === '') return;
-        if (pos.periodExtremePrice !== undefined || pos.mainPositionId) return;
-        if ((pos as any)._fetchingExtremePrice) return;
-        
-        const safeSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
-        const days = this.settings.hedging?.extremeHedgeDays ?? 300;
-        const cacheKey = `EXTREME_300_${safeSymbol}_${days}`;
-        const now = Date.now();
-
-        // 1. 检查失败重试冷却时间（20秒内不重复请求，彻底杜绝 429 刷爆）
-        const lastFail = this.extremeFetchCooldown.get(cacheKey) || 0;
-        if (now - lastFail < 20000) {
-            return;
-        }
-
-        // 2. 检查内存缓存（15分钟内直接命中，0网络开销）
-        const cached = this.extremeCache.get(cacheKey);
-        if (cached && (now - cached.timestamp < 15 * 60 * 1000)) {
-            const { lowest, highest } = cached;
-            pos.periodExtremePrice = pos.side === PositionSide.LONG ? lowest : highest;
-            const entry = pos.entryPrice;
-            let rawRatio = this.settings.hedging?.extremeHedgeTriggerRatio;
-            if (typeof rawRatio !== 'number' || isNaN(rawRatio)) rawRatio = 50;
-            const ratio = rawRatio / 100;
-            
-            if (pos.side === PositionSide.LONG) {
-                const distPercent = ((entry - lowest) / entry) * 100;
-                if (distPercent > 0) {
-                    const triggerLossPercent = distPercent * ratio;
-                    pos.extremeHedgeTriggerPrice = entry * (1 - triggerLossPercent / 100);
-                }
-            } else {
-                const distPercent = ((highest - entry) / entry) * 100;
-                if (distPercent > 0) {
-                    const triggerLossPercent = distPercent * ratio;
-                    pos.extremeHedgeTriggerPrice = entry * (1 + triggerLossPercent / 100);
-                }
-            }
-            this.emitUpdate(true);
-            return;
-        }
-
-        (pos as any)._fetchingExtremePrice = true;
-        
-        try {
-            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${days}`;
-            const res = await fetchWithFallback(url, { priority: 'LOW', timeout: 12000 }, undefined, this.settings.system?.directMode);
-            const data = await res.json();
-            
-            if (Array.isArray(data) && data.length > 0) {
-                let lowest = Infinity;
-                let highest = -Infinity;
-                for (const d of data) {
-                    const low = parseFloat(d[3]);
-                    const high = parseFloat(d[2]);
-                    if (!isNaN(low) && low < lowest) lowest = low;
-                    if (!isNaN(high) && high > highest) highest = high;
-                }
-                
-                if (lowest !== Infinity && highest !== -Infinity) {
-                    // 写入缓存
-                    this.extremeCache.set(cacheKey, { lowest, highest, timestamp: Date.now() });
-
-                    pos.periodExtremePrice = pos.side === PositionSide.LONG ? lowest : highest;
-                    
-                    const entry = pos.entryPrice;
-                    let rawRatio = this.settings.hedging?.extremeHedgeTriggerRatio;
-                    if (typeof rawRatio !== 'number' || isNaN(rawRatio)) rawRatio = 50;
-                    const ratio = rawRatio / 100;
-                    
-                    if (pos.side === PositionSide.LONG) {
-                        const distPercent = ((entry - lowest) / entry) * 100;
-                        if (distPercent <= 0) {
-                            pos.extremeHedgeTriggerPrice = undefined;
-                        } else {
-                            const triggerLossPercent = distPercent * ratio;
-                            pos.extremeHedgeTriggerPrice = entry * (1 - triggerLossPercent / 100);
-                        }
-                    } else {
-                        const distPercent = ((highest - entry) / entry) * 100;
-                        if (distPercent <= 0) {
-                            pos.extremeHedgeTriggerPrice = undefined;
-                        } else {
-                            const triggerLossPercent = distPercent * ratio;
-                            pos.extremeHedgeTriggerPrice = entry * (1 + triggerLossPercent / 100);
-                        }
-                    }
-                    this.emitUpdate(true);
-                }
-            } else {
-                this.extremeFetchCooldown.set(cacheKey, Date.now());
-            }
-        } catch (error: any) {
-            this.extremeFetchCooldown.set(cacheKey, Date.now());
-            console.warn(`[Extreme300] 获取 ${pos.symbol} 300天极值暂不可用(将在20秒后重试):`, error?.message || error);
-        } finally {
-            delete (pos as any)._fetchingExtremePrice;
-        }
+        // [已按指令移除 300天极值比例对冲 功能] 零网络开销
+        return;
     }
 
     private async fetchShortTermExtremePrice(pos: Position) {
-        if (!pos.symbol || pos.symbol === 'USDT' || pos.symbol.trim() === '') return;
-        if (pos.shortTermExtremeTriggerPrice !== undefined || pos.mainPositionId) return;
-        if ((pos as any)._fetchingShortTermExtreme) return;
-        
-        const safeSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
-        const days = this.settings.hedging?.shortTermExtremeDays ?? 7;
-        const cacheKey = `EXTREME_SHORT_${safeSymbol}_${days}`;
-        const now = Date.now();
-
-        // 1. 检查失败重试冷却时间（20秒内不重复请求，彻底杜绝 429 刷爆与 Proxy 线程阻塞）
-        const lastFail = this.extremeFetchCooldown.get(cacheKey) || 0;
-        if (now - lastFail < 20000) {
-            return;
-        }
-
-        // 2. 检查内存缓存（15分钟内直接命中，0网络开销）
-        const cached = this.extremeCache.get(cacheKey);
-        if (cached && (now - cached.timestamp < 15 * 60 * 1000)) {
-            const { lowest, highest } = cached;
-            const entry = pos.entryPrice;
-            let rawRatio = this.settings.hedging?.shortTermExtremeRatio;
-            if (typeof rawRatio !== 'number' || isNaN(rawRatio)) rawRatio = 50;
-            const ratio = rawRatio / 100;
-            
-            if (pos.side === PositionSide.LONG) {
-                const distPercent = ((entry - lowest) / entry) * 100;
-                if (distPercent > 0) {
-                    const triggerLossPercent = distPercent * ratio;
-                    pos.shortTermExtremeTriggerPrice = entry * (1 - triggerLossPercent / 100);
-                }
-            } else {
-                const distPercent = ((highest - entry) / entry) * 100;
-                if (distPercent > 0) {
-                    const triggerLossPercent = distPercent * ratio;
-                    pos.shortTermExtremeTriggerPrice = entry * (1 + triggerLossPercent / 100);
-                }
-            }
-            this.emitUpdate(true);
-            return;
-        }
-
-        (pos as any)._fetchingShortTermExtreme = true;
-        
-        try {
-            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${days}`;
-            const res = await fetchWithFallback(url, { priority: 'LOW', timeout: 12000 }, undefined, this.settings.system?.directMode);
-            const data = await res.json();
-            
-            if (Array.isArray(data) && data.length > 0) {
-                let lowest = Infinity;
-                let highest = -Infinity;
-                for (const d of data) {
-                    const low = parseFloat(d[3]);
-                    const high = parseFloat(d[2]);
-                    if (!isNaN(low) && low < lowest) lowest = low;
-                    if (!isNaN(high) && high > highest) highest = high;
-                }
-                
-                if (lowest !== Infinity && highest !== -Infinity) {
-                    // 写入缓存
-                    this.extremeCache.set(cacheKey, { lowest, highest, timestamp: Date.now() });
-
-                    const entry = pos.entryPrice;
-                    let rawRatio = this.settings.hedging?.shortTermExtremeRatio;
-                    if (typeof rawRatio !== 'number' || isNaN(rawRatio)) rawRatio = 50;
-                    const ratio = rawRatio / 100;
-                    
-                    if (pos.side === PositionSide.LONG) {
-                        const distPercent = ((entry - lowest) / entry) * 100;
-                        if (distPercent <= 0) {
-                            pos.shortTermExtremeTriggerPrice = undefined;
-                        } else {
-                            const triggerLossPercent = distPercent * ratio;
-                            pos.shortTermExtremeTriggerPrice = entry * (1 - triggerLossPercent / 100);
-                        }
-                    } else {
-                        const distPercent = ((highest - entry) / entry) * 100;
-                        if (distPercent <= 0) {
-                            pos.shortTermExtremeTriggerPrice = undefined;
-                        } else {
-                            const triggerLossPercent = distPercent * ratio;
-                            pos.shortTermExtremeTriggerPrice = entry * (1 + triggerLossPercent / 100);
-                        }
-                    }
-                    this.emitUpdate(true);
-                }
-            } else {
-                this.extremeFetchCooldown.set(cacheKey, Date.now());
-            }
-        } catch (error: any) {
-            this.extremeFetchCooldown.set(cacheKey, Date.now());
-            console.warn(`[ShortTermExtreme] 获取 ${pos.symbol} 短期极值暂不可用(将在20秒后重试):`, error?.message || error);
-        } finally {
-            delete (pos as any)._fetchingShortTermExtreme;
-        }
+        // [已按指令彻底移除 短期极值比例对冲 功能] 零日K网络开销与零背景查询
+        return;
     }
 
     private runStrategyAnalysis() {
@@ -4038,22 +3926,7 @@ export class MarketSimulator {
                 secondaryReason = `[二次防爆检测] 亏损达到 ${hedgeSettings.triggerLossPercent}% 强制触发`;
             }
 
-            // B. Check 300-Day Extreme (300天极值比例对冲二次检测)
-            if (!secondaryTriggered && hedgeSettings.extremeHedgeEnabled && position.extremeHedgeTriggerPrice !== undefined) {
-                if (position.side === PositionSide.LONG) {
-                    if (position.markPrice <= position.extremeHedgeTriggerPrice) {
-                        secondaryTriggered = true;
-                        secondaryReason = `[二次防爆检测] 价格跌破300天极值对冲启动价 ${position.extremeHedgeTriggerPrice.toFixed(4)} 强制触发`;
-                    }
-                } else {
-                    if (position.markPrice >= position.extremeHedgeTriggerPrice) {
-                        secondaryTriggered = true;
-                        secondaryReason = `[二次防爆检测] 价格突破300天极值对冲启动价 ${position.extremeHedgeTriggerPrice.toFixed(4)} 强制触发`;
-                    }
-                }
-            }
-
-            // C. Trend Firewall (趋势防火墙二次检测)
+            // B. Trend Firewall (趋势防火墙二次检测)
             if (!secondaryTriggered && hedgeSettings.trendHedgeEnabled && position.entryEmas) {
                 let firewallPrice = 0;
                 const period = hedgeSettings.trendHedgeEmaPeriod || 80;
@@ -4338,33 +4211,16 @@ export class MarketSimulator {
           }
       }
 
-      // --- 0.1 EMA CACHE UPDATE ---
-      if (now - this.lastEmaCheckTime > 5000) { 
+      // --- 0.1 EMA CACHE UPDATE (15s interval to save network) ---
+      if (now - this.lastEmaCheckTime > 15000) { 
           this.lastEmaCheckTime = now;
           this.updateEmaCache();
       }
 
-      // --- 0.2 INDICATOR UPDATE (For AI & DNA) ---
-      if (now - this.lastIndicatorCheckTime > 10000) {
+      // --- 0.2 INDICATOR UPDATE (For AI & DNA - 60s optimized interval to save network) ---
+      if (now - this.lastIndicatorCheckTime > 60000) {
           this.lastIndicatorCheckTime = now;
           this.updateIndicators();
-      }
-
-      // --- 0.3 FETCH EXTREME 300 DAYS PRICES ---
-      if (this.settings.hedging?.extremeHedgeEnabled) {
-          for (const pos of this.positions) {
-              if (pos.periodExtremePrice === undefined && !pos.mainPositionId && pos.symbol && pos.symbol !== 'USDT') {
-                  this.fetchExtreme300Price(pos);
-              }
-          }
-      }
-
-      if (this.settings.hedging?.shortTermExtremeEnabled) {
-          for (const pos of this.positions) {
-              if (pos.shortTermExtremeTriggerPrice === undefined && !pos.mainPositionId && pos.symbol && pos.symbol !== 'USDT') {
-                  this.fetchShortTermExtremePrice(pos);
-              }
-          }
       }
 
       // --- STRATEGY ADVISOR LOOP ---

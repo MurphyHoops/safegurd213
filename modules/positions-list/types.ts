@@ -15,11 +15,12 @@ export interface PositionsListProps {
     onBatchClose: () => void;
     onClearRecords: () => void;
     onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
-    onVerifyPosition: (position: Position) => void;
+    onVerifyPosition: (position: Position | string) => void;
     onManualHedge?: (position: Position) => void;
     onManualAmputate?: (position: Position) => void;
     onManualRefill?: (position: Position) => void;
     onManualClosePair?: (position: Position) => void;
+    onUpdateSettings?: (section: keyof AppSettings, key: string, value: any) => void;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;
     manuallyClosedSymbols: Set<string>;

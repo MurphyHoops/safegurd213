@@ -25,7 +25,7 @@ export const LiveBattlefieldModule: React.FC<Props> = ({ positions, realPrices, 
     React.useEffect(() => {
         // Only update if stats have materially changed (value or count)
         // This prevents re-rendering parent if PnL is stagnant
-        const currentStatsStr = `${stats.symbolCount}-${stats.totalPnl.toFixed(2)}`;
+        const currentStatsStr = `${stats?.symbolCount || 0}-${(stats?.totalPnl ?? 0).toFixed(2)}`;
         
         if (currentStatsStr !== lastStatsRef.current) {
             lastStatsRef.current = currentStatsStr;

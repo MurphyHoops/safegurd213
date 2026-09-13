@@ -1842,39 +1842,39 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     <div className="h-3 w-px bg-slate-800"></div>
                     <div className="flex items-center gap-1 whitespace-nowrap">
                         <span className="text-slate-500 font-semibold">历史实际跌幅:</span>
-                        <span className="text-rose-400 font-bold">{dailyStats.maxDrop.toFixed(2)}%</span>
+                        <span className="text-rose-400 font-bold">{(dailyStats.maxDrop ?? 0).toFixed(2)}%</span>
                     </div>
                     <div className="h-3 w-px bg-slate-800"></div>
                     <div className="flex items-center gap-1 whitespace-nowrap">
                         <span className="text-slate-500 font-semibold">历史实际涨幅:</span>
-                        <span className="text-emerald-400 font-bold">{dailyStats.maxPump.toFixed(2)}%</span>
+                        <span className="text-emerald-400 font-bold">{(dailyStats.maxPump ?? 0).toFixed(2)}%</span>
                     </div>
                     <div className="h-3 w-px bg-slate-800"></div>
                     <div className="flex items-center gap-1 whitespace-nowrap">
                         <span className="text-slate-500 font-semibold">实际极值涨跌:</span>
-                        <span className="text-emerald-500 font-bold">+{dailyStats.extremeRise.toFixed(2)}%</span>
+                        <span className="text-emerald-500 font-bold">+{(dailyStats.extremeRise ?? 0).toFixed(2)}%</span>
                         <span className="text-slate-600">/</span>
-                        <span className="text-rose-500 font-bold">-{dailyStats.extremeDrop.toFixed(2)}%</span>
+                        <span className="text-rose-500 font-bold">-{(dailyStats.extremeDrop ?? 0).toFixed(2)}%</span>
                     </div>
                     <div className="h-3 w-px bg-slate-800"></div>
                     <div className="flex items-center gap-1 whitespace-nowrap">
                         <span className="text-slate-500 font-semibold">横盘内涨跌:</span>
-                        <span className={`font-bold ${dailyStats.sidewaysRise > 0 ? 'text-emerald-400' : 'text-slate-400'}`}>+{dailyStats.sidewaysRise.toFixed(2)}%</span>
+                        <span className={`font-bold ${(dailyStats.sidewaysRise ?? 0) > 0 ? 'text-emerald-400' : 'text-slate-400'}`}>+{(dailyStats.sidewaysRise ?? 0).toFixed(2)}%</span>
                         <span className="text-slate-600">/</span>
-                        <span className={`font-bold ${dailyStats.sidewaysDrop > 0 ? 'text-rose-400' : 'text-slate-400'}`}>-{dailyStats.sidewaysDrop.toFixed(2)}%</span>
+                        <span className={`font-bold ${(dailyStats.sidewaysDrop ?? 0) > 0 ? 'text-rose-400' : 'text-slate-400'}`}>-{(dailyStats.sidewaysDrop ?? 0).toFixed(2)}%</span>
                     </div>
                     <div className="h-3 w-px bg-slate-800"></div>
                     <div className="flex items-center gap-1 whitespace-nowrap">
                         <span className="text-slate-500 font-semibold">EMA80偏离度:</span>
-                        <span className={`font-bold ${dailyStats.ema80Dev >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {dailyStats.ema80Dev >= 0 ? '+' : ''}{dailyStats.ema80Dev.toFixed(2)}%
+                        <span className={`font-bold ${(dailyStats.ema80Dev ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {(dailyStats.ema80Dev ?? 0) >= 0 ? '+' : ''}{(dailyStats.ema80Dev ?? 0).toFixed(2)}%
                         </span>
                     </div>
                     <div className="h-3 w-px bg-slate-800"></div>
                     <div className="flex items-center gap-1 whitespace-nowrap">
                         <span className="text-slate-500 font-semibold">今日量能比:</span>
-                        <span className={`font-bold ${dailyStats.volRatio >= 1.5 ? 'text-yellow-400 animate-pulse' : 'text-sky-400'}`}>
-                            {dailyStats.volRatio.toFixed(2)}x
+                        <span className={`font-bold ${(dailyStats.volRatio ?? 0) >= 1.5 ? 'text-yellow-400 animate-pulse' : 'text-sky-400'}`}>
+                            {(dailyStats.volRatio ?? 0).toFixed(2)}x
                         </span>
                     </div>
                 </div>

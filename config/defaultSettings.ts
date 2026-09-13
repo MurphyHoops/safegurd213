@@ -72,13 +72,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         trendHedgeEnabled: false,
         trendHedgeEmaPeriod: 80,
         breakKLineEnabled: false,
-        breakKLineRatio: 20,
-        extremeHedgeEnabled: false,
-        extremeHedgeDays: 300,
-        extremeHedgeTriggerRatio: 50,
-        shortTermExtremeEnabled: false,
-        shortTermExtremeDays: 7,
-        shortTermExtremeRatio: 50
+        breakKLineRatio: 20
     },
     stopLoss: {
         hedgeProfitClear: false,
@@ -106,7 +100,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
     },
     martingale: { enabled: false },
-    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: ['XMR', 'LIT'], voiceBroadcast: true, enableAutoTransfer: false, autoTransferThreshold: 1000, autoTransferAmount: 200 },
+    system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: ['XMR', 'LIT'], voiceBroadcast: true, enableAutoTransfer: false, autoTransferThreshold: 1000, autoTransferAmount: 200, autoSyncEnabled: true, autoSyncIntervalMinutes: 60, syncHistoryLookbackHours: 1 },
     scanner: {
         minVolume: 1, 
         maxVolume: 0,

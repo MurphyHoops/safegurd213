@@ -7,6 +7,7 @@ import { ArrowUp, ArrowDown, List, Trash2, AlertCircle, AlertTriangle, Zap, Refr
 import { EmptyPositions } from './components/EmptyPositions';
 import { PositionItem } from './components/PositionItem';
 import { PositionSettingsModal } from './components/PositionSettingsModal';
+import { SyncControlDropdown } from './components/SyncControlDropdown';
 import { usePositionsListLogic } from './usePositionsListLogic';
 import { binanceWs } from '../../services/binanceWs';
 import { audioService } from '../../services/audioService';
@@ -32,6 +33,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     onManualAmputate,
     onManualRefill,
     onManualClosePair,
+    onUpdateSettings,
     networkStatus,
     isOnline,
     manuallyClosedSymbols
@@ -55,8 +57,15 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
         setSyncTip('正在同步...');
         try {
             if ((window as any).triggerApiSync) {
-                const res = await (window as any).triggerApiSync(true);
-                if (res && res.rateLimited) {
+                // 5秒硬超时保护机制，防止网络拥塞或慢请求导致长时间卡住转圈
+                const syncPromise = (window as any).triggerApiSync(true);
+                const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 5000));
+                const res: any = await Promise.race([syncPromise, timeoutPromise]);
+
+                if (res && res.timeout) {
+                    setSyncTip('快照已更新');
+                    audioService.speak('已载入最新行情快照', true);
+                } else if (res && res.rateLimited) {
                     setSyncTip('出口限频中');
                     audioService.speak('网络出口限频中，已载入最新快照', true);
                 } else if (res && res.success === false) {
@@ -71,10 +80,10 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
         } finally {
             setTimeout(() => {
                 setIsManualSyncing(false);
-            }, 1200);
+            }, 800);
             setTimeout(() => {
                 setSyncTip(null);
-            }, 3500);
+            }, 3000);
         }
     };
 
@@ -253,22 +262,18 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                         回测仿真 监控
                     </button>
 
-                    {/* 手动获取刷新币安交易数据按钮 */}
+                    {/* 手动获取刷新币安交易数据与单币模糊穿透查询中心（点击展开收纳所有开关与设置） */}
                     {activeTab === 'LIVE' && (
-                        <button
-                            id="manual-binance-sync-btn"
-                            onClick={handleManualSync}
-                            disabled={isManualSyncing}
-                            title="强制手动向币安获取最新持仓、保证金与交易流水（绕过缓存）"
-                            className={`ml-2 px-2.5 py-1 text-[11px] font-bold rounded-md transition-all flex items-center gap-1.5 border shadow-sm select-none ${
-                                isManualSyncing 
-                                    ? 'bg-amber-950/50 text-amber-300 border-amber-500/50 cursor-wait' 
-                                    : 'bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border-slate-700 hover:border-slate-600 active:scale-95'
-                            }`}
-                        >
-                            <RefreshCw size={12} className={isManualSyncing ? 'animate-spin text-amber-400' : 'text-slate-400'} />
-                            <span>{syncTip || '刷新币安数据'}</span>
-                        </button>
+                        <SyncControlDropdown 
+                            isManualSyncing={isManualSyncing}
+                            syncTip={syncTip}
+                            onManualSync={handleManualSync}
+                            onVerifyPosition={onVerifyPosition}
+                            settings={settings}
+                            onUpdateSettings={onUpdateSettings}
+                            activePositions={positions}
+                            realPrices={realPrices}
+                        />
                     )}
                 </div>
                 
@@ -469,21 +474,21 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                     <div className="grid grid-cols-2 gap-3">
                                         <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
                                             <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总净值盈亏</div>
-                                            <div className={`text-base font-mono font-bold mt-1 ${latestReport.stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                                {latestReport.stats.totalPnl >= 0 ? '+' : ''}{latestReport.stats.totalPnl.toFixed(2)} USDT
+                                            <div className={`text-base font-mono font-bold mt-1 ${(latestReport.stats?.totalPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                {(latestReport.stats?.totalPnl ?? 0) >= 0 ? '+' : ''}{(latestReport.stats?.totalPnl ?? 0).toFixed(2)} USDT
                                             </div>
                                         </div>
                                         <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
                                             <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">总交易次数</div>
-                                            <div className="text-base font-mono font-bold mt-1 text-slate-200">{latestReport.stats.totalTrades} 次</div>
+                                            <div className="text-base font-mono font-bold mt-1 text-slate-200">{latestReport.stats?.totalTrades ?? 0} 次</div>
                                         </div>
                                         <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
                                             <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">胜率 (Win Rate)</div>
-                                            <div className="text-base font-mono font-bold mt-1 text-emerald-400">{latestReport.stats.winRate.toFixed(1)}%</div>
+                                            <div className="text-base font-mono font-bold mt-1 text-emerald-400">{(latestReport.stats?.winRate ?? 0).toFixed(1)}%</div>
                                         </div>
                                         <div className="bg-[#0e121a]/80 p-2.5 rounded border border-slate-800/50">
                                             <div className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">盈亏比 (PF)</div>
-                                            <div className="text-base font-mono font-bold mt-1 text-amber-400">{latestReport.stats.profitFactor.toFixed(2)}</div>
+                                            <div className="text-base font-mono font-bold mt-1 text-amber-400">{(latestReport.stats?.profitFactor ?? 0).toFixed(2)}</div>
                                         </div>
                                     </div>
                                     <div className="text-center pt-2 border-t border-slate-800/30">

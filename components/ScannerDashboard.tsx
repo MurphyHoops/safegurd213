@@ -1035,7 +1035,7 @@ const ScannerDashboardInner: React.FC<
   const liveStatsPulseRef = useRef("");
 
   const handleLiveStatsUpdate = useCallback((newStats: any) => {
-    const pulse = `${newStats.symbolCount}-${newStats.totalPnl.toFixed(4)}`;
+    const pulse = `${newStats?.symbolCount || 0}-${(newStats?.totalPnl ?? 0).toFixed(4)}`;
     if (liveStatsPulseRef.current !== pulse) {
       setLiveStats(newStats);
       liveStatsPulseRef.current = pulse;

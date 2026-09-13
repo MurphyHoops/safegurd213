@@ -254,7 +254,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
                         </button>
                     </div>
                     <div className="text-[10px] text-slate-500 font-mono">
-                        当前浮盈: <span className={`font-bold ${position.unrealizedPnLPercentage >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{position.unrealizedPnLPercentage.toFixed(2)}%</span>
+                        当前浮盈: <span className={`font-bold ${(position.unrealizedPnLPercentage ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(position.unrealizedPnLPercentage ?? 0).toFixed(2)}%</span>
                     </div>
                 </div>
 

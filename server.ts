@@ -258,10 +258,13 @@ async function startServer() {
 
         let lastActivity = Date.now();
 
-        // 🔒【主动心跳探针与死链秒级阻断】每15秒发送主动 Ping，若未收到 Pong 立即强制销毁重建，杜绝 TCP 假死僵尸连接
+        // 🔒【主动心跳探针与死链秒级阻断】双重看门狗：每12秒巡检，若连接静默>15秒主动Ping，静默>35秒且无Pong无数据立即判定为假死重连！
         instance.heartbeatTimer = setInterval(() => {
-          if (!instance.isAlive) {
-            console.warn(`⚠️ [Binance UserData Stream] 心跳超时（无 Pong 响应），判定为 TCP 假死连接，立即重连: ${cleanKey.slice(0, 8)}...`);
+          const now = Date.now();
+          const inactiveDuration = now - lastActivity;
+
+          if (inactiveDuration > 35000 && !instance.isAlive) {
+            console.warn(`⚠️ [Binance UserData Stream] 心跳超时（静默 ${inactiveDuration}ms 且无响应），判定为 TCP 假死连接，立即重连: ${cleanKey.slice(0, 8)}...`);
             if (instance.heartbeatTimer) clearInterval(instance.heartbeatTimer);
             if (instance.keepAliveTimer) clearInterval(instance.keepAliveTimer);
             activeUserStreams.delete(cleanKey);
@@ -270,14 +273,17 @@ async function startServer() {
             setTimeout(() => ensureUserDataStream(cleanKey), 500);
             return;
           }
-          instance.isAlive = false;
-          try {
-            uws.ping();
-          } catch (e) {
+
+          if (inactiveDuration > 15000) {
             instance.isAlive = false;
-            try { uws.terminate(); } catch (err) {}
+            try {
+              uws.ping();
+            } catch (e) {
+              instance.isAlive = false;
+              try { uws.terminate(); } catch (err) {}
+            }
           }
-        }, 15000);
+        }, 12000);
 
         uws.on('open', () => {
           console.log(`🟢 [Binance UserData Stream] Successfully connected to ${targetWsUrl}`);
@@ -1954,7 +1960,17 @@ async function startServer() {
                 return [];
             };
 
-            const results = await Promise.all(targetSymbols.slice(0, 25).map(s => fetchTradesForSymbol(s)));
+            const slicedTargets = targetSymbols.slice(0, 25);
+            const results: any[][] = [];
+            const BATCH_SIZE = 4;
+            for (let i = 0; i < slicedTargets.length; i += BATCH_SIZE) {
+                const chunk = slicedTargets.slice(i, i + BATCH_SIZE);
+                const chunkResults = await Promise.all(chunk.map(s => fetchTradesForSymbol(s)));
+                results.push(...chunkResults);
+                if (i + BATCH_SIZE < slicedTargets.length) {
+                    await new Promise(r => setTimeout(r, 40));
+                }
+            }
             allTrades = results.flat();
 
             if (allTrades.length > 0) {
@@ -2044,6 +2060,59 @@ async function startServer() {
             }
         } catch (e: any) {
             return res.json({ success: false, error: e.message || e, trades: [] });
+        }
+    });
+
+    // ⚡ 极速单笔订单状态精准反查通道 (POST /api/binance/query-order - 方案1确定性反查)
+    app.post("/api/binance/query-order", async (req, res) => {
+        let { apiKey, apiSecret, symbol, orderId, origClientOrderId } = req.body;
+        if (!apiKey || !apiSecret || !symbol || (!orderId && !origClientOrderId)) {
+            return res.status(400).json({ success: false, error: "缺少必要参数 (apiKey, apiSecret, symbol, orderId 或 origClientOrderId)" });
+        }
+        apiKey = typeof apiKey === 'string' ? apiKey.trim() : apiKey;
+        apiSecret = typeof apiSecret === 'string' ? apiSecret.trim() : apiSecret;
+        const formattedSymbol = formatBinanceSymbol(symbol);
+
+        try {
+            const timeOffset = await syncBinanceServerTime();
+            const timestamp = Date.now() + timeOffset;
+            let queryString = `symbol=${formattedSymbol}&timestamp=${timestamp}&recvWindow=60000`;
+            if (orderId) {
+                queryString += `&orderId=${orderId}`;
+            }
+            if (origClientOrderId) {
+                queryString += `&origClientOrderId=${origClientOrderId}`;
+            }
+            const signature = crypto.createHmac("sha256", apiSecret).update(queryString).digest("hex");
+
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 3500);
+            const response = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/order?${queryString}&signature=${signature}`, {
+                headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" },
+                signal: controller.signal
+            });
+            clearTimeout(timeout);
+
+            if (response.ok) {
+                const orderData = await response.json();
+                return res.json({
+                    success: true,
+                    symbol: formattedSymbol,
+                    order: orderData
+                });
+            } else {
+                const errText = await response.text();
+                let parsedErr: any = null;
+                try { parsedErr = JSON.parse(errText); } catch {}
+                return res.json({
+                    success: false,
+                    error: (parsedErr && parsedErr.msg) ? parsedErr.msg : errText,
+                    code: parsedErr?.code,
+                    orderNotExist: parsedErr?.code === -2013
+                });
+            }
+        } catch (e: any) {
+            return res.json({ success: false, error: e.message || e });
         }
     });
 
@@ -2174,72 +2243,40 @@ async function startServer() {
 
       if (targetUrl.includes("binance")) {
           const queryParams = new URLSearchParams(parsedTarget.searchParams);
+          // Strip internal client parameters so upstream Binance never rejects with HTTP 400 Bad Request
+          queryParams.delete("isScanner");
+          queryParams.delete("priority");
+          queryParams.delete("_t");
+
+          const rawParams = new URLSearchParams(queryParams);
+          const rawQuery = rawParams.toString();
+
           if (is1000Symbol) {
               queryParams.set("symbol", spotSymbol);
           }
           const spotQuery = queryParams.toString();
-          const rawQuery = parsedTarget.searchParams.toString();
 
           if (isKlineReq) {
-              const isFuturesTarget = targetUrl.includes("/fapi/");
-              if (isFuturesTarget) {
-                  // 🛡️ 合约持仓 K 线优先直连 Futures 节点，兼顾毫秒级极速响应与真实合约行情
-                  if (binanceBannedUntilTimestamp <= Date.now()) {
-                      fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/klines?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
-                  }
-                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api3.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-              } else {
-                  // 现货或扫币列表优先走 Binance Vision 免限频公共行情节点与独立现货节点
-                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api3.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  if (binanceBannedUntilTimestamp <= Date.now()) {
-                      fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/klines?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
-                  }
-              }
+              // 🛡️ 优先走官方免限频公有节点 (Vision) 及现货镜像，绝不与合约交易通道抢占 fapi 权重
+              fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
           } else if (isTickerPriceReq) {
               fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-              fetchCandidates.push({ url: `https://api3.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-              if (binanceBannedUntilTimestamp <= Date.now()) {
-                  fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/ticker/price?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
-              }
           } else if (isTicker24hrReq) {
-              if (targetUrl.includes("/fapi/")) {
-                  if (binanceBannedUntilTimestamp <= Date.now()) {
-                      fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/ticker/24hr?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
-                  }
-                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api3.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-              } else {
-                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api3.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  if (binanceBannedUntilTimestamp <= Date.now()) {
-                      fetchCandidates.push({ url: `https://fapi.binance.com/fapi/v1/ticker/24hr?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
-                  }
-              }
+              fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+              fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
           } else {
-              // Other generic Binance requests
               const spotPath = parsedTarget.pathname.replace(/^\/fapi\/v[12]/, "/api/v3");
               fetchCandidates.push({ url: `https://data-api.binance.vision${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
               fetchCandidates.push({ url: `https://api1.binance.com${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
               fetchCandidates.push({ url: `https://api.binance.com${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
-              if (targetUrl.includes("/fapi/") && binanceBannedUntilTimestamp <= Date.now()) {
-                  fetchCandidates.push({ url: `https://fapi.binance.com${parsedTarget.pathname}?${rawQuery}`, isPublicProxy: false, isSpotScale1000: false });
-              }
           }
       } else {
           fetchCandidates.push({ url: targetUrl, isPublicProxy: false, isSpotScale1000: false });
-          fetchCandidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`, isPublicProxy: true, isSpotScale1000: false });
       }
 
       const officialCandidates = fetchCandidates.filter(c => !c.isPublicProxy);
@@ -2335,26 +2372,27 @@ async function startServer() {
           }
       };
 
-      // 1. Race all official Binance endpoints in parallel (Instant 20-80ms response)
+      // 1. Fetch official Binance endpoints sequentially (Vision preferred, zero connection waste)
       if (officialCandidates.length > 0) {
-          try {
-              const data = await Promise.any(officialCandidates.map(c => fetchCandidate(c)));
-              // As soon as one candidate wins, abort all other losing candidates immediately to free socket connections
-              masterController.abort();
-
-              const ttl = getServerCacheTTL(targetUrl);
-              serverCache.set(cacheKey, {
-                  data,
-                  timestamp: Date.now(),
-                  ttl
-              });
-              return res.json(data);
-          } catch (raceErr) {
-              if (isInvalidSymbolError) {
+          for (const candidate of officialCandidates) {
+              try {
+                  const data = await fetchCandidate(candidate);
                   masterController.abort();
-                  return res.status(400).json({ code: -1121, msg: "Invalid symbol." });
+
+                  const ttl = getServerCacheTTL(targetUrl);
+                  serverCache.set(cacheKey, {
+                      data,
+                      timestamp: Date.now(),
+                      ttl
+                  });
+                  return res.json(data);
+              } catch (candidateErr) {
+                  if (isInvalidSymbolError) {
+                      masterController.abort();
+                      return res.status(400).json({ code: -1121, msg: "Invalid symbol." });
+                  }
+                  // try next candidate
               }
-              console.warn(`[Proxy Race] Official candidates failed for ${targetUrl}, trying public proxies...`);
           }
       }
 
@@ -2490,18 +2528,10 @@ async function startServer() {
 
   app.get("/api/activation/status", (req, res) => {
     try {
-      ensureActivationDir();
-      const machineId = (req.query.machineId as string) || "";
-      if (!fs.existsSync(activationFile)) {
-        return res.json({ isActivated: false });
-      }
-      const data = JSON.parse(fs.readFileSync(activationFile, "utf-8"));
-      if (data && data.isActivated && (!machineId || data.machineId === machineId)) {
-        return res.json({ isActivated: true });
-      }
-      res.json({ isActivated: false });
+      // 🔒 暂时取消“防爆仓救世之星，安全授权锁”验证（打包安装默认放行，直接通过）
+      return res.json({ isActivated: true });
     } catch (err) {
-      res.json({ isActivated: false });
+      res.json({ isActivated: true });
     }
   });
 

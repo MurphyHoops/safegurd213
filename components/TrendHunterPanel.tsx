@@ -454,10 +454,10 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
                         </div>,
                         (p: Position, idx: number) => (
                             <div key={`${p.entryId}-${idx}`} className="bg-slate-800/80 p-3 rounded border border-slate-700 relative overflow-hidden shrink-0">
-                                <div className={`absolute left-0 top-0 bottom-0 w-1 ${p.unrealizedPnL >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+                                <div className={`absolute left-0 top-0 bottom-0 w-1 ${(p.unrealizedPnL ?? 0) >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
                                 <div className="flex justify-between items-center mb-1">
                                     <span className="text-xs font-bold text-white">{p.symbol}</span>
-                                    <span className={`text-[10px] font-mono font-bold ${p.unrealizedPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{p.unrealizedPnLPercentage.toFixed(2)}%</span>
+                                    <span className={`text-[10px] font-mono font-bold ${(p.unrealizedPnL ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(p.unrealizedPnLPercentage ?? 0).toFixed(2)}%</span>
                                 </div>
                                 <div className="flex justify-end">
                                     <button onClick={() => onClosePosition?.(p.symbol, p.side)} className="text-[10px] text-slate-500 hover:text-red-400 flex items-center gap-1"><Trash2 size={10}/> 撤单</button>

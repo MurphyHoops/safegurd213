@@ -341,8 +341,8 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
     }
   };
 
-  // If system is already activated and modal is not explicitly opened, do not render
-  if (isActivated && !isOpen) {
+  // 🔒 暂时取消安全授权锁验证：未主动打开时绝不渲染任何遮罩或弹窗，彻底杜绝全屏灰色遮罩
+  if (!isOpen) {
     return null;
   }
 
@@ -353,8 +353,8 @@ export const ActivationModal: React.FC<ActivationModalProps> = ({
         {/* Top Header Background Glow */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-3/4 h-28 bg-emerald-500/10 blur-3xl pointer-events-none rounded-full" />
 
-        {/* Modal Close Button (Only if already activated or opened from settings) */}
-        {isActivated && onClose && (
+        {/* Modal Close Button */}
+        {onClose && (
           <button 
             onClick={onClose}
             className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white hover:bg-slate-800/60 rounded-lg transition-colors z-10"

@@ -11,6 +11,16 @@
 ## 🔒 杠杆计算边界绝对铁律 (Leverage Calculation Boundary Rule)
 除了财务统计“可用余额 / 杠杆可用额”的时候用上“杠杆”计算外，全系统其余所有盈亏比例（包括所有止盈止损、救世策略如断臂求生/对冲盈利/回调盈利的触发阈值、持仓监控等）一律严格基于【标的资产原始价格变动幅度】，绝对不得置入杠杆比例计算！
 
+## 🔒 列表1全域原子化最小拆分单元绝对锁定铁律
+1. **列表1原子化最小拆分单元全景清单**：
+   - **UI 主面板与选择器容器**：`/modules/market-scanner/ScannerUI.tsx`、`/modules/market-scanner/components/List1_Selection.tsx`
+   - **三级过滤池独立盒子单元**：`/modules/market-scanner/components/VolumePoolBox.tsx`（成交量底池 5m）、`/modules/market-scanner/components/StartTrendPoolBox.tsx`（启动趋势底池 3m）、`/modules/market-scanner/components/SidewaysPoolBox.tsx`（横盘蓄势/宏观底池 4m）
+   - **参数控制与条件配置单元**：`/modules/market-scanner/components/Control.tsx`（头部自动/手动与刷新间隔）、`/modules/market-scanner/components/FilterSection.tsx`（基础过滤阈值）、`/modules/market-scanner/components/StartTrendSection.tsx`（启动趋势参数）、`/modules/market-scanner/components/MajorTrendSection.tsx`（横盘蓄势与回溯周期过滤参数）
+   - **执行动作与单币渲染单元**：`/modules/market-scanner/components/ActionSection.tsx`（一键开仓与平仓后立即开仓闭环状态机）、`/modules/market-scanner/components/Item.tsx`（单币紧凑行与详情折叠极值/多周期面板）、`/modules/market-scanner/components/WatchlistSection.tsx`（自选关注池）、`/modules/market-scanner/components/RulesModal.tsx`（规则释义弹窗）
+   - **底层扫描状态机与规则核心**：`/modules/market-scanner/useScannerLogic.ts`（多周期日K拉取、2秒单币节拍回溯极值判定、本地存储与缓存同步）、`/services/rules/list1_market.ts`（初筛数学过滤算法）、`/modules/market-scanner/types.ts`、`/modules/market-scanner/index.ts`
+2. **市场初筛永不清零·增量差量动态更新绝对铁律**：初筛流水线全链路（包括成交量底池、行情启动趋势底池、横盘蓄势底池、回溯周期极值底池及列表1最终展示）在启动新扫描或例行轮询时，**绝对严禁将底池或列表清零（清空为 [] 或 0）**！必须保留当前既有符合币种，在逐币扫描过程中严格实行**增量与差量动态更新机制**——仅对新符合规则的币种执行“增加”、对不再符合规则的币种执行“删减”，杜绝任何形式的中途清空与闪烁；本铁律全域严格锁定，永不得更改！
+3. **列表1全域原子化最小拆分单元未授权绝不可动铁律**：在完成列表1所有功能原子化拆分后，所有最小拆分单元（包括UI主面板、各独立底池盒子、参数控制与条件配置单元、执行动作与单币渲染单元、底层扫描状态机与规则核心等）全面进入最高级全域锁定！**凡是没有用户明确下达指定修改指令，绝对不得修改列表1上述任何一个拆分单元、组件、函数或配置文件中的任何一行代码（哪怕只有1个字符）！全域严格锁定！**
+
 ## 🔒 “WebSocket”极速连接通道全套代码绝对锁定铁律
 严禁在没有明确逐字指令的情况下修改任何关于【WebSocket 极速连接通道】的代码（涵盖：`/services/binanceWs.ts`、UserDataStream ListenKey 与成交直通解析、全市场行情推送、价格注册表与 Web Worker、服务端代理通道及前端双通道毫秒级竞速确认机制等所有相关代码）。任何涉及该模块的代码，哪怕只有1个字符或1行，若无特别明确逐字指令严禁擅自修改！若有特别原因确需涉及，必须先明确提问并等待用户明确确认授权后方可操作。
 
@@ -43,6 +53,21 @@
 2. **去重幂等注册表绝对锁定**：单笔砍仓/断臂减仓订单 ID（`binance_order_id` / 唯一流水 ID）记入防重注册表后立即物理加锁，严禁重复叠加任何差额。
 3. **权威去重核算与防污染纠偏**：以当前对冲生命周期内真实发生的平仓/砍仓流水为唯一依据，按 `orderId` 严格去重核算真实累计负债，自动识别并剔除任何历史残留的重复叠加脏数据，确保持仓双方与系统界面所见负债绝对真实无污染。
 4. **最小代码结构完全锁定**：`/services/debtManager.ts` 及其在 `marketSimulator.ts`、`PositionsListUI.tsx`、`TradeLogModal.tsx`、`strategy4_amputation.ts` 中的调用点全域锁定，严禁因后续任何修改破坏其原子化独立性！
+
+## 🔒 回溯周期过滤即时呈现与完整保留一致性锁定铁律
+1. **进行时即时呈现·绝不清零**：在“回溯周期过滤”扫描进行期间，只要任一币种通过判定符合规则，毫秒级立即加入候选集并直接呈现于市场初筛列表，绝不清零，杜绝任何中途闪烁或清空。
+2. **完好保留绝不突然减少**：扫描完成后，候选币种全部完好呈现在初筛列表中，绝不允许突然批量减少或刚进又删；且统计数字与初筛列表唯一定向币种行数100%绝对精准对应！
+3. **全域代码锁定**：列表1所有代码及状态机全域锁定，没有指令严禁未授权修改。
+
+## 🔒 砍仓亏损金额统一物理核算算法绝对锁定铁律
+1. **全链路统一核算公式**：断臂求生/止损砍仓在所有分支（即时成交回调、极速探针对账分支、1秒定时主动抓取分支及超时兜底对账补偿分支等）核算砍仓实际亏损金额时，必须 100% 统一使用且仅使用物理核算公式：
+   - 价格变动幅度差：`priceDiff = position.side === 'LONG' ? currentMark - position.entryPrice : position.entryPrice - currentMark`
+   - 砍仓实际数量：`cutAmount = customQty`（实际被削减的数量）
+   - 砍仓实际亏损金额：`calculatedPnl = priceDiff * cutAmount`
+   - 实现盈亏：`realizedPnL = tradePnl !== 0 ? tradePnl : calculatedPnl`
+2. **绝对严禁多重折算与残余持仓污染**：绝对严禁将 `priceDiff` 乘以全量持仓后再乘以 `(ratio / 100)`（避免异步扣减持仓量导致基数失真产生错误）；必须直接以实际砍仓削减数量 `cutAmount` 现场实时物理核算！
+3. **严格遵守杠杆计算边界铁律**：计算砍仓亏损金额时绝对不计入任何杠杆倍数，严格基于标的资产原始价格变动幅度与实际砍仓数量；全链路算法绝对物理锁定，严禁擅自修改！
+
 
 
 

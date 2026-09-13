@@ -109,12 +109,14 @@ export function analyzeList3Structure(
     if (task.direction === 'LONG' && !isGreen) isColorValid = false;
     if (task.direction === 'SHORT' && isGreen) isColorValid = false;
 
-    // --- METRIC 3: Post-Signal Extreme (DEFENSE BACKTRACE) ---
+    // --- METRIC 3: Post-Signal Extreme (DEFENSE & BREAKOUT PURITY BACKTRACE) ---
     const signalClose = closes[signalIdx];
     const signalHigh = highs[signalIdx];
     const signalLow = lows[signalIdx];
 
     let postSignalExtreme = task.price; 
+    let postSignalMaxHigh = -Infinity;
+    let postSignalMinLow = Infinity;
     
     if (signalIdx < idx) {
         const checkStart = signalIdx + 1; 
@@ -122,13 +124,29 @@ export function analyzeList3Structure(
             let minL = Infinity;
             for(let i = checkStart; i <= idx; i++) if(lows[i] < minL) minL = lows[i];
             postSignalExtreme = Math.min(minL, task.price); 
+
+            // 检查信号之后、当前K线之前的历史已完成K线最高价，判断是否曾发生过历史突破
+            let maxH = -Infinity;
+            for(let i = checkStart; i < idx; i++) {
+                if(highs[i] > maxH) maxH = highs[i];
+            }
+            postSignalMaxHigh = maxH;
         } else {
             let maxH = -Infinity;
             for(let i = checkStart; i <= idx; i++) if(highs[i] > maxH) maxH = highs[i];
             postSignalExtreme = Math.max(maxH, task.price);
+
+            // 检查信号之后、当前K线之前的历史已完成K线最低价，判断是否曾发生过历史突破
+            let minL = Infinity;
+            for(let i = checkStart; i < idx; i++) {
+                if(lows[i] < minL) minL = lows[i];
+            }
+            postSignalMinLow = minL;
         }
     } else {
         postSignalExtreme = task.price;
+        postSignalMaxHigh = -Infinity;
+        postSignalMinLow = Infinity;
     }
 
     // --- METRIC 4: Thrust Logic (New 4K Window Logic) ---
@@ -238,6 +256,8 @@ export function analyzeList3Structure(
             signalHigh: signalHigh, 
             signalLow: signalLow,   
             postSignalExtreme: postSignalExtreme,
+            postSignalMaxHigh: postSignalMaxHigh,
+            postSignalMinLow: postSignalMinLow,
             periodChange: task.periodChange, // Pass-through
             isReverse3K,
             ema10: getVal(ema10, idx, 10),

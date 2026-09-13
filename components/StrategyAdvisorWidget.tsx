@@ -49,15 +49,15 @@ const StrategyAdvisorWidget: React.FC<Props> = ({ recommendation, onApply, onIgn
                 <div className="grid grid-cols-3 gap-2 text-[9px] text-slate-500">
                     <div className="bg-slate-950 p-1.5 rounded border border-slate-800">
                         <span className="block mb-0.5">ADX</span>
-                        <span className={indicators.adx > 25 ? 'text-emerald-400 font-bold' : 'text-slate-400'}>{indicators.adx.toFixed(1)}</span>
+                        <span className={(indicators?.adx ?? 0) > 25 ? 'text-emerald-400 font-bold' : 'text-slate-400'}>{(indicators?.adx ?? 0).toFixed(1)}</span>
                     </div>
                     <div className="bg-slate-950 p-1.5 rounded border border-slate-800">
                         <span className="block mb-0.5">RSI</span>
-                        <span className={indicators.rsi > 70 || indicators.rsi < 30 ? 'text-orange-400 font-bold' : 'text-slate-400'}>{indicators.rsi.toFixed(1)}</span>
+                        <span className={(indicators?.rsi ?? 0) > 70 || (indicators?.rsi ?? 0) < 30 ? 'text-orange-400 font-bold' : 'text-slate-400'}>{(indicators?.rsi ?? 0).toFixed(1)}</span>
                     </div>
                     <div className="bg-slate-950 p-1.5 rounded border border-slate-800">
                         <span className="block mb-0.5">BBW</span>
-                        <span className="text-blue-400 font-bold">{(indicators.bbWidth*100).toFixed(1)}%</span>
+                        <span className="text-blue-400 font-bold">{((indicators?.bbWidth ?? 0)*100).toFixed(1)}%</span>
                     </div>
                 </div>
 

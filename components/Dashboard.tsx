@@ -20,11 +20,12 @@ interface Props {
     onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
     onResetBalance: (amount: number) => void;
     onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number) => void;
-    onVerifyPosition: (position: Position) => void;
+    onVerifyPosition: (position: Position | string) => void;
     onManualHedge?: (position: Position) => void;
     onManualAmputate?: (position: Position) => void;
     onManualRefill?: (position: Position) => void;
     onManualClosePair?: (position: Position) => void;
+    onUpdateSettings?: (section: keyof AppSettings, key: string, value: any) => void;
     onOpenLogs: () => void;
     onOpenTradeModal: () => void;
     isSimulating: boolean;
@@ -63,6 +64,7 @@ const Dashboard: React.FC<Props> = ({
     networkStatus,
     isOnline,
     onUpdateCustomSettings,
+    onUpdateSettings,
     manuallyClosedSymbols = new Set<string>()
 }) => {
     
@@ -103,6 +105,7 @@ const Dashboard: React.FC<Props> = ({
                 onBatchClose={onBatchClose}
                 onClearRecords={onClearRecords}
                 onUpdateCustomSettings={onUpdateCustomSettings}
+                onUpdateSettings={onUpdateSettings}
                 networkStatus={networkStatus}
                 isOnline={isOnline}
                 manuallyClosedSymbols={manuallyClosedSymbols}

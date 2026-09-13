@@ -11,13 +11,13 @@ export function useFinanceMonitorLogic(account: any, positions: Position[], real
         }, 0);
     }, [positions, realPrices]);
     
-    const walletBalance = account.marginBalance; 
+    const walletBalance = typeof account?.marginBalance === 'number' ? account.marginBalance : (Number(account?.marginBalance) || 0); 
     const equity = walletBalance + totalPnL;   
     const totalPnLPercentage = walletBalance > 0 ? (totalPnL / walletBalance) * 100 : 0;
     
-    const totalPositionValue = positions.reduce((sum, p) => sum + (p.amount * p.entryPrice), 0);
-    const longValue = positions.filter(p => p.side === PositionSide.LONG).reduce((sum, p) => sum + (p.amount * p.entryPrice), 0);
-    const shortValue = positions.filter(p => p.side === PositionSide.SHORT).reduce((sum, p) => sum + (p.amount * p.entryPrice), 0);
+    const totalPositionValue = positions.reduce((sum, p) => sum + ((p.amount || 0) * (p.entryPrice || 0)), 0);
+    const longValue = positions.filter(p => p.side === PositionSide.LONG).reduce((sum, p) => sum + ((p.amount || 0) * (p.entryPrice || 0)), 0);
+    const shortValue = positions.filter(p => p.side === PositionSide.SHORT).reduce((sum, p) => sum + ((p.amount || 0) * (p.entryPrice || 0)), 0);
 
     const CONTRACT_LEVERAGE = 20;
     const availableMarginWithLeverage = Math.max(0, (walletBalance + totalPnL) - (totalPositionValue / CONTRACT_LEVERAGE));

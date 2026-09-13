@@ -222,14 +222,20 @@ export const SYMBOL_TO_CHINESE_MAP: Record<string, string> = {
     'TRUMP': '川普',
     'MELANIA': '梅拉尼娅',
     'ANIME': '二次元',
-    'BERA': '熊链'
+    'BERA': '熊链',
+    'LOBSTER': '龙虾',
+    'CHILLGUY': '无所谓男',
+    'AI16Z': '小安德森',
+    'FARTCOIN': '放屁币',
+    'GRIFFAIN': '狮鹫',
+    'SWARMS': '蜂群'
 };
 
 // 中文别称/简称/行话 -> 英文代码映射
 export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
     // 顶级主流别称
-    '比特币': 'BTC', '大饼': 'BTC', '比特': 'BTC',
-    '以太坊': 'ETH', '以太': 'ETH', '二饼': 'ETH',
+    '比特币': 'BTC', '大饼': 'BTC', '比特': 'BTC', '比特现金': 'BCH', '太子': 'BCH', '皇太子': 'BCH',
+    '以太坊': 'ETH', '以太': 'ETH', '二饼': 'ETH', '以太经典': 'ETC', '经典以太': 'ETC', '原链': 'ETC', '末日战车': 'ETC',
     '币安币': 'BNB', '平台币': 'BNB',
     '索拉纳': 'SOL', '阳光': 'SOL', '索罗娜': 'SOL',
     '狗狗币': 'DOGE', '狗币': 'DOGE', '狗子': 'DOGE',
@@ -250,8 +256,6 @@ export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
     '老鼠': '1000RATS', '鼠币': '1000RATS',
     '戴帽狗': 'WIF', '帽子狗': 'WIF', '狗帽': 'WIF',
     '莱特币': 'LTC', '莱特': 'LTC', '辣条': 'LTC',
-    '比特现金': 'BCH', '太子': 'BCH', '皇太子': 'BCH',
-    '以太经典': 'ETC', '经典以太': 'ETC', '原链': 'ETC', '末日战车': 'ETC',
     '文件币': 'FIL', '飞尔': 'FIL',
     '宇宙': 'ATOM', '阿童木': 'ATOM',
     '统一': 'UNI', '独角兽': 'UNI',
@@ -271,8 +275,8 @@ export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
     '诺特': 'NOT', '点点币': 'NOT',
     '猫币': 'CATI', '猫咪': 'CATI',
     '仓鼠': 'HMSTR', '仓鼠快打': 'HMSTR',
-    '狗子币': 'DOGS',
-    '奈罗': 'NEIRO', '小狗': 'NEIRO',
+    '狗子币': 'DOGS', '小狗': 'DOGS',
+    '奈罗': 'NEIRO',
     '涡轮': 'TURBO', '涡轮增压': 'TURBO',
     '香蕉': 'BANANA',
     '人民': 'PEOPLE', '宪法': 'PEOPLE', '人民币': 'PEOPLE',
@@ -283,7 +287,7 @@ export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
     '模块化': 'TIA', '提亚': 'TIA',
     '符文': 'RUNE',
     '卡斯': 'KAS', '卡斯帕': 'KAS',
-    '圣徒': 'SEI',
+    '圣徒': 'SEI', '塞伊': 'SEI',
     '算法': 'ALGO', '艾尔格': 'ALGO',
     '电脑': 'ICP', '互联网计算机': 'ICP',
     '恒星': 'XLM', '恒星币': 'XLM',
@@ -329,10 +333,89 @@ export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
     '山羊': 'GOAT',
     '小草': 'GRASS',
     '奶牛': 'COW',
+    '鲸鱼': 'CETUS',
+    '小人': 'ACT',
+    '寻常': 'USUAL',
+    '塞纳': 'THE',
+    '魔法地毯': 'ME',
+    '单车': 'VELODROME',
+    '虚拟空间': 'VIRTUAL', '虚拟': 'VIRTUAL',
+    '五百指数': 'SPX',
+    '企鹅': 'PENGU', '小企鹅': 'PENGU',
+    '移动链': 'MOVE',
+    '声速': 'SONIC',
+    '宝贝狗': '1MBABYDOGE',
+    '卷轴': 'SCR',
+    '艾根': 'EIGEN',
+    '冲击波': 'BLAST',
+    '第零层': 'ZRO',
+    '零知识': 'ZK',
+    '云算力': 'IO',
+    '虫洞': 'W',
+    '张量': 'TNSR',
+    '传奇': 'SAGA',
+    '位元张量': 'TAO',
+    '全链': 'OMNI',
+    '再质押': 'REZ',
+    '跳弹': 'BB',
+    '期权': 'AEVO',
+    '传送门': 'PORTAL',
+    '墨提斯': 'METIS',
+    '像素': 'PIXEL',
+    '戴维森': 'DYM',
+    '蝠鲼': 'MANTA',
+    '阿尔特': 'ALT',
+    '核动力': 'ACE',
+    '光束': 'BEAMX',
+    '赛博': 'CYBER',
+    '独行侠': 'MAV',
+    '方舟': 'ARKM',
+    '魔法': 'MAGIC',
+    '质押验证': 'SSV',
+    '太空身份': 'ID',
+    '开放校园': 'EDU',
+    '炼金术': 'ACH',
+    '以太域名': 'ENS',
+    '日本币': 'JASMY',
+    '哈希达': 'HBAR',
+    '烤面包': 'BAKE',
+    '直播': 'LPT',
+    '克莱': 'KLAY',
+    '面具': 'MASK',
+    '全息': 'HOT',
+    '埃欧塔': 'IOTA',
+    '路印': 'LRC',
+    '极特': 'DGB',
+    '赛罗': 'CELO',
+    '一寸': '1INCH',
+    '大姨夫': 'YFI',
+    '蝙蝠': 'BAT',
+    '恩金': 'ENJ',
+    '京伯': 'KNC',
+    '阿蟹': 'AXS',
     '川普': 'TRUMP', '特朗普': 'TRUMP',
+    '梅拉尼娅': 'MELANIA',
     '熊链': 'BERA',
-    '二次元': 'ANIME'
+    '二次元': 'ANIME',
+    '龙虾': 'LOBSTER', '大龙虾': 'LOBSTER', '龙虾币': 'LOBSTER',
+    '无所谓男': 'CHILLGUY',
+    '放屁币': 'FARTCOIN', '屁币': 'FARTCOIN',
+    '小安德森': 'AI16Z',
+    '狮鹫': 'GRIFFAIN',
+    '蜂群': 'SWARMS'
 };
+
+// 自动将 SYMBOL_TO_CHINESE_MAP 中的中文反向同步到 CHINESE_TO_SYMBOL_MAP（确保 100% 双向覆盖）
+Object.entries(SYMBOL_TO_CHINESE_MAP).forEach(([sym, zh]) => {
+    const cleanSym = sym.replace(/USDT$/, '');
+    if (!CHINESE_TO_SYMBOL_MAP[zh]) {
+        CHINESE_TO_SYMBOL_MAP[zh] = cleanSym;
+    }
+    const zhWithBi = zh + '币';
+    if (!CHINESE_TO_SYMBOL_MAP[zhWithBi]) {
+        CHINESE_TO_SYMBOL_MAP[zhWithBi] = cleanSym;
+    }
+});
 
 /**
  * 获取指定代币代码的中文名称

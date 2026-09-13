@@ -25,11 +25,50 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     const [isAutoSync, setIsAutoSync] = usePersistedState<boolean>('SCANNER_VOLUME_POOL_AUTO_SYNC', true);
     const [syncIntervalMin, setSyncIntervalMin] = usePersistedState<number>('SCANNER_VOLUME_POOL_SYNC_INTERVAL_MIN', 5);
     const [isEditingInterval, setIsEditingInterval] = useState(false);
+    const [feedbackSymbols, setFeedbackSymbols] = useState<string[]>(() => {
+        try {
+            const raw = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    return Array.from(new Set(parsed.map((s: string) => String(s).replace('_LONG', '').replace('_SHORT', '')).filter(Boolean)));
+                }
+            }
+        } catch (_) {}
+        return [];
+    });
     const isMountedRef = useRef(true);
 
     useEffect(() => {
         isMountedRef.current = true;
-        return () => { isMountedRef.current = false; };
+
+        const handleCandidatesUpdate = (e: any) => {
+            const list = e.detail;
+            if (Array.isArray(list)) {
+                const clean = Array.from(new Set(list.map((s: string) => String(s).replace('_LONG', '').replace('_SHORT', '')).filter(Boolean))) as string[];
+                setFeedbackSymbols(clean);
+            } else {
+                try {
+                    const raw = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (Array.isArray(parsed)) {
+                            const clean = Array.from(new Set(parsed.map((s: string) => String(s).replace('_LONG', '').replace('_SHORT', '')).filter(Boolean))) as string[];
+                            setFeedbackSymbols(clean);
+                        }
+                    }
+                } catch (_) {}
+            }
+        };
+
+        window.addEventListener('scanner_major_trend_candidates_updated', handleCandidatesUpdate);
+        window.addEventListener('scanner_major_trend_completed', handleCandidatesUpdate);
+
+        return () => { 
+            isMountedRef.current = false; 
+            window.removeEventListener('scanner_major_trend_candidates_updated', handleCandidatesUpdate);
+            window.removeEventListener('scanner_major_trend_completed', handleCandidatesUpdate);
+        };
     }, []);
 
     // Load & filter symbols from raw Binance data cache or API
@@ -42,8 +81,8 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                     const items: VolumePoolItem[] = parsed
                         .filter((d: any) => d && d.symbol && d.symbol.endsWith('USDT'))
                         .map((d: any) => {
-                            const quoteVol = parseFloat(d.quoteVolume || d.volume24h || '0');
-                            const volM = quoteVol > 10000 ? +(quoteVol / 1000000).toFixed(2) : +(quoteVol).toFixed(2);
+                            const rawQuoteVol = parseFloat(d.quoteVolume || '0');
+                            const volM = +(rawQuoteVol / 1000000).toFixed(2);
                             return {
                                 symbol: d.symbol,
                                 volume24h: volM,
@@ -76,6 +115,8 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     const fetchLatestTickers = async () => {
         if (!isMountedRef.current) return;
         setIsFetching(true);
+        // 🔒 [永不清零·平滑差量更新铁律]: 严禁在拉取时清空既有数据，保留现有池直至新数据到达无缝替换
+        // setRawPool([]) 彻底移除，杜绝中途清空与闪烁
         try {
             const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/24hr?_t=${Date.now()}`);
             if (res.ok) {
@@ -155,25 +196,54 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         const maxVol8am = scanConfig.maxVolume8am ?? 0;
 
         // If neither volume filter is enabled, return sourceList directly
+        let baseList: VolumePoolItem[];
         if (!enable24h && !enable8am) {
-            return sourceList;
+            baseList = sourceList;
+        } else {
+            baseList = sourceList.filter(item => {
+                // Check 24H Volume if enabled
+                if (enable24h) {
+                    if (minVol24h > 0 && item.volume24h < minVol24h) return false;
+                    if (maxVol24h > 0 && item.volume24h > maxVol24h) return false;
+                }
+
+                // Check 8AM Volume if enabled
+                if (enable8am) {
+                    if (minVol8am > 0 && item.volume24h < minVol8am) return false;
+                    if (maxVol8am > 0 && item.volume24h > maxVol8am) return false;
+                }
+
+                return true;
+            });
         }
 
-        return sourceList.filter(item => {
-            // Check 24H Volume if enabled
-            if (enable24h) {
-                if (minVol24h > 0 && item.volume24h < minVol24h) return false;
-                if (maxVol24h > 0 && item.volume24h > maxVol24h) return false;
+        // 🔒【初筛币种回流交易额底池二次过滤闭环铁律】:
+        // 当每一轮回溯周期过滤结束时，将市场初筛/大行情候选集里的币种直接并入交易额过滤底池（如200个+15个=215个），
+        // 确保初筛既有币在后续启动趋势、横盘蓄势及回溯周期极值中进行全套闭环二次过滤！
+        if (feedbackSymbols.length > 0) {
+            const baseSymbolSet = new Set(baseList.map(i => i.symbol));
+            const injectedItems: VolumePoolItem[] = [];
+            feedbackSymbols.forEach(sym => {
+                if (!baseSymbolSet.has(sym)) {
+                    const found = rawPool.find(r => r.symbol === sym);
+                    if (found) {
+                        injectedItems.push(found);
+                    } else {
+                        injectedItems.push({
+                            symbol: sym,
+                            volume24h: 0,
+                            change24h: 0,
+                            price: 0
+                        });
+                    }
+                }
+            });
+            if (injectedItems.length > 0) {
+                return [...baseList, ...injectedItems];
             }
+        }
 
-            // Check 8AM Volume if enabled
-            if (enable8am) {
-                if (minVol8am > 0 && item.volume24h < minVol8am) return false;
-                if (maxVol8am > 0 && item.volume24h > maxVol8am) return false;
-            }
-
-            return true;
-        });
+        return baseList;
     }, [
         rawPool, 
         scanConfig.enableVol24h, 
@@ -181,7 +251,8 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         scanConfig.maxVolume,
         scanConfig.enableVol8am,
         scanConfig.minVolume8am,
-        scanConfig.maxVolume8am
+        scanConfig.maxVolume8am,
+        feedbackSymbols
     ]);
 
     // Save current filtered symbols to localStorage and notify other pools
@@ -368,7 +439,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                                         {item.symbol}
                                     </span>
                                     <span className="font-mono text-[8px] text-amber-400/90">
-                                        {item.volume24h >= 1000 ? `${(item.volume24h / 1000).toFixed(1)}B` : `${item.volume24h.toFixed(0)}M`}
+                                        {(item.volume24h ?? 0) >= 1000 ? `${((item.volume24h ?? 0) / 1000).toFixed(1)}B` : `${(item.volume24h ?? 0).toFixed(0)}M`}
                                     </span>
                                 </div>
                             ))

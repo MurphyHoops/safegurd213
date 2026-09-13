@@ -139,16 +139,6 @@ function formatHedgeTriggerDisplay(triggerReason?: string, hedgedPos?: Position,
                 return `（300）天极值（${extremePct}）%启动防爆对冲`;
             }
         }
-        // 判断是否为短期极值触发
-        if (hedgedPos.shortTermExtremeTriggerPrice !== undefined && hedgedPos.markPrice !== undefined && hedgedPos.markPrice > 0) {
-            const isShortBreached = hedgedPos.side === PositionSide.LONG 
-                ? hedgedPos.markPrice <= hedgedPos.shortTermExtremeTriggerPrice 
-                : hedgedPos.markPrice >= hedgedPos.shortTermExtremeTriggerPrice;
-            if (isShortBreached) {
-                const shortPct = hedgeSettings?.shortTermExtremePercent ?? 0.5;
-                return `短期极值（${shortPct}）%启动防爆对冲`;
-            }
-        }
     }
 
     // 默认展示
@@ -231,12 +221,7 @@ export const PositionItem: React.FC<Props> = React.memo(({
             candidates.push({ price, label: '亏损值' });
         }
 
-        // 2. 300天极值比例对冲
-        if (globalHedgingSettings?.extremeHedgeEnabled && p.extremeHedgeTriggerPrice) {
-            candidates.push({ price: Number(p.extremeHedgeTriggerPrice), label: '极值防爆' });
-        }
-
-        // 3. 趋势防爆 EMA
+        // 2. 趋势防爆 EMA
         if (globalHedgingSettings?.trendHedgeEnabled && p.entryEmas) {
             const period = Number(globalHedgingSettings.trendHedgeEmaPeriod || 80);
             let firewallPrice = 0;
@@ -260,11 +245,6 @@ export const PositionItem: React.FC<Props> = React.memo(({
             const triggerDistanceAbsolute = (signalHigh - signalLow) * (1 + ratio);
             const price = p.side === PositionSide.LONG ? signalHigh - triggerDistanceAbsolute : signalLow + triggerDistanceAbsolute;
             candidates.push({ price, label: '破位防爆' });
-        }
-
-        // 5. 短期极值比例对冲
-        if (globalHedgingSettings?.shortTermExtremeEnabled && p.shortTermExtremeTriggerPrice) {
-            candidates.push({ price: Number(p.shortTermExtremeTriggerPrice), label: '短期极值' });
         }
 
         // Choose the closest trigger candidate
@@ -369,17 +349,17 @@ export const PositionItem: React.FC<Props> = React.memo(({
                                 <span className="line-through scale-[0.95] origin-left">AI智能</span>
                             </div>
                         ) : isAiActivated ? (
-                            <div className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 text-[8px] font-black px-1.5 py-0.5 rounded-sm border border-emerald-500/35 animate-pulse" title={`AI智能逃顶已激活！最高利润: ${maxPnl.toFixed(2)}% (已越过 ${actThreshold}% 启动线)`}>
+                            <div className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 text-[8px] font-black px-1.5 py-0.5 rounded-sm border border-emerald-500/35 animate-pulse" title={`AI智能逃顶已激活！最高利润: ${(maxPnl ?? 0).toFixed(2)}% (已越过 ${actThreshold}% 启动线)`}>
                                 <Brain size={8} />
                                 <span>AI智能-追盈中</span>
                             </div>
                         ) : !isPositionSizeMet ? (
-                            <div className="flex items-center gap-1 bg-red-500/10 text-red-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-red-500/30" title={`金额未达标！当前持仓金额: ${positionValue.toFixed(1)}U < AI起投金额: ${minPosition}U`}>
+                            <div className="flex items-center gap-1 bg-red-500/10 text-red-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-red-500/30" title={`金额未达标！当前持仓金额: ${(positionValue ?? 0).toFixed(1)}U < AI起投金额: ${minPosition}U`}>
                                 <Brain size={8} className="text-red-400/70" />
                                 <span>金额未达标</span>
                             </div>
                         ) : (
-                            <div className="flex items-center gap-1 bg-slate-800/40 text-slate-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-slate-700/60" title={`AI智能监控中 (待触发启动门槛)。当前最高利润: ${maxPnl.toFixed(2)}% / 启动门槛: ${actThreshold}%`}>
+                            <div className="flex items-center gap-1 bg-slate-800/40 text-slate-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border border-slate-700/60" title={`AI智能监控中 (待触发启动门槛)。当前最高利润: ${(maxPnl ?? 0).toFixed(2)}% / 启动门槛: ${actThreshold}%`}>
                                 <Brain size={8} className="text-slate-500" />
                                 <span>AI待命</span>
                             </div>
@@ -407,18 +387,18 @@ export const PositionItem: React.FC<Props> = React.memo(({
             {/* 3. PnL & Stats */}
             <div className="w-[20%] flex items-center justify-end gap-3 pr-4">
                 <div className="flex items-center gap-0.5 text-[10px] font-mono bg-slate-800/80 px-1.5 py-0.5 rounded-sm border border-slate-700 shrink-0">
-                    <span className="font-bold text-slate-200">{(p.amount * livePrice).toFixed(0)}</span>
+                    <span className="font-bold text-slate-200">{((p.amount || 0) * (livePrice || 0)).toFixed(0)}</span>
                     <span className="text-slate-500">U</span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
                     {p.isBacktestRecord ? (
                         <>
                             <span className={`font-mono text-xs font-bold ${currentPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {currentPnl >= 0 ? '+' : ''}{p.amount > 1000 ? currentPnl.toFixed(2) : currentPnl.toFixed(4)}
+                                {currentPnl >= 0 ? '+' : ''}{p.amount > 1000 ? (currentPnl ?? 0).toFixed(2) : (currentPnl ?? 0).toFixed(4)}
                             </span>
                             <span className="text-slate-700 text-[10px]">/</span>
                             <span className={`font-mono text-xs font-bold ${currentPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {currentPnlPct >= 0 ? '+' : ''}{currentPnlPct.toFixed(3)}%
+                                {currentPnlPct >= 0 ? '+' : ''}{(currentPnlPct ?? 0).toFixed(3)}%
                             </span>
                         </>
                     ) : (
@@ -448,7 +428,7 @@ export const PositionItem: React.FC<Props> = React.memo(({
                 {showHedgeStats && (
                     <div className="flex items-center gap-1 text-[9px] text-slate-400 bg-slate-800/50 px-1.5 py-0.5 rounded shrink-0">
                         <span>负债:</span>
-                        <span className="text-red-400 font-mono font-bold">{totalDebt.toFixed(2)}U</span>
+                        <span className="text-red-400 font-mono font-bold">{(totalDebt ?? 0).toFixed(2)}U</span>
                     </div>
                 )}
             </div>
@@ -475,11 +455,11 @@ export const PositionItem: React.FC<Props> = React.memo(({
                                 title={candidates.map(c => `${c.label}启动价格: ${formatPrice(c.price)}`).join(' | ')}
                             >
                                 {candidates.map((cand, idx) => {
-                                    const distPct = livePrice > 0 ? Math.abs((livePrice - cand.price) / livePrice) * 100 : 0;
+                                    const distPct = (livePrice > 0 && cand.price) ? Math.abs((livePrice - cand.price) / livePrice) * 100 : 0;
                                     return (
                                         <span key={idx} className="font-mono text-[9px] text-blue-100 flex items-center">
                                             <span className="text-[8px] text-blue-400 font-bold mr-0.5">{cand.label}</span>
-                                            <span>{distPct.toFixed(2)}%</span>
+                                            <span>{(distPct ?? 0).toFixed(2)}%</span>
                                             {idx < candidates.length - 1 && <span className="mx-1 text-blue-500/60 font-sans">;</span>}
                                         </span>
                                     );

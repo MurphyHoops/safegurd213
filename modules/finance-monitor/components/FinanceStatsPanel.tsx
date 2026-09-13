@@ -77,21 +77,21 @@ export const FinanceStatsPanel: React.FC<Props> = ({
                         )}
                     </div>
                     <div className="flex items-baseline gap-1">
-                        <span className="text-lg font-mono text-slate-100 font-bold">{availableMarginWithLeverage.toFixed(0)}</span>
+                        <span className="text-lg font-mono text-slate-100 font-bold">{(availableMarginWithLeverage ?? 0).toFixed(0)}</span>
                         <span className="text-slate-700 text-[10px]">/</span>
-                        <span className="text-md font-mono text-slate-400">{walletBalance.toFixed(0)}</span>
+                        <span className="text-md font-mono text-slate-400">{(walletBalance ?? 0).toFixed(0)}</span>
                     </div>
                 </div>
 
                 <div className="flex flex-col justify-center pl-3 border-l border-slate-800/50">
                     <span className="text-[9px] text-slate-500 font-bold uppercase mb-0.5">健康度 / 浮盈</span>
                     <div className="flex items-baseline gap-1">
-                        <span className={`text-lg font-mono font-bold ${calculatedMarginRatio >= 50 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                            {calculatedMarginRatio.toFixed(1)}%
+                        <span className={`text-lg font-mono font-bold ${(calculatedMarginRatio ?? 0) >= 50 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {(calculatedMarginRatio ?? 0).toFixed(1)}%
                         </span>
                         <span className="text-slate-700 text-[10px]">/</span>
-                        <div className={`flex items-baseline gap-1 text-[13px] font-mono font-bold ${totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                            <span>{totalPnL >= 0 ? '+' : ''}{totalPnL.toFixed(1)}</span>
+                        <div className={`flex items-baseline gap-1 text-[13px] font-mono font-bold ${(totalPnL ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            <span>{(totalPnL ?? 0) >= 0 ? '+' : ''}{(totalPnL ?? 0).toFixed(1)}</span>
                         </div>
                     </div>
                 </div>
@@ -99,18 +99,18 @@ export const FinanceStatsPanel: React.FC<Props> = ({
                 <div className="flex flex-col justify-center pl-3 border-l border-slate-800/50">
                     <span className="text-[9px] text-slate-500 font-bold uppercase mb-0.5">持仓/多/空 (U)</span>
                     <div className="flex items-baseline gap-1">
-                        <span className="text-lg font-mono text-white font-bold">{totalPositionValue.toFixed(0)}</span>
+                        <span className="text-lg font-mono text-white font-bold">{(totalPositionValue ?? 0).toFixed(0)}</span>
                         <span className="text-slate-700 text-[10px]">/</span>
-                        <span className="text-md font-mono text-emerald-400">{longValue.toFixed(0)}</span>
+                        <span className="text-md font-mono text-emerald-400">{(longValue ?? 0).toFixed(0)}</span>
                         <span className="text-slate-700 text-[10px]">/</span>
-                        <span className="text-md font-mono text-red-400">{shortValue.toFixed(0)}</span>
+                        <span className="text-md font-mono text-red-400">{(shortValue ?? 0).toFixed(0)}</span>
                     </div>
                 </div>
 
                 <div className="flex flex-col justify-center pl-3 border-l border-slate-800/50">
                     <span className="text-[9px] text-slate-500 font-bold uppercase mb-0.5">系统负债 (H-SL)</span>
                     <div className="flex items-baseline gap-1">
-                        <span className="text-lg font-mono text-amber-500 font-bold">{totalHedgeSLAmount.toFixed(1)}</span>
+                        <span className="text-lg font-mono text-amber-500 font-bold">{(totalHedgeSLAmount ?? 0).toFixed(1)}</span>
                         <span className="text-[10px] text-slate-600 ml-1 font-bold">U</span>
                     </div>
                 </div>
