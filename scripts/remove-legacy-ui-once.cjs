@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const root = process.cwd();
 const read = p => fs.readFileSync(path.join(root, p), 'utf8');
 const write = (p, s) => fs.writeFileSync(path.join(root, p), s, 'utf8');
@@ -8,6 +9,14 @@ function replaceRequired(text, oldText, newText, label) {
   if (!text.includes(oldText)) throw new Error(`Expected block not found: ${label}`);
   return text.replace(oldText, newText);
 }
+
+// Restore the backtest universe from the known-good aistudio-dev baseline first,
+// then remove only the retired SettingsPanel prop. This guarantees no accidental
+// backtest behavior changes from cleanup work.
+const backtestPath = 'modules/backtester/BacktestUniverse.tsx';
+let backtest = execFileSync('git', ['show', `origin/aistudio-dev:${backtestPath}`], { encoding: 'utf8' });
+backtest = replaceRequired(backtest, '                                onViewSource={() => {}}\n', '', 'backtest onViewSource callback');
+write(backtestPath, backtest);
 
 // --- App.tsx: remove only references to the retired systems ---
 let app = read('App.tsx');
