@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/cleanup-legacy-once.cjs
       - .github/workflows/legacy-cleanup-once.yml
+      - modules/system-core/types.ts
 
 permissions:
   contents: write
