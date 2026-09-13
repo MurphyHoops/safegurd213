@@ -34,7 +34,6 @@ interface Props {
         tradeCount: number;
         logCount: number;
     };
-    onViewSource: () => void;
     onOpenManual: () => void; 
     onRestoreSettings: (settings: AppSettings) => void;
     onOpenSaviorLab: (tab: 'DNA' | 'BACKTEST') => void;

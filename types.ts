@@ -380,21 +380,6 @@ export interface AppSettings {
     trendHunter: TrendHunterSettings;
 }
 
-export interface LicenseInfo {
-    isActive: boolean;
-    expirationDate: number;
-    planName: string;
-}
-
-export interface SubscriptionPlan {
-    id: string;
-    name: string;
-    durationMonths: number;
-    price: number;
-    tag?: string;
-    popular?: boolean;
-}
-
 export interface StrategyRecommendation {
     symbol: string;
     timestamp: number;

@@ -10,10 +10,7 @@ import { ScannerDashboard } from './components/ScannerDashboard';
 import { SaviorLab } from './components/SaviorLab';
 import TrendHunterPanel from './components/TrendHunterPanel';
 import UserManualModal from './components/UserManualModal';
-import SourceCodeModal from './components/SourceCodeModal';
-import SubscriptionModal from './components/SubscriptionModal';
 import StrategyAdvisorWidget from './components/StrategyAdvisorWidget';
-import { subscriptionService } from './services/subscriptionService';
 import { fetchWithFallback } from './services/apiService'; 
 import { audioService } from './services/audioService';
 import { logger } from './services/monitor/monitorService';
@@ -25,7 +22,6 @@ import { binanceWs } from './services/binanceWs';
 import { normalizeSymbol, resolvePrice, isMajorCoin, isMemeScaledCoin } from './services/symbolUtils';
 import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
-import { ActivationModal } from './components/ActivationModal';
 import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock, AlertTriangle, Trash2 } from 'lucide-react'; 
 
 import { DEFAULT_SETTINGS } from './config/defaultSettings';
@@ -153,30 +149,6 @@ const AppContent: React.FC = () => {
             return [];
         }
     });
-    // 🔒 暂时取消“防爆仓救世之星，安全授权锁”验证（打包安装直接放行，无需实名验证）
-    const [isSystemActivated, setIsSystemActivated] = useState<boolean>(true);
-    const [showSecurityLockModal, setShowSecurityLockModal] = useState<boolean>(false);
-
-    useEffect(() => {
-        try {
-            localStorage.setItem('SAVIOR_ACTIVATED', 'true');
-        } catch {}
-        const handleOpen = () => setShowSecurityLockModal(true);
-        window.addEventListener('open_security_lock', handleOpen);
-        (window as any).openSecurityLock = () => setShowSecurityLockModal(true);
-
-        return () => {
-            window.removeEventListener('open_security_lock', handleOpen);
-        };
-    }, []);
-
-    const handleSystemActivated = useCallback(() => {
-        setIsSystemActivated(true);
-        setShowSecurityLockModal(false);
-        try {
-            localStorage.setItem('SAVIOR_ACTIVATED', 'true');
-        } catch {}
-    }, []);
     const [systemEvents, setSystemEvents] = useState<SystemEvent[]>([]);
     const [realPrices, setRealPrices] = useState<Record<string, number>>({});
     const lastUiUpdateRef = useRef<number>(0);
@@ -816,8 +788,6 @@ const AppContent: React.FC = () => {
 
     const [showTrendHunter, setShowTrendHunter] = useState(false);
     const [showUserManual, setShowUserManual] = useState(false);
-    const [showSourceCode, setShowSourceCode] = useState(false);
-    const [showSubscription, setShowSubscription] = useState(false);
     const [chartSymbol, setChartSymbol] = useState<string | null>(null);
     const [chartEntryPrice, setChartEntryPrice] = useState<number | undefined>(undefined);
     const [chartEntryTime, setChartEntryTime] = useState<number | undefined>(undefined);
@@ -4185,13 +4155,6 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         }
     }, [settings]);
 
-    useEffect(() => {
-        const status = subscriptionService.getLicenseStatus();
-        if (!status.isActive) {
-            setShowSubscription(true);
-        }
-    }, []);
-
     if (bootError) {
         return (
             <div className="h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
@@ -4257,14 +4220,6 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
 
     return (
         <div className="flex h-screen bg-slate-950 text-slate-200 overflow-hidden font-sans relative">
-            {showSecurityLockModal && (
-                <ActivationModal 
-                    isActivated={isSystemActivated}
-                    isOpen={showSecurityLockModal}
-                    onClose={() => setShowSecurityLockModal(false)}
-                    onActivated={handleSystemActivated} 
-                />
-            )}
             
             <div className="flex flex-1 min-w-0 transition-all duration-300">
             <div className="w-80 border-r border-slate-800 flex-shrink-0">
@@ -4282,7 +4237,6 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     isSimulating={isSimulating}
                     previewData={[]}
                     systemStats={{ balance: account.totalBalance, positionCount: positions.length, tradeCount: tradeLogs.length, logCount: logs.length }}
-                    onViewSource={() => setShowSourceCode(true)}
                     onOpenManual={() => setShowUserManual(true)}
                     onRestoreSettings={(s) => setSettings(prev => deepMerge(prev, s))}
                     onBatchOpen={handleBatchOpen}
@@ -4389,7 +4343,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     networkStatus={networkStatus}
                     isOnline={isOnline}
                     settings={settings.scanner} 
-                    isVisible={isSystemActivated && showScanner}
+                    isVisible={showScanner}
                     onClose={() => setShowScanner(false)}
                     onOpenPosition={handleOpenPosition}
                     onClosePosition={handleClosePosition}
@@ -4462,14 +4416,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             )}
 
             {showUserManual && <UserManualModal onClose={() => setShowUserManual(false)} />}
-            {showSourceCode && <SourceCodeModal onClose={() => setShowSourceCode(false)} />}
             
-            <SubscriptionModal 
-                isOpen={showSubscription} 
-                onSuccess={() => setShowSubscription(false)} 
-                isLocked={!subscriptionService.getLicenseStatus().isActive}
-                onClose={() => setShowSubscription(false)}
-            />
 
             {chartSymbol && (
                 <KlineChartModal

@@ -1,200 +1,345 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { X, Loader2, Clock, FastForward, Rewind, Activity, BarChart3 } from 'lucide-react';
-import { AppSettings, AccountData, Position, TradeLog, LogEntry } from '../../types';
-import SettingsPanel from '../../components/SettingsPanel';
-import Dashboard from '../../components/Dashboard';
-import { ScannerDashboard } from '../../components/ScannerDashboard';
-import { MarketProvider } from '../../store/MarketContext';
-import { BacktestContext } from './BacktestContext';
 
-interface Props {
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { AppSettings, AccountData, Position, TradeLog, LogEntry, SystemEvent, PositionSide, KLine } from '../../types';
+import Dashboard from '../../components/Dashboard';
+import SettingsPanel from '../../components/SettingsPanel';
+import TradeLogModal from '../../components/TradeLogModal';
+import { LogCenterModule } from '../log-center';
+import { BacktestScannerDashboard } from './mirrored/BacktestScannerDashboard';
+import { Play, Pause, SkipForward, RotateCcw, X, Clock, TrendingUp, BarChart2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useBacktest } from './BacktestContext';
+
+interface BacktestUniverseProps {
     settings: AppSettings;
+    klinesMap: Record<string, Record<string, KLine[]>>; // { symbol: { interval: KLine[] } }
+    initialBalance: number;
     onClose: () => void;
 }
 
-export const BacktestUniverse: React.FC<Props> = ({ settings, onClose }) => {
-    const [backtestViewMode, setBacktestViewMode] = useState<'DASHBOARD' | 'SCANNER'>('DASHBOARD');
-    const [isRunning, setIsRunning] = useState(false);
-    const [speed, setSpeed] = useState(1);
-    const [currentTime, setCurrentTime] = useState(Date.now());
-    const [progress, setProgress] = useState(0);
+export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, klinesMap, initialBalance, onClose }) => {
+    const {
+        virtualTime, setVirtualTime,
+        realPrices,
+        account, setAccount,
+        positions, setPositions,
+        logs, setLogs,
+        tradeLogs, setTradeLogs,
+        isPlaying, setIsPlaying,
+        speed, setSpeed,
+        currentIndex, setCurrentIndex,
+        totalSteps
+    } = useBacktest();
 
-    const [account] = useState<AccountData>({ marginBalance: 10000, totalBalance: 10000, maintenanceMargin: 0, marginRatio: 999 });
-    const [positions, setPositions] = useState<Position[]>([]);
-    const [tradeLogs, setTradeLogs] = useState<TradeLog[]>([]);
-    const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [realPrices] = useState<Record<string, number>>({});
+    const symbols = Object.keys(klinesMap);
+    const baseInterval = Object.keys(klinesMap[symbols[0]]).sort()[0];
+    const baseKlines = klinesMap[symbols[0]][baseInterval];
 
-    const addLog = useCallback((type: LogEntry['type'], message: string) => {
-        setLogs(prev => [{
-            id: Date.now().toString() + Math.random(),
-            timestamp: new Date(),
-            type,
-            message
-        }, ...prev].slice(0, 300));
-    }, []);
+    const [showScanner, setShowScanner] = useState(true);
+    const [backtestViewMode, setBacktestViewMode] = useState<'DASHBOARD' | 'PIPELINE'>('PIPELINE'); // Default to PIPELINE view for a highly active sandbox feel!
+    const [showTradeLogModal, setShowTradeLogModal] = useState(false);
+    const [tradeLogSearchSymbol, setTradeLogSearchSymbol] = useState<string>('');
+
+    const timerRef = useRef<any>(null);
+
+    // --- TICK LOGIC ---
+    const handleTick = useCallback(() => {
+        setCurrentIndex(prev => {
+            if (prev >= totalSteps - 1) {
+                setIsPlaying(false);
+                return prev;
+            }
+            const next = Math.min(prev + speed, totalSteps - 1);
+            const timestamp = baseKlines[next].time;
+            setVirtualTime(timestamp);
+            return next;
+        });
+    }, [speed, totalSteps, baseKlines, setIsPlaying, setVirtualTime, setCurrentIndex]);
 
     useEffect(() => {
-        if (!isRunning) return;
-        const timer = setInterval(() => {
-            setCurrentTime(t => t + 60_000 * speed);
-            setProgress(p => Math.min(100, p + 0.05 * speed));
-        }, 1000);
-        return () => clearInterval(timer);
-    }, [isRunning, speed]);
+        if (isPlaying) {
+            timerRef.current = setInterval(handleTick, 100); // 10 ticks per second
+        } else {
+            clearInterval(timerRef.current);
+        }
+        return () => clearInterval(timerRef.current);
+    }, [isPlaying, handleTick]);
 
-    const resetBacktest = () => {
-        setIsRunning(false);
-        setProgress(0);
-        setCurrentTime(Date.now());
-        setPositions([]);
-        setTradeLogs([]);
-        setLogs([]);
-        addLog('INFO', '回测环境已重置');
-    };
+    // --- HANDLERS ---
+    const handleOpenPosition = useCallback((symbol: string, side: PositionSide, amount: number, price: number) => {
+        const newPos: Position = {
+            symbol,
+            side,
+            amount,
+            entryPrice: price,
+            markPrice: price,
+            unrealizedPnL: 0,
+            unrealizedPnLPercentage: 0,
+            entryTime: virtualTime,
+            isHedged: false,
+            liquidationPrice: side === 'LONG' ? price * 0.95 : price * 1.05,
+            entryId: Date.now().toString(),
+            isBacktestRecord: true // MARK FOR BACKTEST MONITOR
+        };
+        setPositions(prev => [...prev, newPos]);
+        setLogs(prev => [{
+            id: Date.now().toString(),
+            timestamp: new Date(virtualTime),
+            type: 'SUCCESS',
+            message: `[回测] 开仓成功: ${symbol} ${side} @ ${price}`
+        }, ...prev]);
+    }, [virtualTime, setPositions, setLogs]);
+
+    const handleClosePosition = useCallback((symbol: string, side: PositionSide) => {
+        setPositions(prev => {
+            const pos = prev.find(p => p.symbol === symbol && p.side === side);
+            if (pos) {
+                const pnl = pos.unrealizedPnL;
+                setAccount(acc => ({
+                    ...acc,
+                    totalBalance: acc.totalBalance + pnl,
+                    marginBalance: acc.marginBalance + pnl
+                }));
+                setTradeLogs(logs => [...logs, {
+                    symbol,
+                    side,
+                    entryPrice: pos.entryPrice,
+                    exitPrice: pos.markPrice,
+                    pnl,
+                    pnlPercent: pos.unrealizedPnLPercentage,
+                    exitTime: virtualTime,
+                    reason: 'MANUAL'
+                } as any]);
+            }
+            return prev.filter(p => !(p.symbol === symbol && p.side === side));
+        });
+    }, [virtualTime, setPositions, setAccount, setTradeLogs]);
+
+    const virtualTimeRef = useRef(virtualTime);
+    useEffect(() => {
+        virtualTimeRef.current = virtualTime;
+    }, [virtualTime]);
+
+    const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string) => {
+        const now = virtualTimeRef.current;
+        setLogs(prev => [{
+            id: Date.now().toString() + Math.random(),
+            timestamp: new Date(now),
+            type: type as any,
+            message
+        }, ...prev]);
+    }, [setLogs]);
 
     return (
-        <BacktestContext.Provider value={{
-            isBacktest: true,
-            currentTime,
-            speed,
-            setSpeed,
-            isRunning,
-            setIsRunning,
-            progress
-        } as any}>
-            <MarketProvider>
-                <div className="fixed inset-0 z-[100] bg-[#0b0e11] text-slate-200 flex flex-col">
-                    <div className="h-14 border-b border-slate-800 flex items-center justify-between px-4 bg-slate-950 shrink-0">
-                        <div className="flex items-center gap-3">
-                            <BarChart3 className="text-amber-400" size={20}/>
-                            <div>
-                                <div className="font-bold text-sm text-white">历史回测宇宙</div>
-                                <div className="text-[10px] text-slate-500">Backtest Universe · 隔离运行环境</div>
-                            </div>
+        <div className="fixed inset-0 z-[1000] bg-slate-950 text-slate-200 flex flex-col overflow-hidden font-sans">
+            {/* Top Control Bar */}
+            <div className="bg-slate-900 border-b border-slate-800 p-3 flex items-center justify-between shadow-xl">
+                <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-2">
+                        <div className="p-2 bg-indigo-500/20 rounded-lg">
+                            <Clock className="text-indigo-400" size={18} />
                         </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setBacktestViewMode('DASHBOARD')}
-                                className={`px-3 py-1.5 rounded text-xs ${backtestViewMode === 'DASHBOARD' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400'}`}
-                            >
-                                仪表盘
-                            </button>
-                            <button
-                                onClick={() => setBacktestViewMode('SCANNER')}
-                                className={`px-3 py-1.5 rounded text-xs ${backtestViewMode === 'SCANNER' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400'}`}
-                            >
-                                扫描器
-                            </button>
-                            <button onClick={onClose} className="p-2 hover:bg-red-900/50 rounded text-slate-400 hover:text-white transition-colors">
-                                <X size={20}/>
-                            </button>
+                        <div>
+                            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">虚拟时间 (VIRTUAL TIME)</div>
+                            <div className="text-xs font-mono text-white">{new Date(virtualTime).toLocaleString()}</div>
                         </div>
                     </div>
+                    
+                    <div className="h-8 w-px bg-slate-800" />
 
-                    <div className="h-14 border-b border-slate-800 bg-slate-900/70 px-4 flex items-center gap-3 shrink-0">
-                        <button
-                            onClick={() => setIsRunning(v => !v)}
-                            className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold"
-                        >
-                            {isRunning ? '暂停' : '开始'}
+                    <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg p-1">
+                        <button onClick={() => setCurrentIndex(0)} className="p-2 hover:bg-slate-800 rounded text-slate-400"><RotateCcw size={16}/></button>
+                        <button onClick={() => setIsPlaying(!isPlaying)} className="p-2 bg-indigo-600 hover:bg-indigo-500 rounded text-white shadow-lg shadow-indigo-900/20">
+                            {isPlaying ? <Pause size={16}/> : <Play size={16}/>}
                         </button>
-                        <button onClick={resetBacktest} className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs">重置</button>
-                        <button onClick={() => setSpeed(Math.max(1, speed / 2))} className="p-1.5 bg-slate-800 rounded"><Rewind size={14}/></button>
-                        <span className="text-xs font-mono w-10 text-center">{speed}x</span>
-                        <button onClick={() => setSpeed(Math.min(64, speed * 2))} className="p-1.5 bg-slate-800 rounded"><FastForward size={14}/></button>
-                        <div className="h-2 flex-1 bg-slate-800 rounded overflow-hidden ml-3">
-                            <div className="h-full bg-amber-500" style={{ width: `${progress}%` }}/>
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono">
-                            <Clock size={12}/>{new Date(currentTime).toLocaleString()}
-                        </div>
+                        <button onClick={handleTick} className="p-2 hover:bg-slate-800 rounded text-slate-400"><SkipForward size={16}/></button>
+                        
+                        <div className="h-6 w-px bg-slate-800 mx-1" />
+                        
+                        <select 
+                            value={speed} 
+                            onChange={(e) => setSpeed(parseInt(e.target.value))}
+                            className="bg-transparent text-[10px] font-bold text-slate-400 outline-none px-2"
+                        >
+                            <option value={1}>1x 速度</option>
+                            <option value={5}>5x 速度</option>
+                            <option value={15}>15x 速度</option>
+                            <option value={60}>60x 速度</option>
+                        </select>
                     </div>
 
-                    <div className="flex-1 flex overflow-hidden relative bg-[#0b0e11]">
-                        {backtestViewMode === 'DASHBOARD' ? (
-                            <>
-                                <div className="w-80 border-r border-slate-800 flex-shrink-0 opacity-50 pointer-events-none">
-                                    <SettingsPanel 
-                                        settings={settings} 
-                                        handleChange={() => {}}
-                                        onFactoryReset={() => {}}
-                                        onOpenScanner={() => {}}
-                                        onToggleSim={() => {}}
-                                        isSimulating={true}
-                                        previewData={[]}
-                                        systemStats={{ balance: account.totalBalance, positionCount: positions.length, tradeCount: tradeLogs.length, logCount: logs.length }}
-                                        onOpenManual={() => {}}
-                                        onRestoreSettings={() => {}}
-                                        onBatchOpen={() => {}}
-                                        onOpenSaviorLab={() => {}}
-                                    />
-                                </div>
+                    <div className="flex-1 max-w-xs">
+                        <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                            <div 
+                                className="h-full bg-indigo-500 transition-all duration-300" 
+                                style={{ width: `${(currentIndex / totalSteps) * 100}%` }}
+                            />
+                        </div>
+                    </div>
+                </div>
 
-                                <div className="flex-1 flex flex-col min-w-0">
-                                    <div className="flex-1 overflow-auto p-2">
-                                        <Dashboard 
-                                            account={account}
-                                            positions={positions}
-                                            tradeLogs={tradeLogs}
-                                            realPrices={realPrices}
-                                            networkStatus="healthy"
-                                            isOnline={true}
-                                            onRowLongPress={() => {}}
-                                            onShowHistory={() => {}}
-                                            hasHistory={() => false}
-                                            onClearPositions={() => setPositions([])}
-                                            onClosePosition={() => {}}
-                                            onDeletePosition={() => {}}
-                                            onBatchClose={() => setPositions([])}
-                                            onClearRecords={() => setTradeLogs([])}
-                                            onResetBalance={() => {}}
-                                            onOpenChart={() => {}}
-                                            onVerifyPosition={() => {}}
-                                            onOpenLogs={() => {}}
-                                            onOpenTradeModal={() => {}}
-                                            isSimulating={true}
-                                            onToggleSimulation={() => {}}
-                                            onShowSymbolTradeLogs={() => {}}
-                                            globalAutoReopen={false}
-                                            onToggleLoop={() => {}}
-                                            onOpenScanner={() => setBacktestViewMode('SCANNER')}
-                                            settings={settings}
-                                        />
-                                    </div>
-                                </div>
-                            </>
-                        ) : (
-                            <div className="flex-1 overflow-hidden">
-                                <ScannerDashboard
+                <div className="flex items-center gap-4">
+                    {/* View Switcher for Sandbox Mode */}
+                    <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800 shrink-0 select-none">
+                        <button 
+                            onClick={() => {
+                                setBacktestViewMode('PIPELINE');
+                                setShowScanner(true);
+                            }}
+                            className={`px-3 py-1 text-[11px] font-bold rounded transition-all flex items-center gap-1.5 ${
+                                backtestViewMode === 'PIPELINE' 
+                                    ? 'bg-indigo-600 text-white shadow shadow-indigo-900/20' 
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                        >
+                            <TrendingUp size={12} />
+                            全域沙盒通道 (L1-L5)
+                        </button>
+                        <button 
+                            onClick={() => {
+                                setBacktestViewMode('DASHBOARD');
+                                setShowScanner(false);
+                            }}
+                            className={`px-3 py-1 text-[11px] font-bold rounded transition-all flex items-center gap-1.5 ${
+                                backtestViewMode === 'DASHBOARD' 
+                                    ? 'bg-indigo-600 text-white shadow shadow-indigo-900/20' 
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                        >
+                            <BarChart2 size={12} />
+                            沙盒综合仪表盘
+                        </button>
+                    </div>
+
+                    <div className="text-right">
+                        <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">回测净值 (EQUITY)</div>
+                        <div className={`text-sm font-mono font-bold ${account.totalBalance >= initialBalance ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {account.totalBalance.toFixed(2)} USDT
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-2 hover:bg-red-900/50 rounded text-slate-400 hover:text-white transition-colors">
+                        <X size={20}/>
+                    </button>
+                </div>
+            </div>
+
+            {/* Mirrored Main UI */}
+            <div className="flex-1 flex overflow-hidden relative bg-[#0b0e11]">
+                {backtestViewMode === 'DASHBOARD' ? (
+                    <>
+                        <div className="w-80 border-r border-slate-800 flex-shrink-0 opacity-50 pointer-events-none">
+                            <SettingsPanel 
+                                settings={settings} 
+                                handleChange={() => {}}
+                                onFactoryReset={() => {}}
+                                onOpenScanner={() => {}}
+                                onToggleSim={() => {}}
+                                isSimulating={true}
+                                previewData={[]}
+                                systemStats={{ balance: account.totalBalance, positionCount: positions.length, tradeCount: tradeLogs.length, logCount: logs.length }}
+                                onOpenManual={() => {}}
+                                onRestoreSettings={() => {}}
+                                onBatchOpen={() => {}}
+                                onOpenSaviorLab={() => {}}
+                            />
+                        </div>
+
+                        <div className="flex-1 flex flex-col min-w-0">
+                            <div className="flex-1 overflow-auto p-2">
+                                <Dashboard 
+                                    account={account}
+                                    positions={positions}
+                                    tradeLogs={tradeLogs}
+                                    realPrices={realPrices}
                                     networkStatus="healthy"
                                     isOnline={true}
-                                    settings={settings.scanner}
-                                    isVisible={true}
-                                    onClose={() => setBacktestViewMode('DASHBOARD')}
-                                    onOpenPosition={() => {}}
-                                    onClosePosition={() => {}}
-                                    onBatchClose={() => {}}
-                                    realPrices={realPrices}
-                                    positions={positions}
-                                    onLog={addLog}
+                                    onRowLongPress={() => {}}
+                                    onShowHistory={(symbol) => {
+                                        setTradeLogSearchSymbol(symbol);
+                                        setShowTradeLogModal(true);
+                                    }}
+                                    hasHistory={() => tradeLogs.length > 0}
+                                    onClearPositions={() => setPositions([])}
+                                    onClosePosition={handleClosePosition}
+                                    onDeletePosition={handleClosePosition}
+                                    onBatchClose={() => setPositions([])}
+                                    onResetBalance={() => {}}
+                                    onClearRecords={() => {}}
                                     onOpenChart={() => {}}
-                                    onShowTradeLogs={() => {}}
-                                    onPositionsChange={setPositions}
-                                    onTradeLogsChange={setTradeLogs}
+                                    onVerifyPosition={() => {}}
+                                    onOpenLogs={() => {}}
+                                    onOpenTradeModal={() => {
+                                        setTradeLogSearchSymbol('');
+                                        setShowTradeLogModal(true);
+                                    }}
+                                    isSimulating={true}
+                                    onToggleSimulation={() => {}}
+                                    onShowSymbolTradeLogs={(symbol) => {
+                                        setTradeLogSearchSymbol(symbol);
+                                        setShowTradeLogModal(true);
+                                    }}
+                                    globalAutoReopen={false}
+                                    onToggleLoop={() => {}}
+                                    onOpenScanner={() => setShowScanner(true)}
+                                    settings={settings}
                                 />
                             </div>
-                        )}
-                    </div>
-
-                    {isRunning && (
-                        <div className="absolute bottom-4 right-4 flex items-center gap-2 px-3 py-2 bg-amber-950/80 border border-amber-500/30 rounded-lg text-amber-300 text-xs shadow-xl">
-                            <Loader2 size={14} className="animate-spin"/>
-                            回测时间正在推进
+                            <div className="h-48 border-t border-slate-800 shrink-0">
+                                <LogCenterModule logs={logs} onOpenChart={() => {}} />
+                            </div>
                         </div>
-                    )}
-                </div>
-            </MarketProvider>
-        </BacktestContext.Provider>
+                    </>
+                ) : (
+                    <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+                        {/* Interactive Sandbox Full Pipeline */}
+                        <div className="flex-1 overflow-hidden flex flex-col">
+                            <BacktestScannerDashboard 
+                                settings={settings.scanner} 
+                                isVisible={true}
+                                onClose={() => {}}
+                                onOpenPosition={handleOpenPosition}
+                                onClosePosition={handleClosePosition}
+                                realPrices={realPrices}
+                                activePositions={positions}
+                                balance={account.marginBalance}
+                                directMode={settings.system.directMode}
+                                onLog={handleLog}
+                                embedMode={true}
+                            />
+                        </div>
+                        <div className="h-48 border-t border-slate-800 shrink-0">
+                            <LogCenterModule logs={logs} onOpenChart={() => {}} />
+                        </div>
+                    </div>
+                )}
+
+                {/* Legacy Floating/Overlay Scanner for Dashboard View */}
+                {backtestViewMode === 'DASHBOARD' && (
+                    <BacktestScannerDashboard 
+                        settings={settings.scanner} 
+                        isVisible={showScanner}
+                        onClose={() => setShowScanner(false)}
+                        onOpenPosition={handleOpenPosition}
+                        onClosePosition={handleClosePosition}
+                        realPrices={realPrices}
+                        activePositions={positions}
+                        balance={account.marginBalance}
+                        directMode={settings.system.directMode}
+                        onLog={handleLog}
+                    />
+                )}
+            </div>
+
+            {showTradeLogModal && (
+                <TradeLogModal 
+                    tradeLogs={tradeLogs} 
+                    positions={positions}
+                    systemEvents={[]}
+                    initialSearch={tradeLogSearchSymbol}
+                    onClose={() => setShowTradeLogModal(false)} 
+                    onOpenChart={() => {}}
+                />
+            )}
+        </div>
     );
 };
