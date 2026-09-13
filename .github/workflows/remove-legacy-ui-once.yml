@@ -1,0 +1,52 @@
+name: Remove legacy UI once
+
+on:
+  push:
+    branches:
+      - cleanup/aistudio-exe-minimal
+    paths:
+      - scripts/remove-legacy-ui-once.cjs
+      - .github/workflows/remove-legacy-ui-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout cleanup branch
+        uses: actions/checkout@v4
+        with:
+          ref: cleanup/aistudio-exe-minimal
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Remove retired UI systems
+        run: node scripts/remove-legacy-ui-once.cjs
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: TypeScript validation
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Commit verified cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No cleanup changes to commit."
+            exit 0
+          fi
+          git commit -m "cleanup: fully remove retired legacy UI systems"
+          git push origin HEAD:cleanup/aistudio-exe-minimal
