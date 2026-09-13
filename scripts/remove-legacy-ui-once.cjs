@@ -38,6 +38,7 @@ app = replaceRequired(app, subscriptionEffect, '', 'subscription effect');
 const activationRender = `            {showSecurityLockModal && (\n                <ActivationModal \n                    isActivated={isSystemActivated}\n                    isOpen={showSecurityLockModal}\n                    onClose={() => setShowSecurityLockModal(false)}\n                    onActivated={handleSystemActivated} \n                />\n            )}\n`;
 app = replaceRequired(app, activationRender, '', 'activation render');
 
+app = replaceRequired(app, "                    isVisible={isSystemActivated && showScanner}\n", "                    isVisible={showScanner}\n", 'scanner activation visibility gate');
 app = replaceRequired(app, "                    onViewSource={() => setShowSourceCode(true)}\n", '', 'SettingsPanel source callback');
 app = replaceRequired(app, "            {showSourceCode && <SourceCodeModal onClose={() => setShowSourceCode(false)} />}\n", '', 'source modal render');
 
