@@ -58,12 +58,13 @@ const retiredTypes = `export interface LicenseInfo {\n    isActive: boolean;\n  
 types = replaceRequired(types, retiredTypes, '', 'subscription types');
 write('types.ts', types);
 
-// --- Delete the now-unreferenced compatibility files ---
+// --- Delete the now-unreferenced compatibility/dead legacy files ---
 for (const p of [
   'components/SourceCodeModal.tsx',
   'components/ActivationModal.tsx',
   'components/SubscriptionModal.tsx',
-  'services/subscriptionService.ts'
+  'services/subscriptionService.ts',
+  'components/Settings/SystemModule.tsx'
 ]) {
   const full = path.join(root, p);
   if (!fs.existsSync(full)) throw new Error(`Expected retired file not found: ${p}`);
