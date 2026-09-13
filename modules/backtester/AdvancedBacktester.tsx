@@ -759,7 +759,7 @@ export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
                                         <YAxis domain={['auto', 'auto']} stroke="#475569" fontSize={10} />
                                         <Tooltip 
                                             contentStyle={{ backgroundColor: '#020617', border: '1px solid #1e293b', fontSize: '10px' }}
-                                            labelFormatter={(label) => new Date(label).toLocaleString()}
+                                            labelFormatter={(label) => new Date(String(label)).toLocaleString()}
                                         />
                                         <Area type="monotone" dataKey="balance" stroke="#6366f1" fillOpacity={1} fill="url(#colorBalance)" strokeWidth={2} />
                                     </AreaChart>

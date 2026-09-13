@@ -41,7 +41,7 @@ export const EquityCurveChart: React.FC<Props> = ({ data }) => {
                     />
                     <Tooltip 
                         contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', fontSize: '10px' }}
-                        labelFormatter={(label) => new Date(label).toLocaleString()}
+                        labelFormatter={(label) => new Date(String(label)).toLocaleString()}
                     />
                     <Area type="monotone" dataKey="balance" stroke="#6366f1" fillOpacity={1} fill="url(#colorBalance)" strokeWidth={2} />
                 </AreaChart>
