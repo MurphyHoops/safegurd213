@@ -1,4 +1,5 @@
 
+// @LOCKED: 模块 2 [强力防爆对冲] - 触发核心算法与保护铁律已锁定
 import { Position, AppSettings, PositionSide } from '../../types';
 
 /**

@@ -6,6 +6,8 @@ import { fetchWithFallback } from '../../services/apiService';
 import { audioService } from '../../services/audioService';
 import { calculateEMA } from '../../services/indicators';
 import { pipelineCoordinator } from '../../services/pipelineQueue';
+import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../services/volume8amService';
+
 
 // Helper for fast, isolated, non-blocking klines fetching through official proxy endpoints with hard abort timeout
 const safeFetchKlinesDirect = async (targetUrl: string, timeoutMs = 2500, externalSignal?: AbortSignal): Promise<any[] | null> => {
@@ -331,11 +333,25 @@ export const useScannerLogic = (
             if (pulse === lastFilterPulseRef.current) return;
             lastFilterPulseRef.current = pulse; // Update ref early
 
-            if (rawDataRef.current && Array.isArray(rawDataRef.current) && rawDataRef.current.length > 0) {
+            let rawData = rawDataRef.current;
+            if (!rawData || !Array.isArray(rawData) || rawData.length === 0) {
+                try {
+                    const cached = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
+                    if (cached) {
+                        const parsed = JSON.parse(cached);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            rawData = parsed;
+                            rawDataRef.current = parsed;
+                        }
+                    }
+                } catch (_) {}
+            }
+
+            if (rawData && Array.isArray(rawData) && rawData.length > 0) {
                 const nowTime = Date.now();
                 const expiry = 5 * 60 * 1000;
-                const enrichedRaw = rawDataRef.current.map((t: any) => {
-                    const cached = volume8amCacheRef.current.get(t.symbol);
+                const enrichedRaw = rawData.map((t: any) => {
+                    const cached = volume8amCacheRef.current.get(t.symbol) || (getVolume8am(t.symbol) ? { volume: getVolume8am(t.symbol)!.volume8am, openPrice: getVolume8am(t.symbol)!.openPrice, timestamp: nowTime } : undefined);
                     if (cached && (nowTime - cached.timestamp < expiry)) {
                         return {
                             ...t,
@@ -355,7 +371,7 @@ export const useScannerLogic = (
                 
                 // Map volume8am and change8am from cache if exists
                 filtered.forEach(item => {
-                    const cached = volume8amCacheRef.current.get(item.symbol);
+                    const cached = volume8amCacheRef.current.get(item.symbol) || (getVolume8am(item.symbol) ? { volume: getVolume8am(item.symbol)!.volume8am, openPrice: getVolume8am(item.symbol)!.openPrice, timestamp: nowTime } : undefined);
                     if (cached && (nowTime - cached.timestamp < expiry)) {
                         item.volume8am = cached.volume;
                         if (cached.openPrice > 0 && item.price > 0) {
@@ -364,25 +380,17 @@ export const useScannerLogic = (
                     }
                 });
 
-                // Apply 8AM filtering if enabled
-                let finalCandidates = filtered;
+                // Apply volume rules (both 24H and 8AM) strictly
+                let finalCandidates = filtered.filter(item => checkVolumeRule(item, initialConfig));
                 if (initialConfig.enableVol8am) {
-                    const minVol8am = initialConfig.minVolume8am ?? 0;
-                    const maxVol8am = initialConfig.maxVolume8am ?? 0;
                     const minChange = initialConfig.minChange || 0;
                     const source = initialConfig.source || 'BOTH';
 
-                    finalCandidates = filtered.filter(item => {
-                        const rawVol8am = item.volume8am;
-                        const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : (item.volume24h !== undefined ? item.volume24h : 0);
-                        if (vol8am < minVol8am) return false;
-                        if (maxVol8am > 0 && vol8am > maxVol8am) return false;
-
+                    finalCandidates = finalCandidates.filter(item => {
                         const effectiveChange = item.change8am !== undefined ? item.change8am : 0;
                         if (source === 'GAINERS' && effectiveChange <= 0) return false;
                         if (source === 'LOSERS' && effectiveChange >= 0) return false;
                         if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
-
                         return true;
                     });
                 }
@@ -619,9 +627,10 @@ export const useScannerLogic = (
 
                 finalCandidates = filtered.filter(item => {
                     const rawVol8am = item.volume8am;
-                    const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : (item.volume24h !== undefined ? item.volume24h : (parseFloat((item as any).volume || "0") || 0));
-                    if (vol8am < minVol8am) return false;
-                    if (maxVol8am > 0 && vol8am > maxVol8am) return false;
+                    const cached = volume8amCacheRef.current.get(item.symbol);
+                    const vol8am = rawVol8am !== undefined ? rawVol8am : (cached ? cached.volume : getVolume8am(item.symbol)?.volume8am);
+                    if (minVol8am > 0 && (vol8am === undefined || vol8am < minVol8am)) return false;
+                    if (maxVol8am > 0 && vol8am !== undefined && vol8am > maxVol8am) return false;
 
                     const effectiveChange = item.change8am !== undefined ? item.change8am : (item.change || 0);
                     if (source === 'GAINERS' && effectiveChange <= 0) return false;
@@ -828,153 +837,51 @@ export const useScannerLogic = (
         pruneRunIdRef.current++;
 
         try {
-            // Step 1: Market Primary Screening (市场初筛)
-            // If rawDataRef is empty, pre-fetch ticker data to ensure we have symbols
-            if (!rawDataRef.current || rawDataRef.current.length === 0) {
-                try {
-                    const baseUrl = 'https://fapi.binance.com/fapi/v1/ticker';
-                    const endpoint = `${baseUrl}/24hr?_t=${Date.now()}`;
-                    const res = await fetchWithFallback(
-                        endpoint, 
-                        { cache: 'no-store', timeout: 45000 }, 
-                        (d) => Array.isArray(d) && d.length > 0, 
-                        directModeRef.current
-                    );
-                    const data = await res.json();
-                    if (Array.isArray(data) && data.length > 0) {
-                        rawDataRef.current = data;
-                    }
-                } catch (err) {
-                    console.warn("[MajorTrend] Pre-fetch ticker data failed:", err);
-                }
-            }
-
             if (majorScanAbortRef.current) return;
-        
-        // Filter symbols using processMarketData and volume filters
-        const { list1: filtered } = processMarketData(
-            rawDataRef.current,
-            configRef.current,
-            customSymbolSetRef.current,
-            fixedModeViewRef.current
-        );
 
-        let baseFiltered = filtered.filter(item => !blacklistRef.current.has(item.symbol));
-        if (baseFiltered.length === 0) {
-            setIsMajorScanning(false);
-            return;
-        }
-
-        if (configRef.current.enableVol8am) {
-            const cacheExpiryMs = 5 * 60 * 1000;
-            const nowTime = Date.now();
-            await Promise.all(baseFiltered.map(async (item) => {
-                const cached = volume8amCacheRef.current.get(item.symbol);
-                let vol8am = 0;
-                let openPrice8am = 0;
-                if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
-                    vol8am = cached.volume;
-                    openPrice8am = cached.openPrice || 0;
-                } else {
-                    try {
-                        const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
-                        const klines1d = await safeFetchKlinesDirect(url1d, 3000);
-                        if (Array.isArray(klines1d) && klines1d.length > 0) {
-                            vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
-                            openPrice8am = parseFloat(klines1d[0][1]) || 0;
-                            volume8amCacheRef.current.set(item.symbol, { volume: vol8am, openPrice: openPrice8am, timestamp: nowTime });
-                        }
-                    } catch (err) {
-                        console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
-                        vol8am = cached ? cached.volume : item.volume24h;
-                        openPrice8am = cached?.openPrice || 0;
-                    }
-                }
-                item.volume8am = vol8am;
-                if (openPrice8am > 0 && item.price > 0) {
-                    item.change8am = ((item.price - openPrice8am) / openPrice8am) * 100;
-                } else {
-                    item.change8am = undefined;
-                }
-            }));
-
-            const minVol8am = configRef.current.minVolume8am ?? 0;
-            const maxVol8am = configRef.current.maxVolume8am ?? 0;
-            const minChange = configRef.current.minChange || 0;
-            const source = configRef.current.source || 'BOTH';
-
-            baseFiltered = baseFiltered.filter(item => {
-                const rawVol8am = item.volume8am;
-                const vol8am = rawVol8am !== undefined && rawVol8am > 0 ? rawVol8am : item.volume24h;
-                if (vol8am < minVol8am) return false;
-                if (maxVol8am > 0 && vol8am > maxVol8am) return false;
-
-                const effectiveChange = item.change8am !== undefined ? item.change8am : (item.change || 0);
-                if (source === 'GAINERS' && effectiveChange <= 0) return false;
-                if (source === 'LOSERS' && effectiveChange >= 0) return false;
-                if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
-
-                return true;
-            });
-        }
-
-        const primaryCandidates = baseFiltered;
-
-        // By user requirement: 
-        // 1. 默认情况下，“大行情发现”读取“行情启动底池”里的币；
-        // 2. 当“行情启动趋势”的“多”和“空”都关闭时，不再受启动趋势底池限制，直接进入“大行情发现”规则过滤（直通初筛/成交量底池目标币种）！
-        const isStartTrendActive = Boolean(cfg?.enableStartTrendLong || cfg?.enableStartTrendShort);
-
-        let candidateSymbols: string[] = [];
-        if (isStartTrendActive) {
+            // 🔒 [严格遵循数据流水线 - 用户指定规则]:
+            // 1. 列表1由”成交额范围过滤“进入”交易额过滤底池“
+            // 2. ”行情启动趋势“读取”交易额过滤底池“，筛选后的币进入”行情启动底池“ (SCANNER_START_TREND_POOL)
+            // 3. ”大行情发现“ 的第一步，”横盘蓄势过滤“读取”行情启动底池“的数据，符合规则的币进入”横盘蓄势过滤底池“ (SCANNER_SIDEWAYS_FILTERED_POOL)
+            // 4. ”回溯周期过滤“读取“横盘蓄势过滤底池”数据，符合规则的数据进入“市场初筛”列表！
+            // 5. “回溯周期过滤”扫描完毕后，交接给“行情启动趋势”重新读取“交易额过滤底池”，周而复始！
+            let startTrendSymbols: string[] = [];
             try {
-                const rawPool = localStorage.getItem('SCANNER_START_TREND_POOL');
-                if (rawPool) {
-                    const parsed = JSON.parse(rawPool);
-                    if (Array.isArray(parsed) && parsed.length > 0) {
-                        candidateSymbols = parsed.map((item: any) => item.symbol).filter(Boolean);
+                const rawStartPool = localStorage.getItem('SCANNER_START_TREND_POOL');
+                if (rawStartPool) {
+                    const parsed = JSON.parse(rawStartPool);
+                    if (Array.isArray(parsed)) {
+                        startTrendSymbols = parsed
+                            .map((item: any) => typeof item === 'string' ? item : item?.symbol)
+                            .filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym));
                     }
                 }
             } catch (_) {}
-        }
 
-        const startTrendSymbolSet = new Set(candidateSymbols);
-        let targetSymbols: string[] = [];
-        if (isStartTrendActive && candidateSymbols.length > 0) {
-            targetSymbols = candidateSymbols.filter(sym => !blacklistRef.current.has(sym));
-        } else {
-            targetSymbols = primaryCandidates.map(i => i.symbol).filter(sym => !blacklistRef.current.has(sym));
-        }
+            // 目标币种必须100%严格来自【行情启动底池】
+            const targetSymbols = startTrendSymbols;
 
-        // -------------------------------------------------------------
-        // 🔒 [单向漏斗与持续存留铁律]: 
-        // 1. 当行情启动趋势开启时，大行情发现的目标币种100%严格来自行情启动趋势底池，严禁把已退出的历史候选币重新加回扫描池
-        // 2. 凡已不在【行情启动趋势底池】中的币种，立即从大行情候选集合中物理剔除，杜绝历史失效币种残留
-        // 3. 当“行情启动趋势”多和空都关闭时，直通大行情发现，不以启动趋势底池作强制剔除
-        // -------------------------------------------------------------
-        const validSymbols = new Set<string>(majorTrendCandidatesRef.current);
-        if (isStartTrendActive && candidateSymbols.length > 0) {
-            let pruned = false;
-            Array.from(validSymbols).forEach(cand => {
-                const sym = cand.replace('_LONG', '').replace('_SHORT', '');
-                if (!startTrendSymbolSet.has(sym)) {
-                    validSymbols.delete(cand);
-                    pruned = true;
-                }
-            });
-            if (pruned && isMountedRef.current) {
-                const nextSet = new Set(validSymbols);
-                setMajorTrendCandidates(nextSet);
-                majorTrendCandidatesRef.current = nextSet;
-                localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(nextSet)));
-                window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated'));
+            // 候选币种集合：初始继承已有大行情候选币（支持增量与方向剔除）
+            const validSymbols = new Set<string>(majorTrendCandidatesRef.current);
+
+            if (targetSymbols.length === 0) {
+                console.log("[useScannerLogic] 行情启动底池暂无币种，保持既有底池并等待启动底池产出数据...");
+                setIsMajorScanning(false);
+                (window as any).IS_MAJOR_TREND_SCANNING = false;
+                setMajorProgress({
+                    current: 0,
+                    total: 0,
+                    stage: 'idle',
+                    group1Total: 0,
+                    group1Current: 0,
+                    group1Passed: 0,
+                    group2Total: 0,
+                    group2Current: 0,
+                    group2Passed: 0,
+                    currentSymbol: ''
+                } as any);
+                return;
             }
-        }
-
-        if (targetSymbols.length === 0) {
-            setIsMajorScanning(false);
-            return;
-        }
 
         // Initialize progress with target candidate count
         setMajorProgress({ current: 0, total: targetSymbols.length });
@@ -1111,6 +1018,21 @@ export const useScannerLogic = (
                                     currentPrice,
                                     klines
                                 });
+
+                                // 🌊 实时动态增量写入“横盘蓄势过滤底池”，单币通过横盘过滤立即进池并通知UI！
+                                const liveSideways = stage1PassedItems.map(item => ({
+                                    symbol: item.symbol,
+                                    dropFromMax: item.dropFromMax,
+                                    riseFromMin: item.riseFromMin,
+                                    maxZ: item.maxZ,
+                                    minZ: item.minZ,
+                                    currentPrice: item.currentPrice,
+                                    timestamp: Date.now()
+                                }));
+                                try {
+                                    localStorage.setItem('SCANNER_SIDEWAYS_FILTERED_POOL', JSON.stringify(liveSideways));
+                                    window.dispatchEvent(new CustomEvent('scanner_sideways_pool_updated', { detail: liveSideways }));
+                                } catch (_) {}
                             }
                         }
                     })(),
@@ -1162,29 +1084,14 @@ export const useScannerLogic = (
         localStorage.setItem('SCANNER_SIDEWAYS_FILTERED_POOL', JSON.stringify(poolData));
         window.dispatchEvent(new CustomEvent('scanner_sideways_pool_updated', { detail: poolData }));
 
-        // 清理在第一组未通过的既有候选币
-        const stage1PassedSymbolsSet = new Set(stage1PassedItems.map(i => i.symbol));
-        let listChanged = false;
-        Array.from(validSymbols).forEach(cand => {
-            const sym = cand.replace('_LONG', '').replace('_SHORT', '');
-            if (!stage1PassedSymbolsSet.has(sym)) {
-                validSymbols.delete(cand);
-                listChanged = true;
-            }
-        });
-
-        if (listChanged && isMountedRef.current) {
-            const nextSet = new Set(validSymbols);
-            setMajorTrendCandidates(nextSet);
-            majorTrendCandidatesRef.current = nextSet;
-            localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(nextSet)));
-            window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated', { detail: Array.from(nextSet) }));
-        }
-
         // =========================================================================
         // 🔒【第二阶段: 回溯周期过滤 - 扫描横盘蓄势底池】
+        // 核心铁律：【平时与扫描过程中绝对不增减初筛候选集】
+        // 扫描过程中仅推进进度指示与临时结果收集，必须等整轮完整扫描完成后，
+        // 再与当前初筛列表执行原子差量比对（减去少的那一个，加上多的那一个）！
         // =========================================================================
-        let stage2PassedCount = 0;
+        const stage2PassedSymbols = new Set<string>();
+        const stage2LimitsMap: Record<string, { maxZ: number; minZ: number }> = { ...limitsMap };
         const totalStage2 = stage1PassedItems.length;
 
         setMajorProgress({
@@ -1226,19 +1133,6 @@ export const useScannerLogic = (
             const symbol = item.symbol;
             const s2CycleStart = Date.now();
 
-            setMajorProgress({
-                current: s2Idx + 1,
-                total: totalStage2,
-                stage: 'group2',
-                group1Total: targetSymbols.length,
-                group1Current: targetSymbols.length,
-                group1Passed: totalStage2,
-                group2Total: totalStage2,
-                group2Current: s2Idx + 1,
-                group2Passed: getMatchedUniqueSymbolsCount(validSymbols),
-                currentSymbol: symbol
-            } as any);
-
             const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
             const klines = item.klines;
             const prices = klines.map((k: any) => parseFloat(k[4]));
@@ -1257,19 +1151,42 @@ export const useScannerLogic = (
                 histLows = lows.slice(0, endIdx);
             }
 
-            const maxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
-            const minPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
+            const rawMaxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
+            const rawMinPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
+
+            // 🔒【消除新低/新高负数误杀漏洞】:
+            // 真实绝对极值涵盖整个回溯周期与最近横盘蓄势期。
+            // 当币种在最近蓄势期创下新低时，当前价离绝对最低点距离为0% (绝不产生负数导致被>=0规则误杀)
+            const minPrice = Math.min(rawMinPrice, minZ !== undefined ? minZ : currentPrice, currentPrice);
+            const maxPrice = Math.max(rawMaxPrice, maxZ !== undefined ? maxZ : currentPrice, currentPrice);
 
             const dropFromMaxToMin = ((maxPrice - minPrice) / maxPrice) * 100;
             const pumpFromMinToMax = ((maxPrice - minPrice) / minPrice) * 100;
 
-            const distLong = ((currentPrice - minPrice) / minPrice) * 100;
-            const distShort = ((maxPrice - currentPrice) / maxPrice) * 100;
+            const distLong = Math.max(0, ((currentPrice - minPrice) / minPrice) * 100);
+            const distShort = Math.max(0, ((maxPrice - currentPrice) / maxPrice) * 100);
 
-            const minLowIdx = histLows.indexOf(minPrice);
-            const maxHighIdx = histHighs.indexOf(maxPrice);
-            const lowDaysAgo = minLowIdx !== -1 ? (histLows.length - 1 - minLowIdx) : 0;
-            const highDaysAgo = maxHighIdx !== -1 ? (histHighs.length - 1 - maxHighIdx) : 0;
+            let lowDaysAgo = 0;
+            if (minPrice === currentPrice || (minZ !== undefined && minPrice === minZ)) {
+                // 最低点发生在最近横盘蓄势期内 (0 ~ sidewaysDays 天前)
+                const sidewaysLows = lows.slice(-cfg.sidewaysDays);
+                const sIdx = sidewaysLows.lastIndexOf(minPrice);
+                lowDaysAgo = sIdx !== -1 ? (sidewaysLows.length - 1 - sIdx) : 0;
+            } else {
+                const minLowIdx = histLows.indexOf(minPrice);
+                lowDaysAgo = minLowIdx !== -1 ? (periodKlines.length - 1 - minLowIdx) : 0;
+            }
+
+            let highDaysAgo = 0;
+            if (maxPrice === currentPrice || (maxZ !== undefined && maxPrice === maxZ)) {
+                // 最高点发生在最近横盘蓄势期内 (0 ~ sidewaysDays 天前)
+                const sidewaysHighs = highs.slice(-cfg.sidewaysDays);
+                const sIdx = sidewaysHighs.lastIndexOf(maxPrice);
+                highDaysAgo = sIdx !== -1 ? (sidewaysHighs.length - 1 - sIdx) : 0;
+            } else {
+                const maxHighIdx = histHighs.indexOf(maxPrice);
+                highDaysAgo = maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0;
+            }
 
             const enableLookback = cfg.enableLookbackFilter !== false;
             const isLongMatch = enableLong && 
@@ -1328,58 +1245,34 @@ export const useScannerLogic = (
                 }
             }
 
-            // 2. Stage 2 极值与回溯周期判定
+            // Stage 2 极值与回溯周期判定
             const stage2Passed = stage2Match && !emaFailed;
             const finalLongMatch = stage2Passed && isLongMatch;
             const finalShortMatch = stage2Passed && isShortMatch;
 
-            let itemChanged = false;
-            if (finalLongMatch || finalShortMatch) {
-                stage2PassedCount++;
-                limitsMap[symbol] = { maxZ, minZ };
-                if (finalLongMatch && !validSymbols.has(`${symbol}_LONG`)) {
-                    validSymbols.add(`${symbol}_LONG`);
-                    itemChanged = true;
-                }
-                if (finalShortMatch && !validSymbols.has(`${symbol}_SHORT`)) {
-                    validSymbols.add(`${symbol}_SHORT`);
-                    itemChanged = true;
-                }
-                if (!finalLongMatch && validSymbols.has(`${symbol}_LONG`)) {
-                    validSymbols.delete(`${symbol}_LONG`);
-                    itemChanged = true;
-                }
-                if (!finalShortMatch && validSymbols.has(`${symbol}_SHORT`)) {
-                    validSymbols.delete(`${symbol}_SHORT`);
-                    itemChanged = true;
-                }
-            } else {
-                if (validSymbols.has(`${symbol}_LONG`)) {
-                    validSymbols.delete(`${symbol}_LONG`);
-                    itemChanged = true;
-                }
-                if (validSymbols.has(`${symbol}_SHORT`)) {
-                    validSymbols.delete(`${symbol}_SHORT`);
-                    itemChanged = true;
-                }
-                if (validSymbols.has(symbol)) {
-                    validSymbols.delete(symbol);
-                    itemChanged = true;
-                }
+            if (finalLongMatch) {
+                stage2PassedSymbols.add(`${symbol}_LONG`);
+                stage2LimitsMap[symbol] = { maxZ, minZ };
+            }
+            if (finalShortMatch) {
+                stage2PassedSymbols.add(`${symbol}_SHORT`);
+                stage2LimitsMap[symbol] = { maxZ, minZ };
             }
 
-            if (itemChanged && isMountedRef.current) {
-                const nextSet = new Set(validSymbols);
-                setMajorTrendCandidates(nextSet);
-                majorTrendCandidatesRef.current = nextSet;
-                localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(nextSet)));
-                setMajorTrendLimits({ ...limitsMap });
-                localStorage.setItem(majorTrendLimitsKey, JSON.stringify(limitsMap));
-                setMajorProgress(prev => ({
-                    ...prev,
-                    group2Passed: getMatchedUniqueSymbolsCount(nextSet)
-                } as any));
-                window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated', { detail: Array.from(nextSet) }));
+            // 仅更新扫描进度显示，绝不在此处触发初筛列表的增减更新
+            if (isMountedRef.current) {
+                setMajorProgress({
+                    current: s2Idx + 1,
+                    total: totalStage2,
+                    stage: 'group2',
+                    group1Total: targetSymbols.length,
+                    group1Current: targetSymbols.length,
+                    group1Passed: totalStage2,
+                    group2Total: totalStage2,
+                    group2Current: s2Idx + 1,
+                    group2Passed: getMatchedUniqueSymbolsCount(stage2PassedSymbols),
+                    currentSymbol: symbol
+                } as any);
             }
 
             // 精准单币 2 秒节拍（严格 2 秒一个币），让回溯周期扫描节奏清晰可辨，并平滑展现进度计数
@@ -1391,16 +1284,36 @@ export const useScannerLogic = (
             }
         }
 
-        if (isMountedRef.current) {
-            const finalSet = new Set(validSymbols);
+        // =========================================================================
+        // 🔒【回溯周期过滤整轮扫描完成 - 原子差量比对更新】
+        // 规则：必须是“回溯周期过滤”运行完成后，再和市场初筛列表的数量进行比对：
+        // 1. 如果新过滤结果减少了，初筛列表精准减去少的那一个/几个；
+        // 2. 如果新过滤结果增加了，初筛列表精准加上多的那一个/几个；
+        // 3. 既有依然符合的币种保持平稳，一次性完成原子差量对齐更新！
+        // =========================================================================
+        if (isMountedRef.current && !majorScanAbortRef.current) {
+            const previousCandidates = majorTrendCandidatesRef.current ? Array.from(majorTrendCandidatesRef.current) : [];
+            const newCandidates = Array.from(stage2PassedSymbols);
+
+            const prevSet = new Set(previousCandidates);
+            const newSet = new Set(newCandidates);
+
+            const added = newCandidates.filter(x => !prevSet.has(x));
+            const removed = previousCandidates.filter(x => !newSet.has(x));
+            const retained = previousCandidates.filter(x => newSet.has(x));
+
+            console.log(`[MajorTrendDiscovery] 回溯周期过滤全量完成！初筛差量比对: 原有 ${previousCandidates.length} 个 -> 本轮 ${newCandidates.length} 个 (保留: ${retained.length} 个, 增加: +${added.length} 个 [${added.join(', ')}], 减去: -${removed.length} 个 [${removed.join(', ')}])`);
+
+            const finalSet = new Set(stage2PassedSymbols);
             setMajorTrendCandidates(finalSet);
             majorTrendCandidatesRef.current = finalSet;
-            setMajorTrendLimits(limitsMap);
+            setMajorTrendLimits(stage2LimitsMap);
             localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(finalSet)));
-            localStorage.setItem(majorTrendLimitsKey, JSON.stringify(limitsMap));
+            localStorage.setItem(majorTrendLimitsKey, JSON.stringify(stage2LimitsMap));
             localStorage.setItem(`SCANNER_HAS_RUN_MAJOR${suffix}`, 'true');
             setHasRunMajorTrend(true);
             setIsMajorScanning(false);
+            (window as any).IS_MAJOR_TREND_SCANNING = false;
             setMajorProgress({
                 current: totalStage2,
                 total: totalStage2,
@@ -1413,27 +1326,26 @@ export const useScannerLogic = (
                 group2Passed: getMatchedUniqueSymbolsCount(finalSet),
                 currentSymbol: ''
             } as any);
+
+            // 仅在整轮完成后对外派发初筛更新事件
             window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated', { detail: Array.from(finalSet) }));
             localStorage.setItem('SCANNER_MAJOR_TREND_CANDIDATES', JSON.stringify(Array.from(finalSet)));
             window.dispatchEvent(new CustomEvent('scanner_major_trend_completed', { detail: Array.from(finalSet) }));
             audioService.speak("大行情发现任务完成");
-
-            // 🔒【回溯周期过滤即时呈现与完整保留铁律】:
-            // 扫描完成后，候选币种全部完好呈现在市场初筛列表中，绝不突然批量减少，绝不刚进入就立即一秒一个删减！
-            // 每一个进入候选集的币种均经过前序交易额底池和启动趋势底池的严格准入，在此完好保留呈现。
         }
         } catch (err) {
             console.error("[MajorTrendDiscovery] Error:", err);
         } finally {
             (window as any).IS_MAJOR_TREND_SCANNING = false;
-            window.dispatchEvent(new CustomEvent('scanner_major_trend_completed'));
             if (isMountedRef.current) {
                 setIsMajorScanning(false);
             }
+            // 确保接力事件派发
+            window.dispatchEvent(new CustomEvent('scanner_major_trend_completed'));
         }
     }, []);
 
-    // Major Trend Background Loop - strictly according to intervalMinutes
+    // Major Trend Background Loop - watchdog safety fallback
     useEffect(() => {
         if (!initialConfig.majorTrend?.enabled) return;
 
@@ -1452,16 +1364,14 @@ export const useScannerLogic = (
             }
         }
 
-        // Auto interval (Default: 4 minutes, or configured updateIntervalHours if > 0)
+        // Auto background runs as safety fallback if idle
         const intervalMinutes = initialConfig.majorTrend.intervalMinutes ?? (initialConfig.majorTrend.updateIntervalHours ? initialConfig.majorTrend.updateIntervalHours * 60 : 4);
         const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
         
-        // Auto background runs with pipeline coordinator
         const timer = setInterval(() => {
             if (isMountedRef.current && initialConfig.majorTrend?.enabled && initialConfig.majorTrend?.autoMode !== false) {
-                // 🔒 [时间先后·互斥安全锁]: 若行情启动底池正在扫描，错开时间，绝不同时工作
-                if ((window as any).IS_START_TREND_SCANNING) {
-                    console.log("[MajorTrend] Background interval skipped: Start Trend Pool is currently scanning.");
+                // 🔒 [时间先后·互斥安全锁]: 若行情启动底池正在扫描或大行情正在扫描，错开时间
+                if ((window as any).IS_START_TREND_SCANNING || (window as any).IS_MAJOR_TREND_SCANNING) {
                     return;
                 }
                 pipelineCoordinator.enqueue('major_trend', async () => {
@@ -1485,10 +1395,22 @@ export const useScannerLogic = (
             lookbackDays: cfg.lookbackDays,
             enableLong: cfg.enableLong,
             enableShort: cfg.enableShort,
+            enableLookbackFilter: cfg.enableLookbackFilter,
             minHistoryDrop: cfg.minHistoryDrop,
             minHistoryPump: cfg.minHistoryPump,
             minExtremeDistanceLong: cfg.minExtremeDistanceLong,
             minExtremeDistanceShort: cfg.minExtremeDistanceShort,
+            maxExtremeDistanceLong: cfg.maxExtremeDistanceLong,
+            maxExtremeDistanceShort: cfg.maxExtremeDistanceShort,
+            maxExtremeDistance: cfg.maxExtremeDistance,
+            extremeDaysMinLong: cfg.extremeDaysMinLong,
+            extremeDaysMaxLong: cfg.extremeDaysMaxLong,
+            extremeDaysMinShort: cfg.extremeDaysMinShort,
+            extremeDaysMaxShort: cfg.extremeDaysMaxShort,
+            filterEmaPeriod: cfg.filterEmaPeriod,
+            filterCrossingCount: cfg.filterCrossingCount,
+            filterLongMaxPump: cfg.filterLongMaxPump,
+            filterShortMinDrop: cfg.filterShortMinDrop,
             enableSideways: cfg.enableSideways,
             sidewaysDays: cfg.sidewaysDays,
             sidewaysMaxDrop: cfg.sidewaysMaxDrop,
@@ -1519,26 +1441,34 @@ export const useScannerLogic = (
     }, [initialConfig.majorTrend, runMajorTrendDiscovery]);
     // 🔒 [END_SECURITY_LOCK]
 
-    // --- 🔒 [时间先后·接力赛]: 行情启动底池整轮全部扫描完毕后，接力唤醒大行情发现扫描 ---
+    // --- 🔒 [时间先后·接力赛]: 行情启动底池整轮扫描完毕后，接力唤醒大行情发现扫描 (横盘蓄势过滤 -> 回溯周期过滤) ---
     useEffect(() => {
         const cfg = initialConfig.majorTrend;
-        if (!cfg?.enabled || !cfg?.autoMode) return;
+        // 只要开启了大行情发现且未设为纯手动（autoMode 默认即自动运行），就自动监听接力
+        if (!cfg?.enabled || cfg?.autoMode === false) return;
 
-        const handleStartTrendCompleted = () => {
+        let debounceTimer: any = null;
+        const handleStartTrendBaton = () => {
             if (!isMountedRef.current || isMajorScanning) return;
-            // 确保底池已完全扫描完毕且未在扫描中
+            // 确保底池未在排队冲突中
             if ((window as any).IS_START_TREND_SCANNING) return;
 
-            console.log("[useScannerLogic] Start Trend Pool scan COMPLETED. Handing over baton: Starting Major Trend Discovery now (接力启动)...");
-            pipelineCoordinator.enqueue('major_trend', async () => {
-                await runMajorTrendDiscovery(false);
-            });
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                if (!isMountedRef.current || isMajorScanning) return;
+                console.log("[useScannerLogic] 行情启动底池全量扫描完成！接力棒传递给【横盘蓄势过滤】与【回溯周期过滤】...");
+                pipelineCoordinator.enqueue('major_trend', async () => {
+                    await runMajorTrendDiscovery(false);
+                });
+            }, 200);
         };
 
-        window.addEventListener('scanner_start_trend_pool_completed', handleStartTrendCompleted);
+        // 仅在整轮扫描完成时触发接力，避免单币更新中途早熟执行
+        window.addEventListener('scanner_start_trend_pool_completed', handleStartTrendBaton);
 
         return () => {
-            window.removeEventListener('scanner_start_trend_pool_completed', handleStartTrendCompleted);
+            if (debounceTimer) clearTimeout(debounceTimer);
+            window.removeEventListener('scanner_start_trend_pool_completed', handleStartTrendBaton);
         };
     }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, isMajorScanning, runMajorTrendDiscovery]);
 

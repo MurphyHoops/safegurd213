@@ -22,13 +22,13 @@ interface Props {
 
 const DEFAULT_CONFIG: List4Config = { 
     autoExecute: true, 
-    midlineThreshold: 90, 
-    breakoutThreshold: 10, // Reduced from 30 for better responsiveness
+    midlineThreshold: 80, 
+    breakoutThreshold: 10, // 进攻突破线默认10%
     directionFilter: 'BOTH', 
     enableThresholds: true, 
     enableAntiChase: false, 
     enableRev3K: false,
-    enableThrust: true,
+    enableThrust: false,
     invalidRetentionMinutes: 10, 
     removeInvalidMinutes: 15,
     removeTriggeredMinutes: 15,
@@ -72,15 +72,15 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
     // --- AUTO EXECUTION EFFECT ---
     useEffect(() => {
         // MUST have local auto-ON AND Master Switch ON
-        const isMasterAutoOn = actionConfig?.autoExecute;
+        const isMasterAutoOn = actionConfig?.autoExecute ?? true;
         
         if (!config.autoExecute || !isMasterAutoOn) {
             return;
         }
 
         const now = Date.now();
-        const currentList4 = list4Ref.current;
-        const currentPositions = activePositionsRef.current;
+        const currentList4 = list4;
+        const currentPositions = activePositions;
 
         currentList4.forEach(item => {
             // Logic: Must be TRIGGERED

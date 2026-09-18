@@ -14,6 +14,7 @@ interface VisualizerItem {
   currentPrice?: number;
   highlightTime?: number;
   showAuditLines?: boolean;
+  list4Config?: any;
   extraLines?: any[];
   appearedTime?: number;
   disappearedTime?: number;
@@ -205,6 +206,7 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   highlightTf={currentItem?.timeframe}
                   limit={defaultLimit}
                   list2Config={list2Config}
+                  list4Config={currentItem?.list4Config}
                   disablePortal={true}
                   onClose={() => setSelectedItem(null)}
                   signals={currentItem?.signals || []}

@@ -301,7 +301,7 @@ export class MarketSimulator {
 
     // Cooldown system to prevent immediate re-opening of positions after a manual/global clear
     public getPositions(): Position[] {
-        return [...this.positions];
+        return this.positions.filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed);
     }
 
     public setPositions(newPositions: Position[]) {
@@ -314,8 +314,9 @@ export class MarketSimulator {
         // 0. Filter out positions that are still in-flight closing (within buffer window)
         const now = Date.now();
         const filteredNewPositions: Position[] = [];
+        const validNewPositions = (newPositions || []).filter(np => np && (np.amount || 0) > 0.0001 && !np.isAmputatedToZero && !np.isBeingClosed);
 
-        for (const np of newPositions) {
+        for (const np of validNewPositions) {
             const sym = normalizeSymbol(np.symbol);
             const key = `${sym}_${np.side}`;
             const inFlight = this.inFlightClosingPool.get(key);
@@ -391,18 +392,27 @@ export class MarketSimulator {
                 const cleanSym = normalizeSymbol(newPos.symbol);
                 const symbolAllOld = oldPositions.filter(p => normalizeSymbol(p.symbol) === cleanSym);
                 
-                const isOldSymbolUnderActiveHedge = symbolAllOld.some(p => p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0)) ||
-                    !!newPos.isHedged || !!newPos.mainPositionId || this.amputatedSymbolsInCycle.has(cleanSym);
+                const isOldSymbolUnderActiveHedge = symbolAllOld.some(p => p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0) || (p.cumulativeAmputationLoss || 0) > 0 || (p.cumulativeHedgeLoss || 0) > 0) ||
+                    !!newPos.isHedged || !!newPos.mainPositionId || (newPos.cumulativeAmputationLoss || 0) > 0 || (newPos.cumulativeHedgeLoss || 0) > 0 || this.amputatedSymbolsInCycle.has(cleanSym);
                 
-                const maxSymbolAmpLoss = isOldSymbolUnderActiveHedge
-                    ? Math.max(0, ...symbolAllOld.map(p => p.cumulativeAmputationLoss || 0), ...matchingOldPositions.map(p => p.cumulativeAmputationLoss || 0))
-                    : 0;
-                const maxSymbolHedgeLoss = isOldSymbolUnderActiveHedge
-                    ? Math.max(0, ...symbolAllOld.map(p => p.cumulativeHedgeLoss || 0), ...matchingOldPositions.map(p => p.cumulativeHedgeLoss || 0))
-                    : 0;
-                const maxSymbolAmpCount = isOldSymbolUnderActiveHedge
-                    ? Math.max(0, ...symbolAllOld.map(p => p.amputationCount || 0), ...matchingOldPositions.map(p => p.amputationCount || 0))
-                    : 0;
+                const maxSymbolAmpLoss = Math.max(
+                    0, 
+                    ...symbolAllOld.map(p => p.cumulativeAmputationLoss || 0), 
+                    ...matchingOldPositions.map(p => p.cumulativeAmputationLoss || 0),
+                    newPos.cumulativeAmputationLoss || 0
+                );
+                const maxSymbolHedgeLoss = Math.max(
+                    0, 
+                    ...symbolAllOld.map(p => p.cumulativeHedgeLoss || 0), 
+                    ...matchingOldPositions.map(p => p.cumulativeHedgeLoss || 0),
+                    newPos.cumulativeHedgeLoss || 0
+                );
+                const maxSymbolAmpCount = Math.max(
+                    0, 
+                    ...symbolAllOld.map(p => p.amputationCount || 0), 
+                    ...matchingOldPositions.map(p => p.amputationCount || 0),
+                    newPos.amputationCount || 0
+                );
                 
                 // 🔒 精确识别被砍仓位本方：只要该方向自身处于砍仓标记或有砍仓扣减数量，且两边不处于等量对冲时即保持 isAmputatedState
                 const opposingInOld = symbolAllOld.find(p => p.side !== newPos.side);
@@ -495,8 +505,10 @@ export class MarketSimulator {
                 const realWsPrice = this.realPrices[cleanSym];
 
                 // Preserve original entry ID, time, and custom local attributes
+                const preservedChainId = primaryOldPos.chainId || matchingOldPositions.find(p => p.chainId)?.chainId || newPos.chainId || `CHAIN_${cleanSym}_${primaryOldPos.entryTime || Date.now()}`;
                 const mergedPos: Position = {
                     ...newPos,
+                    chainId: preservedChainId,
                     entryId: primaryOldPos.entryId || newPos.entryId,
                     entryTime: primaryOldPos.entryTime || newPos.entryTime,
                     amount: newPos.amount, // 保持实盘或最新来源的真实完整仓位，严禁碎片化
@@ -551,8 +563,10 @@ export class MarketSimulator {
                 this.inFlightClosingPool.delete(symbolKey);
                 const pendingProps = this.pendingRealOpenProps ? this.pendingRealOpenProps[lookupKey] : undefined;
 
+                const newChainId = newPos.chainId || pendingProps?.chainId || `CHAIN_${symbolKey}_${entryTime}`;
                 const processedPos: Position = {
                     ...newPos,
+                    chainId: newChainId,
                     entryId,
                     entryTime,
                     originalEntryPrice: newPos.entryPrice,
@@ -576,11 +590,13 @@ export class MarketSimulator {
             const isUnderActiveAmp = (oldPos.isAmputated && (oldPos.amputatedAmount || 0) > 0 && (oldPos.amount || 0) > 0.0001) &&
                 updatedPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side !== oldPos.side && p.amount > 0);
             const isUnderSimActiveHedge = !isReal && (oldPos.isHedged || !!oldPos.mainPositionId) && (oldPos.amount || 0) > 0.0001;
+            // 🛡️ 实盘对冲仓位在途与初建保全：若该对冲仓位是在最近 25 秒内创建/更新的，在币安 REST 尚未返回该对冲仓位前，严格予以保全，严禁被暂时的 REST 延迟或缓存覆盖冲掉
+            const isRecentRealHedge = isReal && (oldPos.isHedged || !!oldPos.mainPositionId || oldPos.entryId?.includes('hedge') || oldPos.entryId?.includes('instant_open')) && (Date.now() - (oldPos.entryTime || 0) < 25000) && (oldPos.amount || 0) > 0.0001;
             const alreadyUpdated = updatedPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === oldPos.side);
             const isRecentlyClosed = this.recentlyClosedKeys.has(lookupKey);
 
-            if ((isUnderActiveAmp || isUnderSimActiveHedge) && !alreadyUpdated && !isRecentlyClosed) {
-                console.log(`[MarketSimulator] 🛡️ 保全被砍待补仓位: ${oldPos.symbol} (${oldPos.side}) | 待补数量: ${oldPos.amputatedAmount}`);
+            if ((isUnderActiveAmp || isUnderSimActiveHedge || isRecentRealHedge) && !alreadyUpdated && !isRecentlyClosed) {
+                console.log(`[MarketSimulator] 🛡️ 保全被砍待补或新建立对冲仓位: ${oldPos.symbol} (${oldPos.side}) | 待补/对冲数量: ${oldPos.amputatedAmount || oldPos.amount}`);
                 updatedPositions.push(oldPos);
             }
         }
@@ -898,7 +914,7 @@ export class MarketSimulator {
 
         const finalPositions: Position[] = [];
         for (const p of uniquePosMap.values()) {
-            if ((p.amount || 0) > 0.0001) {
+            if (p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed) {
                 finalPositions.push(p);
             }
         }
@@ -956,14 +972,15 @@ export class MarketSimulator {
     public cleanAmputatedPositionsForSymbol(symbol: string) {
         const cleanSymbol = normalizeSymbol(symbol);
         // 🔒 [彻底清除0持仓铁律] 任何数量归零或标记为0的持仓，立即移出持仓列表
-        this.positions = this.positions.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && ((p.amount || 0) <= 0.0001 || p.isAmputatedToZero)));
+        this.positions = this.positions.filter(p => p && !(normalizeSymbol(p.symbol) === cleanSymbol && ((p.amount || 0) <= 0.0001 || p.isAmputatedToZero || p.isBeingClosed)));
         // Check if there are any ACTIVE (non-zero amount and not being closed) positions left for this symbol
-        const hasActive = this.positions.some(p => normalizeSymbol(p.symbol) === cleanSymbol && p.amount > 0.0001 && !p.isBeingClosed);
+        const hasActive = this.positions.some(p => normalizeSymbol(p.symbol) === cleanSymbol && (p.amount || 0) > 0.0001 && !p.isBeingClosed && !p.isAmputatedToZero);
         if (!hasActive) {
             this.positions = this.positions.filter(p => normalizeSymbol(p.symbol) !== cleanSymbol);
             // 🔒 当该币种所有持仓均已彻底清空时，完全重置该币种的砍仓一票制锁，允许未来全新开仓周期正常使用
             this.amputatedSymbolsInCycle.delete(cleanSymbol);
         }
+        this.positions = this.positions.filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed);
     }
 
     public removePositionLocally(symbol: string, side?: PositionSide) {
@@ -1511,8 +1528,16 @@ export class MarketSimulator {
         
         if (main) {
             main.isBeingClosed = true;
+            const cleanMainSym = normalizeSymbol(main.symbol);
+            const now = Date.now();
+            this.recentlyClosedKeys.set(`${cleanMainSym}_${main.side}`, now);
+            this.cooldowns[`${main.symbol}_${main.side}`] = now + 60000;
+
             if (hedge) {
                 hedge.isBeingClosed = true;
+                const cleanHedgeSym = normalizeSymbol(hedge.symbol);
+                this.recentlyClosedKeys.set(`${cleanHedgeSym}_${hedge.side}`, now);
+                this.cooldowns[`${hedge.symbol}_${hedge.side}`] = now + 60000;
             }
 
             // Record initial profitability states BEFORE closing positions
@@ -1522,7 +1547,7 @@ export class MarketSimulator {
             // Real-trading close dispatch
             if (this.settings?.system?.realTrading && this.onRealClose) {
                 if (isAmputationProfitExit) {
-                    const positionsToClose = this.positions.filter(p => p.symbol === main.symbol);
+                    const positionsToClose = this.positions.filter(p => normalizeSymbol(p.symbol) === cleanMainSym);
                     for (const p of positionsToClose) {
                         if (p.amount > 0.0001) {
                             this.onRealClose(p, reason + ' (断臂全清)');
@@ -1541,31 +1566,29 @@ export class MarketSimulator {
             // Close positions: Clean up positions
             if (isAmputationProfitExit) {
                 // Clear ALL positions for this symbol if Amputation
-                const positionsToClose = this.positions.filter(p => p.symbol === main.symbol);
+                const positionsToClose = this.positions.filter(p => normalizeSymbol(p.symbol) === cleanMainSym);
                 for (const p of positionsToClose) {
                     this.recordTradeLog(p, reason + ' (断臂全清)');
                 }
-                this.positions = this.positions.filter(p => p.symbol !== main.symbol);
+                this.positions = this.positions.filter(p => normalizeSymbol(p.symbol) !== cleanMainSym);
                 this.addLog('INFO', `[断臂全清] 已清除所有 ${main.symbol} 相关仓位: ${reason}`);
-                this.cooldowns[`${main.symbol}_${main.side}`] = Date.now() + 60000;
                 this.saveCooldowns();
             } else {
                 // Close positions: Clean up both main and hedge positions cleanly from state
                 if (hedge) {
                     this.recordTradeLog(hedge, reason);
-                    this.positions = this.positions.filter(p => p.entryId !== hedge.entryId);
-                    this.cooldowns[`${hedge.symbol}_${hedge.side}`] = Date.now() + 60000;
+                    this.positions = this.positions.filter(p => p.entryId !== hedge.entryId && !(normalizeSymbol(p.symbol) === cleanMainSym && p.side === hedge.side));
                     this.addLog('INFO', `Closed Hedge ${hedge.side} on ${hedge.symbol}: ${reason}`);
                 }
                 
                 this.recordTradeLog(main, reason);
-                this.positions = this.positions.filter(p => p.entryId !== main.entryId);
-                this.cooldowns[`${main.symbol}_${main.side}`] = Date.now() + 60000;
+                this.positions = this.positions.filter(p => p.entryId !== main.entryId && !(normalizeSymbol(p.symbol) === cleanMainSym && p.side === main.side));
                 this.saveCooldowns();
                 this.addLog('INFO', `Closed Main ${main.side} on ${main.symbol}: ${reason}`);
             }
 
             this.cleanAmputatedPositionsForSymbol(main.symbol);
+            this.positions = this.positions.filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed);
 
             // Voice announcement for simulated closePair
             const cleanSym = main.symbol.replace('USDT', '');
@@ -1755,6 +1778,7 @@ export class MarketSimulator {
         return false;
     }
 
+    // 🔒 @LOCKED: [断臂求生 - 砍仓执行内核] 严禁在未获用户直接指令前修改本方法
     public amputate(position: Position, ratio: number, reason: string) {
         const cleanSym = normalizeSymbol(position.symbol);
 
@@ -2025,7 +2049,8 @@ export class MarketSimulator {
         this.emitUpdate(true);
     }
 
-    public refill(position: Position, reason: string) {
+    // 🔒 @LOCKED: [断臂求生/回踩补仓 - 执行内核] 严禁在未获用户直接指令前修改本方法
+    public refill(position: Position, reason: string, customRefillQty?: number) {
         if (!this.isNetworkHealthy) {
             this.addLog('WARNING', `网络异常拦截: 拒绝补仓 ${position.symbol} ${position.side}`);
             return;
@@ -2052,9 +2077,17 @@ export class MarketSimulator {
             return;
         }
 
-        // 🔒 [精确补仓铁律] 严格读取该仓位被砍掉的实际数量，绝对严禁通过数量差推导虚假补仓
-        const refillAmount = position.amputatedAmount || 0;
+        // 🔒 [精确补仓铁律] 严格优先读取透传的 customRefillQty，其次读取该仓位被砍掉的实际数量，最后以对冲差额兜底
+        let refillAmount = (typeof customRefillQty === 'number' && customRefillQty > 0)
+            ? customRefillQty
+            : (position.amputatedAmount || 0);
+
+        if (refillAmount <= 0 && oppositePos && oppositePos.amount > position.amount) {
+            refillAmount = Math.max(0, oppositePos.amount - position.amount);
+        }
+
         if (refillAmount <= 0) {
+            console.warn(`[Refill Skipped] 🛡️ 补仓数量计算为0: ${position.symbol} ${position.side} (customRefillQty=${customRefillQty}, amputatedAmount=${position.amputatedAmount})`);
             return;
         }
 
@@ -2095,10 +2128,10 @@ export class MarketSimulator {
             this.lastRefillTimestampMap.set(lockKey, now);
             position.lastRefillTime = now;
 
-            // 5秒安全超时防死锁（防止前端网络死锁或未正确返回回执）
+            // 2秒安全超时防死锁（防止前端网络阻塞或未正确返回回执）
             setTimeout(() => {
                 this.inFlightRefillPool.delete(lockKey);
-            }, 6000);
+            }, 2000);
 
             if (this.onRealOpen) {
                 this.onRealOpen(position, refillAmount, reason);
@@ -2217,6 +2250,15 @@ export class MarketSimulator {
         
         this.addLog('INFO', `🔄 补回仓位: ${position.symbol} ${position.side} 补回 ${refillAmount.toFixed(4)} (累计第${nextRefillCount}次补仓) | 新均价: ${newEntryPrice.toFixed(4)} | ${reason}`);
         this.emitUpdate(true);
+    }
+
+    /**
+     * 手动/异常释放补仓在途锁
+     */
+    public releaseInFlightRefill(symbol: string, side: PositionSide) {
+        const cleanSym = normalizeSymbol(symbol);
+        const lockKey = `${cleanSym}_${side}`;
+        this.inFlightRefillPool.delete(lockKey);
     }
 
     /**
@@ -2368,6 +2410,11 @@ export class MarketSimulator {
         const hedge = this.positions.find(p => p.entryId === hedgeId);
         if (hedge && hedge.mainPositionId) {
             hedge.isBeingClosed = true;
+            const cleanHedgeSym = normalizeSymbol(hedge.symbol);
+            const now = Date.now();
+            this.recentlyClosedKeys.set(`${cleanHedgeSym}_${hedge.side}`, now);
+            this.cooldowns[`${hedge.symbol}_${hedge.side}`] = now + 60000;
+            this.saveCooldowns();
             const main = this.positions.find(p => p.entryId === hedge.mainPositionId);
             
             if (this.settings?.system?.realTrading && this.onRealClose) {
@@ -2427,8 +2474,9 @@ export class MarketSimulator {
                 this.addTradeEvent(mainPos, profit >= 0 ? '盈利平仓' : '止损平仓', hedge.markPrice, hedge.amount, reason, profit);
             }
 
-            this.positions = this.positions.filter(p => p.entryId !== hedgeId);
+            this.positions = this.positions.filter(p => p.entryId !== hedgeId && !(normalizeSymbol(p.symbol) === cleanHedgeSym && p.side === hedge.side));
             this.cleanAmputatedPositionsForSymbol(hedge.symbol);
+            this.positions = this.positions.filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed);
             if (profit >= 0) {
                 this.addLog('SUCCESS', `🐜 蚂蚁搬家: 对冲单止盈 | ${reason}`);
             } else {
@@ -3027,10 +3075,12 @@ export class MarketSimulator {
         const positionSide = trade.positionSide || (side === "BUY" ? "LONG" : "SHORT");
 
         // 判断是平仓还是开仓
-        const isInferredClose = trade.action === "CLOSE" || 
+        const isInferredClose = trade.action !== "OPEN" && (
+            trade.action === "CLOSE" || 
             (realizedPnl !== 0) || 
             (positionSide === "LONG" && side === "SELL") || 
-            (positionSide === "SHORT" && side === "BUY");
+            (positionSide === "SHORT" && side === "BUY")
+        );
 
         if (isInferredClose) {
             const inferredDirection = (positionSide === "LONG" || (positionSide === "BOTH" && side === "SELL")) ? PositionSide.LONG : PositionSide.SHORT;
@@ -4091,8 +4141,8 @@ export class MarketSimulator {
                     this.amputate(pos, ratio, reason);
                     actionTaken = true;
                 },
-                (pos, reason) => {
-                    this.refill(pos, reason);
+                (pos, reason, customQty) => {
+                    this.refill(pos, reason, customQty);
                     actionTaken = true;
                 },
                 (hedgeId, profit, reason) => {
@@ -4167,7 +4217,7 @@ export class MarketSimulator {
 
                 this.updateCallback(
                     { ...this.account },
-                    [ ...this.positions ],
+                    this.getPositions(),
                     limitedLogs,
                     null,
                     limitedTradeLogs,

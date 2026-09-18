@@ -4,6 +4,7 @@ import { Layers, ChevronDown, ChevronUp, Copy, Check, RefreshCw, Search, Databas
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { pipelineCoordinator } from '../../../services/pipelineQueue';
 import { fetchWithFallback } from '../../../services/apiService';
+import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../../services/volume8amService';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -14,7 +15,10 @@ interface VolumePoolItem {
     volume24h: number; // in Millions
     change24h: number; // in %
     price: number;
+    volume8am?: number;
+    change8am?: number;
 }
+
 
 export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('SCANNER_VOLUME_POOL_COLLAPSED', false);
@@ -77,6 +81,13 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
             const raw = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
             if (raw) {
                 const parsed = JSON.parse(raw);
+                // 检查是否混入了现货数据（如包含 ETHBTC 或非合约币），如果是则作废旧缓存并强制重新拉取永续合约数据
+                const isSpotCache = Array.isArray(parsed) && parsed.some((d: any) => d && (d.symbol === 'ETHBTC' || d.symbol === 'BNBBTC'));
+                if (isSpotCache) {
+                    try { localStorage.removeItem('SCANNER_RAW_DATA_CACHE'); } catch (_) {}
+                    fetchLatestTickers();
+                    return;
+                }
                 if (Array.isArray(parsed)) {
                     const items: VolumePoolItem[] = parsed
                         .filter((d: any) => d && d.symbol && d.symbol.endsWith('USDT'))
@@ -91,11 +102,13 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                             };
                         });
                     setRawPool(items);
+                    return;
                 }
             }
         } catch (e) {
             console.warn('[VolumePoolBox] Failed to parse raw data cache', e);
         }
+        fetchLatestTickers();
     };
 
     useEffect(() => {
@@ -174,6 +187,26 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         return () => clearInterval(interval);
     }, [isAutoSync, syncIntervalMin, rawPool.length]);
 
+    // 📡 监听早上8点起缓存数据实时更新事件
+    const [_8amTick, set8amTick] = useState(0);
+    useEffect(() => {
+        const handle8amUpdate = () => {
+            set8amTick(t => t + 1);
+        };
+        window.addEventListener('scanner_8am_cache_updated', handle8amUpdate);
+        return () => {
+            window.removeEventListener('scanner_8am_cache_updated', handle8amUpdate);
+        };
+    }, []);
+
+    // 当开启“早上8点起”或8AM模式且底池有币时，自动批量拉取 8AM 日K线数据
+    useEffect(() => {
+        if ((scanConfig.enableVol8am || scanConfig.timeBasis === '8AM') && rawPool.length > 0) {
+            const symbols = rawPool.map(r => r.symbol);
+            fetchVolume8amBatch(symbols);
+        }
+    }, [scanConfig.enableVol8am, scanConfig.timeBasis, rawPool.length]);
+
     // Filter by current volume thresholds in scanConfig (both 24H volume and 8AM volume)
     const filteredPool = useMemo(() => {
         if (!rawPool || rawPool.length === 0) return [];
@@ -187,39 +220,20 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
             sourceList = sortedByAlphabet.slice(startIdx, endIdx);
         }
 
-        const enable24h = scanConfig.enableVol24h !== false;
-        const minVol24h = scanConfig.minVolume || 0;
-        const maxVol24h = scanConfig.maxVolume || 0;
-
-        const enable8am = !!scanConfig.enableVol8am;
-        const minVol8am = scanConfig.minVolume8am ?? 1;
-        const maxVol8am = scanConfig.maxVolume8am ?? 0;
-
-        // If neither volume filter is enabled, return sourceList directly
-        let baseList: VolumePoolItem[];
-        if (!enable24h && !enable8am) {
-            baseList = sourceList;
-        } else {
-            baseList = sourceList.filter(item => {
-                // Check 24H Volume if enabled
-                if (enable24h) {
-                    if (minVol24h > 0 && item.volume24h < minVol24h) return false;
-                    if (maxVol24h > 0 && item.volume24h > maxVol24h) return false;
-                }
-
-                // Check 8AM Volume if enabled
-                if (enable8am) {
-                    if (minVol8am > 0 && item.volume24h < minVol8am) return false;
-                    if (maxVol8am > 0 && item.volume24h > maxVol8am) return false;
-                }
-
-                return true;
-            });
-        }
+        // 使用统一的 checkVolumeRule 过滤 24H 与 早上8点起 交易额
+        const baseList = sourceList.filter(item => {
+            const cached8am = getVolume8am(item.symbol);
+            const enriched = {
+                ...item,
+                volume8am: item.volume8am !== undefined ? item.volume8am : cached8am?.volume8am,
+                change8am: item.change8am !== undefined ? item.change8am : cached8am?.change8am,
+            };
+            return checkVolumeRule(enriched, scanConfig);
+        });
 
         // 🔒【初筛币种回流交易额底池二次过滤闭环铁律】:
         // 当每一轮回溯周期过滤结束时，将市场初筛/大行情候选集里的币种直接并入交易额过滤底池（如200个+15个=215个），
-        // 确保初筛既有币在后续启动趋势、横盘蓄势及回溯周期极值中进行全套闭环二次过滤！
+        // 必须通过交易额规则校验（低于最小值或高于最大值者绝不混入），确保初筛既有币在后续极值中进行全套闭环二次过滤！
         if (feedbackSymbols.length > 0) {
             const baseSymbolSet = new Set(baseList.map(i => i.symbol));
             const injectedItems: VolumePoolItem[] = [];
@@ -227,14 +241,15 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                 if (!baseSymbolSet.has(sym)) {
                     const found = rawPool.find(r => r.symbol === sym);
                     if (found) {
-                        injectedItems.push(found);
-                    } else {
-                        injectedItems.push({
-                            symbol: sym,
-                            volume24h: 0,
-                            change24h: 0,
-                            price: 0
-                        });
+                        const cached8am = getVolume8am(sym);
+                        const enriched = {
+                            ...found,
+                            volume8am: found.volume8am !== undefined ? found.volume8am : cached8am?.volume8am,
+                            change8am: found.change8am !== undefined ? found.change8am : cached8am?.change8am,
+                        };
+                        if (checkVolumeRule(enriched, scanConfig)) {
+                            injectedItems.push(found);
+                        }
                     }
                 }
             });
@@ -252,7 +267,12 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         scanConfig.enableVol8am,
         scanConfig.minVolume8am,
         scanConfig.maxVolume8am,
-        feedbackSymbols
+        scanConfig.timeBasis,
+        scanConfig.enableAlphabeticalFilter,
+        scanConfig.alphabeticalRangeStart,
+        scanConfig.alphabeticalRangeEnd,
+        feedbackSymbols,
+        _8amTick
     ]);
 
     // Save current filtered symbols to localStorage and notify other pools
@@ -429,20 +449,28 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                                     : '未找到符合当前成交范围过滤条件的币种'}
                             </div>
                         ) : (
-                            displayList.map(item => (
-                                <div 
-                                    key={item.symbol}
-                                    className="px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700 hover:border-indigo-500/50 hover:bg-slate-700/70 transition-all flex items-center gap-1 group cursor-default"
-                                    title={`${item.symbol}: 24H成交额 ${item.volume24h}M USDT | 涨跌幅 ${item.change24h > 0 ? `+${item.change24h}%` : `${item.change24h}%`}`}
-                                >
-                                    <span className="font-mono font-bold text-[9px] text-slate-200 group-hover:text-indigo-300">
-                                        {item.symbol}
-                                    </span>
-                                    <span className="font-mono text-[8px] text-amber-400/90">
-                                        {(item.volume24h ?? 0) >= 1000 ? `${((item.volume24h ?? 0) / 1000).toFixed(1)}B` : `${(item.volume24h ?? 0).toFixed(0)}M`}
-                                    </span>
-                                </div>
-                            ))
+                            displayList.map(item => {
+                                const v8am = item.volume8am ?? getVolume8am(item.symbol)?.volume8am;
+                                return (
+                                    <div 
+                                        key={item.symbol}
+                                        className="px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700 hover:border-indigo-500/50 hover:bg-slate-700/70 transition-all flex items-center gap-1 group cursor-default"
+                                        title={`${item.symbol}: 24H成交额 ${item.volume24h}M USDT${v8am !== undefined ? ` | 8AM起成交额 ${v8am.toFixed(1)}M USDT` : ''} | 涨跌幅 ${item.change24h > 0 ? `+${item.change24h}%` : `${item.change24h}%`}`}
+                                    >
+                                        <span className="font-mono font-bold text-[9px] text-slate-200 group-hover:text-indigo-300">
+                                            {item.symbol}
+                                        </span>
+                                        <span className="font-mono text-[8px] text-amber-400/90">
+                                            {(item.volume24h ?? 0) >= 1000 ? `${((item.volume24h ?? 0) / 1000).toFixed(1)}B` : `${(item.volume24h ?? 0).toFixed(0)}M`}
+                                        </span>
+                                        {v8am !== undefined && (scanConfig.enableVol8am || scanConfig.timeBasis === '8AM') && (
+                                            <span className="font-mono text-[8px] text-blue-400/90" title="北京时间今早8点起交易额">
+                                                8A:{v8am.toFixed(0)}M
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            })
                         )}
                     </div>
                 </div>

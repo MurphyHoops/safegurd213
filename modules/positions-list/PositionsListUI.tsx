@@ -643,6 +643,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                 isManuallyClosed={manuallyClosedSymbols.has(p.symbol)}
                                 hasCustomSettings={!!p.customProfitSettings}
                                 hedgeTriggerReason={p.triggerReason || hedgePos?.triggerReason || mainPos?.triggerReason}
+                                hasActiveOpposingHedge={!!hedgePos}
                             />
                         );
                     })

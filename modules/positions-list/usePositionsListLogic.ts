@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { Position, PositionSide } from '../../types';
+import { normalizeSymbol } from '../../services/symbolUtils';
 
 export function usePositionsListLogic(
     rawPositions: Position[], 
@@ -10,7 +11,7 @@ export function usePositionsListLogic(
     isHoverLocked: boolean = false
 ) {
     const positions = useMemo(() => {
-        return (rawPositions || []).filter(p => p && (p.amount || 0) > 0.0001);
+        return (rawPositions || []).filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed);
     }, [rawPositions]);
 
     const lockedPositionsOrderRef = useRef<Position[]>([]);
@@ -43,7 +44,7 @@ export function usePositionsListLogic(
             lockedPositionsOrderRef.current.forEach(oldP => {
                 const key = `${oldP.entryId || ''}_${oldP.symbol}_${oldP.side}`;
                 const updatedP = posMap.get(key);
-                if (updatedP) {
+                if (updatedP && (updatedP.amount || 0) > 0.0001 && !updatedP.isAmputatedToZero && !updatedP.isBeingClosed) {
                     preservedList.push(updatedP);
                     seenKeys.add(key);
                 }
@@ -52,7 +53,7 @@ export function usePositionsListLogic(
             // 2. Append any newly opened positions at the bottom so they don't shift existing rows
             positions.forEach(p => {
                 const key = `${p.entryId || ''}_${p.symbol}_${p.side}`;
-                if (!seenKeys.has(key)) {
+                if (!seenKeys.has(key) && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed) {
                     preservedList.push(p);
                 }
             });
@@ -82,8 +83,9 @@ export function usePositionsListLogic(
         }> = {};
         
         positions.forEach(p => {
-            if (!symbolStats[p.symbol]) {
-                symbolStats[p.symbol] = { 
+            const sym = normalizeSymbol(p.symbol);
+            if (!symbolStats[sym]) {
+                symbolStats[sym] = { 
                     isHedged: false, 
                     maxPnlPercent: -Infinity,
                     maxPositionValue: -Infinity,
@@ -91,36 +93,38 @@ export function usePositionsListLogic(
                 };
             }
             if (p.isHedged) {
-                symbolStats[p.symbol].isHedged = true;
+                symbolStats[sym].isHedged = true;
             }
             
             const pnlPct = getLivePnLPercent(p);
-            if (pnlPct > symbolStats[p.symbol].maxPnlPercent) {
-                symbolStats[p.symbol].maxPnlPercent = pnlPct;
+            if (pnlPct > symbolStats[sym].maxPnlPercent) {
+                symbolStats[sym].maxPnlPercent = pnlPct;
             }
 
             const posVal = getPositionValue(p);
-            if (posVal > symbolStats[p.symbol].maxPositionValue) {
-                symbolStats[p.symbol].maxPositionValue = posVal;
+            if (posVal > symbolStats[sym].maxPositionValue) {
+                symbolStats[sym].maxPositionValue = posVal;
             }
 
             const pnlAmt = getLivePnLAmount(p);
-            if (pnlAmt > symbolStats[p.symbol].maxPnlAmount) {
-                symbolStats[p.symbol].maxPnlAmount = pnlAmt;
+            if (pnlAmt > symbolStats[sym].maxPnlAmount) {
+                symbolStats[sym].maxPnlAmount = pnlAmt;
             }
         });
 
         // Sort logic
         const sorted = [...positions].sort((a, b) => {
-            const statsA = symbolStats[a.symbol];
-            const statsB = symbolStats[b.symbol];
+            const symA = normalizeSymbol(a.symbol);
+            const symB = normalizeSymbol(b.symbol);
+            const statsA = symbolStats[symA] || { isHedged: false, maxPnlPercent: 0, maxPositionValue: 0, maxPnlAmount: 0 };
+            const statsB = symbolStats[symB] || { isHedged: false, maxPnlPercent: 0, maxPositionValue: 0, maxPnlAmount: 0 };
 
             // 1. Hedged pairs first
             if (statsA.isHedged && !statsB.isHedged) return -1;
             if (!statsA.isHedged && statsB.isHedged) return 1;
 
             // 2. If they are different symbols, sort by the selected key
-            if (a.symbol !== b.symbol) {
+            if (symA !== symB) {
                 if (sortKey === 'PNL_PCT') {
                     if (sortMode === 'DESC') {
                         return statsB.maxPnlPercent - statsA.maxPnlPercent;

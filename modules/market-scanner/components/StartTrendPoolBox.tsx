@@ -47,7 +47,13 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
     useEffect(() => {
         const handleVolumePoolSync = () => {
             const currentCandidates = getCandidateSymbols();
-            if (currentCandidates.length === 0) return;
+            if (currentCandidates.length === 0) {
+                // 若交易额过滤底池暂无币种，行情启动底池彻底清零，不叠加或残留任何历史老数据
+                localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify([]));
+                setPool([]);
+                window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
+                return;
+            }
             const validSet = new Set(currentCandidates);
             
             try {
@@ -73,7 +79,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         };
     }, [setPool]);
 
-    // Directly read candidate coins from "交易额过滤底池" (SCANNER_VOLUME_FILTERED_POOL or SCANNER_RAW_DATA_CACHE)
+    // 🔒【纯净数据源】：直接完全从“交易额过滤底池” (SCANNER_VOLUME_FILTERED_POOL) 获取基础数据量信息，不混入任何其他源
     const getCandidateSymbols = (): string[] => {
         try {
             const rawPool = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
@@ -81,31 +87,6 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 const parsed = JSON.parse(rawPool);
                 if (Array.isArray(parsed) && parsed.length > 0) {
                     return parsed;
-                }
-            }
-        } catch (_) {}
-
-        // Fallback: Calculate from raw data cache
-        try {
-            const raw = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed)) {
-                    const currentCfg = scanConfigRef.current;
-                    const minVol = currentCfg.minVolume || 0;
-                    const maxVol = currentCfg.maxVolume || 0;
-                    const enableVol = currentCfg.enableVol24h !== false;
-                    return parsed
-                        .filter((d: any) => {
-                            if (!d || !d.symbol || !d.symbol.endsWith('USDT')) return false;
-                            if (!enableVol) return true;
-                            const rawQuoteVol = parseFloat(d.quoteVolume || '0');
-                            const volM = rawQuoteVol / 1000000;
-                            if (minVol > 0 && volM < minVol) return false;
-                            if (maxVol > 0 && volM > maxVol) return false;
-                            return true;
-                        })
-                        .map((d: any) => d.symbol);
                 }
             }
         } catch (_) {}
@@ -224,23 +205,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         (window as any).IS_START_TREND_SCANNING = true;
         setIsScanning(true);
 
-        // 🔒【永不清零·增量差量动态更新铁律】:
-        // 扫描启动时绝不清空底池（保留当前既有符合币种），只能在扫描过程中根据实际结果动态增加或删减！
+        // 🔒【纯净数据源·无历史老数据叠加】：每次运行完全从空白开始，严格仅由本轮交易额底池候选币重新匹配产生，彻底杜绝老数据叠加
         const poolMap = new Map<string, StartTrendPoolItem>();
-        if (pool && pool.length > 0) {
-            pool.forEach(item => poolMap.set(item.symbol, item));
-        } else {
-            try {
-                const cached = localStorage.getItem('SCANNER_START_TREND_POOL');
-                if (cached) {
-                    const parsed = JSON.parse(cached);
-                    if (Array.isArray(parsed)) {
-                        parsed.forEach((item: StartTrendPoolItem) => poolMap.set(item.symbol, item));
-                    }
-                }
-            } catch (_) {}
-        }
-        setProgress({ current: 1, total: candidates.length, passed: poolMap.size });
+        setProgress({ current: 1, total: candidates.length, passed: 0 });
 
         try {
             // Process sequentially with user-configured interval (default 3s) so progress counter increments smoothly and visibly
@@ -418,10 +385,11 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         });
     };
 
-    // Auto Scan Trigger when isAutoScan is enabled - Continuous robust heartbeat loop
+    // Auto Scan Trigger when isAutoScan is enabled - Sequential relay closed-loop
     useEffect(() => {
         let isLoopActive = true;
         let scanTimer: any = null;
+        let lastFinishedAt = Date.now();
 
         const scheduleNext = (delayMs: number) => {
             if (!isLoopActive) return;
@@ -429,34 +397,65 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             scanTimer = setTimeout(async () => {
                 if (!isLoopActive || !isMountedRef.current) return;
                 if (isAutoScanRef.current && !isScanningRef.current) {
-                    // 🔒 [时间先后·互斥安全锁]: 若大行情正在扫描，错开时间，等待大行情执行完毕后再启动
+                    // 🔒 [时间先后·互斥安全锁]: 若大行情（横盘蓄势/回溯周期）正在扫描，让行等待
                     if ((window as any).IS_MAJOR_TREND_SCANNING) {
-                        scheduleNext(3000);
+                        scheduleNext(1500);
                         return;
                     }
                     await runStartTrendScan(false);
+                    lastFinishedAt = Date.now();
                 }
-                const intervalMs = Math.max(1, syncIntervalSecRef.current || 3) * 1000;
-                scheduleNext(intervalMs);
             }, delayMs);
         };
 
-        scheduleNext(500);
+        // 初始开机：800ms 后触发第 1 棒扫描（读取交易额过滤底池）
+        scheduleNext(800);
 
-        // 🔒 [时间先后·接力赛]: 监听大行情发现完成事件，当大行情完成后无缝接力唤醒底池扫描
+        // 🔒 [时间先后·闭环接力赛]: 
+        // 列表1里“回溯周期过滤”扫描完毕后，派发 scanner_major_trend_completed，
+        // “行情启动趋势”无缝接棒，重新读取“交易额过滤底池”开始新一轮扫描，周而复始！
         const handleMajorTrendCompleted = () => {
             if (!isLoopActive || !isMountedRef.current) return;
-            if (isAutoScanRef.current && !isScanningRef.current && !(window as any).IS_MAJOR_TREND_SCANNING) {
-                console.log("[StartTrendPool] Major Trend completed. Handing over baton: Starting Start Trend scan now (接力启动)...");
-                scheduleNext(100);
-            }
+            if (!isAutoScanRef.current || isScanningRef.current) return;
+
+            console.log("[StartTrendPool] 回溯周期过滤扫描完毕！接力棒交回【行情启动趋势】：读取“交易额过滤底池”开始新一轮闭环扫描 (周而复始)...");
+            scheduleNext(800);
         };
         window.addEventListener('scanner_major_trend_completed', handleMajorTrendCompleted);
+
+        // 🔒 [循环看门狗守护器]:
+        // 若由于极端网络异常或底池空值等原因两端均处于空闲超 25 秒，看门狗自动唤醒行情启动趋势扫描，杜绝管道卡死
+        const watchdog = setInterval(() => {
+            if (!isLoopActive || !isMountedRef.current) return;
+            if (isAutoScanRef.current && !isScanningRef.current && !(window as any).IS_MAJOR_TREND_SCANNING) {
+                if (Date.now() - lastFinishedAt > 25000) {
+                    console.log("[StartTrendPool] 闭环看门狗检测到空闲，主动唤醒行情启动趋势开始新一轮扫描...");
+                    scheduleNext(100);
+                }
+            }
+        }, 10000);
 
         return () => {
             isLoopActive = false;
             if (scanTimer) clearTimeout(scanTimer);
+            clearInterval(watchdog);
             window.removeEventListener('scanner_major_trend_completed', handleMajorTrendCompleted);
+        };
+    }, []);
+
+    const [volumeCandidatesCount, setVolumeCandidatesCount] = useState<number>(() => getCandidateSymbols().length);
+
+    useEffect(() => {
+        const updateCandidates = () => {
+            setVolumeCandidatesCount(getCandidateSymbols().length);
+        };
+        window.addEventListener('scanner_volume_pool_updated', updateCandidates);
+        window.addEventListener('storage', updateCandidates);
+        const timer = setInterval(updateCandidates, 2000);
+        return () => {
+            window.removeEventListener('scanner_volume_pool_updated', updateCandidates);
+            window.removeEventListener('storage', updateCandidates);
+            clearInterval(timer);
         };
     }, []);
 
@@ -467,9 +466,8 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         return pool.filter(item => item.symbol.includes(term));
     }, [pool, searchTerm]);
 
-    const candidateCount = useMemo(() => {
-        return getCandidateSymbols().length;
-    }, [pool, isScanning]);
+    const totalCandidates = progress.total > 0 ? progress.total : volumeCandidatesCount;
+    const currentScanPos = isScanning ? progress.current : totalCandidates;
 
     const handleCopyAll = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -495,14 +493,12 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         <span className="text-[10px] font-bold text-white tracking-wide">
                             行情启动底池
                         </span>
-                        {/* 三段式显示: 左边交易额过滤底池数量 / 中间正在扫描位置 / 右边已筛选过滤出数量 */}
+                        {/* 三段式显示: 【交易额过滤底池数量 / 正在扫描位置 / 符合行情启动趋势的数量】 */}
                         <span 
                             className="px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/60 text-amber-300 font-mono font-bold text-[9px] tracking-tight"
-                            title="【交易额过滤底池数量 / 正在扫描位置 / 已筛选过滤出数量】"
+                            title="【交易额过滤底池数量 / 正在扫描位置 / 符合行情启动趋势的数量】"
                         >
-                            {progress.total > 0 
-                                ? `${progress.total} / ${isScanning ? progress.current : progress.total} / ${pool.length}` 
-                                : `${candidateCount || pool.length} / ${candidateCount || pool.length} / ${pool.length}`}
+                            {totalCandidates} / {currentScanPos} / {pool.length}
                         </span>
                     </div>
                 </div>
@@ -581,7 +577,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         {isScanning ? (
                             <>
                                 <RefreshCw size={10} className="animate-spin" />
-                                <span>{progress.total}/{progress.current}/{pool.length}</span>
+                                <span>{totalCandidates}/{currentScanPos}/{pool.length}</span>
                             </>
                         ) : (
                             <>

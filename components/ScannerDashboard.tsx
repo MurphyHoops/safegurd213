@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { audioService } from "../services/audioService";
 import { normalizeSymbol, resolvePrice } from "../services/symbolUtils";
+import { logSignalOccurrence } from "../services/binanceLogger";
 import KlineChartModal from "./KlineChartModal";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { usePersistedState } from "../hooks/usePersistedState";
@@ -42,6 +43,11 @@ const MemoizedMarketScannerModule = React.memo(MarketScannerModule, (prev, next)
          prev.directMode === next.directMode &&
          prev.mode === next.mode &&
          prev.selectedStrategyId === next.selectedStrategyId &&
+         prev.strategies === next.strategies &&
+         prev.onAddStrategy === next.onAddStrategy &&
+         prev.onDeleteStrategy === next.onDeleteStrategy &&
+         prev.onRenameStrategy === next.onRenameStrategy &&
+         prev.onSelectStrategy === next.onSelectStrategy &&
          prev.isScanAllowed === next.isScanAllowed &&
          prev.isRotationEnabled === next.isRotationEnabled &&
          prev.rotationIntervalMinutes === next.rotationIntervalMinutes &&
@@ -62,14 +68,16 @@ const MemoizedStructureAuditModule = React.memo(StructureAuditModule, (prev, nex
          prev.activePositions === next.activePositions && 
          prev.directMode === next.directMode &&
          prev.strategyId === next.strategyId &&
-         prev.isBackground === next.isBackground;
+         prev.isBackground === next.isBackground &&
+         prev.actionConfig === next.actionConfig;
 });
 const MemoizedMomentumAuditModule = React.memo(MomentumAuditModule, (prev, next) => {
   return prev.candidates === next.candidates && 
          prev.activePositions === next.activePositions && 
          prev.list3Config === next.list3Config &&
          prev.strategyId === next.strategyId &&
-         prev.isBackground === next.isBackground;
+         prev.isBackground === next.isBackground &&
+         prev.actionConfig === next.actionConfig;
 });
 
 // --- MIRRORED MODULES ---
@@ -353,12 +361,20 @@ const ScannerDashboardInner: React.FC<
   }, [setSelectedStrategyId]);
 
   const handleAddStrategy = useCallback(() => {
-    setStrategies((prev) => {
-      const nextNum = prev.length + 1;
-      const newId = `strat-${Date.now()}`;
-      return [...prev, { id: newId, name: `自动选币 ${nextNum}`, active: true, unconfigured: true }];
-    });
-  }, [setStrategies]);
+    const nextNum = (strategiesRef.current?.length || 0) + 1;
+    const newId = `strat-${Date.now()}`;
+    const newStrategy: StrategyItem = {
+      id: newId,
+      name: `自动选币 ${nextNum}`,
+      active: true,
+      unconfigured: true,
+    };
+    setStrategies((prev) => [...prev, newStrategy]);
+    handleSelectStrategy(newId);
+    if (onLogRef.current) {
+      onLogRef.current("INFO", `[新增策略] 成功创建「自动选币 ${nextNum}」并已自动切换至该策略。`);
+    }
+  }, [handleSelectStrategy, setStrategies]);
 
   const handleActivateStrategy = useCallback(() => {
     setStrategies((prev) =>
@@ -368,26 +384,37 @@ const ScannerDashboardInner: React.FC<
   }, [selectedStrategyId, setStrategies, onLog]);
 
   const handleDeleteStrategy = useCallback((id: string) => {
-    // Synchronously clean up deleted strategy lists from disk
+    const currentStrats = strategiesRef.current || [];
+    if (currentStrats.length <= 1) {
+      if (onLogRef.current) {
+        onLogRef.current("WARNING", `[删除策略] 系统至少需保留一个选币策略，无法全部删除。`);
+      }
+      return;
+    }
+
+    // Synchronously clean up deleted strategy lists and configs from disk
     localStorage.removeItem(`SCANNER_LIST1_${id}`);
     localStorage.removeItem(`SCANNER_LIST2_${id}`);
     localStorage.removeItem(`SCANNER_LIST3_${id}`);
     localStorage.removeItem(`SCANNER_LIST3_CONFIG_${id}`);
+    localStorage.removeItem(`SCANNER_LIST4_CONFIG_${id}`);
     localStorage.removeItem(`SCANNER_ACTION_CONFIG_${id}`);
+    localStorage.removeItem(`SCANNER_CONFIG_24H_${id}`);
+    localStorage.removeItem(`SCANNER_CONFIG_8AM_${id}`);
 
-    setStrategies((prev) => {
-      if (prev.length <= 1) return prev;
-      const filtered = prev.filter((s) => s.id !== id);
-      if (selectedStrategyId === id && filtered.length > 0) {
-        const nextId = filtered[0].id;
-        setSelectedStrategyId(nextId);
-        setList1Candidates(loadState<ScannerItem[]>(`SCANNER_LIST1_${nextId}`, []));
-        setList2Results(loadState<ScannerItem[]>(`SCANNER_LIST2_${nextId}`, []));
-        setList3Results(loadState<ScannerItem[]>(`SCANNER_LIST3_${nextId}`, []));
-      }
-      return filtered;
-    });
-  }, [selectedStrategyId, setSelectedStrategyId, setStrategies]);
+    const filtered = currentStrats.filter((s) => s.id !== id);
+    setStrategies(filtered);
+
+    if (selectedStrategyId === id && filtered.length > 0) {
+      const nextId = filtered[0].id;
+      handleSelectStrategy(nextId);
+    }
+
+    const deletedStrat = currentStrats.find((s) => s.id === id);
+    if (onLogRef.current) {
+      onLogRef.current("INFO", `[删除策略] 策略「${deletedStrat ? deletedStrat.name : id}」已成功删除并释放配置。`);
+    }
+  }, [selectedStrategyId, handleSelectStrategy, setStrategies]);
 
   const handleRenameStrategy = useCallback((id: string, name: string) => {
     setStrategies((prev) =>
@@ -597,7 +624,7 @@ const ScannerDashboardInner: React.FC<
       instantReopenEnabled: false,
       instantOpenDirection: "LONG",
       majorTrend: {
-        enabled: true,
+        enabled: false,
         updateIntervalHours: 4,
         requestPerMinute: 20,
         lookbackDays: 300,
@@ -941,44 +968,10 @@ const ScannerDashboardInner: React.FC<
   };
 
   // --- DATA PIPELINE STATE ---
-  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>(() => {
-    return loadState<ScannerItem[]>(`SCANNER_LIST1_${selectedStrategyId || 'strat-1'}`, []);
-  });
-  const [list2Results, setList2Results] = useState<ScannerItem[]>(() => {
-    return loadState<ScannerItem[]>(`SCANNER_LIST2_${selectedStrategyId || 'strat-1'}`, []);
-  });
-  const [list3Results, setList3Results] = useState<ScannerItem[]>(() => {
-    return loadState<ScannerItem[]>(`SCANNER_LIST3_${selectedStrategyId || 'strat-1'}`, []);
-  });
-
-  const lastSavedStrategyIdRef1 = useRef(selectedStrategyId);
-  const lastSavedStrategyIdRef2 = useRef(selectedStrategyId);
-  const lastSavedStrategyIdRef3 = useRef(selectedStrategyId);
-
-  // Automatically persist visible lists whenever they change for the active strategy
-  useEffect(() => {
-    if (lastSavedStrategyIdRef1.current !== selectedStrategyId) {
-      lastSavedStrategyIdRef1.current = selectedStrategyId;
-      return;
-    }
-    saveState(`SCANNER_LIST1_${selectedStrategyId}`, list1Candidates);
-  }, [list1Candidates, selectedStrategyId]);
-
-  useEffect(() => {
-    if (lastSavedStrategyIdRef2.current !== selectedStrategyId) {
-      lastSavedStrategyIdRef2.current = selectedStrategyId;
-      return;
-    }
-    saveState(`SCANNER_LIST2_${selectedStrategyId}`, list2Results);
-  }, [list2Results, selectedStrategyId]);
-
-  useEffect(() => {
-    if (lastSavedStrategyIdRef3.current !== selectedStrategyId) {
-      lastSavedStrategyIdRef3.current = selectedStrategyId;
-      return;
-    }
-    saveState(`SCANNER_LIST3_${selectedStrategyId}`, list3Results);
-  }, [list3Results, selectedStrategyId]);
+  // 🔒 [DATA INTEGRITY]: 严格由实时扫描流驱动，严禁启动时盲读历史残留列表
+  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>([]);
+  const [list2Results, setList2Results] = useState<ScannerItem[]>([]);
+  const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
 
   const handleList1Results = useCallback((results: ScannerItem[]) => {
     setList1Candidates(prev => {
@@ -1049,6 +1042,10 @@ const ScannerDashboardInner: React.FC<
   const list2RemoveSignalRef = useRef<((uniqueId: string) => void) | undefined>(
     undefined,
   );
+
+  const handleRemoveSignalReady = useCallback((fn: (uniqueId: string) => void) => {
+    removeSignalRef.current = fn;
+  }, []);
 
   const handleRemoveSignal = (id: string) => {
     removeSignalRef.current?.(id);
@@ -1139,6 +1136,7 @@ const ScannerDashboardInner: React.FC<
       const DEFAULT_ACTION_CONFIG: ActionConfig = {
         enabled: true,
         openAmount: 10,
+        leverage: 20,
         maxOpenSymbols: 200,
         maxTotalValue: 100000,
         breakoutBuffer: 0.2,
@@ -1176,6 +1174,10 @@ const ScannerDashboardInner: React.FC<
           typeof userConfig.openAmount === "number" && userConfig.openAmount > 0
             ? userConfig.openAmount
             : DEFAULT_ACTION_CONFIG.openAmount,
+        leverage:
+          typeof userConfig.leverage === "number" && userConfig.leverage > 0
+            ? userConfig.leverage
+            : (DEFAULT_ACTION_CONFIG.leverage || 20),
         maxOpenSymbols:
           typeof userConfig.maxOpenSymbols === "number" &&
           userConfig.maxOpenSymbols > 0
@@ -1377,6 +1379,7 @@ const ScannerDashboardInner: React.FC<
         strategyId: selectedStrategyId,
         isManual: isManual,
         reason: reason,
+        leverage: (extraProps as any)?.leverage || config.leverage || 20,
         ...extraProps,
       };
 
@@ -1434,6 +1437,16 @@ const ScannerDashboardInner: React.FC<
           );
         return true;
       } else {
+        logSignalOccurrence({
+          source: isManual ? 'MANUAL' : 'AUTO_STRATEGY',
+          strategyName: (mergedExtraProps as any)?.strategyName || selectedStrategyId || '选币扫描策略',
+          actionType: 'OPEN',
+          symbol: cleanSymbol,
+          side: side,
+          price: price,
+          amountUsdt: amount,
+          reason: reason || '策略满足开仓条件'
+        });
         onOpenPosition(
           cleanSymbol,
           side,
@@ -2038,9 +2051,7 @@ const ScannerDashboardInner: React.FC<
                   candidates={list2Results}
                   onResultsUpdate={handleList3Results}
                   onConfigUpdate={setList3Config}
-                  onRemoveSignalReady={(fn) => {
-                    removeSignalRef.current = fn;
-                  }}
+                  onRemoveSignalReady={handleRemoveSignalReady}
                   realPrices={currentPrices}
                   setChartData={safeSetChartData}
                   executeTradeSafe={executeTradeSafe}
@@ -2054,9 +2065,7 @@ const ScannerDashboardInner: React.FC<
                   candidates={list2Results}
                   onResultsUpdate={handleList3Results}
                   onConfigUpdate={setList3Config}
-                  onRemoveSignalReady={(fn) => {
-                    removeSignalRef.current = fn;
-                  }}
+                  onRemoveSignalReady={handleRemoveSignalReady}
                   realPrices={currentPrices}
                   setChartData={safeSetChartData}
                   executeTradeSafe={executeTradeSafe}
@@ -2204,6 +2213,7 @@ const ScannerDashboardInner: React.FC<
           entryTime={chartData.entryTime}
           currentPrice={chartData.currentPrice}
           list2Config={chartData.list2Config}
+          list4Config={chartData.list4Config}
           highlightTime={chartData.highlightTime}
           extraLines={chartData.extraLines}
           directMode={directMode}
@@ -2300,7 +2310,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
       instantReopenEnabled: false,
       instantOpenDirection: "LONG",
       majorTrend: {
-        enabled: true,
+        enabled: false,
         updateIntervalHours: 4,
         requestPerMinute: 20,
         lookbackDays: 300,
@@ -2380,28 +2390,10 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     [activeMode, config24H, config8AM],
   );
 
-  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>(() => {
-    return loadState<ScannerItem[]>(`SCANNER_LIST1_${strategyId}`, []);
-  });
-  const [list2Results, setList2Results] = useState<ScannerItem[]>(() => {
-    return loadState<ScannerItem[]>(`SCANNER_LIST2_${strategyId}`, []);
-  });
-  const [list3Results, setList3Results] = useState<ScannerItem[]>(() => {
-    return loadState<ScannerItem[]>(`SCANNER_LIST3_${strategyId}`, []);
-  });
-
-  // Automatically persist visible lists whenever they change for this background strategy
-  useEffect(() => {
-    saveState(`SCANNER_LIST1_${strategyId}`, list1Candidates);
-  }, [list1Candidates, strategyId]);
-
-  useEffect(() => {
-    saveState(`SCANNER_LIST2_${strategyId}`, list2Results);
-  }, [list2Results, strategyId]);
-
-  useEffect(() => {
-    saveState(`SCANNER_LIST3_${strategyId}`, list3Results);
-  }, [list3Results, strategyId]);
+  // 🔒 [DATA INTEGRITY]: 严格由实时扫描流驱动，严禁启动时盲读历史残留列表
+  const [list1Candidates, setList1Candidates] = useState<ScannerItem[]>([]);
+  const [list2Results, setList2Results] = useState<ScannerItem[]>([]);
+  const [list3Results, setList3Results] = useState<ScannerItem[]>([]);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
   const [actionConfig, setActionConfig] = useState<ActionConfig | null>(() => {
     try {
@@ -2444,6 +2436,10 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
 
   const bgRemoveSignalRef = useRef<((id: string) => void) | undefined>(undefined);
   const bgList2RemoveSignalRef = useRef<((id: string) => void) | undefined>(undefined);
+
+  const handleBgRemoveSignalReady = useCallback((fn: (id: string) => void) => {
+    bgRemoveSignalRef.current = fn;
+  }, []);
 
   const handleBgRemoveSignal = (id: string) => {
     bgRemoveSignalRef.current?.(id);
@@ -2544,9 +2540,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
           candidates={list2Results}
           onResultsUpdate={handleList3Results}
           onConfigUpdate={setList3Config}
-          onRemoveSignalReady={(fn) => {
-            bgRemoveSignalRef.current = fn;
-          }}
+          onRemoveSignalReady={handleBgRemoveSignalReady}
           realPrices={currentPrices}
           setChartData={() => {}}
           executeTradeSafe={wrappedExecuteTradeSafe}
@@ -2560,9 +2554,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
           candidates={list2Results}
           onResultsUpdate={handleList3Results}
           onConfigUpdate={setList3Config}
-          onRemoveSignalReady={(fn) => {
-            bgRemoveSignalRef.current = fn;
-          }}
+          onRemoveSignalReady={handleBgRemoveSignalReady}
           realPrices={currentPrices}
           setChartData={() => {}}
           executeTradeSafe={wrappedExecuteTradeSafe}

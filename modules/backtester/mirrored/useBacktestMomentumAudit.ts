@@ -34,7 +34,7 @@ export const useBacktestMomentumAudit = (
 ) => {
     const { fetchVirtualKlines, virtualTime } = useBacktest();
     const [config, setConfig] = usePersistedState<List4Config>('SCANNER_LIST4_CONFIG', {
-        midlineThreshold: 50,
+        midlineThreshold: 80,
         breakoutThreshold: 10,
         enableThresholds: true,
         enableAntiChase: true,
@@ -98,23 +98,11 @@ export const useBacktestMomentumAudit = (
             const tfMinutes = getTfMinutes(item.tf || '15m');
             const now = virtualTime;
 
-            // Check "Structure Broken" (INVALID)
+            // Check "Structure Broken" (INVALID) - 立即清除 (达到中轴防守突破价格，立即从列表4清除)
             if (item.momentum?.status === 'INVALID') {
-                if (!invalidSignalCacheRef.current.has(uniqueId)) {
-                    invalidSignalCacheRef.current.set(uniqueId, now);
-                }
-                
-                if (config.removeInvalidCandles && config.removeInvalidCandles > 0) {
-                    const invalidTime = invalidSignalCacheRef.current.get(uniqueId) || now;
-                    const elapsedMs = now - invalidTime;
-                    const maxMs = config.removeInvalidCandles * tfMinutes * 60 * 1000;
-                    
-                    if (elapsedMs >= maxMs) {
-                        expiredSignalCacheRef.current.add(uniqueId);
-                        shouldKeep = false;
-                        callbacksRef.current.onRemoveSignal?.(uniqueId);
-                    }
-                }
+                expiredSignalCacheRef.current.add(uniqueId);
+                shouldKeep = false;
+                callbacksRef.current.onRemoveSignal?.(uniqueId);
             } else {
                 invalidSignalCacheRef.current.delete(uniqueId);
             }

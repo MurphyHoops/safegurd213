@@ -261,72 +261,79 @@ export function analyzeList2Crossing(
                     }
                 }
 
-                // Check if EMA10 has crossed EMA20, EMA30, and EMA40 within the preceding lookback bars of the divergence formation (Configurable)
+                // 🔒 [USER MANDATORY RULE - 发散回溯穿越 (Directional Lookback Crossing)]
+                // 在设置的 divergenceLookbackBars 根K线内，EMA10必须穿越EMA20/30/40均线：
+                // 做多时：EMA10向上金叉穿越 EMA20/30/40 (prev10 <= prevTarget 且 cur10 > curTarget)
+                // 做空时：EMA10向下死叉穿越 EMA20/30/40 (prev10 >= prevTarget 且 cur10 < curTarget)
                 let crossedAllL = true;
                 let crossedAllS = true;
 
                 if (enableDivergenceCrossCheck) {
-                    if (isAlignedL) {
-                        let crossed20 = false;
-                        let crossed30 = false;
-                        let crossed40 = false;
-                        for (let b = 1; b <= divergenceLookbackBars; b++) {
-                            const bIdx = checkIdx - b;
-                            if (bIdx - 1 < 80) break;
+                    let crossed20L = false;
+                    let crossed30L = false;
+                    let crossed40L = false;
 
-                            const cur10 = getEmaVal(ema10, bIdx, 10);
-                            const cur20 = getEmaVal(ema20, bIdx, 20);
-                            const cur30 = getEmaVal(ema30, bIdx, 30);
-                            const cur40 = getEmaVal(ema40, bIdx, 40);
+                    let crossed20S = false;
+                    let crossed30S = false;
+                    let crossed40S = false;
 
-                            const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+                    for (let b = 0; b < divergenceLookbackBars; b++) {
+                        const bIdx = checkIdx - b;
+                        if (bIdx - 1 < 80) break;
 
-                            if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
-                                if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                        const cur10 = getEmaVal(ema10, bIdx, 10);
+                        const cur20 = getEmaVal(ema20, bIdx, 20);
+                        const cur30 = getEmaVal(ema30, bIdx, 30);
+                        const cur40 = getEmaVal(ema40, bIdx, 40);
+
+                        const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                        const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                        const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                        const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+
+                        if (cur10 !== null && prev10 !== null) {
+                            // 做多：EMA10 向上穿越 EMA20 / EMA30 / EMA40
+                            if (cur20 !== null && prev20 !== null) {
+                                if ((prev10 <= prev20 && cur10 > cur20) || (prev10 < prev20 && cur10 >= cur20)) {
+                                    crossed20L = true;
+                                }
                             }
-                            if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
-                                if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
+                            if (cur30 !== null && prev30 !== null) {
+                                if ((prev10 <= prev30 && cur10 > cur30) || (prev10 < prev30 && cur10 >= cur30)) {
+                                    crossed30L = true;
+                                }
                             }
-                            if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
-                                if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
+                            if (cur40 !== null && prev40 !== null) {
+                                if ((prev10 <= prev40 && cur10 > cur40) || (prev10 < prev40 && cur10 >= cur40)) {
+                                    crossed40L = true;
+                                }
                             }
-                        }
-                        crossedAllL = crossed20 && crossed30 && crossed40;
-                    }
 
-                    if (isAlignedS) {
-                        let crossed20 = false;
-                        let crossed30 = false;
-                        let crossed40 = false;
-                        for (let b = 1; b <= divergenceLookbackBars; b++) {
-                            const bIdx = checkIdx - b;
-                            if (bIdx - 1 < 80) break;
-
-                            const cur10 = getEmaVal(ema10, bIdx, 10);
-                            const cur20 = getEmaVal(ema20, bIdx, 20);
-                            const cur30 = getEmaVal(ema30, bIdx, 30);
-                            const cur40 = getEmaVal(ema40, bIdx, 40);
-
-                            const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
-
-                            if (cur10 !== null && cur20 !== null && prev10 !== null && prev20 !== null) {
-                                if ((cur10 - cur20) * (prev10 - prev20) <= 0) crossed20 = true;
+                            // 做空：EMA10 向下穿越 EMA20 / EMA30 / EMA40
+                            if (cur20 !== null && prev20 !== null) {
+                                if ((prev10 >= prev20 && cur10 < cur20) || (prev10 > prev20 && cur10 <= cur20)) {
+                                    crossed20S = true;
+                                }
                             }
-                            if (cur10 !== null && cur30 !== null && prev10 !== null && prev30 !== null) {
-                                if ((cur10 - cur30) * (prev10 - prev30) <= 0) crossed30 = true;
+                            if (cur30 !== null && prev30 !== null) {
+                                if ((prev10 >= prev30 && cur10 < cur30) || (prev10 > prev30 && cur10 <= cur30)) {
+                                    crossed30S = true;
+                                }
                             }
-                            if (cur10 !== null && cur40 !== null && prev10 !== null && prev40 !== null) {
-                                if ((cur10 - cur40) * (prev10 - prev40) <= 0) crossed40 = true;
+                            if (cur40 !== null && prev40 !== null) {
+                                if ((prev10 >= prev40 && cur10 < cur40) || (prev10 > prev40 && cur10 <= cur40)) {
+                                    crossed40S = true;
+                                }
                             }
                         }
-                        crossedAllS = crossed20 && crossed30 && crossed40;
+
+                        if (crossed20L && crossed30L && crossed40L && crossed20S && crossed30S && crossed40S) {
+                            break;
+                        }
                     }
+
+                    crossedAllL = crossed20L && crossed30L && crossed40L;
+                    crossedAllS = crossed20S && crossed30S && crossed40S;
                 }
 
                 const candleRange = kHigh - kLow;
@@ -405,6 +412,12 @@ export function analyzeList2Crossing(
                     // Squeeze fallback
                     patternMatchedL = crossingStrictOkL;
                     patternMatchedS = crossingStrictOkS;
+                }
+
+                // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
+                if (enableDivergenceCrossCheck) {
+                    patternMatchedL = patternMatchedL && crossedAllL;
+                    patternMatchedS = patternMatchedS && crossedAllS;
                 }
 
                 // [CRITICAL MANDATORY RULE - USER DEFINITION]:
@@ -599,6 +612,8 @@ export function analyzeList2Crossing(
                     isPendingGray: targetMember.isPendingGray,
                     kOpen: targetMember.kOpen,
                     kClose: targetMember.kClose,
+                    kHigh: targetMember.kHigh,
+                    kLow: targetMember.kLow,
                     signalTime: targetMember.time
                 });
             }
@@ -664,6 +679,8 @@ export function analyzeList2Crossing(
                     isPendingGray: targetMember.isPendingGray,
                     kOpen: targetMember.kOpen,
                     kClose: targetMember.kClose,
+                    kHigh: targetMember.kHigh,
+                    kLow: targetMember.kLow,
                     signalTime: targetMember.time
                 });
             }

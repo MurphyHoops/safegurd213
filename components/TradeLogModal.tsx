@@ -64,10 +64,12 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
 
   const positions = useMemo(() => {
       if (!Array.isArray(rawPositions)) return [];
-      return rawPositions.map((p, index) => ({
-          ...p,
-          entryId: p.entryId ? String(p.entryId) : `pos_fallback_${p.symbol || 'coin'}_${index}_${p.entryTime || Date.now()}`
-      }));
+      return rawPositions
+          .filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed)
+          .map((p, index) => ({
+              ...p,
+              entryId: p.entryId ? String(p.entryId) : `pos_fallback_${p.symbol || 'coin'}_${index}_${p.entryTime || Date.now()}`
+          }));
   }, [rawPositions]);
 
   const [selectedLog, setSelectedLog] = useState<TradeLog | null>(null); 
@@ -1421,17 +1423,67 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                     (p.isHedged || !!p.mainPositionId || (p.hedgeRetries || 0) > 0)
                                 );
 
-                                // 计算当前币种在该对冲周期内的累计平仓/砍仓总亏损与总盈利
+                                // 计算当前币种自【最近一次新开仓】过后的对冲周期总盈利与总亏损（包含当次亏损）
                                 const hedgeCycleStats = (() => {
                                     if (!hasEverTriggeredHedge) return null;
-                                    const relatedLogs = tradeLogs.filter(l => normalizeSymbol(l.symbol) === normSym && l.status === 'CLOSED');
+                                    
+                                    // 1. 获取该币种所有的相关日志（按开仓时间升序排列）
+                                    const symbolLogs = tradeLogs
+                                        .filter(l => normalizeSymbol(l.symbol) === normSym)
+                                        .sort((a, b) => (a.entry_timestamp || 0) - (b.entry_timestamp || 0));
+
+                                    // 2. 找到最近一次【独立主仓新开仓】（非对冲单、无 main_entry_id、无 parent_entry_id，且在当前日志时间戳之前或等于当前日志）
+                                    const currentLogTime = log.entry_timestamp || (log.exit_timestamp || 0);
+                                    let latestNewOpenLog: TradeLog | undefined;
+
+                                    for (let i = symbolLogs.length - 1; i >= 0; i--) {
+                                        const l = symbolLogs[i];
+                                        const lTime = l.entry_timestamp || (l.exit_timestamp || 0);
+                                        if (lTime <= currentLogTime) {
+                                            const isHedge = l.is_hedge === true || !!l.main_entry_id || l.entry_id?.startsWith('HEDGE_');
+                                            const isCutOrRefill = l.entry_id?.includes('_cut_') || l.entry_id?.includes('_refill_') || !!l.parent_entry_id;
+                                            if (!isHedge && !isCutOrRefill) {
+                                                latestNewOpenLog = l;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    // 统计起始时间戳（自最近一次新开仓以来）
+                                    const startCycleTime = latestNewOpenLog ? (latestNewOpenLog.entry_timestamp || 0) : 0;
+
+                                    // 3. 筛选自该次新开仓以来的所有平仓日志（只统计该轮生命周期，且不超过当前查看日志的时间）
+                                    const cycleLogs = symbolLogs.filter(l => 
+                                        l.status === 'CLOSED' &&
+                                        (l.entry_timestamp || 0) >= startCycleTime &&
+                                        (l.exit_timestamp || l.entry_timestamp || 0) <= (log.exit_timestamp || log.entry_timestamp || Infinity)
+                                    );
+
                                     let grossProfit = 0;
                                     let totalLoss = 0;
-                                    relatedLogs.forEach(l => {
+                                    let hasCountedCurrentLoss = false;
+
+                                    cycleLogs.forEach(l => {
                                         const p = l.profit_usdt || 0;
-                                        if (p > 0) grossProfit += p;
-                                        else if (p < 0) totalLoss += Math.abs(p);
+                                        if (p > 0) {
+                                            grossProfit += p;
+                                        } else if (p < 0) {
+                                            totalLoss += Math.abs(p);
+                                            if (l.entry_id === log.entry_id) {
+                                                hasCountedCurrentLoss = true;
+                                            }
+                                        }
                                     });
+
+                                    // 4. 确保在计算总亏损时加上当次亏损（若当前日志本身是亏损且未被累计，或当前持仓产生当次浮亏）
+                                    const currentRealized = Number(log.profit_usdt || 0);
+                                    if (currentRealized < 0 && !hasCountedCurrentLoss) {
+                                        totalLoss += Math.abs(currentRealized);
+                                    } else if (!isClosed && activePos && (activePos.unrealizedPnL || 0) < 0) {
+                                        // 运行中若有当次浮亏，也加上当次亏损
+                                        totalLoss += Math.abs(activePos.unrealizedPnL);
+                                    }
+
                                     const netProfit = grossProfit - totalLoss;
                                     return { grossProfit, totalLoss, netProfit };
                                 })();

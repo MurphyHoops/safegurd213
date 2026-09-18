@@ -40,6 +40,7 @@ export interface Position {
     lastLoggedPeakPercent?: number;
     maxPnLPercent?: number;
     isHedged?: boolean;
+    isHedge?: boolean;
     lastHedgeClosedAt?: number;
     hedgeSignalTriggered?: boolean;
     hedgeOrderInFlight?: boolean;
@@ -102,13 +103,38 @@ export interface Position {
     isOscillationLocked?: boolean; // 震荡熔断锁定状态
     amputationEntryPrice?: number; // 砍仓时的基准入场均价（用于回踩补仓精确判定）
     originalEntryPrice?: number; // 原始开仓基准价格
+    chainId?: string; // 🔗 主从对冲关联合约链编号 (Lifecycle Chain ID)
 }
+
+export type LogCategory = 'ALL' | 'AUTO' | 'MANUAL' | 'HEDGE' | 'PNL' | 'ERROR';
 
 export interface LogEntry {
     id: string;
     timestamp: Date;
     type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER';
     message: string;
+    category?: LogCategory;
+    chainId?: string;
+    latencyInfo?: {
+        signalLatencyMs?: number;
+        networkLatencyMs?: number;
+        totalLatencyMs?: number;
+        slippagePercent?: number;
+    };
+    pnlBreakdown?: {
+        grossPnl?: number;
+        commission?: number;
+        fundingFee?: number;
+        netPnl?: number;
+    };
+    exposureInfo?: {
+        symbol?: string;
+        longAmount?: number;
+        shortAmount?: number;
+        netAmount?: number;
+        netDirection?: 'NET_LONG' | 'NET_SHORT' | 'NEUTRAL';
+        exposurePercent?: number;
+    };
 }
 
 export interface TradeEvent {
@@ -344,6 +370,7 @@ export interface SystemSettings {
     autoSyncEnabled?: boolean;
     autoSyncIntervalMinutes?: number;
     syncHistoryLookbackHours?: number;
+    defaultLeverage?: number;
 }
 
 export interface ScannerSettings {

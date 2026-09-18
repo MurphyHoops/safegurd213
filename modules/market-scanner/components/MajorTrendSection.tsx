@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Activity, Settings2, PlayCircle, Loader2, CheckCircle2, Clock } from 'lucide-react';
 import { MajorTrendConfig } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
+import { usePersistedState } from '../../../hooks/usePersistedState';
 
 interface Props {
     config?: MajorTrendConfig;
@@ -64,7 +65,8 @@ const DEFAULT_CONFIG: MajorTrendConfig = {
 export const MajorTrendSection: React.FC<Props> = ({ 
     config, setConfig, isMajorScanning, majorProgress, onRunDiscovery, onCancelDiscovery, isPrimaryMode 
 }) => {
-    const [isExpanded, setIsExpanded] = useState(isPrimaryMode || false);
+    const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('SCANNER_MAJOR_TREND_SECTION_COLLAPSED', false);
+    const isExpanded = !isCollapsed;
     const [isEditingInterval, setIsEditingInterval] = useState(false);
     const activeConfig = { ...DEFAULT_CONFIG, ...config };
     if (activeConfig.enableStartTrend) {
@@ -84,7 +86,10 @@ export const MajorTrendSection: React.FC<Props> = ({
     return (
         <div className="border border-slate-800 rounded-lg bg-slate-900/50 overflow-hidden transition-all duration-300">
             {/* Header with Integrated Switch */}
-            <div className={`p-2 flex items-center justify-between cursor-pointer hover:bg-slate-800/80 ${activeConfig.enabled ? 'bg-indigo-900/20' : ''}`} onClick={() => setIsExpanded(!isExpanded)}>
+            <div 
+                className={`p-2 flex items-center justify-between cursor-pointer select-none hover:bg-slate-800/80 ${activeConfig.enabled ? 'bg-indigo-900/20' : ''}`} 
+                onClick={() => setIsCollapsed(!isCollapsed)}
+            >
                 <div className="flex items-center gap-2">
                     <div className={`p-1 rounded ${activeConfig.enabled ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-500'}`}>
                         <DiscoveryIcon isScanning={isMajorScanning} />
@@ -102,7 +107,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                 
                 <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                     {/* (手动/自动) 读取运行开关 */}
-                    <div className="flex items-center bg-slate-950/80 rounded border border-slate-700/80 p-0.5" title="大行情发现运行模式：自动读取行情启动底池 / 手动点击运行">
+                    <div className="flex items-center bg-slate-950/80 rounded border border-slate-700/80 p-0.5" title="大行情发现运行模式：自动运行 / 手动点击运行">
                         <button
                             type="button"
                             onClick={(e) => {
@@ -173,7 +178,19 @@ export const MajorTrendSection: React.FC<Props> = ({
                     >
                         <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform duration-200 ${activeConfig.enabled ? 'translate-x-[19px]' : 'translate-x-[3px]'}`} />
                     </button>
-                    {isExpanded ? <ChevronUp size={14} className="text-slate-500 cursor-pointer" /> : <ChevronDown size={14} className="text-slate-500 cursor-pointer" />}
+
+                    {/* Collapse Button */}
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setIsCollapsed(!isCollapsed);
+                        }}
+                        className="text-slate-400 hover:text-white p-0.5 transition-colors focus:outline-none"
+                        title={isCollapsed ? "展开大行情发现" : "折叠大行情发现"}
+                    >
+                        {isCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                    </button>
                 </div>
             </div>
 
@@ -186,15 +203,15 @@ export const MajorTrendSection: React.FC<Props> = ({
                         <InputField label="速率(币/分)" value={activeConfig.requestPerMinute} onChange={v => updateField('requestPerMinute', v)} />
                     </div>
 
-                    {/* Stage 1: Sideways Filter (横盘蓄势过滤 - 优先访问行情启动底池) */}
+                    {/* Stage 1: Sideways Filter (横盘蓄势过滤) */}
                     <div className="bg-black/20 p-2 rounded border border-slate-800/50 space-y-2.5">
                         <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/60">
                             <div className="flex flex-col">
                                 <span className="text-[9px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                                    Stage 1: 横盘蓄势过滤 (Z, X%, Y%)
+                                    Stage 1: 横盘蓄势过滤 (读取行情启动底池)
                                 </span>
                                 <span className="text-[7.5px] text-slate-500">
-                                    优先从行情启动底池读取数据，限制过去 Z 天内最高/最低点到当前价格的幅差
+                                    读取【行情启动底池】数据，限制过去 Z 天内最高/最低点到当前价格的幅差，符合的进入【横盘蓄势过滤底池】
                                 </span>
                             </div>
                             <button 
@@ -252,7 +269,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                         {/* Header Row */}
                         <div className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
                             <div className="flex items-center gap-2">
-                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Stage 2: 回溯周期过滤</span>
+                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Stage 2: 回溯周期过滤 (读取横盘蓄势底池 -&gt; 市场初筛)</span>
                                 <button 
                                     type="button"
                                     onClick={() => updateField('enableLookbackFilter', activeConfig.enableLookbackFilter !== false ? false : true)}
@@ -461,7 +478,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                                 <span className="text-slate-400 font-mono">✅ 已完成</span>
                             </div>
 
-                            {/* Step 1: Sideways Filter (横盘蓄势过滤 - 优先访问行情启动底池) */}
+                            {/* Step 1: Sideways Filter (横盘蓄势过滤) */}
                             <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
                                 <div className="flex items-center gap-1">
                                     {majorProgress.stage === 'group1' ? (
@@ -472,13 +489,13 @@ export const MajorTrendSection: React.FC<Props> = ({
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
                                     <span className={majorProgress.stage === 'group1' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? 'text-slate-400' : 'text-slate-500'}>
-                                        第一组: 横盘蓄势过滤 (行情启动底池)
+                                        第一组: 横盘蓄势过滤
                                     </span>
                                 </div>
                                 <div className="font-mono text-right shrink-0">
                                     {majorProgress.stage === 'group1' ? (
                                         <span className="text-indigo-300 font-bold">
-                                            <span className="text-slate-400" title="行情启动底池总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
+                                            <span className="text-slate-400" title="扫描待测总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
                                             <span className="text-indigo-300 font-bold" title="当前筛选进度">{majorProgress.group1Current ?? majorProgress.current ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
@@ -486,7 +503,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                                         </span>
                                     ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
                                         <span className="text-emerald-400 font-bold">
-                                            <span className="text-slate-400" title="行情启动底池总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
+                                            <span className="text-slate-400" title="扫描待测总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
                                             <span className="text-slate-400" title="全部已筛选完成">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>

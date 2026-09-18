@@ -74,6 +74,12 @@
           var diag = document.getElementById('boot-diag-msg');
           
           var interval = setInterval(function() {
+            if (window.__MAIN_APP_MOUNTED__ || window.isReactReady) {
+              clearInterval(interval);
+              var bs = document.getElementById('boot-shield');
+              if (bs) bs.remove();
+              return;
+            }
             step++;
             if (step === 1 && bar && text) {
               bar.style.width = '55%';
@@ -83,6 +89,11 @@
               text.innerText = '正在校验持仓状态与风控防御防线...';
             } else if (step >= 5) {
               clearInterval(interval);
+              if (window.__MAIN_APP_MOUNTED__ || window.isReactReady) {
+                var bs2 = document.getElementById('boot-shield');
+                if (bs2) bs2.remove();
+                return;
+              }
               if (bar) bar.style.width = '95%';
               if (text) text.innerText = '系统正在就绪，如遇卡顿可使用下方工具：';
               if (tools) tools.style.display = 'flex';

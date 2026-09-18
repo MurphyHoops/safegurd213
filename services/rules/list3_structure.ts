@@ -14,18 +14,30 @@ export function analyzeList3Structure(
 ): ScannerItem | null {
     
     const idx = closes.length - 1;
+    if (idx < 0) return null;
+
+    const areAllRulesOff = !config.strictTrend && !config.checkCandleColor && !config.enableAmplitudeAudit && (config.enableRsi === false) && !config.enableMultiResonance;
+    
     // Safety check: Needs at least 40 candles for basic EMA alignment. 
-    // EMA80 will be treated as optional if history is between 40-80.
-    if (idx < 40) return null; 
+    // If all rules are off, we can still construct a basic structure item without requiring 40 candles.
+    if (idx < 40 && !areAllRulesOff) return null; 
 
     // 0. FIND THE SIGNAL INDEX
     // Locate the exact candle index where the List 2 signal occurred using the timestamp
     let signalIdx = -1;
-    if (task.time) {
-        // rawKlines[x][0] is the timestamp
-        signalIdx = rawKlines.findIndex((k: any) => k[0] === task.time);
+    if (task.time && rawKlines && rawKlines.length > 0) {
+        // Calculate timeframe duration in milliseconds
+        const tfUnit = task.tf ? task.tf.slice(-1) : 'm';
+        const tfVal = task.tf ? parseInt(task.tf) || 15 : 15;
+        let tfMs = 15 * 60 * 1000;
+        if (tfUnit === 'm') tfMs = tfVal * 60 * 1000;
+        else if (tfUnit === 'h') tfMs = tfVal * 60 * 60 * 1000;
+        else if (tfUnit === 'd') tfMs = tfVal * 24 * 60 * 60 * 1000;
+
+        // Primary Match: Check if signal timestamp falls within the candle interval [openTime, openTime + tfMs)
+        signalIdx = rawKlines.findIndex((k: any) => task.time >= k[0] && task.time < k[0] + tfMs);
         
-        // Robust Fallback: If exact time not found, try to find closest match within tolerance
+        // Secondary Match: If exact interval missed, find the candle with the smallest timestamp difference
         if (signalIdx === -1) {
              let minDiff = Infinity;
              let closestIdx = -1;
@@ -37,8 +49,7 @@ export function analyzeList3Structure(
                  }
              });
              
-             // If closest is within ~5 mins (300000ms) or reasonable relative to TF, accept it.
-             if (closestIdx !== -1 && minDiff < 300000) { 
+             if (closestIdx !== -1) { 
                  signalIdx = closestIdx;
              }
         }
@@ -224,16 +235,27 @@ export function analyzeList3Structure(
     const curMid = (curUp + curLow) / 2;
     const bbw = curMid !== 0 ? (curUp - curLow) / curMid : 0;
 
-    // --- METRIC 7: Reverse 3K Check (Audit current momentum direction) ---
-    const last3Closes = closes.slice(-3);
-    const last3Opens = opens.slice(-3);
-    const last3Green = last3Closes.map((c, i) => c > last3Opens[i]);
-    let isReverse3K = false;
-    if (task.direction === 'LONG') {
-        if (last3Green.length === 3 && last3Green.every(g => !g)) isReverse3K = true;
+    // --- METRIC 7: 3K Breakout Check (前三K突破: 做多 > Max(Close[1..3]), 做空 < Min(Close[1..3])) ---
+    let isBreakout3K = false;
+    if (idx >= 3) {
+        const c1 = closes[idx - 1];
+        const c2 = closes[idx - 2];
+        const c3 = closes[idx - 3];
+        if (task.direction === 'LONG') {
+            const maxClose3 = Math.max(c1, c2, c3);
+            if (task.price > maxClose3) {
+                isBreakout3K = true;
+            }
+        } else {
+            const minClose3 = Math.min(c1, c2, c3);
+            if (task.price < minClose3) {
+                isBreakout3K = true;
+            }
+        }
     } else {
-        if (last3Green.length === 3 && last3Green.every(g => g)) isReverse3K = true;
+        isBreakout3K = true;
     }
+    const isReverse3K = !isBreakout3K;
 
     // 8. Return Constructed Item with ALL Audit Data
     // We do NOT return null here. We return the full profile.
@@ -260,6 +282,7 @@ export function analyzeList3Structure(
             postSignalMinLow: postSignalMinLow,
             periodChange: task.periodChange, // Pass-through
             isReverse3K,
+            isBreakout3K,
             ema10: getVal(ema10, idx, 10),
             ema20: getVal(ema20, idx, 20),
             ema30: getVal(ema30, idx, 30),

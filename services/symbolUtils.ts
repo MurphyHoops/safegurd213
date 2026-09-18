@@ -1,16 +1,29 @@
 
+import { resolveSymbolFromInput } from './coinNames';
+
 /**
  * Normalizes trading symbols to a common format for consistent lookup.
- * Removes common suffixes and prefixes, converts to uppercase and strips special characters.
+ * Removes common suffixes and prefixes, converts to uppercase, handles Chinese names and strips special characters.
  */
 export const normalizeSymbol = (s: string): string => {
     if (!s || typeof s !== 'string') return s || '';
     
-    return s.toUpperCase()
-        .trim()
+    let target = s.trim();
+
+    // If string contains Chinese characters or parenthesized Chinese, resolve via Chinese dictionary first
+    if (/[\u4e00-\u9fa5]/.test(target) || target.includes('(') || target.includes('（')) {
+        const resolved = resolveSymbolFromInput(target);
+        if (resolved && resolved.symbol) {
+            target = resolved.symbol;
+        }
+    }
+
+    const cleaned = target.toUpperCase()
         .replace(/_PREP$/, '')
         .replace(/USDT$/, '')
         .replace(/[^A-Z0-9]/g, '');
+
+    return cleaned || target.toUpperCase().trim();
 };
 
 export const isMemeScaledCoin = (symbol: string): boolean => {
@@ -83,7 +96,7 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
                 const corrected = ratio > 500 ? foundPrice / 1000 : foundPrice * 1000;
                 const correctedRatio = corrected / fallbackPrice;
                 if (correctedRatio > 0.8 && correctedRatio < 1.2) {
-                    console.log(`[Price Resolve] Corrected ${symbol}: ${foundPrice} -> ${corrected} (Ratio: ${ratio.toFixed(2)})`);
+                    console.log(`[Price Resolve] Corrected ${symbol}: ${foundPrice} -> ${corrected} (Ratio: ${typeof ratio === 'number' && isFinite(ratio) ? ratio.toFixed(2) : ratio})`);
                     return corrected;
                 }
             }
@@ -118,9 +131,9 @@ export const resolvePrice = (symbol: string, realPrices: Record<string, number>,
  * Smart price formatting that adjusts decimals based on magnitude.
  * Ideal for high-precision tokens like PEPE, SHIB.
  */
-export const formatPrice = (price: number): string => {
+export const formatPrice = (price: number | null | undefined): string => {
+    if (price === null || price === undefined || typeof price !== 'number' || isNaN(price) || !isFinite(price)) return '--';
     if (price === 0) return '0.00';
-    if (isNaN(price) || !isFinite(price)) return '--';
     
     const absPrice = Math.abs(price);
     if (absPrice >= 1000) return price.toFixed(2);

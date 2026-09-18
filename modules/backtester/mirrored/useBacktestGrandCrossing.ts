@@ -6,6 +6,7 @@ import {
 } from "../../../components/Scanner/scannerTypes";
 import { analyzeList2Crossing } from "../../../services/rules/list2_crossing";
 import { useBacktest } from "../BacktestContext";
+import { normalizeSymbol } from "../../../services/symbolUtils";
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
@@ -37,11 +38,20 @@ export const useBacktestGrandCrossing = (
   const expiredList2SignalCacheRef = useRef<Set<string>>(new Set());
 
   const performUpdate = useCallback(() => {
-    let items = Array.from(cacheRef.current.values());
+    const allowedNorm = new Set((candidates || []).map((c) => normalizeSymbol(c.symbol)));
+    for (const [k, v] of cacheRef.current.entries()) {
+      if (!v || !v.symbol || !allowedNorm.has(normalizeSymbol(v.symbol))) {
+        cacheRef.current.delete(k);
+      }
+    }
+    let items = Array.from(cacheRef.current.values()).filter(
+      (item) => item && item.symbol && allowedNorm.has(normalizeSymbol(item.symbol))
+    );
 
     // Update prices from candidates
     items = items.map((item) => {
-      const candidate = candidates.find((c) => c.symbol === item.symbol);
+      const normSym = normalizeSymbol(item.symbol);
+      const candidate = candidates.find((c) => normalizeSymbol(c.symbol) === normSym);
       if (candidate) {
         return {
           ...item,
@@ -130,13 +140,8 @@ export const useBacktestGrandCrossing = (
         const tfsToScan = Array.from(pendingTfsRef.current);
         pendingTfsRef.current.clear();
 
-        const candidateSymbols = new Set(candidates.map((c) => c.symbol));
+        // 🔒 [STRICT DATA SOURCE]: 列表2只能且必须从列表1市场初筛获取数据源，绝不扫描残留或外部币种
         const allScanItems = [...candidates];
-        Array.from(cacheRef.current.values()).forEach((cached) => {
-          if (!candidateSymbols.has(cached.symbol)) {
-            allScanItems.push(cached);
-          }
-        });
 
         onLog?.(
           "INFO",

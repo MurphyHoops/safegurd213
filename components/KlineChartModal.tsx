@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { X, Loader2, Move, ZoomIn, ZoomOut, RefreshCw, AlertTriangle, WifiOff, Activity, ArrowRight, BarChart2, Ruler } from 'lucide-react';
 import { calculateEMA } from '../services/indicators';
 import { fetchWithFallback } from '../services/apiService';
@@ -18,6 +18,8 @@ interface ComputedSignal extends Signal {
     signalIdx?: number;
     midPrice?: number;
     breakthroughPrice?: number;
+    breakoutThreshold?: number;
+    midlineThreshold?: number;
     ampVal?: number;
     volRatioVal?: number;
     bodyRatioVal?: number;
@@ -43,6 +45,7 @@ interface Props {
   currentPrice?: number; // New prop for accurate simulation target
   scanWindow?: number; 
   list2Config?: List2Config; 
+  list4Config?: any;
   highlightTime?: number; // Time to highlight (Vertical Line)
   extraLines?: ExtraLine[]; // New: Dynamic visual lines (Trigger/Defense)
   directMode?: boolean; // Added directMode for fast fetching
@@ -336,7 +339,7 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
     throw new Error(`无法获取 ${safeSymbol} 的 K 线数据，请检查网络连接或稍后重试`);
 }
 
-const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays, hasPrev, hasNext, currentIndexLabel, onPrev, onNext }) => {
+const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, list4Config: propList4Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays, hasPrev, hasNext, currentIndexLabel, onPrev, onNext }) => {
   const backtest = useOptionalBacktest();
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
   const serializedConfig = JSON.stringify(list2Config);
@@ -374,6 +377,36 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   // Computed Signals State (Full History)
   const [computedSignals, setComputedSignals] = useState<Signal[]>([]);
 
+  // Optimized O(log N) candle index lookup helper using binary search on timestamps
+  const getCandleIdxFast = useCallback((time: number, data: KlineData[] = fullData): number => {
+      if (data.length === 0) return -1;
+      let left = 0;
+      let right = data.length - 1;
+      while (left <= right) {
+          const mid = Math.floor((left + right) / 2);
+          if (data[mid].time === time) return mid;
+          if (data[mid].time < time) left = mid + 1;
+          else right = mid - 1;
+      }
+      // If exact timestamp not found, check closest neighbor within interval tolerance
+      const tfMinutes = getTfMinutes(timeframe);
+      const intervalMs = tfMinutes * 60 * 1000;
+      const tolerance = intervalMs * 0.6;
+      let bestIdx = -1;
+      let minDiff = Infinity;
+      const candidates = [left - 1, left, left + 1];
+      for (const idx of candidates) {
+          if (idx >= 0 && idx < data.length) {
+              const diff = Math.abs(data[idx].time - time);
+              if (diff <= tolerance && diff < minDiff) {
+                  minDiff = diff;
+                  bestIdx = idx;
+              }
+          }
+      }
+      return bestIdx;
+  }, [fullData, timeframe]);
+
   // Analyze whether the current coin/timeframe signal is Crossing (穿越) or Divergence/Spread (发散)
   const signalPattern = useMemo(() => {
       if (fullData.length === 0 || !list2Config) return null;
@@ -403,22 +436,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   const computedSignalsWithStats = useMemo<ComputedSignal[]>(() => {
       if (computedSignals.length === 0 || fullData.length === 0) return [];
       
-      const tfMinutes = getTfMinutes(timeframe);
-      const intervalMs = tfMinutes * 60 * 1000;
-      const tolerance = intervalMs * 0.6;
-
       return computedSignals.map((sig) => {
-          let signalIdx = fullData.findIndex(k => k.time === sig.time);
-          if (signalIdx === -1) {
-              let minDiff = Infinity;
-              fullData.forEach((k, i) => {
-                  const diff = Math.abs(k.time - sig.time);
-                  if (diff < minDiff && diff <= tolerance) {
-                      minDiff = diff;
-                      signalIdx = i;
-                  }
-              });
-          }
+          const signalIdx = getCandleIdxFast(sig.time, fullData);
           if (signalIdx === -1) {
               return { ...sig, signalIdx: -1 };
           }
@@ -426,12 +445,50 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           const d = fullData[signalIdx];
           const isLong = sig.type === 'LONG';
           
-          // Calculate mid-axis (中轴) of the signal candle
-          const midPrice = (d.high + d.low) / 2;
+          // Calculate amplitude with safe minimum threshold matching list4_momentum.ts
+          const signalHigh = d.high;
+          const signalLow = d.low;
+          const amplitude = signalHigh - signalLow;
+          const safeAmplitude = amplitude > (d.close * 0.0005) ? amplitude : (d.close * 0.0005);
           
-          // Calculate breakthrough line (进攻突破线)
-          const amplitude = d.high - d.low;
-          const breakthroughPrice = isLong ? d.high + amplitude * 0.3 : d.low - amplitude * 0.3;
+          let list4Config: any = propList4Config || null;
+          if (!list4Config) {
+            try {
+              const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+              const savedL4 = (selectedId ? localStorage.getItem(`SCANNER_LIST4_CONFIG_${selectedId}`) : null) || 
+                              localStorage.getItem('SCANNER_LIST4_CONFIG');
+              if (savedL4) list4Config = JSON.parse(savedL4);
+            } catch(e) {}
+          }
+
+          const midlineThreshold = (list4Config && typeof list4Config.midlineThreshold === 'number' && !isNaN(list4Config.midlineThreshold)) ? list4Config.midlineThreshold : 80;
+          const breakoutThreshold = (list4Config && typeof list4Config.breakoutThreshold === 'number' && !isNaN(list4Config.breakoutThreshold)) ? list4Config.breakoutThreshold : 10;
+          
+          const high = signalHigh;
+          const low = signalLow;
+          const price_range = safeAmplitude;
+          const breakout_pct = breakoutThreshold / 100;
+          const defense_pct = midlineThreshold / 100;
+
+          // 进攻突破价格计算
+          // long_breakout = high + price_range * breakout_pct
+          // short_breakout = low - price_range * breakout_pct
+          const long_breakout = high + price_range * breakout_pct;
+          const short_breakout = low - price_range * breakout_pct;
+
+          // 中轴防守价格计算
+          // long_defense = high - price_range * defense_pct
+          // short_defense = low + price_range * defense_pct
+          const long_defense = high - price_range * defense_pct;
+          const short_defense = low + price_range * defense_pct;
+
+          // 优先采用从外部卡片传入的精确进攻与防守线价格（仅对当前聚焦的信号生效）
+          const triggerExtra = extraLines?.find(l => l.label && (l.label.includes('TRIGGER') || l.label.includes('攻') || l.label.includes('突破')));
+          const defenseExtra = extraLines?.find(l => l.label && (l.label.includes('DEFENSE') || l.label.includes('守') || l.label.includes('防守')));
+
+          const isCurrentSignal = entryTime ? sig.time === entryTime : true;
+          const midPrice = (isCurrentSignal && defenseExtra && defenseExtra.price > 0) ? defenseExtra.price : (isLong ? long_defense : short_defense);
+          const breakthroughPrice = (isCurrentSignal && triggerExtra && triggerExtra.price > 0) ? triggerExtra.price : (isLong ? long_breakout : short_breakout);
 
           // Compute signal parameters
           const refPrice = (signalIdx > 0 && fullData[signalIdx - 1]) ? fullData[signalIdx - 1].close : d.open;
@@ -473,6 +530,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               signalIdx,
               midPrice,
               breakthroughPrice,
+              breakoutThreshold,
+              midlineThreshold,
               ampVal,
               volRatioVal,
               bodyRatioVal,
@@ -482,7 +541,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               openDropFromMax
           };
       });
-  }, [computedSignals, fullData, timeframe]);
+  }, [computedSignals, fullData, timeframe, getCandleIdxFast, extraLines, propList4Config]);
 
   // Daily (Major Trend) Stats State
   interface DailyStats {
@@ -860,34 +919,13 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                         
                         let targetIdx = -1;
                         if (appearedTime) {
-                            targetIdx = klines.findIndex(k => k.time === appearedTime);
-                            if (targetIdx === -1) {
-                                let minDiff = Infinity;
-                                klines.forEach((k, i) => {
-                                    const diff = Math.abs(k.time - appearedTime);
-                                    if (diff < minDiff) {
-                                        minDiff = diff;
-                                        targetIdx = i;
-                                    }
-                                });
-                            }
+                            targetIdx = getCandleIdxFast(appearedTime, klines);
                         } else if (signals && signals.length > 0) {
-                            const sig = signals[0];
-                            targetIdx = klines.findIndex(k => k.time === sig.time);
-                            if (targetIdx === -1) {
-                                let minDiff = Infinity;
-                                klines.forEach((k, i) => {
-                                    const diff = Math.abs(k.time - sig.time);
-                                    if (diff < minDiff) {
-                                        minDiff = diff;
-                                        targetIdx = i;
-                                    }
-                                });
-                            }
+                            targetIdx = getCandleIdxFast(signals[0].time, klines);
                         } else if (highlightTime) {
-                            targetIdx = klines.findIndex(k => k.time === highlightTime);
+                            targetIdx = getCandleIdxFast(highlightTime, klines);
                         } else if (entryTime) {
-                            targetIdx = klines.findIndex(k => k.time === entryTime);
+                            targetIdx = getCandleIdxFast(entryTime, klines);
                         }
 
                         if (targetIdx !== -1) {
@@ -1078,21 +1116,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   }, [tradeLogs, symbol]);
   
   const getCandleIdx = (time: number) => {
-      let idx = fullData.findIndex(k => k.time === time);
-      if (idx === -1) {
-          let minDiff = Infinity;
-          const tfMinutes = getTfMinutes(timeframe);
-          const intervalMs = tfMinutes * 60 * 1000;
-          const tolerance = intervalMs * 0.6;
-          fullData.forEach((k, i) => {
-              const diff = Math.abs(k.time - time);
-              if (diff < minDiff && diff <= tolerance) {
-                  minDiff = diff;
-                  idx = i;
-              }
-          });
-      }
-      return idx;
+      return getCandleIdxFast(time, fullData);
   };
   
   const renderChart = () => {
@@ -1211,13 +1235,30 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                       const x = getX(i) + candleWidth / 2;
                       const isLong = sig.type === 'LONG';
                       
-                      const midPrice = sig.midPrice ?? ((d.high + d.low) / 2);
+                      const amp = d.high - d.low;
+                      const safeAmp = amp > (d.close * 0.0005) ? amp : (d.close * 0.0005);
+
+                      const triggerExtra = extraLines?.find(l => l.label && (l.label.includes('TRIGGER') || l.label.includes('攻') || l.label.includes('突破')));
+                      const defenseExtra = extraLines?.find(l => l.label && (l.label.includes('DEFENSE') || l.label.includes('守') || l.label.includes('防守')));
+
+                      const defPct = (sig.midlineThreshold !== undefined ? sig.midlineThreshold : 80) / 100;
+                      const brkPct = (sig.breakoutThreshold !== undefined ? sig.breakoutThreshold : 10) / 100;
+
+                      const isCurrentSignal = entryTime ? sig.time === entryTime : true;
+                      const midPrice = (isCurrentSignal && defenseExtra && defenseExtra.price > 0) 
+                          ? defenseExtra.price 
+                          : (sig.midPrice ?? (isLong ? d.high - safeAmp * defPct : d.low + safeAmp * defPct));
                       const midY = getY(midPrice);
                       
-                      const breakthroughPrice = sig.breakthroughPrice ?? (isLong ? d.high + (d.high - d.low) * 0.3 : d.low - (d.high - d.low) * 0.3);
+                      const breakthroughPrice = (isCurrentSignal && triggerExtra && triggerExtra.price > 0) 
+                          ? triggerExtra.price 
+                          : (sig.breakthroughPrice ?? (isLong ? d.high + safeAmp * brkPct : d.low - safeAmp * brkPct));
                       const breakthroughY = getY(breakthroughPrice);
                       
-                      if (showAuditLines) {
+                      if (showAuditLines && (!extraLines || extraLines.length === 0)) {
+                          const defenseLabel = sig.midlineThreshold !== undefined ? `中轴防守 (${sig.midlineThreshold}%)` : `中轴防守`;
+                          const breakLabel = sig.breakoutThreshold !== undefined ? `进攻突破 (${sig.breakoutThreshold}%)` : `进攻突破`;
+
                           // Draw Mid-Axis Defense Line to the right
                           signalMarkers.push(
                               <g key={`sig-mid-${idx}`} pointerEvents="none">
@@ -1239,7 +1280,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                                       textAnchor="end" 
                                       opacity={0.8}
                                   >
-                                      中轴防守 {formatPrice(midPrice)}
+                                      {defenseLabel} {formatPrice(midPrice)}
                                   </text>
                               </g>
                           );
@@ -1263,10 +1304,10 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                                       fill={isLong ? "#0ECB81" : "#F6465D"} 
                                       fontSize="9" 
                                       textAnchor="end" 
-                                      opacity={0.9}
+                                      opacity={0.9} 
                                       fontWeight="bold"
                                   >
-                                      进攻突破 {formatPrice(breakthroughPrice)}
+                                      {breakLabel} {formatPrice(breakthroughPrice)}
                                   </text>
                               </g>
                           );
@@ -1443,20 +1484,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       // Highlight Time Line (L4 Entry)
       let highlightLine = null;
       if (showAuditLines && highlightTime) {
-          // Find index matching time or closest
-          let hlIdx = fullData.findIndex(k => k.time === highlightTime);
-          
-          // Fallback search
-          if (hlIdx === -1) {
-              let minDiff = Infinity;
-              fullData.forEach((k, i) => {
-                  const diff = Math.abs(k.time - highlightTime);
-                  if (diff < minDiff && diff < intervalMs) {
-                      minDiff = diff;
-                      hlIdx = i;
-                  }
-              });
-          }
+          const hlIdx = getCandleIdxFast(highlightTime, fullData);
 
           if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
               const i = hlIdx - startIndex;
@@ -1473,17 +1501,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       // Appeared Line (发生)
       let appearedLine = null;
       if (appearedTime) {
-          let hlIdx = fullData.findIndex(k => k.time === appearedTime);
-          if (hlIdx === -1) {
-              let minDiff = Infinity;
-              fullData.forEach((k, i) => {
-                  const diff = Math.abs(k.time - appearedTime);
-                  if (diff < minDiff && diff < intervalMs) {
-                      minDiff = diff;
-                      hlIdx = i;
-                  }
-              });
-          }
+          const hlIdx = getCandleIdxFast(appearedTime, fullData);
 
           if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
               const i = hlIdx - startIndex;
@@ -1501,17 +1519,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       // Disappeared Line (消失)
       let disappearedLine = null;
       if (disappearedTime) {
-          let hlIdx = fullData.findIndex(k => k.time === disappearedTime);
-          if (hlIdx === -1) {
-              let minDiff = Infinity;
-              fullData.forEach((k, i) => {
-                  const diff = Math.abs(k.time - disappearedTime);
-                  if (diff < minDiff && diff < intervalMs) {
-                      minDiff = diff;
-                      hlIdx = i;
-                  }
-              });
-          }
+          const hlIdx = getCandleIdxFast(disappearedTime, fullData);
 
           if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
               const i = hlIdx - startIndex;
@@ -1526,18 +1534,40 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       }
 
-      // Waiting Line (等待 - for active coins in list)
+      // Waiting / Triggered Line (等待 / 已触发 - for active coins in list)
       let waitingLine = null;
       if (!disappearedTime && fullData.length > 0) {
           const lastIdx = fullData.length - 1;
           if (lastIdx >= startIndex && lastIdx < startIndex + visibleCount) {
               const i = lastIdx - startIndex;
               const x = getX(i) + candleWidth / 2;
+              
+              // Check if extraLines indicates a breakout trigger has been reached
+              const triggerLine = extraLines?.find(l => l.label.includes('突破') || l.label.includes('Trigger') || l.label.includes('TRIGGER') || l.label.includes('攻'));
+              let isTriggeredByChart = false;
+              if (triggerLine && triggerLine.price > 0) {
+                  const lastCandle = fullData[lastIdx];
+                  const isShort = triggerLine.label.includes('空') || signals.some(s => s.type === 'SHORT');
+                  // For LONG: high >= trigger; For SHORT: low <= trigger
+                  if (isShort) {
+                      if (lastCandle.low <= triggerLine.price || lastCandle.close <= triggerLine.price) {
+                          isTriggeredByChart = true;
+                      }
+                  } else {
+                      if (lastCandle.high >= triggerLine.price || lastCandle.close >= triggerLine.price) {
+                          isTriggeredByChart = true;
+                      }
+                  }
+              }
+
+              const tagText = isTriggeredByChart ? "已触发" : "等待";
+              const tagColor = isTriggeredByChart ? "#0ECB81" : "#FACC15";
+
               waitingLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke="#FACC15" strokeWidth={1.5} strokeDasharray="2 2" />
-                      <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#FACC15" rx={2} opacity={0.9} />
-                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">等待</text>
+                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke={tagColor} strokeWidth={1.5} strokeDasharray="2 2" />
+                      <rect x={x - 22} y={padding.top + 5} width={44} height={16} fill={tagColor} rx={2} opacity={0.9} />
+                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">{tagText}</text>
                   </g>
               );
           }
@@ -1569,19 +1599,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               let entryX = -1;
               // Find Entry Candle X if visible
               if (entryTime) {
-                  // Try exact match first
-                  let eIdx = fullData.findIndex(k => k.time === entryTime);
-                  // Fallback match
-                  if (eIdx === -1) {
-                      let minDiff = Infinity;
-                      fullData.forEach((k, i) => {
-                          const diff = Math.abs(k.time - entryTime!);
-                          if (diff < minDiff && diff < intervalMs) {
-                              minDiff = diff;
-                              eIdx = i;
-                          }
-                      });
-                  }
+                  const eIdx = getCandleIdxFast(entryTime, fullData);
                   if (eIdx !== -1 && eIdx >= startIndex && eIdx < startIndex + visibleCount) {
                       entryX = getX(eIdx - startIndex) + candleWidth / 2;
                   }
@@ -1620,8 +1638,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           return (
               <g key={`extra-${idx}`} pointerEvents="none">
                   <line x1={0} y1={y} x2={width - padding.right} y2={y} stroke={line.color} strokeWidth={1.5} strokeDasharray={dash} opacity={0.9} />
-                  <rect x={width - 80} y={y - 9} width={80} height={18} fill={line.color} rx={2} opacity={0.15} />
-                  <text x={width - 76} y={y + 3} fill={line.color} fontSize="9" fontWeight="bold" fontFamily="monospace">
+                  <rect x={width - padding.right - 145} y={y - 9} width={145} height={18} fill={line.color} rx={2} opacity={0.15} />
+                  <text x={width - padding.right - 141} y={y + 3} fill={line.color} fontSize="9" fontWeight="bold" fontFamily="monospace">
                       {line.label}: {formatPrice(line.price)}
                   </text>
               </g>

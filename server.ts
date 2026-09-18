@@ -194,9 +194,7 @@ async function startServer() {
       let listenKey = "";
       let isAuthError = false;
       const listenKeyEndpoints = [
-        "https://fapi.binance.com/fapi/v1/listenKey",
-        "https://fapi1.binance.com/fapi/v1/listenKey",
-        "https://fapi2.binance.com/fapi/v1/listenKey"
+        "https://fapi.binance.com/fapi/v1/listenKey"
       ];
       for (const endpoint of listenKeyEndpoints) {
         try {
@@ -574,11 +572,6 @@ async function startServer() {
         }
 
         const candidateUrls = [urlStr];
-        // If targeting official fapi.binance.com, prepare alternate nodes in case of route failure
-        if (urlStr.includes("fapi.binance.com")) {
-            candidateUrls.push(urlStr.replace("fapi.binance.com", "fapi1.binance.com"));
-            candidateUrls.push(urlStr.replace("fapi.binance.com", "fapi2.binance.com"));
-        }
 
         let lastError: any = null;
         for (let i = 0; i < candidateUrls.length; i++) {
@@ -588,9 +581,14 @@ async function startServer() {
                 const timeout = setTimeout(() => controller.abort(), timeoutMs);
                 const res = await fetch(targetUrl, {
                     ...options,
+                    redirect: "manual",
                     signal: controller.signal
                 });
                 clearTimeout(timeout);
+
+                if (res.status >= 300 && res.status < 400) {
+                    throw new Error(`Endpoint returned unexpected redirect ${res.status}`);
+                }
 
                 if (res.status === 418 || res.status === 429) {
                     try {
@@ -631,6 +629,33 @@ async function startServer() {
     // 杜绝任何毫秒级并发、多周期同时突破、网络重试导致的同一币种重复下达币安市价开仓单
     const serverOpeningPositionsInFlight = new Map<string, number>(); // 正在向币安下单在途中的锁 (最长保护15秒)
     const serverRecentOpenedPositions = new Map<string, number>();   // 10秒内成功开仓完成的记录
+
+    // 🔒 [币安出站订单限频队列与速率限制保护]
+    // 币安规限：10秒内新订单不得超过 20 笔 (-1015)。
+    // 我们维护一个服务端全局出站订单队列，确保每笔向币安发送的订单之间至少有 500ms 的间隔（即每秒最多 2 笔，10 秒最多 20 笔）。
+    let orderQueueLastExecutionTime = 0;
+    let orderQueuePauseUntil = 0;
+    let orderQueueChain: Promise<any> = Promise.resolve();
+
+    function enqueueBinanceOrderTask<T>(task: () => Promise<T>): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            orderQueueChain = orderQueueChain.then(async () => {
+                const now = Date.now();
+                if (now < orderQueuePauseUntil) {
+                    const waitMs = orderQueuePauseUntil - now;
+                    console.log(`[Binance Order Queue] 触发频控保护，延迟 ${waitMs}ms 后处理队列中的下一笔订单...`);
+                    await new Promise(r => setTimeout(r, waitMs));
+                }
+                const timeSinceLast = Date.now() - orderQueueLastExecutionTime;
+                const minInterval = 500; // 500ms 间隔，彻底杜绝 -1015 限频
+                if (timeSinceLast < minInterval) {
+                    await new Promise(r => setTimeout(r, minInterval - timeSinceLast));
+                }
+                orderQueueLastExecutionTime = Date.now();
+                return await task();
+            }).then(resolve, reject);
+        });
+    }
 
     app.post("/api/binance/order", async (req, res) => {
         const { apiKey, apiSecret, symbol, side, action, quantity, amountUsdt, leverage } = req.body;
@@ -890,7 +915,7 @@ async function startServer() {
                     
                     // If user passed an amount or requested opening/refill/hedge and it's close to minNotional, auto-align upward to satisfy minNotional
                     const isRefillReq = req.body.isRefill === true || req.body.allowExisting === true || req.body.isHedge === true;
-                    if ((amountUsdt && amountUsdt >= minNotional * 0.75) || notionalValue >= minNotional * 0.75 || isRefillReq) {
+                    if (isRefillReq || (amountUsdt && amountUsdt >= minNotional * 0.5) || notionalValue >= minNotional * 0.5) {
                         console.log(`[Binance Order] Auto-adjusting quantity for ${formattedSymbol} from ${finalQty} to ${adjustedQty} (${(adjustedQty * currentPrice).toFixed(2)} USDT) to satisfy Binance MIN_NOTIONAL (${minNotional} USDT) (Refill: ${isRefillReq})`);
                         finalQty = adjustedQty;
                     } else if (finalQty * currentPrice < minNotional) {
@@ -971,12 +996,12 @@ async function startServer() {
                 const refillKey = `${apiKey.slice(-6)}_${formattedSymbol}_${side}`;
                 const lastRefillReq = serverRefillFloodGuard.get(refillKey) || 0;
                 const now = Date.now();
-                if (now - lastRefillReq < 3000) {
-                    console.warn(`[Binance Order] 🛡️ [防连续重复补仓拦截] ${formattedSymbol} ${side} 距离上次补仓仅 ${now - lastRefillReq}ms，3秒内严禁连续重复补仓！已由服务端原地拦截。`);
+                if (now - lastRefillReq < 1500) {
+                    console.warn(`[Binance Order] 🛡️ [防连续重复补仓拦截] ${formattedSymbol} ${side} 距离上次补仓仅 ${now - lastRefillReq}ms，1.5秒内严禁连续重复补仓！已由服务端原地拦截。`);
                     return res.status(200).json({
                         success: false,
                         orderId: "REFILL_FLOOD_PREVENTED",
-                        error: `[防连续重复补仓拦截] ${formattedSymbol} ${side} 3秒内严禁连续重复补仓 (距离上次: ${((now - lastRefillReq) / 1000).toFixed(1)}秒)`
+                        error: `[防连续重复补仓拦截] ${formattedSymbol} ${side} 1.5秒内严禁连续重复补仓 (距离上次: ${((now - lastRefillReq) / 1000).toFixed(1)}秒)`
                     });
                 }
                 serverRefillFloodGuard.set(refillKey, now);
@@ -1108,67 +1133,69 @@ async function startServer() {
             let orderText = "";
 
             try {
-                const orderPromise = fetchWithFallback(finalOrderUrl, {
-                    method: "POST",
-                    headers: {
-                        "X-MBX-APIKEY": apiKey,
-                        "Content-Type": "application/json"
-                    }
-                }, 15000);
-
-                // 包装 orderPromise 返回统一结构，消除 Response 与 JSON 结构之间的竞争歧义
-                const wrappedOrderPromise = orderPromise.then(async res => {
-                    const ok = res.ok;
-                    const text = await res.text();
-                    let json: any = null;
-                    try { json = JSON.parse(text); } catch {}
-                    return { isProbe: false, ok, text, data: json };
-                }).catch(err => ({ isProbe: false, ok: false, text: err.message || String(err), data: null, error: err }));
-
-                // 方案2：如果下单请求超过 1200ms 尚未返回，主动发起定向探针查询该 clientOrderId 的状态
-                const probeTimerPromise = new Promise<{ isProbeTimeout: true }>(resolve => setTimeout(() => resolve({ isProbeTimeout: true }), 1200));
-                const firstResult = await Promise.race([wrappedOrderPromise, probeTimerPromise]);
-
-                if ('isProbeTimeout' in firstResult) {
-                    console.warn(`[Binance Order] ⏱️ 下单请求处理超过 1.5s，启动定向探针 (ClientOrderId: ${generatedClientOrderId}) 毫秒级探测...`);
-                    const probeTimeOffset = await syncBinanceServerTime();
-                    const probeTimestamp = Date.now() + probeTimeOffset;
-                    const probeQuery = `symbol=${formattedSymbol}&origClientOrderId=${encodeURIComponent(generatedClientOrderId)}&timestamp=${probeTimestamp}&recvWindow=10000`;
-                    const probeSig = crypto.createHmac("sha256", apiSecret).update(probeQuery).digest("hex");
-                    const probeUrl = `https://fapi.binance.com/fapi/v1/order?${probeQuery}&signature=${probeSig}`;
-
-                    const probePromise = fetchWithFallback(probeUrl, {
-                        headers: { "X-MBX-APIKEY": apiKey }
-                    }).then(async res => {
-                        if (res.ok) {
-                            const pJson = await res.json().catch(() => null);
-                            if (pJson && (pJson.status === "FILLED" || pJson.status === "PARTIALLY_FILLED" || pJson.status === "NEW")) {
-                                return { isProbe: true, ok: true, text: "", data: pJson };
-                            }
+                await enqueueBinanceOrderTask(async () => {
+                    const orderPromise = fetchWithFallback(finalOrderUrl, {
+                        method: "POST",
+                        headers: {
+                            "X-MBX-APIKEY": apiKey,
+                            "Content-Type": "application/json"
                         }
-                        return null;
-                    }).catch(() => null);
+                    }, 15000);
 
-                    const raceWinner = await Promise.race([wrappedOrderPromise, probePromise]);
-                    if (raceWinner && 'isProbe' in raceWinner && raceWinner.isProbe && raceWinner.data) {
-                        console.log(`⚡ [Binance Order] 定向探针抢先确认订单已撮合成交: OrderId=${raceWinner.data.orderId}, Status=${raceWinner.data.status}`);
-                        orderData = raceWinner.data;
-                        orderResponseOk = true;
-                    } else if (raceWinner && 'isProbe' in raceWinner && !raceWinner.isProbe) {
-                        orderResponseOk = raceWinner.ok;
-                        orderText = raceWinner.text;
-                        orderData = raceWinner.data;
+                    // 包装 orderPromise 返回统一结构，消除 Response 与 JSON 结构之间的竞争歧义
+                    const wrappedOrderPromise = orderPromise.then(async res => {
+                        const ok = res.ok;
+                        const text = await res.text();
+                        let json: any = null;
+                        try { json = JSON.parse(text); } catch {}
+                        return { isProbe: false, ok, text, data: json };
+                    }).catch(err => ({ isProbe: false, ok: false, text: err.message || String(err), data: null, error: err }));
+
+                    // 方案2：如果下单请求超过 1200ms 尚未返回，主动发起定向探针查询该 clientOrderId 的状态
+                    const probeTimerPromise = new Promise<{ isProbeTimeout: true }>(resolve => setTimeout(() => resolve({ isProbeTimeout: true }), 1200));
+                    const firstResult = await Promise.race([wrappedOrderPromise, probeTimerPromise]);
+
+                    if ('isProbeTimeout' in firstResult) {
+                        console.warn(`[Binance Order] ⏱️ 下单请求处理超过 1.5s，启动定向探针 (ClientOrderId: ${generatedClientOrderId}) 毫秒级探测...`);
+                        const probeTimeOffset = await syncBinanceServerTime();
+                        const probeTimestamp = Date.now() + probeTimeOffset;
+                        const probeQuery = `symbol=${formattedSymbol}&origClientOrderId=${encodeURIComponent(generatedClientOrderId)}&timestamp=${probeTimestamp}&recvWindow=10000`;
+                        const probeSig = crypto.createHmac("sha256", apiSecret).update(probeQuery).digest("hex");
+                        const probeUrl = `https://fapi.binance.com/fapi/v1/order?${probeQuery}&signature=${probeSig}`;
+
+                        const probePromise = fetchWithFallback(probeUrl, {
+                            headers: { "X-MBX-APIKEY": apiKey }
+                        }).then(async res => {
+                            if (res.ok) {
+                                const pJson = await res.json().catch(() => null);
+                                if (pJson && (pJson.status === "FILLED" || pJson.status === "PARTIALLY_FILLED" || pJson.status === "NEW")) {
+                                    return { isProbe: true, ok: true, text: "", data: pJson };
+                                }
+                            }
+                            return null;
+                        }).catch(() => null);
+
+                        const raceWinner = await Promise.race([wrappedOrderPromise, probePromise]);
+                        if (raceWinner && 'isProbe' in raceWinner && raceWinner.isProbe && raceWinner.data) {
+                            console.log(`⚡ [Binance Order] 定向探针抢先确认订单已撮合成交: OrderId=${raceWinner.data.orderId}, Status=${raceWinner.data.status}`);
+                            orderData = raceWinner.data;
+                            orderResponseOk = true;
+                        } else if (raceWinner && 'isProbe' in raceWinner && !raceWinner.isProbe) {
+                            orderResponseOk = raceWinner.ok;
+                            orderText = raceWinner.text;
+                            orderData = raceWinner.data;
+                        } else {
+                            const actualRes = await wrappedOrderPromise;
+                            orderResponseOk = actualRes.ok;
+                            orderText = actualRes.text;
+                            orderData = actualRes.data;
+                        }
                     } else {
-                        const actualRes = await wrappedOrderPromise;
-                        orderResponseOk = actualRes.ok;
-                        orderText = actualRes.text;
-                        orderData = actualRes.data;
+                        orderResponseOk = firstResult.ok;
+                        orderText = firstResult.text;
+                        orderData = firstResult.data;
                     }
-                } else {
-                    orderResponseOk = firstResult.ok;
-                    orderText = firstResult.text;
-                    orderData = firstResult.data;
-                }
+                });
             } catch (networkErr: any) {
                 console.warn(`[Binance Order] 下单请求遇到网络异常 (${networkErr.message || networkErr})，正在启动应急定向探针确认交易所真实状态...`);
                 try {
@@ -1197,9 +1224,18 @@ async function startServer() {
                     orderData = JSON.parse(orderText);
                 } catch (e) {
                     console.warn(`[Binance Order] Failed to parse response as JSON. Raw response: ${orderText}`);
+                    let userFriendlyMsg = `币安交易所返回了非 JSON 格式的响应: ${orderText.substring(0, 100)}`;
+                    if (orderText.includes("-1003") || orderText.includes("rate-limited") || orderText.includes("IP rate-limited") || orderText.includes("Outbound request paused")) {
+                        userFriendlyMsg = "【触发币安 IP 频率限制 (code: -1003)】短时间内提交的订单或请求过多，触发了交易所出口 IP 限频防护。系统已自动暂停下单并发 30 秒，队列将自动延迟重试。";
+                        orderQueuePauseUntil = Date.now() + 30000;
+                    } else if (orderText.includes("-1015") || orderText.includes("Too many new orders")) {
+                        userFriendlyMsg = "【下单过于频繁，触发币安限频 (code: -1015)】系统在 10 秒内发起了多于 20 笔订单。服务端已自动开启排队缓冲，请稍等 15 秒。";
+                        orderQueuePauseUntil = Date.now() + 15000;
+                    }
                     return res.status(502).json({
                         success: false,
-                        error: `币安交易所返回了非 JSON 格式的响应: ${orderText.substring(0, 100)}`
+                        error: userFriendlyMsg,
+                        code: -1003
                     });
                 }
             }
@@ -1217,8 +1253,14 @@ async function startServer() {
                 const executedQuote = rawCumQuote > 0 ? rawCumQuote : (executedQty * avgPrice);
 
                 // Invalidate account cache immediately so UI sync receives new position state instantly
-                const userCacheKey = `${apiKey.substring(0, 10)}_${apiKey.slice(-6)}`;
+                const trimmedApiKey = typeof apiKey === 'string' ? apiKey.trim() : (apiKey || '');
+                const userCacheKey = `${trimmedApiKey.substring(0, 10)}_${trimmedApiKey.slice(-6)}`;
                 accountStateCache.delete(userCacheKey);
+                for (const k of accountStateCache.keys()) {
+                    if (k.startsWith(trimmedApiKey.substring(0, 10))) {
+                        accountStateCache.delete(k);
+                    }
+                }
 
                 // 🔒 核心提速：立即清除该 API Key 的成交流水缓存，绝不让后续抓取命中陈旧缓存
                 const apiKeyPrefix = apiKey.substring(0, 10);
@@ -1388,11 +1430,15 @@ async function startServer() {
                 } else if (errorCode === -4164 || (typeof errorMsg === 'string' && (errorMsg.includes("Order's notional must be no smaller than") || errorMsg.includes("notional must be no smaller than")))) {
                     userFriendlyError = "【订单名义价值过低】币安规定单笔订单名义价值（价格 * 数量）不能小于 20 USDT。请在设置中增加下单本金/子弹金额，或提高杠杆倍数，确保开仓价值不低于 20 USDT！";
                 } else if (errorCode === -2027) {
-                    userFriendlyError = "【超出当前杠杆最大持仓限额】下单数量或金额已超出您当前杠杆倍数下允许的最大持仓额度。请前往币安 App 或网页端调低该币种的杠杆倍数（例如降至 20x 或以下），或者在设置中减小下单本金/子弹金额。";
+                    userFriendlyError = "【超出当前杠杆最大持仓限额 (code: -2027)】下单的名义价值（持仓量 * 价格）已超出币安风控在当前杠杆下允许的最大持仓上限！解决建议：1. 若您已在系统设为 2x 杠杆，请检查币安 App 内该币种当前实际生效杠杆是否已被手动固定为高倍；2. 该币种在币安账户中可能已存在旧持仓或挂单占用额度，请先平仓；3. 部分热门小币种在币安的最高持仓上限仅为几百/几千 USDT，请适当降低开仓金额或前往币安 App 手动调整杠杆。";
                 } else if (errorCode === -4140) {
                     userFriendlyError = "【该交易对当前状态无法开仓】该币种在币安当前不可开仓（正处于非交易状态、停牌、清算或交易所已下线该合约且仅允许平仓）。请在设置中将其加入黑名单，或换其他币种。";
                 } else if (errorCode === -1015) {
-                    userFriendlyError = "【下单过于频繁，触发币安限频】系统在 10 秒内触发了多于 20 笔订单，触及了交易所的安全风控。请稍微等待 10-15 秒后再尝试，或者调大系统扫描或运行间隔。";
+                    userFriendlyError = "【下单过于频繁，触发币安限频 (code: -1015)】系统在 10 秒内触发了多于 20 笔订单。服务端已自动启用 500ms 排队缓冲队列，请等待 15 秒让队列平滑消费。";
+                    orderQueuePauseUntil = Date.now() + 15000;
+                } else if (errorCode === -1003) {
+                    userFriendlyError = "【触发币安 IP 频率限制 (code: -1003)】短时间内发起的请求过多，触及了交易所出口 IP 限频防护。服务端已自动暂停 30 秒以恢复正常。";
+                    orderQueuePauseUntil = Date.now() + 30000;
                 }
                 
                 console.warn(`[Binance Order] Failed: ${JSON.stringify(orderData)}`);
@@ -1427,9 +1473,7 @@ async function startServer() {
         }
         const timeEndpoints = [
             "https://fapi.binance.com/fapi/v1/time",
-            "https://api.binance.com/api/v3/time",
-            "https://fapi1.binance.com/fapi/v1/time",
-            "https://fapi2.binance.com/fapi/v1/time"
+            "https://api.binance.com/api/v3/time"
         ];
         for (const endpoint of timeEndpoints) {
             try {
@@ -1536,11 +1580,7 @@ async function startServer() {
                 .digest("hex");
 
             const baseUrls = [
-                "https://fapi.binance.com",
-                "https://fapi1.binance.com",
-                "https://fapi2.binance.com",
-                "https://fapi3.binance.com",
-                "https://fapi4.binance.com"
+                "https://fapi.binance.com"
             ];
 
             let lastError = null;
@@ -1560,18 +1600,24 @@ async function startServer() {
                             "X-MBX-APIKEY": apiKey,
                             "Content-Type": "application/json"
                         },
+                        redirect: "manual",
                         signal: controller.signal
                     });
                     
                     clearTimeout(timeout);
 
-                    if (response.ok) {
+                    if (response.status >= 300 && response.status < 400) {
+                        lastError = `币安节点返回非预期重定向 (HTTP ${response.status})，请检查网络设置。`;
+                        break;
+                    }
+
+                    if (response.ok && response.status === 200) {
                         const responseText = await response.text();
                         if (!responseText || !responseText.trim()) {
                             throw new Error("币安返回空数据");
                         }
                         if (responseText.trim().startsWith('<') || responseText.toLowerCase().includes('doctype html')) {
-                            throw new Error("Received HTML error page instead of JSON");
+                            throw new Error("币安返回了 HTML 网页而非 JSON 数据");
                         }
                         let data: any = null;
                         try {
@@ -1609,10 +1655,19 @@ async function startServer() {
                         } catch (e) {}
 
                         if (errCode === -2015 || (typeof errMsg === 'string' && (errMsg.includes('-2015') || errMsg.includes('Invalid API-key')))) {
-                            lastError = `币安 API 权限不足或 IP 限制 (code: -2015)。请检查：1. 是否已在币安开启“允许合约 (Enable Futures)”权限；2. 是否需要将服务器出口 IP (34.34.226.10) 加入白名单或设置为无 IP 限制；3. API Key 与 Secret 是否正确。`;
+                            lastError = `币安 API 权限不足或 IP 限制 (code: -2015)。请检查：1. 是否已在币安开启“允许合约 (Enable Futures)”权限；2. 是否需要将服务器当前出口 IP 加入白名单（可在系统设置中查看出口IP）或设置为无 IP 限制；3. API Key 与 Secret 是否输入正确。`;
+                        } else if (errCode === -2014) {
+                            lastError = `币安 API Key 格式不正确 (code: -2014)，请检查输入的 API Key 是否完整无误。`;
+                        } else if (errCode === -1021) {
+                            lastError = `时间戳不同步 (code: -1021: Timestamp for this request is outside of the recvWindow)，系统正在重新同步服务器时间。`;
+                            lastTimeSyncTimestamp = 0;
+                        } else if (errCode === -1022) {
+                            lastError = `签名无效 (code: -1022: Signature for this request is not valid)，请检查 Secret Key 是否输入正确。`;
                         } else {
                             lastError = `币安报错 (HTTP ${response.status}): ${errMsg}`;
                         }
+                        // 客户端身份/鉴权类错误直接终止，避免重复重试
+                        break;
                     }
                 } catch (err: any) {
                     lastError = `连接币安网络错误: ${err.message || err}`;
@@ -1884,9 +1939,7 @@ async function startServer() {
             const timeOffset = await syncBinanceServerTime();
             const timestamp = Date.now() + timeOffset;
             const baseUrls = [
-                "https://fapi.binance.com",
-                "https://fapi1.binance.com",
-                "https://fapi2.binance.com"
+                "https://fapi.binance.com"
             ];
 
             let allTrades: any[] = [];
@@ -1931,10 +1984,15 @@ async function startServer() {
                         const response = await fetch(url, {
                             method: "GET",
                             headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" },
+                            redirect: "manual",
                             signal: controller.signal
                         });
                         clearTimeout(timeout);
-                        if (response.ok) {
+                        if (response.status >= 300 && response.status < 400) {
+                            lastError = `Endpoint redirected (${response.status})`;
+                            break;
+                        }
+                        if (response.ok && response.status === 200) {
                             const data = await response.json();
                             if (Array.isArray(data)) {
                                 return data;
@@ -2256,8 +2314,19 @@ async function startServer() {
           }
           const spotQuery = queryParams.toString();
 
-          if (isKlineReq) {
-              // 🛡️ 优先走官方免限频公有节点 (Vision) 及现货镜像，绝不与合约交易通道抢占 fapi 权重
+          const isFuturesReq = targetUrl.includes("/fapi/") || targetUrl.includes("fapi.binance");
+
+          if (isFuturesReq) {
+              // 🛡️ 币安USDT永续合约 (Futures) 官方节点集群，绝不偷换为现货！
+              // 原生支持 1000PEPEUSDT / BTCUSDT 等全部合约币种及真实合约成交额
+              const fapiPath = parsedTarget.pathname;
+              const fapiQueryStr = rawQuery ? `?${rawQuery}` : "";
+              fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
+              // 备用公共跨域代理（原样保留目标 fapi 永续合约地址）
+              fetchCandidates.push({ url: `https://corsproxy.io/?${encodeURIComponent(`https://fapi.binance.com${fapiPath}${fapiQueryStr}`)}`, isPublicProxy: true, isSpotScale1000: false });
+              fetchCandidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://fapi.binance.com${fapiPath}${fapiQueryStr}`)}`, isPublicProxy: true, isSpotScale1000: false });
+          } else if (isKlineReq) {
+              // 现货 K 线
               fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
@@ -2322,8 +2391,13 @@ async function startServer() {
 
               const response = await fetch(candidate.url, {
                   headers,
+                  redirect: "manual",
                   signal: controller.signal
               });
+
+              if (response.status >= 300 && response.status < 400) {
+                  throw new Error(`Upstream node returned unexpected redirect ${response.status}`);
+              }
 
               if (!response.ok) {
                   const isMatchingTarget = targetUrl.includes("/fapi/") ? candidate.url.includes("/fapi/") : candidate.url.includes("/api/v3/");

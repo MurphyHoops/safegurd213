@@ -156,9 +156,94 @@ export const useStructureAudit = (
   // EXTREMES CACHE: Cache 1h/1m historical extremes in memory to prevent hammering Binance REST endpoints
   const extremesCacheRef = useRef<Map<string, any>>(new Map());
 
+  const updateList3FromCache = useCallback(() => {
+    const allItems: ScannerItem[] = Array.from(cacheRef.current.values());
+    allItems.sort(
+      (a, b) => (b.list3Results?.length || 0) - (a.list3Results?.length || 0),
+    );
+
+    // Only update state if list actually changed
+    const currentListStr = JSON.stringify(allItems);
+    if (currentListStr !== lastUpdateRef.current) {
+      setList3(allItems);
+      lastUpdateRef.current = currentListStr;
+    }
+
+    // Persist to localStorage
+    const cacheArray = Array.from(cacheRef.current.entries()).map(
+      ([key, value]) => ({ key, value }),
+    );
+    saveState(cacheMapKey, cacheArray, 200); // Cap list 3 cache
+    saveState(
+      expiredSignalsKey,
+      Array.from(expiredSignalCacheRef.current),
+      1000,
+    ); // Cap expired
+  }, [cacheMapKey, expiredSignalsKey]);
+
   useEffect(() => {
     configRef.current = config;
-  }, [config]);
+    const areAllRulesOff = !config.strictTrend && !config.checkCandleColor && !config.enableAmplitudeAudit && (config.enableRsi === false) && !config.enableMultiResonance;
+    
+    // When all rules are toggled off, immediately unblock and latch all existing candidates and cached signals
+    if (areAllRulesOff) {
+      let changed = false;
+      const curCandidates = candidatesRef.current || [];
+      curCandidates.forEach((c) => {
+        if (!c.symbol) return;
+        const validGrouped = (c.groupedResults || []).filter(r => !r.isPendingGray);
+        if (validGrouped.length === 0) return;
+
+        const mappedResults = validGrouped.map((r) => ({
+          tf: r.tf,
+          direction: r.direction || 'LONG',
+          latched: true,
+          structure: {
+            rsi: 50,
+            bbw: 0.1,
+            crossCount: 2,
+            locationPct: 10,
+            thrustValid: true,
+            isStrictTrend: true,
+            isColorValid: true,
+            lag: r.lag || 0,
+            signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
+            signalPrice: c.price,
+            signalHigh: r.kHigh ?? c.price,
+            signalLow: r.kLow ?? c.price,
+            ema10: c.emaDetails?.ema10 || c.price,
+            ema20: c.emaDetails?.ema20 || c.price,
+            ema30: c.emaDetails?.ema30 || c.price,
+            ema40: c.emaDetails?.ema40 || c.price,
+            ema80: c.emaDetails?.ema80 || c.price,
+          }
+        })).filter(r => !expiredSignalCacheRef.current.has(`${c.symbol}-${r.tf}-${r.direction}`));
+
+        if (mappedResults.length > 0) {
+          cacheRef.current.set(c.symbol, {
+            ...c,
+            list3Results: mappedResults
+          });
+          changed = true;
+        }
+      });
+
+      cacheRef.current.forEach((cachedItem) => {
+        if (cachedItem.list3Results) {
+          cachedItem.list3Results.forEach((r) => {
+            if (!r.latched) {
+              r.latched = true;
+              changed = true;
+            }
+          });
+        }
+      });
+
+      if (changed) {
+        updateList3FromCache();
+      }
+    }
+  }, [config, updateList3FromCache]);
   useEffect(() => {
     candidatesRef.current = candidates;
   }, [candidates]);
@@ -251,7 +336,7 @@ export const useStructureAudit = (
 
         const s = entry.structure;
         const cfg = configRef.current;
-        const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+        const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
         
         let passes = true;
         if (!areAllRulesOff) {
@@ -397,31 +482,6 @@ export const useStructureAudit = (
     }, 1000);
     return () => clearInterval(timer);
   }, [strategyId]);
-
-  const updateList3FromCache = useCallback(() => {
-    const allItems: ScannerItem[] = Array.from(cacheRef.current.values());
-    allItems.sort(
-      (a, b) => (b.list3Results?.length || 0) - (a.list3Results?.length || 0),
-    );
-
-    // Only update state if list actually changed
-    const currentListStr = JSON.stringify(allItems);
-    if (currentListStr !== lastUpdateRef.current) {
-      setList3(allItems);
-      lastUpdateRef.current = currentListStr;
-    }
-
-    // Persist to localStorage
-    const cacheArray = Array.from(cacheRef.current.entries()).map(
-      ([key, value]) => ({ key, value }),
-    );
-    saveState(cacheMapKey, cacheArray, 200); // Cap list 3 cache
-    saveState(
-      expiredSignalsKey,
-      Array.from(expiredSignalCacheRef.current),
-      1000,
-    ); // Cap expired
-  }, []);
 
   // --- PRIORITY DIRECT ANALYZER (No block, no batching, full parallel timeframe/item requests for zero latency) ---
   const runPriorityAnalysisInternal = useCallback(
@@ -728,7 +788,7 @@ export const useStructureAudit = (
             // [MILLISECOND-LEVEL FAILURE CLEARANCE]
             // If some rules are selected, and this coin has 0 latched results, immediately clear/remove it!
             const cfg = configRef.current;
-            const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+            const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
             if (!areAllRulesOff) {
               const cachedItem = cacheRef.current.get(item.symbol);
               if (cachedItem && cachedItem.list3Results) {
@@ -1089,7 +1149,7 @@ export const useStructureAudit = (
 
               // [MILLISECOND-LEVEL FAILURE CLEARANCE]
               const cfg = configRef.current;
-              const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+              const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
               if (!areAllRulesOff) {
                 const cachedItem = cacheRef.current.get(item.symbol);
                 if (cachedItem && cachedItem.list3Results) {
@@ -1145,7 +1205,24 @@ export const useStructureAudit = (
   ); // Removed realPrices from here
 
   // --- TRIGGERS ---
+  const prevCandidatesSignatureRef = useRef<string>('');
   useEffect(() => {
+    // Generate signature based on symbols, tfs, directions and non-gray states (excluding real-time price fluctuations)
+    const currentSig = (candidates || [])
+      .map(
+        (c) =>
+          `${c.symbol}:${(c.groupedResults || [])
+            .filter((r) => !r.isPendingGray)
+            .map((r) => `${r.tf}_${r.direction}_${r.kHigh ?? 0}_${r.kLow ?? 0}`)
+            .join(",")}`,
+      )
+      .join("|");
+
+    if (currentSig === prevCandidatesSignatureRef.current) {
+      return;
+    }
+    prevCandidatesSignatureRef.current = currentSig;
+
     // Sync Cache Removal & Expired Signals Cleanup
     const validSymbols = new Set(candidates.map((c) => c.symbol));
     const validUniqueIds = new Set<string>();
@@ -1185,7 +1262,7 @@ export const useStructureAudit = (
     }
 
     const cfg = configRef.current;
-    const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false);
+    const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
 
     // Identify New/Changed Candidates
     const itemsToScan: ScannerItem[] = [];
@@ -1197,13 +1274,14 @@ export const useStructureAudit = (
       const lastHash = structureHashRef.current.get(c.symbol);
       const cached = cacheRef.current.get(c.symbol);
 
-      if (!cached) {
-        // [MILLISECOND-LEVEL INSTANT TRANSITION]
-        // Synchronously add to cache. If rules are active, start unlatched (false) to prevent flickering.
-        const results = c.groupedResults?.map((r) => ({
+      const nonGrayGrouped = (c.groupedResults || []).filter(r => !r.isPendingGray);
+      if (nonGrayGrouped.length === 0) return;
+
+      if (areAllRulesOff) {
+        const results = nonGrayGrouped.map((r) => ({
           tf: r.tf,
           direction: r.direction || 'LONG',
-          latched: areAllRulesOff, // Only default to true if all rules are off, avoiding flickering
+          latched: true,
           structure: {
             rsi: 50,
             bbw: 0.1,
@@ -1213,38 +1291,109 @@ export const useStructureAudit = (
             isStrictTrend: true,
             isColorValid: true,
             lag: r.lag || 0,
-            signalTime: r.crossingTimes ? Math.max(...r.crossingTimes) : Date.now(),
+            signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
             signalPrice: c.price,
+            signalHigh: r.kHigh ?? c.price,
+            signalLow: r.kLow ?? c.price,
             ema10: c.emaDetails?.ema10 || c.price,
             ema20: c.emaDetails?.ema20 || c.price,
             ema30: c.emaDetails?.ema30 || c.price,
             ema40: c.emaDetails?.ema40 || c.price,
             ema80: c.emaDetails?.ema80 || c.price,
           }
-        })) || [];
-
-        // Only add results that are not expired/removed
-        const filteredResults = results.filter((r) => {
+        })).filter((r) => {
           const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;
           return !expiredSignalCacheRef.current.has(uniqueId);
         });
 
-        if (filteredResults.length > 0) {
+        if (results.length > 0) {
           const immediateItem: ScannerItem = {
             ...c,
-            list3Results: filteredResults,
+            list3Results: results,
           };
-
           cacheRef.current.set(c.symbol, immediateItem);
           instantAdded = true;
+        }
+      } else {
+        if (!cached || !cached.list3Results || cached.list3Results.length === 0) {
+          const results = nonGrayGrouped.map((r) => ({
+            tf: r.tf,
+            direction: r.direction || 'LONG',
+            latched: false,
+            structure: {
+              rsi: 50,
+              bbw: 0.1,
+              crossCount: 2,
+              locationPct: 10,
+              thrustValid: true,
+              isStrictTrend: true,
+              isColorValid: true,
+              lag: r.lag || 0,
+              signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
+              signalPrice: c.price,
+              signalHigh: r.kHigh ?? c.price,
+              signalLow: r.kLow ?? c.price,
+              ema10: c.emaDetails?.ema10 || c.price,
+              ema20: c.emaDetails?.ema20 || c.price,
+              ema30: c.emaDetails?.ema30 || c.price,
+              ema40: c.emaDetails?.ema40 || c.price,
+              ema80: c.emaDetails?.ema80 || c.price,
+            }
+          })).filter((r) => {
+            const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;
+            return !expiredSignalCacheRef.current.has(uniqueId);
+          });
 
-          if (!areAllRulesOff) {
+          if (results.length > 0) {
+            const immediateItem: ScannerItem = {
+              ...c,
+              list3Results: results,
+            };
+            cacheRef.current.set(c.symbol, immediateItem);
+            instantAdded = true;
+          }
+          itemsToScan.push(c);
+        } else {
+          // If cached exists, sync any new timeframes
+          let addedTf = false;
+          nonGrayGrouped.forEach((r) => {
+            const exists = cached.list3Results?.some(cr => cr.tf === r.tf && cr.direction === r.direction);
+            if (!exists) {
+              const uniqueId = `${c.symbol}-${r.tf}-${r.direction || 'LONG'}`;
+              if (!expiredSignalCacheRef.current.has(uniqueId)) {
+                cached.list3Results?.push({
+                  tf: r.tf,
+                  direction: r.direction || 'LONG',
+                  latched: false,
+                  structure: {
+                    rsi: 50,
+                    bbw: 0.1,
+                    crossCount: 2,
+                    locationPct: 10,
+                    thrustValid: true,
+                    isStrictTrend: true,
+                    isColorValid: true,
+                    lag: r.lag || 0,
+                    signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
+                    signalPrice: c.price,
+                    signalHigh: r.kHigh ?? c.price,
+                    signalLow: r.kLow ?? c.price,
+                    ema10: c.emaDetails?.ema10 || c.price,
+                    ema20: c.emaDetails?.ema20 || c.price,
+                    ema30: c.emaDetails?.ema30 || c.price,
+                    ema40: c.emaDetails?.ema40 || c.price,
+                    ema80: c.emaDetails?.ema80 || c.price,
+                  }
+                });
+                addedTf = true;
+              }
+            }
+          });
+          if (addedTf) instantAdded = true;
+
+          if (currentHash !== lastHash) {
             itemsToScan.push(c);
           }
-        }
-      } else if (currentHash !== lastHash) {
-        if (!areAllRulesOff) {
-          itemsToScan.push(c);
         }
       }
     });

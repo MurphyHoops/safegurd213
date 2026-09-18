@@ -107,7 +107,7 @@ export class DebtManager {
         if (activePositions.length === 0) return 0;
 
         const isSymbolUnderActiveHedge = activePositions.some(p => 
-            p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0)
+            p.isHedged || !!p.mainPositionId || (p.isAmputated && (p.amputatedAmount || 0) > 0) || (p.cumulativeAmputationLoss || 0) > 0 || (p.cumulativeHedgeLoss || 0) > 0 || (p.amputationCount || 0) > 0
         );
         if (!isSymbolUnderActiveHedge) {
             for (const p of activePositions) {
@@ -116,9 +116,14 @@ export class DebtManager {
             return 0;
         }
 
-        const hedgeStartTime = Math.min(...activePositions.map(p => p.lastAmputationTime || p.entryTime || 0));
+        // 🔒 [周期起始时间铁律] 必须以当前存活仓位的最早入场时间 (entryTime) 作为周期基准，
+        // 绝不可使用 latest lastAmputationTime，否则多次砍仓时后续砍仓会把此前所有砍仓记录过滤剔除！
+        const activeEntryTimes = activePositions
+            .map(p => p.backtestEntryTime || p.entryTime || 0)
+            .filter(t => t > 0);
+        const cycleStartTime = activeEntryTimes.length > 0 ? Math.min(...activeEntryTimes) : 0;
 
-        // 收集该币种在当前对冲周期内所有属于砍仓/断臂/减仓止损的真实流水记录
+        // 收集该币种在当前对冲生命周期内所有属于砍仓/断臂/减仓止损的真实流水记录
         const relevantCutLogs = tradeLogs.filter(l => 
             normalizeSymbol(l.symbol) === cleanSym &&
             l.status === 'CLOSED' &&
@@ -127,17 +132,19 @@ export class DebtManager {
                 l.exit_reason?.includes('砍仓') || 
                 l.exit_reason?.includes('断臂') || 
                 l.exit_reason?.includes('减仓') ||
-                l.exit_reason?.includes('止损')
+                l.exit_reason?.includes('止损') ||
+                l.is_hedge ||
+                l.events?.some(e => e.action?.includes('砍仓') || e.action?.includes('断臂') || e.action?.includes('减仓') || e.action?.includes('止损'))
             ) &&
-            ((l.exit_timestamp || l.entry_timestamp || 0) >= hedgeStartTime - 60000)
+            (cycleStartTime === 0 || (l.exit_timestamp || l.entry_timestamp || 0) >= cycleStartTime - 300000)
         );
 
-        // 🔒 按 orderId / entry_id 严格唯一去重，每笔订单/砍仓流水只计算一次真实的已实现亏损
+        // 🔒 按 orderId / entry_id 严格唯一去重，每笔订单/砍仓流水只计算一次真实的已实现亏损，并将多次砍仓完整累加！
         const seenOrders = new Set<string>();
         let trueTotalLoss = 0;
 
         for (const log of relevantCutLogs) {
-            const uniqueKey = log.binance_order_id ? String(log.binance_order_id) : log.entry_id;
+            const uniqueKey = log.binance_order_id ? String(log.binance_order_id) : (log.entry_id || `${log.symbol}_${log.exit_timestamp}`);
             if (uniqueKey && !seenOrders.has(uniqueKey)) {
                 seenOrders.add(uniqueKey);
                 trueTotalLoss += Math.abs(log.profit_usdt || 0);
@@ -147,22 +154,33 @@ export class DebtManager {
         // 四舍五入保留4位小数，避免浮点累积
         trueTotalLoss = Math.round(trueTotalLoss * 10000) / 10000;
 
-        // 如果旧持仓上的负债值显著高于真实流水去重总和（典型如 1630.76 vs 0.76 的重复记入污染）
         const currentOldMax = Math.max(0, ...activePositions.map(p => p.cumulativeAmputationLoss || 0));
-        if (currentOldMax > trueTotalLoss + 0.001) {
+        let finalLoss = trueTotalLoss;
+
+        if (trueTotalLoss === 0 && currentOldMax > 0) {
+            // 流水尚未完成同步或正在对账中，保全内存中已记录的累计砍仓亏损
+            finalLoss = currentOldMax;
+        } else if (trueTotalLoss > 0 && currentOldMax > trueTotalLoss * 3 + 10) {
+            // 如果旧持仓上的负债值显著成倍高于真实流水去重总和（典型如 1630.76 vs 0.76 的重复记入污染），则纠偏
             if (onCalibrateLog) {
                 onCalibrateLog(
                     `🛡️ [负债账单校准] 剔除重复记入污染: ${cleanSym} 负债已从异常值 ${currentOldMax.toFixed(2)} USDT 精准校准为真实砍仓亏损: ${trueTotalLoss.toFixed(2)} USDT (只记入一次)`
                 );
             }
+            finalLoss = trueTotalLoss;
+        } else {
+            // 正常情况下取流水真实累加值与内存最大值的合理上限，确保每一次砍仓亏损均100%累计
+            finalLoss = Math.max(trueTotalLoss, currentOldMax);
         }
 
-        // 校准并同步给该币种的所有活动持仓，确保双方一致且只记入一次
+        finalLoss = Math.round(finalLoss * 10000) / 10000;
+
+        // 校准并同步给该币种的所有活动持仓，确保双方一致且累计亏损完整
         for (const p of activePositions) {
-            p.cumulativeAmputationLoss = trueTotalLoss;
+            p.cumulativeAmputationLoss = finalLoss;
         }
 
-        return trueTotalLoss;
+        return finalLoss;
     }
 }
 

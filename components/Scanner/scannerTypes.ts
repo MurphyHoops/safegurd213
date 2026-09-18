@@ -20,6 +20,8 @@ export interface List2GroupedResult {
     isPendingGray?: boolean; // 正在走动的实时K线是否因价格不符变为灰色待定态
     kOpen?: number; // 信号K线开盘价
     kClose?: number; // 信号K线收盘价/当前价
+    kHigh?: number; // 信号K线最高价
+    kLow?: number; // 信号K线最低价
     signalTime?: number; // 信号K线时间戳
 }
 
@@ -62,6 +64,7 @@ export interface ScannerItem {
     volume8am?: number;
     change8am?: number; 
     volume?: string;
+    quoteVolume?: string | number;
     change?: number;
     isDailyRefined?: boolean;
     isNew?: boolean; 
@@ -119,6 +122,7 @@ export interface ScannerItem {
         postSignalMinLow?: number;
         periodChange?: number; 
         isReverse3K?: boolean;
+        isBreakout3K?: boolean;
     };
     list3Results?: List3SignalResult[]; 
     momentum?: {
@@ -269,6 +273,7 @@ export interface AdvancedFilterGroup {
 export interface ActionConfig {
     enabled: boolean;
     openAmount: number; 
+    leverage?: number; // 杠杆倍数 (如: 2, 5, 10, 20)
     maxOpenSymbols: number;
     maxTotalValue: number;
     breakoutBuffer: number;
@@ -389,6 +394,26 @@ export interface ScanConfig {
     instantOpenEnabled?: boolean; // 立即开仓开关
     instantReopenEnabled?: boolean; // 平仓后立即开仓开关
     instantOpenDirection?: 'LONG' | 'SHORT'; // 开仓方向：'LONG' (多) 或 'SHORT' (空)
+    list2PushConfig?: {
+        enabled: boolean; // 是否启用定向推送至列表2 (若关闭则全部初筛币进入列表2)
+        mode: 'OR' | 'AND'; // 复合条件模式: 'OR' (满足任意一项) | 'AND' (必须全部满足)
+        // 条件1: 24H 涨跌幅绝对值 >= X%
+        enableChg24h: boolean;
+        minChg24h: number;
+        // 条件2: 8AM 涨跌幅绝对值 >= X%
+        enableChg8am: boolean;
+        minChg8am: number;
+        // 条件3: 24H 交易额 >= X M
+        enableVol24h: boolean;
+        minVol24h: number;
+        // 条件4: 8AM 交易额 >= X M
+        enableVol8am: boolean;
+        minVol8am: number;
+        // 头部 Top N 排序截取
+        enableTopN: boolean;
+        topNCount: number;
+        topNSortKey: 'CHG_24H_ABS' | 'CHG_8AM_ABS' | 'VOL_24H' | 'VOL_8AM' | 'CHG_24H_DESC' | 'CHG_24H_ASC' | 'CHG_8AM_DESC' | 'CHG_8AM_ASC';
+    };
 }
 
 // Added currentAction to status

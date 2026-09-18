@@ -1,4 +1,5 @@
 
+// @LOCKED: 模块 2 [强力防爆对冲] - UI组件与配置交互已锁定
 import React from 'react';
 import { HedgeGuardianProps } from './types';
 import { Activity } from 'lucide-react';

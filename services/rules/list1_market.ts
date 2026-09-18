@@ -1,5 +1,6 @@
 
 import { ScanConfig, ScannerItem } from '../../components/Scanner/scannerTypes';
+import { getVolume8am, checkVolumeRule } from '../volume8amService';
 
 export interface MarketStats {
     up: number;
@@ -55,11 +56,14 @@ export function processMarketData(
         // Optimization: Pre-filter zero volume or very small volume
         if (volume <= 0 && config.minVolume > 0) return;
 
-        const cachedVol = t._cachedVolume8am;
-        const cachedOpen = t._cachedOpenPrice8am;
+        const cached8am = getVolume8am(t.symbol);
+        const cachedVol = t._cachedVolume8am !== undefined ? t._cachedVolume8am : cached8am?.volume8am;
+        const cachedOpen = t._cachedOpenPrice8am !== undefined ? t._cachedOpenPrice8am : cached8am?.openPrice;
         let change8am = undefined;
         if (cachedOpen !== undefined && cachedOpen > 0 && price > 0) {
             change8am = ((price - cachedOpen) / cachedOpen) * 100;
+        } else if (cached8am?.change8am !== undefined) {
+            change8am = cached8am.change8am;
         }
 
         allCandidates.push({
@@ -107,21 +111,9 @@ export function processMarketData(
         });
     } else {
         filtered = allCandidates.filter(i => {
-            // Basic Volume filter (both 24H volume and 8AM volume)
-            const check24h = config.enableVol24h !== false;
-            const check8am = !!config.enableVol8am;
-
-            if (check24h) {
-                if (config.minVolume > 0 && (i.volume24h || 0) < config.minVolume) return false;
-                if (config.maxVolume > 0 && (i.volume24h || 0) > config.maxVolume) return false;
-            }
-
-            if (check8am) {
-                const min8am = config.minVolume8am ?? 1;
-                const max8am = config.maxVolume8am ?? 0;
-                const volVal = i.volume8am !== undefined ? i.volume8am : (i.volume24h || 0);
-                if (min8am > 0 && volVal < min8am) return false;
-                if (max8am > 0 && volVal > max8am) return false;
+            // Check volume rules (24H volume and 8AM volume with 0 = no limit)
+            if (!checkVolumeRule(i, config)) {
+                return false;
             }
 
             if (config.majorTrend?.enabled) {
@@ -131,6 +123,7 @@ export function processMarketData(
             }
 
             // Regular filters for Config A / Standard Mode
+            const check8am = !!config.enableVol8am;
             const effectiveChange = check8am ? (i.change8am !== undefined ? i.change8am : 0) : (i.change || 0);
             if (config.source === 'GAINERS' && effectiveChange <= 0) return false;
             if (config.source === 'LOSERS' && effectiveChange >= 0) return false;

@@ -92,6 +92,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                                 currentPrice: i.price,
                                 highlightTime: i.enterList4Time,
                                 showAuditLines: true,
+                                list4Config: config,
                                 extraLines: [
                                     { price: m.entryTrigger, label: "TRIGGER (攻)", color: "#fbbf24", style: "dashed" },
                                     { price: m.midPoint, label: "DEFENSE (守)", color: "#f87171", style: "dashed" }
@@ -109,6 +110,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                         <List4Item 
                             key={`${item.symbol}-${idx}`}
                             item={item}
+                            config={config}
                             executeTradeSafe={executeTradeSafe}
                             setChartData={setChartData}
                             onRemove={() => onRemoveItem(item.symbol)}

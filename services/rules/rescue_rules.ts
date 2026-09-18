@@ -1,4 +1,6 @@
 
+// 🔒 @LOCKED: [模块 3 盈亏平衡救赎 - 调度总控]
+// 包含 Strategy 4 断臂求生等核心解套救赎策略，严禁在未获用户直接指令前擅自修改
 import { Position, AppSettings, PositionSide } from '../../types';
 import { checkStrategy2_HedgeProfit } from './rescue/strategy2_hedgeProfit';
 import { checkStrategy3_CallbackProfit } from './rescue/strategy3_callbackProfit';
@@ -14,7 +16,7 @@ export function checkRescueRules(
     settings: AppSettings,
     closePair: (mainId: string, hedgeId: string, reason: string) => void,
     amputate: (position: Position, ratio: number, reason: string) => void,
-    refill: (position: Position, reason: string) => void,
+    refill: (position: Position, reason: string, customRefillQty?: number) => void,
     closeHedgeOnly: (hedgeId: string, profit: number, reason: string) => void,
     reopenPosition?: (position: Position, reason: string) => void,
     addLog?: (type: string, message: string) => void

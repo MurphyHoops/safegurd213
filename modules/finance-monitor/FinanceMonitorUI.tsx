@@ -23,7 +23,7 @@ export const FinanceMonitorModule: React.FC<FinanceMonitorProps> = ({
     } = useFinanceMonitorLogic(account, positions, realPrices);
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-2 shrink-0 h-[74px]">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-2 shrink-0 min-h-[74px] h-[76px]">
             <div className="md:col-span-3 h-full">
                 <FinanceStatsPanel 
                     availableMarginWithLeverage={availableMarginWithLeverage}

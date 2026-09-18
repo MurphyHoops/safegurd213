@@ -100,7 +100,9 @@ export const NetworkWidget: React.FC<Props> = ({ networkStatus, isOnline = true,
                 border: 'border-red-500/50',
                 text: 'text-red-400',
                 dot: 'bg-red-500',
-                label: autoReconnect ? `自动重连币安中 (${timeSinceDisconnect}s/第${reconnectAttempts || 1}次)` : `币安连接断开 (${timeSinceDisconnect}s)`,
+                label: compact 
+                    ? (autoReconnect ? `断线重连(${timeSinceDisconnect}s)` : `断开(${timeSinceDisconnect}s)`)
+                    : (autoReconnect ? `自动重连币安中 (${timeSinceDisconnect}s/第${reconnectAttempts || 1}次)` : `币安连接断开 (${timeSinceDisconnect}s)`),
                 icon: <XCircle size={11} className="text-red-400 shrink-0" />
             };
         }
@@ -110,7 +112,7 @@ export const NetworkWidget: React.FC<Props> = ({ networkStatus, isOnline = true,
                 border: 'border-amber-500/40',
                 text: 'text-amber-300',
                 dot: 'bg-amber-400',
-                label: autoReconnect ? `行情延迟·正在自愈重连` : `行情存在延迟`,
+                label: compact ? '行情延迟' : (autoReconnect ? `行情延迟·正在自愈重连` : `行情存在延迟`),
                 icon: <Activity size={11} className="text-amber-400 shrink-0" />
             };
         }
@@ -119,12 +121,58 @@ export const NetworkWidget: React.FC<Props> = ({ networkStatus, isOnline = true,
             border: 'border-emerald-500/30',
             text: 'text-emerald-400',
             dot: 'bg-emerald-400',
-            label: '币安行情已连接',
+            label: compact ? '行情正常' : '币安行情已连接',
             icon: <CheckCircle size={11} className="text-emerald-400 shrink-0" />
         };
     };
 
     const config = getStatusConfig();
+
+    if (compact) {
+        return (
+            <div 
+                className={`flex items-center gap-1.5 px-1.5 py-0.5 rounded border transition-all select-none ${config.bg} ${config.border} ${
+                    isAbnormal ? 'shadow-[0_0_10px_rgba(239,68,68,0.15)] animate-pulse' : ''
+                }`}
+                title="币安行情连接状态与自愈机制：检测到断网会自动重连"
+            >
+                <div className={`flex items-center gap-1 text-[9px] font-bold ${config.text}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${config.dot} ${isAbnormal ? 'animate-ping' : ''}`} />
+                    <span className="truncate">{config.label}</span>
+                </div>
+
+                <button
+                    type="button"
+                    onClick={handleToggleAutoReconnect}
+                    className={`px-1 py-0.2 rounded text-[8px] font-bold border transition-colors flex items-center gap-0.5 ${
+                        autoReconnect 
+                            ? 'bg-indigo-950/60 text-indigo-300 border-indigo-500/40 hover:bg-indigo-900/80' 
+                            : 'bg-slate-900 text-slate-500 border-slate-700 hover:text-slate-300'
+                    }`}
+                    title={autoReconnect ? "自动重连已开启（点击关闭）" : "自动重连已关闭（点击开启）"}
+                >
+                    <Zap size={7} className={autoReconnect ? "text-indigo-400 fill-indigo-400" : "text-slate-500"} />
+                    <span>{autoReconnect ? "自愈:开" : "自愈:关"}</span>
+                </button>
+
+                <button
+                    type="button"
+                    onClick={handleManualRefresh}
+                    disabled={isRefreshing}
+                    className={`p-0.5 rounded text-[8px] font-bold border transition-all ${
+                        isRefreshing
+                            ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed'
+                            : isAbnormal
+                                ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 animate-bounce'
+                                : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white'
+                    }`}
+                    title="立即重连币安行情"
+                >
+                    <RefreshCw size={8} className={isRefreshing ? 'animate-spin' : ''} />
+                </button>
+            </div>
+        );
+    }
 
     return (
         <div 

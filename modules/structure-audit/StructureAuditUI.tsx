@@ -45,12 +45,22 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
     
     const { config, setConfig, list3, isScanning, scanStatus, countdowns, removeSignal, removeItem, clearItems } = useStructureAudit(candidates, DEFAULT_CONFIG, realPrices, directMode, strategyId);
     
+    // Stabilize callbacks using refs
+    const onResultsUpdateRef = useRef(onResultsUpdate);
+    onResultsUpdateRef.current = onResultsUpdate;
+
+    const onConfigUpdateRef = useRef(onConfigUpdate);
+    onConfigUpdateRef.current = onConfigUpdate;
+
+    const onRemoveSignalReadyRef = useRef(onRemoveSignalReady);
+    onRemoveSignalReadyRef.current = onRemoveSignalReady;
+
     // Expose removeSignal to parent
     useEffect(() => {
-        if (onRemoveSignalReady) {
-            onRemoveSignalReady(removeSignal);
+        if (onRemoveSignalReadyRef.current) {
+            onRemoveSignalReadyRef.current(removeSignal);
         }
-    }, [onRemoveSignalReady, removeSignal]);
+    }, [removeSignal]);
     
     // Fix: Store previous config string to prevent infinite loops
     const prevConfigStrRef = useRef('');
@@ -62,10 +72,10 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
         if (str !== lastListStrRef.current) {
             lastListStrRef.current = str;
             setTimeout(() => {
-                onResultsUpdate(list3);
+                onResultsUpdateRef.current?.(list3);
             }, 0);
         }
-    }, [list3, onResultsUpdate]);
+    }, [list3]);
 
     // Sync Config (SAFE VERSION)
     useEffect(() => {
@@ -73,10 +83,10 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
         if (str !== prevConfigStrRef.current) {
             prevConfigStrRef.current = str;
             setTimeout(() => {
-                onConfigUpdate(config);
+                onConfigUpdateRef.current?.(config);
             }, 0);
         }
-    }, [config, onConfigUpdate]);
+    }, [config]);
 
     if (isBackground) {
         return null;

@@ -1,12 +1,14 @@
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Loader2, AlertTriangle, RotateCw, Maximize2, Upload, Download, Plus, Trash2, Edit3, Check, X as XIcon, Zap, ArrowUpDown } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { Loader2, AlertTriangle, RotateCw, Maximize2, Upload, Download, Plus, Trash2, Edit3, Check, X as XIcon, Zap, ArrowUpDown, Filter, ChevronDown, ChevronRight, Send, Sliders } from 'lucide-react';
 import { fetchWithFallback } from '../../../services/apiService';
 import { StrategyItem } from '../../../types';
 import { ScanConfig, ScannerItem, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { List1Control } from './Control';
 import { List1Item } from './Item';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
+import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../../services/volume8amService';
+
 
 interface Props {
     scanConfig: ScanConfig;
@@ -108,11 +110,12 @@ const List1_Selection: React.FC<Props> = ({
     };
 
     // --- 📊 List 1 Smart Multi-Sorting States & Logic ---
-    const [activeSorts, setActiveSorts] = useState<number[]>([]); // active sort criteria IDs: 1, 2, or 3
+    const [activeSorts, setActiveSorts] = useState<number[]>([]); // active sort criteria IDs: 1 (24H涨跌幅), 2 (8H涨跌幅), 3 (24H交易额), 4 (8H交易额)
     const [sortOrders, setSortOrders] = useState<Record<number, 'asc' | 'desc'>>({
         1: 'desc',
         2: 'desc',
-        3: 'desc'
+        3: 'desc',
+        4: 'desc'
     });
 
     const [metricsCache, setMetricsCache] = useState<Record<string, {
@@ -130,6 +133,9 @@ const List1_Selection: React.FC<Props> = ({
         minPeriodLow?: number;
         maxPeriodHigh?: number;
     }>>({});
+
+    // 🚀 定向推送至列表2控制面板折叠/展开状态
+    const [isPushConfigOpen, setIsPushConfigOpen] = useState(true);
 
     // 🌊 行情启动底池数据监听 (用于当未开启大行情发现时，市场初筛列表直接展示行情启动底池里的币)
     const [startTrendPool, setStartTrendPool] = useState<any[]>(() => {
@@ -166,6 +172,21 @@ const List1_Selection: React.FC<Props> = ({
         }
     });
 
+    const [hasRunMajorTrend, setHasRunMajorTrend] = useState<boolean>(() => {
+        try {
+            const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
+            return localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true';
+        } catch (_) {
+            return false;
+        }
+    });
+
+    useEffect(() => {
+        const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
+        const runState = localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true';
+        setHasRunMajorTrend(runState);
+    }, [selectedStrategyId]);
+
     useEffect(() => {
         const handleStartTrendUpdate = () => {
             try {
@@ -183,6 +204,7 @@ const List1_Selection: React.FC<Props> = ({
             try {
                 if (e?.detail && Array.isArray(e.detail)) {
                     setLocalMajorTrendCandidates(new Set(e.detail));
+                    setHasRunMajorTrend(true);
                     return;
                 }
                 const key = selectedStrategyId ? `SCANNER_MAJOR_TREND_CANDIDATES_${selectedStrategyId}` : 'SCANNER_MAJOR_TREND_CANDIDATES';
@@ -190,6 +212,10 @@ const List1_Selection: React.FC<Props> = ({
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     setLocalMajorTrendCandidates(new Set(Array.isArray(parsed) ? parsed : []));
+                }
+                const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
+                if (localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true') {
+                    setHasRunMajorTrend(true);
                 }
             } catch (_) {}
         };
@@ -201,6 +227,7 @@ const List1_Selection: React.FC<Props> = ({
         window.addEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
         window.addEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
         window.addEventListener('scanner_major_trend_candidates_updated', handleSidewaysUpdate);
+        window.addEventListener('scanner_major_trend_completed', handleMajorTrendUpdate);
         const timer = setInterval(() => {
             handleStartTrendUpdate();
             handleSidewaysUpdate();
@@ -214,9 +241,58 @@ const List1_Selection: React.FC<Props> = ({
             window.removeEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
             window.removeEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
             window.removeEventListener('scanner_major_trend_candidates_updated', handleSidewaysUpdate);
+            window.removeEventListener('scanner_major_trend_completed', handleMajorTrendUpdate);
             clearInterval(timer);
         };
     }, [selectedStrategyId]);
+
+    // 🌊【数据流水线核心保障：行情启动底池 -> 横盘蓄势过滤底池 联动同步】
+    // 1. 凡不在行情启动底池中的币种，不得滞留在横盘蓄势底池中（平稳同步，绝不在中途瞬时清零）
+    // 2. 行情启动底池中的币种一旦计算出横盘蓄势指标符合(isSidewaysMatch === true)，实时增量写入横盘蓄势底池
+    useEffect(() => {
+        const cfg = scanConfig.majorTrend;
+        if (!cfg?.enabled || cfg?.enableSideways === false) return;
+        if (!startTrendPool || startTrendPool.length === 0) return;
+
+        const startTrendSymbolSet = new Set(startTrendPool.map(p => p.symbol));
+        let changed = false;
+        const currentSidewaysMap = new Map<string, any>();
+
+        // 清理已离开行情启动底池的币
+        (sidewaysPool || []).forEach(item => {
+            if (startTrendSymbolSet.has(item.symbol)) {
+                currentSidewaysMap.set(item.symbol, item);
+            } else {
+                changed = true;
+            }
+        });
+
+        // 将行情启动底池中已满足横盘蓄势条件的币种增量加入
+        startTrendPool.forEach(p => {
+            const m = metricsCache[p.symbol];
+            if (m && !m.loading && m.isSidewaysMatch === true && !currentSidewaysMap.has(p.symbol)) {
+                currentSidewaysMap.set(p.symbol, {
+                    symbol: p.symbol,
+                    dropFromMax: m.highToCurrentDeclinePct ?? 0,
+                    riseFromMin: m.lowToCurrentIncreasePct ?? 0,
+                    maxZ: m.maxPeriodHigh ?? p.price,
+                    minZ: m.minPeriodLow ?? p.price,
+                    currentPrice: p.price,
+                    timestamp: Date.now()
+                });
+                changed = true;
+            }
+        });
+
+        if (changed) {
+            const newList = Array.from(currentSidewaysMap.values());
+            setSidewaysPool(newList);
+            try {
+                localStorage.setItem('SCANNER_SIDEWAYS_FILTERED_POOL', JSON.stringify(newList));
+                window.dispatchEvent(new CustomEvent('scanner_sideways_pool_updated', { detail: newList }));
+            } catch (_) {}
+        }
+    }, [startTrendPool, metricsCache, scanConfig.majorTrend?.enabled, scanConfig.majorTrend?.enableSideways, sidewaysPool, setSidewaysPool]);
 
     // 合并 Props 与 Local state 中的大行情候选集
     const effectiveMajorCandidates = useMemo(() => {
@@ -273,6 +349,7 @@ const List1_Selection: React.FC<Props> = ({
                 Object.keys(updated).forEach(symbol => {
                     updated[symbol] = {
                         ...updated[symbol],
+                        isSidewaysMatch: undefined,
                         startTrendValidLong: undefined,
                         startTrendValidShort: undefined,
                     };
@@ -285,6 +362,18 @@ const List1_Selection: React.FC<Props> = ({
     // 🔒 [END_SECURITY_LOCK]
 
     const fetchingSymbolsRef = useRef<Set<string>>(new Set());
+
+    // 📡 监听早上8点起缓存数据实时更新事件
+    const [_8amUpdateTick, set8amUpdateTick] = useState(0);
+    useEffect(() => {
+        const handle8amUpdate = () => {
+            set8amUpdateTick(t => t + 1);
+        };
+        window.addEventListener('scanner_8am_cache_updated', handle8amUpdate);
+        return () => {
+            window.removeEventListener('scanner_8am_cache_updated', handle8amUpdate);
+        };
+    }, []);
 
     const baseList = useMemo(() => {
         // 🔒 无论是否开启大行情发现，列表1的基础底池均由行情启动底池（startTrendPool）支撑
@@ -316,10 +405,13 @@ const List1_Selection: React.FC<Props> = ({
             const startItem = startTrendPool?.find(p => p.symbol === sym);
             const sidewaysItem = sidewaysPool?.find(p => p.symbol === sym);
             const raw = rawCacheMap.get(sym);
+            const cached8am = getVolume8am(sym);
 
             let price = partial?.price || startItem?.price || sidewaysItem?.currentPrice || existing?.price || raw?.price || 0;
             let change = partial?.changePct !== undefined ? partial.changePct : (partial?.change !== undefined ? partial.change : (startItem?.changePct !== undefined ? startItem.changePct : (existing?.change !== undefined ? existing.change : (raw?.change || 0))));
             let volume24h = partial?.volume24h !== undefined ? partial.volume24h : (existing?.volume24h !== undefined ? existing.volume24h : raw?.volM);
+            let volume8am = partial?.volume8am !== undefined ? partial.volume8am : (existing?.volume8am !== undefined ? existing.volume8am : cached8am?.volume8am);
+            let change8am = partial?.change8am !== undefined ? partial.change8am : (existing?.change8am !== undefined ? existing.change8am : cached8am?.change8am);
 
             return {
                 ...existing,
@@ -331,30 +423,35 @@ const List1_Selection: React.FC<Props> = ({
                 change: change !== undefined ? change : (existing?.change !== undefined ? existing.change : (raw?.change || 0)),
                 volume24h: (volume24h !== undefined && volume24h > 0) ? volume24h : (existing?.volume24h || raw?.volM || 0),
                 volume: existing?.volume || raw?.volM,
+                volume8am: volume8am !== undefined ? Number(volume8am) : undefined,
+                change8am: change8am !== undefined ? Number(change8am) : undefined,
             };
         };
 
+        // 🔒【市场初筛核心底池】：必须首先载入 list1 的全部初筛币种，绝不允许因启动底池有币而丢弃初筛基础数据
+        list1.forEach(item => {
+            poolMap.set(item.symbol, enrichItem(item.symbol, item));
+        });
+
+        // 补齐行情启动底池中的币种及属性
         if (startTrendPool && startTrendPool.length > 0) {
             startTrendPool.forEach(p => {
-                poolMap.set(p.symbol, enrichItem(p.symbol, p));
-            });
-        } else {
-            list1.forEach(item => {
-                poolMap.set(item.symbol, enrichItem(item.symbol, item));
-            });
-        }
-
-        if (sidewaysPool && sidewaysPool.length > 0) {
-            sidewaysPool.forEach(p => {
-                // 🔒 必须在启动趋势底池内才允许加入
-                if (!startTrendSymbolSet || startTrendSymbolSet.has(p.symbol)) {
-                    if (!poolMap.has(p.symbol)) {
-                        poolMap.set(p.symbol, enrichItem(p.symbol, p));
-                    }
+                if (!poolMap.has(p.symbol)) {
+                    poolMap.set(p.symbol, enrichItem(p.symbol, p));
                 }
             });
         }
 
+        // 补齐横盘底池中的币种及属性
+        if (sidewaysPool && sidewaysPool.length > 0) {
+            sidewaysPool.forEach(p => {
+                if (!poolMap.has(p.symbol)) {
+                    poolMap.set(p.symbol, enrichItem(p.symbol, p));
+                }
+            });
+        }
+
+        // 补齐大行情候选池中的币种
         if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
             effectiveMajorCandidates.forEach(cand => {
                 const sym = cand.replace('_LONG', '').replace('_SHORT', '');
@@ -381,12 +478,19 @@ const List1_Selection: React.FC<Props> = ({
                 const symbol = item.symbol;
                 if (!symbol) return false;
 
-                // Skip if already computed and not loading, unless trend validation fields are undefined
+                // Skip if already computed and not loading, unless required fields are undefined
                 const cachedMetrics = metricsCacheRef.current[symbol];
                 if (cachedMetrics && !cachedMetrics.loading) {
-                    const hasTrendActive = scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort;
-                    if (!hasTrendActive || (cachedMetrics.startTrendValidLong !== undefined && cachedMetrics.startTrendValidShort !== undefined)) {
-                        return false;
+                    const isMajorActive = scanConfig.majorTrend?.enabled;
+                    if (isMajorActive) {
+                        if (cachedMetrics.minPeriodLow !== undefined && cachedMetrics.isSidewaysMatch !== undefined) {
+                            return false;
+                        }
+                    } else {
+                        const hasTrendActive = scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort;
+                        if (!hasTrendActive || (cachedMetrics.startTrendValidLong !== undefined && cachedMetrics.startTrendValidShort !== undefined)) {
+                            return false;
+                        }
                     }
                 }
 
@@ -458,27 +562,14 @@ const List1_Selection: React.FC<Props> = ({
                             histLows = lows.slice(0, endIdx);
                         }
 
-                        const maxPeriodHigh = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
-                        const minPeriodLow = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
-
-                        const safeNum = (v: number) => (isNaN(v) || !isFinite(v)) ? 0 : v;
-                        const maxDeclinePct = safeNum(maxPeriodHigh > 0 ? ((minPeriodLow - maxPeriodHigh) / maxPeriodHigh) * 100 : 0);
-                        const highToCurrentDeclinePct = safeNum(maxPeriodHigh > 0 ? ((currentPrice - maxPeriodHigh) / maxPeriodHigh) * 100 : 0);
-                        const maxIncreasePct = safeNum(minPeriodLow > 0 ? ((maxPeriodHigh - minPeriodLow) / minPeriodLow) * 100 : 0);
-                        const lowToCurrentIncreasePct = safeNum(minPeriodLow > 0 ? ((currentPrice - minPeriodLow) / minPeriodLow) * 100 : 0);
-
-                        const minLowIdx = histLows.indexOf(minPeriodLow);
-                        const maxHighIdx = histHighs.indexOf(maxPeriodHigh);
-
-                        const lowDaysAgo = minLowIdx !== -1 ? (periodKlines.length - 1 - minLowIdx) : 0;
-                        const highDaysAgo = maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0;
-
                         let isSidewaysMatch = true;
+                        let maxZ = currentPrice;
+                        let minZ = currentPrice;
                         if (enableSideways && highs.length > sidewaysDays) {
                             const sidewaysHighs = highs.slice(-sidewaysDays);
                             const sidewaysLows = lows.slice(-sidewaysDays);
-                            const maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
-                            const minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
+                            maxZ = sidewaysHighs.length > 0 ? Math.max(...sidewaysHighs) : currentPrice;
+                            minZ = sidewaysLows.length > 0 ? Math.min(...sidewaysLows) : currentPrice;
 
                             const dropFromMax = ((maxZ - currentPrice) / maxZ) * 100;
                             const riseFromMin = ((currentPrice - minZ) / minZ) * 100;
@@ -487,6 +578,37 @@ const List1_Selection: React.FC<Props> = ({
                                 riseFromMin >= (scanConfig.majorTrend?.sidewaysMaxPump ?? 10)) {
                                 isSidewaysMatch = false;
                             }
+                        }
+
+                        const rawMaxPeriodHigh = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
+                        const rawMinPeriodLow = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
+                        const maxPeriodHigh = Math.max(rawMaxPeriodHigh, maxZ, currentPrice);
+                        const minPeriodLow = Math.min(rawMinPeriodLow, minZ, currentPrice);
+
+                        const safeNum = (v: number) => (isNaN(v) || !isFinite(v)) ? 0 : v;
+                        const maxDeclinePct = safeNum(maxPeriodHigh > 0 ? ((minPeriodLow - maxPeriodHigh) / maxPeriodHigh) * 100 : 0);
+                        const highToCurrentDeclinePct = safeNum(maxPeriodHigh > 0 ? Math.max(0, ((maxPeriodHigh - currentPrice) / maxPeriodHigh) * 100) : 0);
+                        const maxIncreasePct = safeNum(minPeriodLow > 0 ? ((maxPeriodHigh - minPeriodLow) / minPeriodLow) * 100 : 0);
+                        const lowToCurrentIncreasePct = safeNum(minPeriodLow > 0 ? Math.max(0, ((currentPrice - minPeriodLow) / minPeriodLow) * 100) : 0);
+
+                        let lowDaysAgo = 0;
+                        if (minPeriodLow === currentPrice || minPeriodLow === minZ) {
+                            const sidewaysLows = lows.slice(-sidewaysDays);
+                            const sIdx = sidewaysLows.lastIndexOf(minPeriodLow);
+                            lowDaysAgo = sIdx !== -1 ? (sidewaysLows.length - 1 - sIdx) : 0;
+                        } else {
+                            const minLowIdx = histLows.indexOf(minPeriodLow);
+                            lowDaysAgo = minLowIdx !== -1 ? (periodKlines.length - 1 - minLowIdx) : 0;
+                        }
+
+                        let highDaysAgo = 0;
+                        if (maxPeriodHigh === currentPrice || maxPeriodHigh === maxZ) {
+                            const sidewaysHighs = highs.slice(-sidewaysDays);
+                            const sIdx = sidewaysHighs.lastIndexOf(maxPeriodHigh);
+                            highDaysAgo = sIdx !== -1 ? (sidewaysHighs.length - 1 - sIdx) : 0;
+                        } else {
+                            const maxHighIdx = histHighs.indexOf(maxPeriodHigh);
+                            highDaysAgo = maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0;
                         }
 
                         // ⚡ [日K极速扫描方案]: 直接复用已拉取的日K数据(data)，零网络额外开销零阻塞
@@ -626,20 +748,21 @@ const List1_Selection: React.FC<Props> = ({
     }, [list1SymbolsStr, lookbackDays, majorTrendConfigStr]);
 
     const getSortValue = (item: ScannerItem, criterionId: number) => {
-        const metrics = metricsCache[item.symbol];
-        if (!metrics) return 0;
-
+        const cached8am = getVolume8am(item.symbol);
         if (criterionId === 1) {
-            return isLong ? Math.abs(metrics.maxDeclinePct) : Math.abs(metrics.maxIncreasePct);
+            // 24H 涨跌幅
+            return item.change !== undefined && item.change !== null ? Number(item.change) : 0;
         } else if (criterionId === 2) {
-            const currentPrice = item.price;
-            const minLow = metrics.minPeriodLow || currentPrice;
-            const maxHigh = metrics.maxPeriodHigh || currentPrice;
-            const liveLowToCurrentIncrease = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
-            const liveHighToCurrentDecline = maxHigh > 0 ? ((currentPrice - maxHigh) / maxHigh) * 100 : 0;
-            return isLong ? liveLowToCurrentIncrease : Math.abs(liveHighToCurrentDecline);
+            // 8H 涨跌幅 (今早8点起涨跌幅)
+            const chg8am = item.change8am !== undefined && item.change8am !== null ? Number(item.change8am) : cached8am?.change8am;
+            return chg8am !== undefined && !isNaN(chg8am) ? Number(chg8am) : (item.change !== undefined ? Number(item.change) : 0);
         } else if (criterionId === 3) {
-            return isLong ? metrics.lowDaysAgo : metrics.highDaysAgo;
+            // 24H 交易额 (USDT, 百万M为单位)
+            return Number(item.volume24h) || (Number(item.quoteVolume) ? Number(item.quoteVolume) / 1000000 : 0);
+        } else if (criterionId === 4) {
+            // 8H 交易额 (今早8点起交易额 USDT, 百万M为单位)
+            const vol8am = item.volume8am !== undefined && item.volume8am !== null ? Number(item.volume8am) : cached8am?.volume8am;
+            return vol8am !== undefined && !isNaN(vol8am) ? Number(vol8am) : 0;
         }
         return 0;
     };
@@ -663,323 +786,235 @@ const List1_Selection: React.FC<Props> = ({
         return 0;
     });
 
+    const sortedSymbolsKey = useMemo(() => sortedList1.map(i => i.symbol).filter(Boolean).join(','), [sortedList1]);
+
+    // 保证总是批量拉取日K线获取真实8点数据以呈现在列表中，并支持8H涨跌幅/8H交易额排序
+    useEffect(() => {
+        const symbols = sortedList1.map(i => i.symbol).filter(Boolean);
+        if (symbols.length > 0) {
+            fetchVolume8amBatch(symbols);
+        }
+    }, [sortedSymbolsKey, _8amUpdateTick, scanConfig.enableVol8am, scanConfig.timeBasis]);
+
     const filteredList = useMemo(() => {
-        // 🔒 [第一步严格 24H 交易额刚性拦截与过滤]:
+        // 🔒 [第一步严格 24H 交易额与早上8点起交易额刚性拦截与过滤]:
         // 无论何种模式（是否开启大行情发现、启动趋势池等），在列表1向外输出的最终集合中，
         // 凡开启了 24H 交易额过滤（如 5M - 0），必须严格通过 24H 交易额区间校验，低于 minVolume 或高于 maxVolume 者一票否决！
-        const enable24h = scanConfig.enableVol24h !== false;
-        const minVol24h = scanConfig.minVolume || 0;
-        const maxVol24h = scanConfig.maxVolume || 0;
-
+        // 凡开启了早上8点起交易额过滤，必须严格通过北京时间早上8点到当前的交易额区间校验，后面为0无上限！
         const volumeFilteredList = sortedList1.filter(item => {
-            if (enable24h) {
-                const vol = item.volume24h !== undefined ? item.volume24h : 0;
-                if (minVol24h > 0 && vol < minVol24h) return false;
-                if (maxVol24h > 0 && vol > maxVol24h) return false;
-            }
-            return true;
+            return checkVolumeRule(item, scanConfig);
         });
 
-        // 判断“行情启动趋势”是否处于活动状态（多或空至少开启一个）
-        const isStartTrendActive = Boolean(scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort);
+        // 判断“行情启动趋势”是否处于活动状态（必须开启 enableStartTrend 总开关，且多或空至少开启一个）
+        const isStartTrendActive = Boolean(
+            scanConfig.majorTrend?.enableStartTrend &&
+            (scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort)
+        );
         const startTrendSymbolSet = (isStartTrendActive && startTrendPool && startTrendPool.length > 0) ? new Set(startTrendPool.map(p => p.symbol)) : null;
 
         // 🔒【行情启动趋势底池前置过滤】：
-        // 1. 若行情启动趋势多/空开启，凡不在启动趋势底池中的币种一律立即过滤剔除；
-        // 2. 若“行情启动趋势”的“多”和“空”都关闭，则不进行启动趋势底池过滤拦截，直通后续“大行情发现”规则过滤！
+        // 1. 若行情启动趋势多/空开启且启动底池有数据，凡不在启动趋势底池中的币种过滤剔除；
+        // 2. 若“行情启动趋势”关闭或底池为空，则不进行强制过滤拦截，保证市场初筛底池完整可用！
         const startTrendFilteredList = startTrendSymbolSet
             ? volumeFilteredList.filter(item => startTrendSymbolSet.has(item.symbol))
             : volumeFilteredList;
 
         // =========================================================================
-        // 🌊 状态 1：当【大行情发现】关闭时，市场初筛列表 100% 纯粹就是【行情启动底池】里的币
+        // 🌊 状态 1：当【大行情发现】关闭时，市场初筛列表按照【行情启动底池】规则过滤
         // 凡不再符合启动趋势规则的币种立即被剔除，不留存任何失效币种
         // =========================================================================
+        let finalResult: ScannerItem[] = [];
+
         if (!scanConfig.majorTrend?.enabled) {
-            return startTrendFilteredList;
-        }
+            finalResult = startTrendFilteredList;
+        } else {
+            // =========================================================================
+            // 🌊 状态 2：当【大行情发现】开启时！
+            // 🔒 [严格遵循数据流水线 - 用户指定规则]:
+            // 1. ”成交额范围过滤“ 筛选出的符合规则币进入 ”交易额过滤底池“ (volumeFilteredList)
+            // 2. ”行情启动趋势“ 读取 ”交易额过滤底池“ 的数据，筛选后的币进入 ”行情启动底池“ (startTrendFilteredList)
+            // 3. ”大行情发现“ 的第一步，”横盘蓄势过滤“ 读取 ”行情启动底池“ 的数据，符合规则的币进入 ”横盘蓄势过滤底池“ (sidewaysFilteredList)
+            // 4. ”回溯周期过滤“ 读取 “横盘蓄势过滤底池” 数据，符合规则的数据进行 “市场初筛” 列表！
+            // =========================================================================
+            const cfg = (scanConfig.majorTrend || {}) as any;
+            const enableLong = cfg.enableLong !== false;
+            const enableShort = cfg.enableShort !== false;
+            const enableSideways = cfg.enableSideways === true; // 横盘蓄势开关
+            const enableLookbackFilter = cfg.enableLookbackFilter !== false && (cfg.enableLookbackFilter === true || (enableLong || enableShort)); // 回溯周期开关
 
-        // =========================================================================
-        // 当【大行情发现】开启时：
-        // =========================================================================
-        const cfg = (scanConfig.majorTrend || {}) as any;
-        const enableLong = cfg.enableLong !== false;
-        const enableShort = cfg.enableShort !== false;
-        const enableSideways = cfg.enableSideways === true; // 横盘蓄势开关开启时生效
-        const enableLookbackFilter = cfg.enableLookbackFilter !== false && (cfg.enableLookbackFilter === true || (enableLong || enableShort));
+            // 🎯 第一步的输入源：100% 严格读取【行情启动底池】
+            const baseMajorSource = startTrendFilteredList;
 
-        // 🌊 状态 2：开启【大行情发现】且仅开启【横盘蓄势过滤】（未开启回溯周期过滤或多空方向皆关闭）
-        // 市场初筛列表 100% 纯粹就是【横盘蓄势过滤底池】（且属于启动趋势底池）里的币，不再符合者立即剔除
-        if (enableSideways && !enableLookbackFilter) {
-            if (sidewaysPool) {
-                const sidewaysSymbolSet = new Set(sidewaysPool.map(p => p.symbol));
-                return startTrendFilteredList.filter(item => sidewaysSymbolSet.has(item.symbol));
-            }
-            return startTrendFilteredList.filter(item => {
-                const metrics = metricsCache[item.symbol];
-                if (!metrics || metrics.loading) return false;
-                return metrics.isSidewaysMatch !== false;
-            });
-        }
-
-        // 🌊 状态 3：开启【大行情发现】且开启【横盘蓄势过滤】+【回溯周期过滤】
-        // 🔒【回溯周期过滤即时呈现与交易额底池重筛自动删减铁律】:
-        // 在“回溯周期过滤”进行时，只要有币符合条件，立即出现在市场初筛列表里，绝不清零；
-        // 候选币种结合 24H 交易额底池进行校验，发现不再符合条件的自动删减！
-        const hasCandidates = Boolean(effectiveMajorCandidates && effectiveMajorCandidates.size > 0);
-
-        if (hasCandidates) {
-            return sortedList1.filter(item => {
-                const sym = item.symbol;
-                if (!sym) return false;
-
-                // 1. 回溯周期过滤匹配：必须在最新大行情候选池中且方向匹配
-                const matchLong = effectiveMajorCandidates.has(`${sym}_LONG`) || effectiveMajorCandidates.has(sym);
-                const matchShort = effectiveMajorCandidates.has(`${sym}_SHORT`) || effectiveMajorCandidates.has(sym);
-
-                let dirMatched = false;
-                if (enableLong && enableShort) {
-                    dirMatched = matchLong || matchShort;
-                } else if (enableLong) {
-                    dirMatched = matchLong;
-                } else if (enableShort) {
-                    dirMatched = matchShort;
-                }
-                if (!dirMatched) return false;
-
-                // 🔒【初筛候选币实时二次过滤与动态删减铁律】:
-                // 对初筛候选池中的币种结合最新实时指标与参数进行二次过滤校验：
-                // 若指标已加载完成，且不再满足极值区间、启动趋势或横盘要求，当场动态删除！
-                const metrics = metricsCache[sym];
-                if (metrics && !metrics.loading) {
-                    const currentPrice = item.price;
-
-                    // 1. 横盘蓄势校验
-                    if (enableSideways && metrics.isSidewaysMatch === false) {
-                        return false;
-                    }
-
-                    // 2. 回溯周期极值与启动趋势校验
-                    if (enableLookbackFilter) {
-                        const checkLong = () => {
-                            if (!enableLong) return false;
-                            if (!matchLong) return false;
-
-                            // 最小历史跌幅
-                            if (cfg.minHistoryDrop !== undefined && cfg.minHistoryDrop > 0) {
-                                if (Math.abs(metrics.maxDeclinePct || 0) < cfg.minHistoryDrop) return false;
-                            }
-
-                            // 最低点到当前涨幅区间
-                            const minLow = metrics.minPeriodLow || currentPrice;
-                            const liveLowToCurrentIncrease = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
-                            const minExtremeDistanceLong = cfg.minExtremeDistanceLong ?? 0;
-                            const maxExtremeDistanceLong = cfg.maxExtremeDistanceLong !== undefined 
-                                ? cfg.maxExtremeDistanceLong 
-                                : (cfg.maxExtremeDistance ?? 100);
-                            if (liveLowToCurrentIncrease < minExtremeDistanceLong || 
-                                liveLowToCurrentIncrease > maxExtremeDistanceLong) {
-                                return false;
-                            }
-
-                            // 最低点距今天数区间
-                            const extremeDaysMinLong = cfg.extremeDaysMinLong ?? 0;
-                            const extremeDaysMaxLong = cfg.extremeDaysMaxLong ?? 300;
-                            if ((metrics.lowDaysAgo ?? 0) < extremeDaysMinLong || 
-                                (metrics.lowDaysAgo ?? 0) > extremeDaysMaxLong) {
-                                return false;
-                            }
-
-                            // 行情启动趋势多头
-                            if (scanConfig.majorTrend?.enableStartTrendLong) {
-                                if (metrics.startTrendValidLong === false) return false;
-                            }
-
-                            return true;
-                        };
-
-                        const checkShort = () => {
-                            if (!enableShort) return false;
-                            if (!matchShort) return false;
-
-                            // 最小历史涨幅
-                            if (cfg.minHistoryPump !== undefined && cfg.minHistoryPump > 0) {
-                                if ((metrics.maxIncreasePct || 0) < cfg.minHistoryPump) return false;
-                            }
-
-                            // 最高点到当前跌幅区间
-                            const maxHigh = metrics.maxPeriodHigh || currentPrice;
-                            const liveHighToCurrentDecline = maxHigh > 0 ? ((maxHigh - currentPrice) / maxHigh) * 100 : 0;
-                            const minExtremeDistanceShort = cfg.minExtremeDistanceShort ?? 0;
-                            const maxExtremeDistanceShort = cfg.maxExtremeDistanceShort !== undefined 
-                                ? cfg.maxExtremeDistanceShort 
-                                : (cfg.maxExtremeDistance ?? 100);
-                            if (liveHighToCurrentDecline < minExtremeDistanceShort || 
-                                liveHighToCurrentDecline > maxExtremeDistanceShort) {
-                                return false;
-                            }
-
-                            // 最高点距今天数区间
-                            const extremeDaysMinShort = cfg.extremeDaysMinShort ?? 0;
-                            const extremeDaysMaxShort = cfg.extremeDaysMaxShort ?? 300;
-                            if ((metrics.highDaysAgo ?? 0) < extremeDaysMinShort || 
-                                (metrics.highDaysAgo ?? 0) > extremeDaysMaxShort) {
-                                return false;
-                            }
-
-                            // 行情启动趋势空头
-                            if (scanConfig.majorTrend?.enableStartTrendShort) {
-                                if (metrics.startTrendValidShort === false) return false;
-                            }
-
-                            return true;
-                        };
-
-                        let ok = false;
-                        if (enableLong && enableShort) {
-                            ok = checkLong() || checkShort();
-                        } else if (enableLong) {
-                            ok = checkLong();
-                        } else if (enableShort) {
-                            ok = checkShort();
-                        }
-                        if (!ok) return false;
-                    }
-                }
-
-                return true;
-            });
-        }
-
-        const lookbackMatches = startTrendFilteredList.filter(item => {
-            const sym = item.symbol;
-            if (!sym) return false;
-
-            // 1. 如果开启了横盘蓄势过滤，必须先在横盘底池中通过
+            // 🎯 第一步：横盘蓄势过滤读取“行情启动底池”的数据，符合“横盘蓄势过滤”规则的币进入“横盘蓄势过滤底池”
+            let sidewaysFilteredList = baseMajorSource;
             if (enableSideways) {
                 if (sidewaysPool && sidewaysPool.length > 0) {
                     const sidewaysSymbolSet = new Set(sidewaysPool.map(p => p.symbol));
-                    if (!sidewaysSymbolSet.has(sym)) return false;
+                    sidewaysFilteredList = baseMajorSource.filter(item => sidewaysSymbolSet.has(item.symbol));
                 } else {
-                    return false;
+                    sidewaysFilteredList = baseMajorSource.filter(item => {
+                        const metrics = metricsCache[item.symbol];
+                        if (!metrics || metrics.loading) return !isMajorScanning;
+                        return metrics.isSidewaysMatch !== false;
+                    });
                 }
             }
 
-            const metrics = metricsCache[item.symbol];
-            if (!metrics || metrics.loading) return false;
-
-            const currentPrice = item.price;
-
-            if (enableLookbackFilter) {
-                const checkLongMatch = () => {
-                    if (!enableLong) return false;
-
-                    // 最小历史跌幅
-                    if (cfg.minHistoryDrop !== undefined && cfg.minHistoryDrop > 0) {
-                        if (Math.abs(metrics.maxDeclinePct || 0) < cfg.minHistoryDrop) return false;
-                    }
-
-                    // 最低点到当前涨幅区间
-                    const minLow = metrics.minPeriodLow || currentPrice;
-                    const liveLowToCurrentIncrease = minLow > 0 ? ((currentPrice - minLow) / minLow) * 100 : 0;
-                    const minExtremeDistanceLong = cfg.minExtremeDistanceLong ?? 0;
-                    const maxExtremeDistanceLong = cfg.maxExtremeDistanceLong !== undefined 
-                        ? cfg.maxExtremeDistanceLong 
-                        : (cfg.maxExtremeDistance ?? 100);
-                    if (liveLowToCurrentIncrease < minExtremeDistanceLong || 
-                        liveLowToCurrentIncrease > maxExtremeDistanceLong) {
-                        return false;
-                    }
-
-                    // 最低点距今天数区间
-                    const extremeDaysMinLong = cfg.extremeDaysMinLong ?? 0;
-                    const extremeDaysMaxLong = cfg.extremeDaysMaxLong ?? 300;
-                    if ((metrics.lowDaysAgo ?? 0) < extremeDaysMinLong || 
-                        (metrics.lowDaysAgo ?? 0) > extremeDaysMaxLong) {
-                        return false;
-                    }
-
-                    // 行情启动趋势多头
-                    if (scanConfig.majorTrend?.enableStartTrendLong) {
-                        if (metrics.startTrendValidLong === false) return false;
-                    }
-
-                    return true;
-                };
-
-                const checkShortMatch = () => {
-                    if (!enableShort) return false;
-
-                    // 最小历史涨幅
-                    if (cfg.minHistoryPump !== undefined && cfg.minHistoryPump > 0) {
-                        if ((metrics.maxIncreasePct || 0) < cfg.minHistoryPump) return false;
-                    }
-
-                    // 最高点到当前跌幅区间
-                    const maxHigh = metrics.maxPeriodHigh || currentPrice;
-                    const liveHighToCurrentDecline = maxHigh > 0 ? ((maxHigh - currentPrice) / maxHigh) * 100 : 0;
-                    const minExtremeDistanceShort = cfg.minExtremeDistanceShort ?? 0;
-                    const maxExtremeDistanceShort = cfg.maxExtremeDistanceShort !== undefined 
-                        ? cfg.maxExtremeDistanceShort 
-                        : (cfg.maxExtremeDistance ?? 100);
-                    if (liveHighToCurrentDecline < minExtremeDistanceShort || 
-                        liveHighToCurrentDecline > maxExtremeDistanceShort) {
-                        return false;
-                    }
-
-                    // 最高点距今天数区间
-                    const extremeDaysMinShort = cfg.extremeDaysMinShort ?? 0;
-                    const extremeDaysMaxShort = cfg.extremeDaysMaxShort ?? 300;
-                    if ((metrics.highDaysAgo ?? 0) < extremeDaysMinShort || 
-                        (metrics.highDaysAgo ?? 0) > extremeDaysMaxShort) {
-                        return false;
-                    }
-
-                    // 行情启动趋势空头
-                    if (scanConfig.majorTrend?.enableStartTrendShort) {
-                        if (metrics.startTrendValidShort === false) return false;
-                    }
-
-                    return true;
-                };
-
-                if (enableLong && enableShort) {
-                    if (!checkLongMatch() && !checkShortMatch()) return false;
-                } else if (enableLong) {
-                    if (!checkLongMatch()) return false;
-                } else if (enableShort) {
-                    if (!checkShortMatch()) return false;
-                } else {
+            // 🎯 第二步：若未开启【回溯周期过滤】，则“横盘蓄势过滤底池”即为最终“市场初筛”列表
+            if (!enableLookbackFilter) {
+                finalResult = sidewaysFilteredList;
+            } else if (hasRunMajorTrend || (effectiveMajorCandidates && effectiveMajorCandidates.size > 0)) {
+                // 🎯 第三步：”回溯周期过滤“读取“横盘蓄势过滤底池”数据，符合“回溯周期过滤”规则的数据进入“市场初筛”列表！
+                // 🔒【用户特别强调的核心铁律】：
+                // 市场初筛的币，【平时不要增减】，必须是“回溯周期过滤”运行完成后，再和市场初筛列表的数量进行比对！
+                // 如果“回溯周期过滤”已产生候选集（或已完成扫描判定），市场初筛列表严格展示通过回溯周期过滤的有效候选集币种，
+                // 绝不因中途底池扫描、日K重算或临时变量波动而发生清零或闪烁！
+                const matchedList = sortedList1.filter(item => {
+                    const sym = item.symbol;
+                    if (!sym) return false;
+                    const matchLong = effectiveMajorCandidates.has(`${sym}_LONG`) || effectiveMajorCandidates.has(sym);
+                    const matchShort = effectiveMajorCandidates.has(`${sym}_SHORT`) || effectiveMajorCandidates.has(sym);
+                    if (enableLong && enableShort) return matchLong || matchShort;
+                    if (enableLong) return matchLong;
+                    if (enableShort) return matchShort;
                     return false;
-                }
+                });
+                finalResult = matchedList;
+            } else if (isMajorScanning) {
+                // 正在执行扫描中，等待扫描完成差量更新
+                finalResult = [];
+            } else if (sidewaysFilteredList.length > 0) {
+                // 🔒 若尚未完成首次全量回溯扫描，先呈现横盘蓄势底池币种待扫描
+                finalResult = sidewaysFilteredList;
             } else {
-                if (isLong && scanConfig.majorTrend?.enableStartTrendLong && metrics.startTrendValidLong === false) {
-                    return false;
-                }
-                if (!isLong && scanConfig.majorTrend?.enableStartTrendShort && metrics.startTrendValidShort === false) {
-                    return false;
-                }
+                // 兜底返回行情启动底池币种
+                finalResult = baseMajorSource;
             }
+        }
 
-            return true;
+        // 🔒 [严格数量限制 (Limit)]: 若设置了数量限制 (limit > 0)，截取前 limit 个初筛币种展示与输出
+        const limit = Number(scanConfig.limit);
+        if (limit > 0 && finalResult.length > limit) {
+            return finalResult.slice(0, limit);
+        }
+
+        return finalResult;
+    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, isMajorScanning, _8amUpdateTick]);
+
+    // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
+    const pushConfig = scanConfig.list2PushConfig;
+    const list2PushCandidates = useMemo(() => {
+        if (!pushConfig || !pushConfig.enabled) {
+            // 未启用定向推送时，默认初筛列表全量直接进入列表2
+            return filteredList;
+        }
+
+        // 1. 获取已启用的过滤指标判断条件
+        const activeFilterChecks: ((item: ScannerItem) => boolean)[] = [];
+
+        if (pushConfig.enableChg24h) {
+            const minVal = Number(pushConfig.minChg24h) || 0;
+            activeFilterChecks.push((item) => {
+                const chg = item.change !== undefined && item.change !== null ? Math.abs(Number(item.change)) : 0;
+                return chg >= minVal;
+            });
+        }
+
+        if (pushConfig.enableChg8am) {
+            const minVal = Number(pushConfig.minChg8am) || 0;
+            activeFilterChecks.push((item) => {
+                const v8 = getVolume8am(item.symbol);
+                const chg8 = v8?.change8am !== undefined && !isNaN(v8.change8am) ? Math.abs(v8.change8am) : (item.change8am ? Math.abs(item.change8am) : 0);
+                return chg8 >= minVal;
+            });
+        }
+
+        if (pushConfig.enableVol24h) {
+            const minVal = Number(pushConfig.minVol24h) || 0;
+            activeFilterChecks.push((item) => {
+                const volM = item.quoteVolume ? Number(item.quoteVolume) / 1_000_000 : ((Number(item.price || 0) * Number(item.volume || 0)) / 1_000_000);
+                return (volM || 0) >= minVal;
+            });
+        }
+
+        if (pushConfig.enableVol8am) {
+            const minVal = Number(pushConfig.minVol8am) || 0;
+            activeFilterChecks.push((item) => {
+                const v8 = getVolume8am(item.symbol);
+                const vol8M = v8?.volume8am ? v8.volume8am / 1_000_000 : (item.volume8am ? item.volume8am / 1_000_000 : 0);
+                return (vol8M || 0) >= minVal;
+            });
+        }
+
+        // 第一步：根据 OR / AND 模式执行指标阈值过滤
+        let candidates = filteredList.filter(item => {
+            if (activeFilterChecks.length === 0) return true; // 未勾选任何门槛条件时默认全部通过第一步
+            if (pushConfig.mode === 'AND') {
+                return activeFilterChecks.every(check => check(item));
+            } else {
+                return activeFilterChecks.some(check => check(item));
+            }
         });
 
-        // 🔒【严格动态淘汰与即时清除铁律】:
-        // 市场初筛严格只输出当前通过回溯周期过滤的候选币种，不符合或已失效的币种直接剔除删除，绝不兜底留存！
-        return lookbackMatches;
-    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, startTrendPool, sidewaysPool, isMajorScanning]);
+        // 第二步：根据头部排序规则进行 Top N 排名截取
+        if (pushConfig.enableTopN && candidates.length > 0) {
+            const sortKey = pushConfig.topNSortKey || 'CHG_8AM_ABS';
+            const count = Math.max(1, Number(pushConfig.topNCount) || 10);
+
+            const sorted = [...candidates].sort((a, b) => {
+                const chg24_a = a.change !== undefined && a.change !== null ? Number(a.change) : 0;
+                const chg24_b = b.change !== undefined && b.change !== null ? Number(b.change) : 0;
+                
+                const v8_a = getVolume8am(a.symbol);
+                const v8_b = getVolume8am(b.symbol);
+                const chg8_a = v8_a?.change8am !== undefined && !isNaN(v8_a.change8am) ? v8_a.change8am : (a.change8am || 0);
+                const chg8_b = v8_b?.change8am !== undefined && !isNaN(v8_b.change8am) ? v8_b.change8am : (b.change8am || 0);
+
+                const vol24_a = a.quoteVolume ? Number(a.quoteVolume) : ((Number(a.price || 0) * Number(a.volume || 0)));
+                const vol24_b = b.quoteVolume ? Number(b.quoteVolume) : ((Number(b.price || 0) * Number(b.volume || 0)));
+
+                const vol8_a = v8_a?.volume8am || a.volume8am || 0;
+                const vol8_b = v8_b?.volume8am || b.volume8am || 0;
+
+                switch (sortKey) {
+                    case 'CHG_24H_ABS':
+                        return Math.abs(chg24_b) - Math.abs(chg24_a);
+                    case 'CHG_8AM_ABS':
+                        return Math.abs(chg8_b) - Math.abs(chg8_a);
+                    case 'VOL_24H':
+                        return vol24_b - vol24_a;
+                    case 'VOL_8AM':
+                        return vol8_b - vol8_a;
+                    case 'CHG_24H_DESC':
+                        return chg24_b - chg24_a;
+                    case 'CHG_24H_ASC':
+                        return chg24_a - chg24_b;
+                    case 'CHG_8AM_DESC':
+                        return chg8_b - chg8_a;
+                    case 'CHG_8AM_ASC':
+                        return chg8_a - chg8_b;
+                    default:
+                        return Math.abs(chg8_b) - Math.abs(chg8_a);
+                }
+            });
+
+            candidates = sorted.slice(0, count);
+        }
+
+        return candidates;
+    }, [filteredList, pushConfig, _8amUpdateTick]);
 
     const lastFilteredStrRef = useRef('');
 
     useEffect(() => {
         if (onFilteredUpdate) {
-            const str = filteredList.map(i => i.symbol).join(',');
+            const str = list2PushCandidates.map(i => i.symbol).join(',');
             if (str !== lastFilteredStrRef.current) {
                 lastFilteredStrRef.current = str;
-                onFilteredUpdate(filteredList);
+                onFilteredUpdate(list2PushCandidates);
             }
         }
-    }, [filteredList, onFilteredUpdate]);
+    }, [list2PushCandidates, onFilteredUpdate]);
 
     return (
         <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 flex-1 min-w-[380px] overflow-y-auto custom-scrollbar`}>
@@ -1130,8 +1165,12 @@ const List1_Selection: React.FC<Props> = ({
                                             </button>
                                             {strategies.length > 1 && (
                                                 <button
-                                                    onClick={() => onDeleteStrategy(strat.id)}
-                                                    className="text-slate-500 hover:text-red-400 p-0.5 rounded cursor-pointer"
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        onDeleteStrategy(strat.id);
+                                                    }}
+                                                    className="text-slate-500 hover:text-red-400 p-0.5 rounded cursor-pointer transition-colors"
                                                     title="删除此策略"
                                                 >
                                                     <Trash2 size={9} />
@@ -1146,8 +1185,12 @@ const List1_Selection: React.FC<Props> = ({
 
                     {/* Add Strategy Button */}
                     <button
-                        onClick={onAddStrategy}
-                        className="bg-slate-800/60 hover:bg-slate-800 hover:text-indigo-400 text-slate-400 rounded p-1 transition-all cursor-pointer border border-transparent hover:border-indigo-500/20"
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onAddStrategy();
+                        }}
+                        className="bg-slate-800/60 hover:bg-slate-800 hover:text-indigo-400 text-slate-400 rounded p-1 transition-all cursor-pointer border border-transparent hover:border-indigo-500/20 flex items-center justify-center"
                         title="添加新选币策略"
                     >
                         <Plus size={10} />
@@ -1175,6 +1218,14 @@ const List1_Selection: React.FC<Props> = ({
             <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-y-2 sticky top-0 z-10">
                 <div className="flex items-center gap-2">
                     <div className="text-[10px] font-bold text-slate-500 uppercase">1. 市场初筛</div>
+                    <div className="text-xs font-mono font-bold text-white bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">{filteredList.length}</div>
+                    <button 
+                        onClick={() => setShowVisualizer(true)}
+                        className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-indigo-400 transition-all border border-transparent hover:border-indigo-500/30"
+                        title="放大查看 K 线大图"
+                    >
+                        <Maximize2 size={12} />
+                    </button>
                     {scanConfig.useCustomOnly && fixedModeView === 'SEARCH' && (
                         <div className="flex gap-1 animate-in fade-in">
                             <button onClick={onSelectAll} className="text-[9px] bg-slate-800 border border-slate-700 px-1.5 py-0.5 rounded text-cyan-400 hover:bg-slate-700 transition-colors">全选</button>
@@ -1235,17 +1286,6 @@ const List1_Selection: React.FC<Props> = ({
                     >
                         数量由列表6设置
                     </div>
-
-                    <div className="h-4 w-[1px] bg-slate-800 mx-0.5" />
-
-                    <div className="text-xs font-mono font-bold text-white">{filteredList.length}</div>
-                    <button 
-                        onClick={() => setShowVisualizer(true)}
-                        className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-indigo-400 transition-all border border-transparent hover:border-indigo-500/30"
-                        title="放大查看 K 线大图"
-                    >
-                        <Maximize2 size={12} />
-                    </button>
                 </div>
             </div>
             
@@ -1274,6 +1314,383 @@ const List1_Selection: React.FC<Props> = ({
                     onClose={() => setShowVisualizer(false)}
                 />
             )}
+
+            {/* 🚀 定向推送至列表2 (扫描漏斗总控面板) */}
+            <div className="px-3 py-2 bg-slate-950/80 border-b border-indigo-900/40 text-[10px] space-y-2">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 cursor-pointer select-none" onClick={() => setIsPushConfigOpen(!isPushConfigOpen)}>
+                        <button 
+                            type="button"
+                            className="text-slate-400 hover:text-slate-200 transition-transform"
+                        >
+                            {isPushConfigOpen ? <ChevronDown size={13} className="text-indigo-400" /> : <ChevronRight size={13} className="text-indigo-400" />}
+                        </button>
+                        <span className="font-extrabold text-indigo-300 flex items-center gap-1 text-[10.5px]">
+                            <Send size={11} className="text-indigo-400" /> 定向推送至列表2 (趋势漏斗)
+                        </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        {/* 实时命中统计反馈 */}
+                        <div className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800">
+                            <span className="text-slate-500">推送池:</span>
+                            <span className={`font-bold ${pushConfig?.enabled ? 'text-indigo-400' : 'text-slate-300'}`}>
+                                {list2PushCandidates.length}
+                            </span>
+                            <span className="text-slate-600">/</span>
+                            <span className="text-slate-400">{filteredList.length} 币</span>
+                        </div>
+
+                        {/* 定向推送总开关 */}
+                        <label className="flex items-center gap-1 cursor-pointer select-none">
+                            <input 
+                                type="checkbox"
+                                checked={!!pushConfig?.enabled}
+                                onChange={(e) => {
+                                    const checked = e.target.checked;
+                                    setScanConfig(prev => ({
+                                        ...prev,
+                                        list2PushConfig: {
+                                            enabled: checked,
+                                            mode: prev.list2PushConfig?.mode || 'OR',
+                                            enableChg24h: prev.list2PushConfig?.enableChg24h ?? false,
+                                            minChg24h: prev.list2PushConfig?.minChg24h ?? 5.0,
+                                            enableChg8am: prev.list2PushConfig?.enableChg8am ?? true,
+                                            minChg8am: prev.list2PushConfig?.minChg8am ?? 3.0,
+                                            enableVol24h: prev.list2PushConfig?.enableVol24h ?? false,
+                                            minVol24h: prev.list2PushConfig?.minVol24h ?? 30.0,
+                                            enableVol8am: prev.list2PushConfig?.enableVol8am ?? false,
+                                            minVol8am: prev.list2PushConfig?.minVol8am ?? 15.0,
+                                            enableTopN: prev.list2PushConfig?.enableTopN ?? true,
+                                            topNCount: prev.list2PushConfig?.topNCount ?? 10,
+                                            topNSortKey: prev.list2PushConfig?.topNSortKey || 'CHG_8AM_ABS',
+                                        }
+                                    }));
+                                }}
+                                className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 border-slate-700 bg-slate-800 accent-indigo-500 cursor-pointer"
+                            />
+                            <span className={`font-bold text-[9.5px] ${pushConfig?.enabled ? 'text-indigo-300' : 'text-slate-400'}`}>
+                                {pushConfig?.enabled ? '已开启定向' : '全量直推'}
+                            </span>
+                        </label>
+                    </div>
+                </div>
+
+                {isPushConfigOpen && (
+                    <div className="pt-1.5 border-t border-slate-800/60 space-y-2 animate-in fade-in">
+                        {/* 1. 过滤逻辑模式 (单选/多选 + OR/AND) */}
+                        <div className="flex items-center justify-between text-[9px]">
+                            <span className="text-slate-400 font-bold flex items-center gap-1">
+                                <Filter size={10} className="text-indigo-400" /> ① 趋势门槛过滤 (多选/单选):
+                            </span>
+                            <div className="flex items-center gap-1 bg-slate-900 p-0.5 rounded border border-slate-800">
+                                <button
+                                    type="button"
+                                    onClick={() => setScanConfig(prev => ({
+                                        ...prev,
+                                        list2PushConfig: {
+                                            ...(prev.list2PushConfig || {
+                                                enabled: true,
+                                                enableChg24h: false, minChg24h: 5.0,
+                                                enableChg8am: true, minChg8am: 3.0,
+                                                enableVol24h: false, minVol24h: 30.0,
+                                                enableVol8am: false, minVol8am: 15.0,
+                                                enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                            }),
+                                            mode: 'OR'
+                                        }
+                                    }))}
+                                    className={`px-1.5 py-0.5 rounded text-[8.5px] font-bold transition-all ${pushConfig?.mode !== 'AND' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                                    title="满足任意勾选的一项即推入列表2"
+                                >
+                                    任意满足 (OR)
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setScanConfig(prev => ({
+                                        ...prev,
+                                        list2PushConfig: {
+                                            ...(prev.list2PushConfig || {
+                                                enabled: true,
+                                                enableChg24h: false, minChg24h: 5.0,
+                                                enableChg8am: true, minChg8am: 3.0,
+                                                enableVol24h: false, minVol24h: 30.0,
+                                                enableVol8am: false, minVol8am: 15.0,
+                                                enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                            }),
+                                            mode: 'AND'
+                                        }
+                                    }))}
+                                    className={`px-1.5 py-0.5 rounded text-[8.5px] font-bold transition-all ${pushConfig?.mode === 'AND' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                                    title="必须同时满足所有已勾选的条件才推入列表2"
+                                >
+                                    全部满足 (AND)
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 四项独立可配指标卡片 */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                            {/* 条件 1: 24H 涨跌幅 */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${pushConfig?.enableChg24h ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none">
+                                    <input 
+                                        type="checkbox"
+                                        checked={!!pushConfig?.enableChg24h}
+                                        onChange={(e) => {
+                                            const val = e.target.checked;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enableChg24h: val
+                                                }
+                                            }));
+                                        }}
+                                        className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
+                                    />
+                                    <span className="text-[9px] font-bold text-slate-300">24H 涨跌幅 ≥</span>
+                                </label>
+                                <div className="flex items-center gap-0.5">
+                                    <input 
+                                        type="number"
+                                        step="0.5"
+                                        value={pushConfig?.minChg24h ?? 5.0}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: true, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    minChg24h: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-10 bg-slate-950 border border-slate-700 text-indigo-300 font-mono text-[9px] text-right px-1 py-0.5 rounded"
+                                    />
+                                    <span className="text-[9px] text-slate-400 font-bold">%</span>
+                                </div>
+                            </div>
+
+                            {/* 条件 2: 8AM 涨跌幅 */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${pushConfig?.enableChg8am ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none">
+                                    <input 
+                                        type="checkbox"
+                                        checked={!!pushConfig?.enableChg8am}
+                                        onChange={(e) => {
+                                            const val = e.target.checked;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enableChg8am: val
+                                                }
+                                            }));
+                                        }}
+                                        className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
+                                    />
+                                    <span className="text-[9px] font-bold text-blue-300">8AM 涨跌幅 ≥</span>
+                                </label>
+                                <div className="flex items-center gap-0.5">
+                                    <input 
+                                        type="number"
+                                        step="0.5"
+                                        value={pushConfig?.minChg8am ?? 3.0}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    minChg8am: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-10 bg-slate-950 border border-slate-700 text-blue-300 font-mono text-[9px] text-right px-1 py-0.5 rounded"
+                                    />
+                                    <span className="text-[9px] text-slate-400 font-bold">%</span>
+                                </div>
+                            </div>
+
+                            {/* 条件 3: 24H 交易额 */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${pushConfig?.enableVol24h ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none">
+                                    <input 
+                                        type="checkbox"
+                                        checked={!!pushConfig?.enableVol24h}
+                                        onChange={(e) => {
+                                            const val = e.target.checked;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enableVol24h: val
+                                                }
+                                            }));
+                                        }}
+                                        className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
+                                    />
+                                    <span className="text-[9px] font-bold text-slate-300">24H 交易额 ≥</span>
+                                </label>
+                                <div className="flex items-center gap-0.5">
+                                    <input 
+                                        type="number"
+                                        step="5"
+                                        value={pushConfig?.minVol24h ?? 30.0}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: true, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    minVol24h: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-10 bg-slate-950 border border-slate-700 text-indigo-300 font-mono text-[9px] text-right px-1 py-0.5 rounded"
+                                    />
+                                    <span className="text-[9px] text-slate-400 font-bold">M</span>
+                                </div>
+                            </div>
+
+                            {/* 条件 4: 8AM 交易额 */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${pushConfig?.enableVol8am ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none">
+                                    <input 
+                                        type="checkbox"
+                                        checked={!!pushConfig?.enableVol8am}
+                                        onChange={(e) => {
+                                            const val = e.target.checked;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enableVol8am: val
+                                                }
+                                            }));
+                                        }}
+                                        className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
+                                    />
+                                    <span className="text-[9px] font-bold text-blue-300">8AM 交易额 ≥</span>
+                                </label>
+                                <div className="flex items-center gap-0.5">
+                                    <input 
+                                        type="number"
+                                        step="5"
+                                        value={pushConfig?.minVol8am ?? 15.0}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: true, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    minVol8am: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-10 bg-slate-950 border border-slate-700 text-blue-300 font-mono text-[9px] text-right px-1 py-0.5 rounded"
+                                    />
+                                    <span className="text-[9px] text-slate-400 font-bold">M</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 2. Top N 头部排名截取 */}
+                        <div className={`p-1.5 rounded border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 ${pushConfig?.enableTopN ? 'bg-indigo-950/30 border-indigo-500/50' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                <input 
+                                    type="checkbox"
+                                    checked={!!pushConfig?.enableTopN}
+                                    onChange={(e) => {
+                                        const val = e.target.checked;
+                                        setScanConfig(prev => ({
+                                            ...prev,
+                                            list2PushConfig: {
+                                                ...(prev.list2PushConfig || {
+                                                    enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                }),
+                                                enableTopN: val
+                                            }
+                                        }));
+                                    }}
+                                    className="w-3.5 h-3.5 rounded accent-indigo-500 cursor-pointer"
+                                />
+                                <span className="text-[9.5px] font-extrabold text-amber-300">② 排列前几位截取 (Top N):</span>
+                            </label>
+
+                            <div className="flex items-center gap-1.5">
+                                <select
+                                    value={pushConfig?.topNSortKey || 'CHG_8AM_ABS'}
+                                    onChange={(e) => {
+                                        const key = e.target.value as any;
+                                        setScanConfig(prev => ({
+                                            ...prev,
+                                            list2PushConfig: {
+                                                ...(prev.list2PushConfig || {
+                                                    enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10
+                                                }),
+                                                topNSortKey: key
+                                            }
+                                        }));
+                                    }}
+                                    className="bg-slate-950 border border-slate-700 text-slate-200 text-[9px] font-bold rounded px-1.5 py-0.5 outline-none"
+                                >
+                                    <option value="CHG_8AM_ABS">8AM 涨跌幅绝对值 (动能)</option>
+                                    <option value="CHG_24H_ABS">24H 涨跌幅绝对值 (全天)</option>
+                                    <option value="VOL_8AM">8AM 成交额 (今日热钱)</option>
+                                    <option value="VOL_24H">24H 成交额 (全天流动性)</option>
+                                    <option value="CHG_8AM_DESC">8AM 纯涨幅 (多头最强)</option>
+                                    <option value="CHG_8AM_ASC">8AM 纯跌幅 (空头最强)</option>
+                                    <option value="CHG_24H_DESC">24H 纯涨幅 (涨幅榜)</option>
+                                    <option value="CHG_24H_ASC">24H 纯跌幅 (跌幅榜)</option>
+                                </select>
+
+                                <div className="flex items-center gap-1">
+                                    <span className="text-[9px] text-slate-400 font-bold">前</span>
+                                    <input 
+                                        type="number"
+                                        min="1"
+                                        max="100"
+                                        value={pushConfig?.topNCount ?? 10}
+                                        onChange={(e) => {
+                                            const v = Math.max(1, parseInt(e.target.value) || 1);
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    topNCount: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-10 bg-slate-950 border border-slate-700 text-amber-300 font-mono text-[9px] text-center px-1 py-0.5 rounded font-bold"
+                                    />
+                                    <span className="text-[9px] text-slate-400 font-bold">名</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+
             {/* 📊 智能多重排序控制面板 */}
             {list1.length > 0 && (
                 <div className="px-3 py-1.5 bg-slate-950/70 border-b border-slate-800/60 flex flex-col gap-1 animate-in fade-in">
@@ -1288,11 +1705,12 @@ const List1_Selection: React.FC<Props> = ({
                             </button>
                         )}
                     </div>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1">
                         {[
-                            { id: 1, label: isLong ? '最大跌幅' : '最大涨幅', fullLabel: isLong ? '期间最大跌幅' : '期间最大涨幅' },
-                            { id: 2, label: isLong ? '极值➔当前涨' : '极值➔当前跌', fullLabel: isLong ? '最低点➔当前涨幅' : '最高点➔当前跌幅' },
-                            { id: 3, label: isLong ? '极值到前天数' : '极值到当前天', fullLabel: isLong ? '最低点到当前天数(1d)' : '最高点到当前天数(1d)' }
+                            { id: 1, label: '24H涨跌幅', fullLabel: '24小时涨跌幅 (支持 ↑ 从小到大 / ↓ 从大到小)' },
+                            { id: 2, label: '8H涨跌幅', fullLabel: '北京时间今早8点起涨跌幅 (支持 ↑ 从小到大 / ↓ 从大到小)' },
+                            { id: 3, label: '24H交易额', fullLabel: '过去24小时全量交易额 (支持 ↑ 从小到大 / ↓ 从大到小)' },
+                            { id: 4, label: '8H交易额', fullLabel: '北京时间今早8点起交易额 (支持 ↑ 从小到大 / ↓ 从大到小)' }
                         ].map((btn) => {
                             const activeIdx = activeSorts.indexOf(btn.id);
                             const isActive = activeIdx !== -1;
@@ -1341,13 +1759,27 @@ const List1_Selection: React.FC<Props> = ({
                                             }
                                         }}
                                         className={`p-0.5 rounded transition-all hover:bg-slate-800 ${isActive ? 'text-indigo-400' : 'text-slate-600 hover:text-slate-300'}`}
-                                        title={order === 'asc' ? '从小到大' : '从大到小'}
+                                        title={order === 'asc' ? '从小到大 (↑)' : '从大到小 (↓)'}
                                     >
                                         {order === 'asc' ? '↑' : '↓'}
                                     </button>
                                 </div>
                             );
                         })}
+                    </div>
+                </div>
+            )}
+
+            {filteredList.length > 0 && (
+                <div className="px-3 py-1 bg-slate-900/60 border-b border-slate-800/80 flex items-center text-[9px] font-bold text-slate-400 font-mono">
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="w-[30px] text-left shrink-0 text-slate-500">#</div>
+                        <div className="w-[52px] text-left shrink-0 text-slate-300">币种</div>
+                        <div className="flex items-center gap-1 shrink-0">
+                            <div className="w-[96px] text-center text-slate-400">24H (涨跌/额)</div>
+                            <span className="text-slate-700 font-normal px-0.5">|</span>
+                            <div className="w-[96px] text-center text-blue-300/80">8AM (涨跌/额)</div>
+                        </div>
                     </div>
                 </div>
             )}

@@ -54,7 +54,7 @@ export const MarketSentimentWidget = ({ stats }: { stats: { up: number, down: nu
             </div>
             <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
                 <div className="flex items-center gap-1.5 text-[9px] text-slate-500 font-bold">BTC</div>
-                <div className={`font-mono font-bold text-[9px] ${stats.btcChange > 0 ? 'text-emerald-400' : 'text-red-400'}`}>{stats.btcChange > 0 ? '+' : ''}{stats.btcChange.toFixed(2)}%</div>
+                <div className={`font-mono font-bold text-[9px] ${(stats.btcChange ?? 0) > 0 ? 'text-emerald-400' : 'text-red-400'}`}>{(stats.btcChange ?? 0) > 0 ? '+' : ''}{typeof stats.btcChange === 'number' && isFinite(stats.btcChange) ? stats.btcChange.toFixed(2) : '0.00'}%</div>
             </div>
         </div>
     );

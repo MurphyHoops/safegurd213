@@ -372,6 +372,13 @@ if (!rootElement) {
     console.log('🚀 [Boot] Mounting React...');
     persistRawSystemLog('INFO', 'BOOT', '🚀 启动 React 渲染引擎挂载 (Mounting React)');
     (window as any).isReactReady = true;
+
+    // 清理启动遮罩
+    try {
+        const shield = document.getElementById('boot-shield');
+        if (shield) shield.remove();
+    } catch (e) {}
+
     ReactDOM.createRoot(rootElement).render(
         <ErrorBoundary moduleName="Root Shield">
             <App />

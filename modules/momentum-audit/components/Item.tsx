@@ -1,10 +1,11 @@
 
 import React from 'react';
 import { Zap, Lock, Ban, Activity, AlertTriangle, Trash2 } from 'lucide-react';
-import { ScannerItem } from '../../../components/Scanner/scannerTypes';
+import { ScannerItem, List4Config } from '../../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../../types';
 import { formatPrice } from '../../../services/symbolUtils';
 import { getCoinChineseName } from '../../../services/coinNames';
+import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
 
 interface Props {
     item: ScannerItem;
@@ -12,9 +13,10 @@ interface Props {
     setChartData: (data: any) => void;
     onRemove: () => void;
     idx?: number;
+    config?: List4Config;
 }
 
-const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartData, onRemove, idx }) => {
+const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartData, onRemove, idx, config }) => {
     // Robust defensive check: Ensure item and its nested objects exist
     if (!item) return null;
 
@@ -56,9 +58,10 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
             currentPrice: item.price,
             highlightTime: item.enterList4Time, // Pass Entry Time
             showAuditLines: true, // Explicitly show Audit lines (Defense/Breakout) for L4
+            list4Config: config,
             extraLines: [
-                { price: m.entryTrigger, label: "TRIGGER (攻)", color: "#fbbf24", style: "dashed" },
-                { price: m.midPoint, label: "DEFENSE (守)", color: "#f87171", style: "dashed" }
+                { price: m.entryTrigger, label: `${isLong ? '多单' : '空单'}进攻突破 (${config?.breakoutThreshold ?? 10}%)`, color: isLong ? "#0ECB81" : "#F6465D", style: "dashed" },
+                { price: m.midPoint, label: `${isLong ? '多单' : '空单'}中轴防守 (${config?.midlineThreshold ?? 80}%)`, color: "#fbbf24", style: "dashed" }
             ]
         });
     };
@@ -95,7 +98,7 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                             )}
                         </span>
                     </div>
-                    <span className="text-[8px] text-slate-500 font-bold uppercase flex items-center gap-1">现价: <span className="text-white">{formatPrice(item.price)}</span></span>
+                    <span className="text-[8px] text-slate-500 font-bold uppercase flex items-center gap-1">现价: <RealtimePriceSpan symbol={item.symbol} fallbackPrice={item.price} className="text-white" /></span>
                 </div>
                 {item.fuseBlocked 
                     ? <span className="text-[9px] bg-red-900/50 text-red-400 px-2 py-0.5 rounded font-bold border border-red-500/30">已熔断</span>
@@ -144,15 +147,15 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                                 isPending ? (
                                     <span className="flex items-center gap-1">
                                         等待突破 
-                                        <span className="text-[9px] font-mono opacity-80">(距触发: {diffToTrigger.toFixed(2)}%)</span>
+                                        <span className="text-[9px] font-mono opacity-80">(距触发: {typeof diffToTrigger === 'number' && isFinite(diffToTrigger) ? diffToTrigger.toFixed(2) : '0.00'}%)</span>
                                     </span>
                                 ) : 
                                 '已触发突破 (TRIGGERED)'}
                             </span>
                         </div>
 
-                        {isInvalid && (
-                            <div className="text-[9px] text-red-400 text-center leading-tight">
+                        {m.invalidReason && (
+                            <div className={`text-[9px] text-center leading-tight ${isInvalid ? 'text-red-400' : 'text-amber-400 font-semibold'}`}>
                                 {m.invalidReason}
                             </div>
                         )}

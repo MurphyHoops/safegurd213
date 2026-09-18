@@ -115,6 +115,9 @@ export const useMomentumAudit = (
         configRef.current = config; 
         fuseAuditLatchRef.current.clear();
         localStorage.removeItem(fuseLatchKey);
+        try {
+            localStorage.setItem('SCANNER_LIST4_CONFIG', JSON.stringify(config));
+        } catch(e) {}
     }, [config]);
     useEffect(() => { list3ConfigRef.current = list3Config; }, [list3Config]);
     useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
@@ -181,6 +184,8 @@ export const useMomentumAudit = (
                         }
                     }
 
+                    const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
+
                     flatCandidates.push({
                         ...item,
                         price: livePrice, // Inject fresh price
@@ -188,9 +193,9 @@ export const useMomentumAudit = (
                         tf: res.tf,
                         structure: res.structure,
                         // Inject latched results to avoid re-calculating inside analyzeList4Momentum
-                        fuseBlocked: latchedAudit?.blocked || false,
-                        fuseReason: latchedAudit?.reason || '',
-                        fuseLatched: latchedAudit?.blocked || false // Only latch if it was actually blocked
+                        fuseBlocked: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false,
+                        fuseReason: isAnyFuseEnabled ? (latchedAudit?.reason || '') : '',
+                        fuseLatched: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false // Only latch if it was actually blocked and enabled
                     });
                 });
             }
@@ -202,6 +207,12 @@ export const useMomentumAudit = (
         // 3. Apply Removal Logic
         const finalItems: ScannerItem[] = [];
         
+        const safeRemoveSignal = (uniqueId: string) => {
+            queueMicrotask(() => {
+                onRemoveSignalRef.current?.(uniqueId);
+            });
+        };
+
         analyzedItems.forEach(item => {
             const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
             
@@ -211,35 +222,13 @@ export const useMomentumAudit = (
             let shouldKeep = true;
             const tfMinutes = getTfMinutes(item.tf || '15m');
             
-            // Check "Structure Broken" (INVALID)
+            // Check "Structure Broken" (INVALID) - 立即清除 (达到中轴防守突破价格，立即从列表4清除)
             if (item.momentum?.status === 'INVALID') {
-                if (!invalidSignalCacheRef.current.has(uniqueId)) {
-                    invalidSignalCacheRef.current.set(uniqueId, now);
-                }
-                
-                const invalidTime = invalidSignalCacheRef.current.get(uniqueId) || now;
-                const elapsedMs = now - invalidTime;
-                
-                // Keep default behavior: candle based removal
-                if (currentConfig.removeInvalidCandles && currentConfig.removeInvalidCandles > 0) {
-                    const maxMs = currentConfig.removeInvalidCandles * tfMinutes * 60 * 1000;
-                    if (elapsedMs >= maxMs) {
-                        expiredSignalCacheRef.current.add(uniqueId);
-                        shouldKeep = false;
-                        item.removalReason = `结构破坏 (设定分钟: ${currentConfig.removeInvalidMinutes || 'N/A'}, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
-                        onRemoveSignalRef.current?.(uniqueId);
-                    }
-                }
-                // Also check Minute based removal
-                if (currentConfig.removeInvalidMinutes && currentConfig.removeInvalidMinutes > 0) {
-                    const maxMs = currentConfig.removeInvalidMinutes * 60 * 1000;
-                    if (elapsedMs >= maxMs) {
-                        expiredSignalCacheRef.current.add(uniqueId);
-                        shouldKeep = false;
-                        item.removalReason = `结构破坏 (设定分钟: ${currentConfig.removeInvalidMinutes}, 已持续: ${Math.round(elapsedMs / 60000)}分钟)`;
-                        onRemoveSignalRef.current?.(uniqueId);
-                    }
-                }
+                expiredSignalCacheRef.current.add(uniqueId);
+                shouldKeep = false;
+                item.removalReason = item.momentum.invalidReason || '中轴防守突破 (结构破坏立即清除)';
+                safeRemoveSignal(uniqueId);
+                logToHistory(item, item.removalReason);
             } else {
                 // Reset if it becomes valid again
                 invalidSignalCacheRef.current.delete(uniqueId);
@@ -260,7 +249,7 @@ export const useMomentumAudit = (
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
                         item.removalReason = `触发后超时 (设定: ${currentConfig.removeTriggeredMinutes}分钟, 持续: ${Math.round(elapsedMs / 60000)}分钟)`;
-                        onRemoveSignalRef.current?.(uniqueId);
+                        safeRemoveSignal(uniqueId);
                     }
                 }
             } else {
@@ -277,7 +266,7 @@ export const useMomentumAudit = (
                 fuseAuditLatchRef.current.delete(uniqueId);
                 
                 // Remove from upstream List 3 structure audit and cache
-                onRemoveSignalRef.current?.(uniqueId);
+                safeRemoveSignal(uniqueId);
                 
                 // Background log to history
                 logToHistory(item, `过滤清除: ${item.fuseReason}`);
@@ -302,7 +291,7 @@ export const useMomentumAudit = (
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
                         item.removalReason = `已开仓后超时 (设定K线: ${currentConfig.removeTradedCandles}, 持续时间: ${Math.round(elapsedMs / 60000)}分钟)`;
-                        onRemoveSignalRef.current?.(uniqueId);
+                        safeRemoveSignal(uniqueId);
                     }
                 }
             } else {
@@ -334,12 +323,30 @@ export const useMomentumAudit = (
         }
 
         // 4. Update State
-        const sameLength = list4Ref.current.length === finalItems.length;
-        const sameIds = sameLength && list4Ref.current.every((item, i) => 
-            `${item.symbol}-${item.tf}-${item.direction}` === `${finalItems[i].symbol}-${finalItems[i].tf}-${finalItems[i].direction}`
-        );
+        const prevList = list4Ref.current;
+        const sameLength = prevList.length === finalItems.length;
+        
+        let shouldUpdateState = !sameLength;
+        if (!shouldUpdateState) {
+            for (let i = 0; i < finalItems.length; i++) {
+                const prev = prevList[i];
+                const next = finalItems[i];
+                if (
+                    `${prev.symbol}-${prev.tf}-${prev.direction}` !== `${next.symbol}-${next.tf}-${next.direction}` ||
+                    prev.price !== next.price ||
+                    prev.momentum?.status !== next.momentum?.status ||
+                    prev.momentum?.entryTrigger !== next.momentum?.entryTrigger ||
+                    prev.momentum?.midPoint !== next.momentum?.midPoint ||
+                    prev.fuseBlocked !== next.fuseBlocked ||
+                    prev.fuseReason !== next.fuseReason
+                ) {
+                    shouldUpdateState = true;
+                    break;
+                }
+            }
+        }
 
-        if (!sameLength || !sameIds) {
+        if (shouldUpdateState) {
             setList4(finalItems);
         }
 
@@ -368,10 +375,10 @@ export const useMomentumAudit = (
         runMomentumAnalysis.current();
     }, [strategyId]);
 
-    // CRITICAL LATENCY REFIX: Re-run analysis immediately when list 3 candidates list updates
+    // CRITICAL LATENCY REFIX: Re-run analysis immediately when list 3 candidates or config updates
     useEffect(() => {
         runAnalysisSync();
-    }, [candidates, runAnalysisSync]);
+    }, [candidates, config, runAnalysisSync]);
 
     const logToHistory = useCallback(async (item: ScannerItem, reason: string) => {
         if (!auth.currentUser) return;

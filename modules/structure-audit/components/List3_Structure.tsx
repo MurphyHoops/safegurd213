@@ -66,18 +66,22 @@ const List3_Structure: React.FC<Props> = ({
   // --- DYNAMIC FILTERING LOGIC ---
   const filteredList = useMemo(() => {
     if (!list3) return [];
+    const areAllRulesOff = !config.strictTrend && !config.checkCandleColor && !config.enableAmplitudeAudit && (config.enableRsi === false) && !config.enableMultiResonance;
+
     return list3
       .map((item) => {
         // Defensive Check: Ensure item and list3Results exist
         if (!item || !item.list3Results) return null;
 
-        let validResults = item.list3Results?.filter((r) => r.latched) || [];
+        let validResults = areAllRulesOff 
+          ? (item.list3Results || []) 
+          : (item.list3Results?.filter((r) => r.latched) || []);
 
         // 1. Minimum Results Check
         if (validResults.length === 0) return null;
 
         // 2. Multi-Resonance Filtering (Adjacent Strict Trend)
-        if (config.enableMultiResonance && item.adjacentStrictTrends) {
+        if (!areAllRulesOff && config.enableMultiResonance && item.adjacentStrictTrends) {
           const ALL_TFS = [
             "1m",
             "3m",
@@ -113,7 +117,7 @@ const List3_Structure: React.FC<Props> = ({
         return { ...item, list3Results: validResults };
       })
       .filter(Boolean) as ScannerItem[];
-  }, [list3]);
+  }, [list3, config.enableMultiResonance, config.strictTrend, config.checkCandleColor, config.enableAmplitudeAudit, config.enableRsi]);
 
   // --- AUTO EXECUTE LOGIC ---
   const executedRef = useRef<Set<string>>(new Set());

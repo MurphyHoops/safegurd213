@@ -294,12 +294,13 @@ export const List4Control: React.FC<List4PanelProps> = ({
                       ? ""
                       : config.midlineThreshold
                   }
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
                     setConfig((p) => ({
                       ...p,
-                      midlineThreshold: parseFloat(e.target.value),
-                    }))
-                  }
+                      midlineThreshold: isNaN(val) ? 0 : val,
+                    }));
+                  }}
                   className="w-12 bg-slate-900 border border-slate-700 rounded text-center text-[10px] text-emerald-400 font-bold outline-none"
                 />
               </div>
@@ -318,12 +319,13 @@ export const List4Control: React.FC<List4PanelProps> = ({
                       ? ""
                       : config.breakoutThreshold
                   }
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
                     setConfig((p) => ({
                       ...p,
-                      breakoutThreshold: parseFloat(e.target.value),
-                    }))
-                  }
+                      breakoutThreshold: isNaN(val) ? 0 : val,
+                    }));
+                  }}
                   className="w-12 bg-slate-900 border border-slate-700 rounded text-center text-[10px] text-amber-400 font-bold outline-none"
                 />
               </div>
@@ -334,8 +336,8 @@ export const List4Control: React.FC<List4PanelProps> = ({
         {/* NEW: Independent Momentum Conditions (3K & 7K) */}
         <div className="grid grid-cols-2 gap-2 py-1">
           <div className="bg-slate-800 p-1.5 rounded border border-slate-700 flex items-center justify-between">
-            <span className="text-[8px] text-slate-400 font-bold">
-              逆势三连K拦截
+            <span className="text-[8px] text-slate-400 font-bold" title="做多: Price > Max(Close[1..3]) / 做空: Price < Min(Close[1..3])">
+              前三K突破
             </span>
             <div
               onClick={() =>

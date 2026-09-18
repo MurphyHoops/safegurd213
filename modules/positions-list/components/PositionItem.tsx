@@ -171,12 +171,13 @@ interface Props {
     isManuallyClosed?: boolean;
     hasCustomSettings?: boolean;
     hedgeTriggerReason?: string;
+    hasActiveOpposingHedge?: boolean;
 }
 
 // @LOCKED: PositionItem logic
 export const PositionItem: React.FC<Props> = React.memo(({
     p, idx, livePrice, currentPnl, currentPnlPct, showHedgeStats, totalDebt, isHedgedMode, isModule1Active, hasAmmo,
-    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, onManualAmputate, onManualRefill, onManualClosePair, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings, hedgeTriggerReason
+    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, onManualAmputate, onManualRefill, onManualClosePair, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings, hedgeTriggerReason, hasActiveOpposingHedge
 }) => {
     const [isRefreshing, setIsRefreshing] = useState(false);
     const isHedgedActive = p.isHedged || !!p.mainPositionId;
@@ -320,14 +321,33 @@ export const PositionItem: React.FC<Props> = React.memo(({
                         </div>
                     )}
                     {isHedgedMode ? (
-                        <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${(p.mainPositionId || p.entryId?.startsWith('HEDGE_')) ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' : 'bg-indigo-900/30 text-indigo-300 border-indigo-500/30'}`} title="模块4已接管">
+                        <div 
+                            className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${
+                                (p.mainPositionId || p.entryId?.startsWith('HEDGE_')) 
+                                    ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' 
+                                    : (hasActiveOpposingHedge 
+                                        ? 'bg-indigo-900/40 text-indigo-300 border-indigo-500/40' 
+                                        : 'bg-amber-950/40 text-amber-300 border-amber-500/40')
+                            }`} 
+                            title={
+                                (p.mainPositionId || p.entryId?.startsWith('HEDGE_')) 
+                                    ? "对冲防爆持仓单" 
+                                    : (hasActiveOpposingHedge 
+                                        ? "当前与反向对冲单同时持仓中（双向对冲）" 
+                                        : "对冲单已止盈/平仓离场，原仓位保留等待解套或二次对冲")
+                            }
+                        >
                             <Shield size={8} fill="currentColor"/>
-                            <span>{(p.mainPositionId || p.entryId?.startsWith('HEDGE_')) ? (p.reopenCount ? `对冲仓位 (编号${p.reopenCount})` : '对冲仓位') : '原仓位'}</span>
+                            <span>
+                                {(p.mainPositionId || p.entryId?.startsWith('HEDGE_')) 
+                                    ? (p.reopenCount ? `对冲仓位 (编号${p.reopenCount})` : '对冲仓位') 
+                                    : (hasActiveOpposingHedge ? '原仓位·对冲中' : '原仓位·对冲已出局')}
+                            </span>
                         </div>
                     ) : (
                         <div className={`flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded-sm border ${isModule1Active ? 'bg-emerald-900/20 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-600'}`}>
                             <Target size={8} />
-                            <span>{isModule1Active ? ((p.mainPositionId || p.entryId?.startsWith('HEDGE_')) ? '对冲仓位' : (p.isHedged ? '原仓位' : '标准风控')) : '手动模式'}</span>
+                            <span>{isModule1Active ? ((p.mainPositionId || p.entryId?.startsWith('HEDGE_')) ? '对冲仓位' : (p.isHedged ? (hasActiveOpposingHedge ? '原仓位·对冲中' : '原仓位·对冲已出局') : '标准风控')) : '手动模式'}</span>
                         </div>
                     )}
                     {hasAmmo && (
@@ -439,11 +459,23 @@ export const PositionItem: React.FC<Props> = React.memo(({
                 {isHedgedActive ? (
                     <div className="flex items-center gap-1.5">
                         <div 
-                            className="flex bg-purple-950/40 border border-purple-800/50 rounded-sm px-2 py-0.5 items-center gap-1 whitespace-nowrap text-purple-300 font-bold text-[9px] shadow-[0_0_8px_rgba(168,85,247,0.15)]"
-                            title={hedgeTriggerReason || p.triggerReason || '防爆对冲已启动'}
+                            className={`flex rounded-sm px-2 py-0.5 items-center gap-1 whitespace-nowrap font-bold text-[9px] ${
+                                (p.mainPositionId || hasActiveOpposingHedge)
+                                    ? 'bg-purple-950/40 border border-purple-800/50 text-purple-300 shadow-[0_0_8px_rgba(168,85,247,0.15)]'
+                                    : 'bg-amber-950/30 border border-amber-800/40 text-amber-300'
+                            }`}
+                            title={
+                                (p.mainPositionId || hasActiveOpposingHedge)
+                                    ? (hedgeTriggerReason || p.triggerReason || '防爆对冲已启动')
+                                    : '该币此前触发的对冲单已完成止盈或平仓离场，主仓保留等待反弹解套'
+                            }
                         >
-                            <Shield size={10} className="text-purple-400 shrink-0" />
-                            <span>{formatHedgeTriggerDisplay(hedgeTriggerReason || p.triggerReason, p, globalHedgingSettings)}</span>
+                            <Shield size={10} className={(p.mainPositionId || hasActiveOpposingHedge) ? "text-purple-400 shrink-0" : "text-amber-400 shrink-0"} />
+                            <span>
+                                {(p.mainPositionId || hasActiveOpposingHedge)
+                                    ? formatHedgeTriggerDisplay(hedgeTriggerReason || p.triggerReason, p, globalHedgingSettings)
+                                    : ((p.cumulativeHedgeProfit && p.cumulativeHedgeProfit > 0) ? `对冲已止盈 (+${p.cumulativeHedgeProfit.toFixed(1)}U)` : '对冲已平仓离场')}
+                            </span>
                         </div>
                     </div>
                 ) : (

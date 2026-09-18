@@ -490,9 +490,9 @@ export const useAutoHistoryLogger = (
                 const matchedRes = sig.originalItem.list3Results?.find((r: any) => r.tf === sig.tf && r.direction === sig.direction);
                 const struct = matchedRes?.structure || sig.originalItem.structure || {};
                 const isStrictTrend = struct.isStrictTrend ? "主趋势多空排列对齐" : "一般趋势";
-                const bbw = struct.bbw ? `布林带带宽: ${(struct.bbw * 100).toFixed(2)}%` : "";
-                const rsiStr = struct.rsi ? `RSI: ${struct.rsi.toFixed(1)}` : "";
-                const locStr = struct.locationPct !== undefined ? `通道位置: ${(struct.locationPct * 100).toFixed(1)}%` : "";
+                const bbw = typeof struct.bbw === 'number' && isFinite(struct.bbw) ? `布林带带宽: ${(struct.bbw * 100).toFixed(2)}%` : "";
+                const rsiStr = typeof struct.rsi === 'number' && isFinite(struct.rsi) ? `RSI: ${struct.rsi.toFixed(1)}` : "";
+                const locStr = typeof struct.locationPct === 'number' && isFinite(struct.locationPct) ? `通道位置: ${(struct.locationPct * 100).toFixed(1)}%` : "";
                 reason = `结构审计通过 [周期: ${sig.tf}, 方向: ${sig.direction}, ${isStrictTrend}, ${rsiStr}, ${bbw}, ${locStr}]`;
             } else if (listType === 'LIST4') {
                 const mom = sig.originalItem.momentum || {};
@@ -527,7 +527,7 @@ export const useAutoHistoryLogger = (
                 const prevUniqueId = `${symbol}-${tf}-${direction}`;
                 const prevItem = prevFullItemsRef.current[prevUniqueId];
                 
-                let disappearanceReason = '指标不满足持续监控条件，系统自动移出';
+                let disappearanceReason = '';
                 
                 if (prevItem) {
                     if (listType === 'LIST4') {
@@ -542,7 +542,7 @@ export const useAutoHistoryLogger = (
                         } else if (prevItem.momentum?.status === 'INVALID') {
                             disappearanceReason = `动能指标失效/结构破坏\n[过滤规则]: K线实体变向，主趋势多空排列对齐在周期内被打破\n[细节]: 破坏原因: ${prevItem.momentum?.invalidReason || '多空多级阻力逆转'}`;
                         } else {
-                            disappearanceReason = `信号生命周期到期衰减\n[过滤规则]: 达到最大动能监控 K 线数量上限，信号自动过期清理\n[细节]: 周期: ${tf}, 方向: ${direction}`;
+                            disappearanceReason = `动能衰减/K线回调或结构破坏\n[过滤规则]: 价格回踩反转或动能指标不再满足突破条件，信号解除监控\n[细节]: 周期: ${tf}, 方向: ${direction}`;
                         }
                     } else if (listType === 'LIST3') {
                         const matchedRes = prevItem.list3Results?.find((r: any) => r.tf === tf && r.direction === direction);
@@ -557,17 +557,17 @@ export const useAutoHistoryLogger = (
                     } else if (listType === 'LIST2') {
                         const matchedGroup = prevItem.groupedResults?.find((g: any) => g.tf === tf);
                         if (matchedGroup && !matchedGroup.isSqueeze) {
-                            disappearanceReason = `波动性释放/通道变宽\n[过滤规则]: 波动通道(Bollinger Bands Squeeze)挤压释放，不再满足低波、窄幅安全蓄势条件\n[细节]: 波动率(带宽)超过阀值: ${(matchedGroup.squeezeRatio || 0.5).toFixed(2)}`;
+                            const ratioStr = typeof matchedGroup.squeezeRatio === 'number' && isFinite(matchedGroup.squeezeRatio) ? matchedGroup.squeezeRatio.toFixed(2) : '0.50';
+                            disappearanceReason = `波动性释放/通道变宽\n[过滤规则]: 波动通道(Bollinger Bands Squeeze)挤压释放，不再满足低波、窄幅安全蓄势条件\n[细节]: 波动率(带宽)超过阀值: ${ratioStr}`;
                         } else {
                             disappearanceReason = `均线交叉结束/均线排列对齐形态失效\n[过滤规则]: K线实体偏离或不再交织于短期均线，且不满足对齐对绞状态\n[细节]: EMA均线交叉已结束或对齐模式被破坏`;
                         }
                     }
                 }
                 
-                // If the coin is completely gone from screener (below thresholds)
-                const symbolStillInScreener = currentItems.some(item => item && item.symbol === symbol);
-                if (!symbolStillInScreener) {
-                    disappearanceReason = `币种活跃度低于筛选阈值\n[过滤规则]: 币种的24H成交额或24H涨跌幅百分比低于全局过滤器(List 1)的设定阈值，不再列为全局监控候选币种\n[细节]: 该币种 (${symbol}) 已被移出系统全局扫描候选池`;
+                // Fallback ONLY if no specific reason was determined above
+                if (!disappearanceReason) {
+                    disappearanceReason = `币种活跃度低于筛选阈值或从初筛池移出\n[过滤规则]: 币种的24H成交额或涨跌幅低于全局过滤器(List 1)设定阈值，不再列为全局监控候选币种\n[细节]: 该币种 (${symbol}) 已离开候选池`;
                 }
                 
                 markSignalDisappeared(listType, symbol, tf, direction, userId, disappearanceReason);

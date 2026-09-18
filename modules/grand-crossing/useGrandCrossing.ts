@@ -69,22 +69,8 @@ export const useGrandCrossing = (
     }
   }, [config.timeframes, setConfig]);
 
-  const [list2, setList2] = useState<ScannerItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(cacheMapKey);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed
-            .map((item: any) => item?.value)
-            .filter((v) => v && v.symbol);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load List 2 state", e);
-    }
-    return [];
-  });
+  // 🔒 [DATA INTEGRITY]: 列表2初始化严格为空数组，完全由列表1（市场初筛）的实时输入来驱动，严禁盲读本地旧缓存
+  const [list2, setList2] = useState<ScannerItem[]>([]);
 
   // Initial update of sorted candidates from list1 candidates on mount
   useEffect(() => {
@@ -262,35 +248,26 @@ export const useGrandCrossing = (
 
   // --- REFS ---
   const configRef = useRef(config); // For async access
-  const cacheRef = useRef<Map<string, ScannerItem>>(
-    new Map(
-      (() => {
-        try {
-          const saved = localStorage.getItem(cacheMapKey);
-          if (saved) {
-            const parsed = JSON.parse(saved);
-            if (Array.isArray(parsed)) {
-              return parsed
-                .filter((item: any) => item && item.key && item.value)
-                .map((item: any) => [item.key, item.value]);
-            }
-          }
-        } catch (e) {
-          console.error("Failed to load List 2 cache map", e);
-        }
-        return [];
-      })(),
-    ),
-  );
+  const candidatesRef = useRef(candidates);
+  candidatesRef.current = candidates;
+
+  // 🔒 [DATA INTEGRITY]: 列表2缓存初始化严格为空Map，完全由列表1（市场初筛）的实时输入来驱动，严禁盲读本地旧缓存
+  const cacheRef = useRef<Map<string, ScannerItem>>(new Map());
   const tfLastScanRef = useRef<Record<string, number>>({});
   const symbolTfLastFetchRef = useRef<Map<string, number>>(new Map()); // symbol-tf -> timestamp
-  const candidatesRef = useRef(candidates);
 
   // --- PERFORMANCE REFS ---
   const lastUpdateTimestampRef = useRef<number>(0);
   const pendingUpdateRef = useRef<boolean>(false);
-  const lastListLengthRef = useRef<number>(0);
-  const lastListSignalsHashRef = useRef<string>(""); // For lightweight change detection
+  const lastListLengthRef = useRef<number>(list2.length);
+  const lastListSignalsHashRef = useRef<string>(
+    list2
+      .map(
+        (i) =>
+          `${i.symbol}-${i.groupedResults?.length}-${i.groupedResults?.map((r) => `${r.tf}-${r.direction}-${Math.floor(r.lag || 0)}-${r.isPendingGray ? 1 : 0}`).join(",")}-${i.lastUpdated}-${i.price}-${i.change}`,
+      )
+      .join("|"),
+  ); // For lightweight change detection
 
   // --- CONCURRENCY LOCK ---
   const isScanningRef = useRef(false);
@@ -343,9 +320,22 @@ export const useGrandCrossing = (
     let timeDiffMs = Math.max(0, now - lastUpdate);
     if (timeDiffMs > 180000) timeDiffMs = 180000; // Max 3 minutes of catch-up aging
 
+    const currentCandidates = candidatesRef.current || [];
+    const allowedNorm = new Set(currentCandidates.map((c) => normalizeSymbol(c.symbol)));
+
+    // 🔒 [STRICT DATA SOURCE ENFORCEMENT]: 列表2的数据源绝对且只能从列表1市场初筛中获取
+    // 任何不在列表1当前初筛候选集中的币种，立即从缓存中剔除并绝不渲染
+    for (const [key, item] of cacheRef.current.entries()) {
+      if (!item || !item.symbol || !allowedNorm.has(normalizeSymbol(item.symbol))) {
+        cacheRef.current.delete(key);
+      }
+    }
+
     let items: ScannerItem[] = [];
     try {
-      items = Array.from(cacheRef.current.values());
+      items = Array.from(cacheRef.current.values()).filter(
+        (item) => item && item.symbol && allowedNorm.has(normalizeSymbol(item.symbol))
+      );
     } catch (e) {
       console.error("Cache iteration error", e);
       return;
@@ -481,64 +471,68 @@ export const useGrandCrossing = (
     // Delete fully expired items
     itemIdsToDelete.forEach((id) => cacheRef.current.delete(id));
 
-    // Re-read items from cache after filter
-    items = Array.from(cacheRef.current.values());
+    // Re-read items from cache after filter, strictly filtered by List 1 candidates
+    items = Array.from(cacheRef.current.values()).filter(
+      (item) => item && item.symbol && allowedNorm.has(normalizeSymbol(item.symbol))
+    );
 
     const sortMode = cfg.sortMode;
-    const currentCandidates = candidatesRef.current;
 
     // --- 0. UPDATE PRICES (Lightweight pointer lookup + priceRegistry fallback) ---
-    const priceMap = new Map(currentCandidates.map((c) => [c.symbol, c]));
+    const priceMap = new Map(currentCandidates.map((c) => [normalizeSymbol(c.symbol), c]));
     const realPrices = priceRegistry.getAllPrices();
 
-    items = items.map((item) => {
-      const candidate = priceMap.get(item.symbol);
-      const regPrice = realPrices[normalizeSymbol(item.symbol)];
-      const updatedPrice = candidate
-        ? Number(candidate.price) || item.price
-        : regPrice !== undefined && regPrice > 0
-          ? Number(regPrice)
-          : item.price;
+    items = items
+      .filter((item) => allowedNorm.has(normalizeSymbol(item.symbol)))
+      .map((item) => {
+        const normSym = normalizeSymbol(item.symbol);
+        const candidate = priceMap.get(normSym);
+        const regPrice = realPrices[normSym];
+        const updatedPrice = candidate
+          ? Number(candidate.price) || item.price
+          : regPrice !== undefined && regPrice > 0
+            ? Number(regPrice)
+            : item.price;
 
-      // 实时K线价格动态校验：当价格不满足阳线(多)/阴线(空)关系时，动态切换为灰色待定态
-      let updatedGroupedResults = item.groupedResults;
-      if (updatedGroupedResults && updatedPrice > 0) {
-        updatedGroupedResults = updatedGroupedResults.map((r) => {
-          if (r.lag !== undefined && r.lag < 1.0 && r.kOpen !== undefined && r.kOpen > 0) {
-            let isPendingGray = false;
-            if (r.direction === "LONG") {
-              isPendingGray = !(updatedPrice > r.kOpen);
-            } else if (r.direction === "SHORT") {
-              isPendingGray = !(updatedPrice < r.kOpen);
+        // 实时K线价格动态校验：当价格不满足阳线(多)/阴线(空)关系时，动态切换为灰色待定态
+        let updatedGroupedResults = item.groupedResults;
+        if (updatedGroupedResults && updatedPrice > 0) {
+          updatedGroupedResults = updatedGroupedResults.map((r) => {
+            if (r.lag !== undefined && r.lag < 1.0 && r.kOpen !== undefined && r.kOpen > 0) {
+              let isPendingGray = false;
+              if (r.direction === "LONG") {
+                isPendingGray = !(updatedPrice > r.kOpen);
+              } else if (r.direction === "SHORT") {
+                isPendingGray = !(updatedPrice < r.kOpen);
+              }
+              if (r.isPendingGray !== isPendingGray) {
+                return { ...r, isPendingGray };
+              }
             }
-            if (r.isPendingGray !== isPendingGray) {
-              return { ...r, isPendingGray };
-            }
-          }
-          return r;
-        });
-      }
+            return r;
+          });
+        }
 
-      if (candidate) {
+        if (candidate) {
+          return {
+            ...item,
+            price: updatedPrice,
+            change: candidate.change,
+            volume: candidate.volume,
+            groupedResults: updatedGroupedResults,
+          };
+        } else if (regPrice !== undefined && regPrice > 0) {
+          return {
+            ...item,
+            price: updatedPrice,
+            groupedResults: updatedGroupedResults,
+          };
+        }
         return {
           ...item,
-          price: updatedPrice,
-          change: candidate.change,
-          volume: candidate.volume,
           groupedResults: updatedGroupedResults,
         };
-      } else if (regPrice !== undefined && regPrice > 0) {
-        return {
-          ...item,
-          price: updatedPrice,
-          groupedResults: updatedGroupedResults,
-        };
-      }
-      return {
-        ...item,
-        groupedResults: updatedGroupedResults,
-      };
-    });
+      });
 
     // --- 2. FAST HASH CHECK (Avoid JSON.stringify on huge data) ---
     // Include price/change and pending gray state in hash to ensure UI updates when prices move
@@ -694,9 +688,26 @@ export const useGrandCrossing = (
     const count = cacheRef.current.size;
     cacheRef.current.clear();
     capturedSignalsRef.current.clear();
+    symbolTfLastFetchRef.current.clear();
+    lastListSignalsHashRef.current = "";
+    lastListLengthRef.current = 0;
+    setList2([]);
+    setTfCounts({});
+    setCountdowns({});
+    try {
+      localStorage.removeItem(cacheMapKey);
+      if (strategyId) {
+        localStorage.removeItem(`SCANNER_LIST2_CACHE_MAP_${strategyId}`);
+        localStorage.removeItem(`SCANNER_LIST2_${strategyId}`);
+      }
+      localStorage.removeItem("SCANNER_LIST2_CACHE_MAP");
+      localStorage.removeItem("SCANNER_LIST2");
+    } catch (e) {
+      console.error("[useGrandCrossing] Failed to remove cache keys on clear:", e);
+    }
     performUpdate();
     onLog?.("INFO", `[列表2] 手动清空所有信号 (共移除 ${count} 个币种)`);
-  }, [performUpdate, onLog]);
+  }, [performUpdate, onLog, cacheMapKey, strategyId]);
 
   // --- DOUBLE VERIFICATION (二次验证机制) ---
   useEffect(() => {
@@ -712,8 +723,23 @@ export const useGrandCrossing = (
         }
       }
 
-      const activeItems = Array.from(cacheRef.current.values());
-      if (activeItems.length === 0) return;
+      const currentCandidates = candidatesRef.current || [];
+      const allowedNorm = new Set(currentCandidates.map((c) => normalizeSymbol(c.symbol)));
+
+      // 剔除任何不在列表1初筛中的幽灵币种
+      for (const [key, item] of cacheRef.current.entries()) {
+        if (!item || !item.symbol || !allowedNorm.has(normalizeSymbol(item.symbol))) {
+          cacheRef.current.delete(key);
+        }
+      }
+
+      const activeItems = Array.from(cacheRef.current.values()).filter(
+        (item) => item && item.symbol && allowedNorm.has(normalizeSymbol(item.symbol))
+      );
+      if (activeItems.length === 0) {
+        performUpdate();
+        return;
+      }
 
       console.log(`[List 2 Double Verify] Starting verification for ${activeItems.length} active items...`);
       onLog?.("INFO", `[列表2] 启动定时二次规则校验模式 (对当前 ${activeItems.length} 个币种执行穿透核验)...`);
@@ -865,9 +891,21 @@ export const useGrandCrossing = (
   useEffect(() => {
     candidatesRef.current = candidates;
 
-    // 🔒 [ATOMIC CODE LOCK - 扫描目标严格且绝对只来源于列表1当前市场初筛列表中的币种]
-    // 列表2后台轮询扫描队列严格只对列表1传入的币种执行穿越与发散分析，绝不引入任何外部或历史残留币种。
-    // 已生成的列表2信号则保留在 cacheRef 中由【信号存续】寿命独立管理。
+    // 🔒 [ATOMIC CODE LOCK - 列表2数据源严格且绝对只来源于列表1当前市场初筛列表中的币种]
+    // 列表2后台轮询扫描队列与数据展示严格只对列表1传入的币种执行穿越与发散分析，绝不引入或保留任何外部或历史残留币种。
+    const allowedNorm = new Set((candidates || []).map((c) => normalizeSymbol(c.symbol)));
+    for (const [key, item] of cacheRef.current.entries()) {
+      if (!item || !item.symbol || !allowedNorm.has(normalizeSymbol(item.symbol))) {
+        cacheRef.current.delete(key);
+      }
+    }
+    for (const id of capturedSignalsRef.current) {
+      const sym = id.split("-")[0];
+      if (sym && !allowedNorm.has(normalizeSymbol(sym))) {
+        capturedSignalsRef.current.delete(id);
+      }
+    }
+
     if (candidates.length > 0) {
       sortedCandidatesRef.current = [...candidates].sort((a, b) => {
         const volA = parseFloat(a.volume || "0");
@@ -906,13 +944,21 @@ export const useGrandCrossing = (
     symbol: string,
     tf: string,
   ) => {
-    const cacheKey = `${symbol}-FULL`;
-    const existingItem = cacheRef.current.get(cacheKey);
+    const normSym = normalizeSymbol(symbol);
     const candidateItem = candidatesRef.current.find(
-      (c) => c.symbol === symbol,
+      (c) => normalizeSymbol(c.symbol) === normSym,
     );
 
-    const item = candidateItem || existingItem;
+    // 🔒 [STRICT DATA SOURCE RULE]: 列表2只能且绝对只能从列表1市场初筛获取数据
+    // 若当前币种不属于列表1候选，立即终止并从列表2缓存中彻底删除
+    if (!candidateItem) {
+      cacheRef.current.delete(`${symbol}-FULL`);
+      return;
+    }
+
+    const cacheKey = `${candidateItem.symbol}-FULL`;
+    const existingItem = cacheRef.current.get(cacheKey);
+    const item = candidateItem;
     if (!item) return;
 
     // Throttle duplicate fetches to 2s to protect against race conditions under fast ticks

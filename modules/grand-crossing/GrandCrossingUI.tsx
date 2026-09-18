@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useGrandCrossing } from './useGrandCrossing';
 import { ScannerItem, ScanConfig, List2Config } from '../../components/Scanner/scannerTypes';
 import List2_GrandCrossing from './components/List2_GrandCrossing';
+import { normalizeSymbol } from '../../services/symbolUtils';
 
 interface Props {
     networkStatus?: 'healthy' | 'delayed' | 'disconnected';
@@ -72,44 +73,60 @@ export const GrandCrossingModule: React.FC<Props> = ({
         config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, scanningSymbols, lastScanTime, removeItem, clearItems, removeSignal
     } = useGrandCrossing(effectiveCandidates, initialConfig || DEFAULT_CONFIG, directMode, onLog, strategyId);
 
+    const onRemoveSignalReadyRef = React.useRef(onRemoveSignalReady);
+    onRemoveSignalReadyRef.current = onRemoveSignalReady;
+
+    const onResultsUpdateRef = React.useRef(onResultsUpdate);
+    onResultsUpdateRef.current = onResultsUpdate;
+
     // Expose removeSignal to parent
     useEffect(() => {
-        if (onRemoveSignalReady && removeSignal) {
-            onRemoveSignalReady(removeSignal);
+        if (onRemoveSignalReadyRef.current && removeSignal) {
+            onRemoveSignalReadyRef.current(removeSignal);
         }
-    }, [onRemoveSignalReady, removeSignal]);
+    }, [removeSignal]);
 
-    // --- SYNC OUTPUT (Only closed K-line signals pass to List 3) ---
+    // 🔒 [STRICT DATA SOURCE ENFORCEMENT]: 列表2的数据源与渲染绝对只能来源于列表1当前候选币种
+    const allowedSymbolSet = React.useMemo(() => {
+        return new Set((effectiveCandidates || []).map(c => normalizeSymbol(c.symbol)));
+    }, [effectiveCandidates]);
+
+    const sanitizedList2 = React.useMemo(() => {
+        return (list2 || []).filter(item => item && item.symbol && allowedSymbolSet.has(normalizeSymbol(item.symbol)));
+    }, [list2, allowedSymbolSet]);
+
+    // --- SYNC OUTPUT (All non-pending signals pass to List 3) ---
     const lastListStrRef = React.useRef<string>('');
     useEffect(() => {
-        let outputList = list2 || [];
+        let outputList = sanitizedList2 || [];
 
-        // 🔒 [USER MANDATORY RULE] 列表3在读取列表2的数据必须是K线已收盘的币种 (lag >= 1 且 非灰色待定态)
-        outputList = outputList.filter(item => {
-            if (!item || !item.groupedResults || item.groupedResults.length === 0) return false;
-            return item.groupedResults.some(r => {
-                const isClosed = r.isClosed === true || (r.lag !== undefined && r.lag >= 1.0);
-                const notGray = !r.isPendingGray;
-                return isClosed && notGray;
-            });
-        });
+        // 🔒 [USER MANDATORY RULE] 列表3承接列表2所有“非待定”数据 (非灰色待定态 !isPendingGray)
+        outputList = outputList.map(item => {
+            if (!item || !item.groupedResults || item.groupedResults.length === 0) return null;
+            const validResults = item.groupedResults.filter(r => !r.isPendingGray);
+            if (validResults.length === 0) return null;
+            return {
+                ...item,
+                groupedResults: validResults
+            };
+        }).filter(Boolean) as ScannerItem[];
 
         if (config?.syncDirectionFilterToList3) {
             const dir = config.viewMode || 'ALL';
             if (dir === 'LONG') {
-                outputList = outputList.filter(item => item && item.direction === 'LONG');
+                outputList = outputList.filter(item => item && (item.direction === 'LONG' || item.groupedResults?.some(r => r.direction === 'LONG')));
             } else if (dir === 'SHORT') {
-                outputList = outputList.filter(item => item && item.direction === 'SHORT');
+                outputList = outputList.filter(item => item && (item.direction === 'SHORT' || item.groupedResults?.some(r => r.direction === 'SHORT')));
             }
         }
         const str = JSON.stringify(outputList);
         if (str !== lastListStrRef.current) {
             lastListStrRef.current = str;
             setTimeout(() => {
-                onResultsUpdate(outputList);
+                onResultsUpdateRef.current?.(outputList);
             }, 0);
         }
-    }, [list2, config?.syncDirectionFilterToList3, config?.viewMode, onResultsUpdate]);
+    }, [sanitizedList2, config?.syncDirectionFilterToList3, config?.viewMode]);
 
     // --- LOCAL UI STATE ---
     const [activeFilterTf, setActiveFilterTf] = useState<string | null>(null);
@@ -139,8 +156,8 @@ export const GrandCrossingModule: React.FC<Props> = ({
 
     // Filter list for display
     let filteredList = activeFilterTf 
-        ? list2.filter(item => item.groupedResults?.some(r => r.tf === activeFilterTf))
-        : list2;
+        ? sanitizedList2.filter(item => item.groupedResults?.some(r => r.tf === activeFilterTf))
+        : sanitizedList2;
 
     const viewMode = config?.viewMode || 'ALL';
     if (viewMode === 'LONG') {
@@ -176,7 +193,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
             activeFilterTf={activeFilterTf} isLocked={isLocked}
             onTfInteraction={handleTfInteraction}
             filteredList2={filteredList}
-            allList2={list2}
+            allList2={sanitizedList2}
             setChartData={setChartData}
             pollingStatus={status === 'SCANNING' ? scanText : (lastScanTime ? `最后扫描: ${new Date(lastScanTime).toLocaleTimeString()}` : undefined)}
             activeScanTfs={activeScanTfs}

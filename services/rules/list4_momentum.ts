@@ -28,60 +28,104 @@ export function analyzeList4Momentum(
             ? Math.min(item.structure.postSignalExtreme ?? currentPrice, currentPrice)
             : Math.max(item.structure.postSignalExtreme ?? currentPrice, currentPrice);
         
-        const signalHigh = item.structure.signalHigh ?? item.price; 
-        const signalLow = item.structure.signalLow ?? item.price;
-        const amplitude = signalHigh - signalLow;
-
-        const safeAmplitude = amplitude > (item.price * 0.0005) ? amplitude : (item.price * 0.0005); 
+        const bestPrice = item.direction === 'LONG'
+            ? Math.max(item.structure.postSignalMaxHigh ?? currentPrice, currentPrice)
+            : Math.min(item.structure.postSignalMinLow ?? currentPrice, currentPrice);
         
-        const defenseBuffer = safeAmplitude * (config.midlineThreshold / 100);
-        const breakoutBuffer = safeAmplitude * (config.breakoutThreshold / 100);
+        // 最高价与最低价基准 (high, low, price_range)
+        const rawHigh = typeof item.structure?.signalHigh === 'number' && item.structure.signalHigh > 0
+            ? item.structure.signalHigh
+            : (item.structure?.signalPrice ?? item.price);
+        const rawLow = typeof item.structure?.signalLow === 'number' && item.structure.signalLow > 0
+            ? item.structure.signalLow
+            : (item.structure?.signalPrice ?? item.price);
+        
+        const high = Math.max(rawHigh, rawLow);
+        const low = Math.min(rawHigh, rawLow);
+        const raw_price_range = high - low;
+        const price_range = raw_price_range > (item.price * 0.0005) ? raw_price_range : (item.price * 0.0005); 
+        
+        const defense_pct = ((config && typeof config.midlineThreshold === 'number' && !isNaN(config.midlineThreshold)) ? config.midlineThreshold : 80) / 100;
+        const breakout_pct = ((config && typeof config.breakoutThreshold === 'number' && !isNaN(config.breakoutThreshold)) ? config.breakoutThreshold : 10) / 100;
+
+        // 【1. 进攻突破线算法（开仓线）】
+        // 做多进攻突破价 = 最高价 + (最高价 - 最低价) * 进攻突破百分比
+        // 做空进攻突破价 = 最低价 - (最高价 - 最低价) * 进攻突破百分比
+        const long_breakout = high + price_range * breakout_pct;
+        const short_breakout = low - price_range * breakout_pct;
+
+        // 【2. 中轴防守线算法（清除线）】
+        // 做多中轴防守价 = 最高价 - (最高价 - 最低价) * 中轴防守百分比
+        // 做空中轴防守价 = 最低价 + (最高价 - 最低价) * 中轴防守百分比
+        const long_defense = high - price_range * defense_pct;
+        const short_defense = low + price_range * defense_pct;
 
         let midPoint = 0;
         let entryTrigger = 0;
         
         if (item.direction === 'LONG') {
-            midPoint = signalHigh - defenseBuffer; 
-            entryTrigger = signalHigh + breakoutBuffer;
+            entryTrigger = long_breakout;
+            midPoint = long_defense; 
         } else {
-            midPoint = signalLow + defenseBuffer;
-            entryTrigger = signalLow - breakoutBuffer;
+            entryTrigger = short_breakout;
+            midPoint = short_defense;
         }
 
         let momentumStatus: 'INVALID' | 'PENDING' | 'TRIGGERED' = 'PENDING';
         let invalidReason = '';
 
-        const epsilon = currentPrice * 0.0005; 
+        const triggerEpsilon = currentPrice * 0.00001; // Float precision tolerance (0.001%)
 
         if (config.enableThresholds !== false) {
             if (item.direction === 'LONG') {
-                if (extreme < (midPoint - epsilon)) {
+                if (currentPrice < midPoint || extreme < midPoint) {
                     momentumStatus = 'INVALID';
-                    invalidReason = `结构破坏: 回撤(${extreme.toFixed(4)}) 跌破防守线(${midPoint.toFixed(4)})`;
-                } else if (item.structure.postSignalMaxHigh !== undefined && item.structure.postSignalMaxHigh >= entryTrigger) {
-                    momentumStatus = 'INVALID';
-                    invalidReason = `过期突破: 信号后历史最高价(${item.structure.postSignalMaxHigh.toFixed(4)})已达到进攻突破线(${entryTrigger.toFixed(4)})，拒绝二次开仓`;
-                } else if (currentPrice >= entryTrigger) {
-                    momentumStatus = 'TRIGGERED';
+                    const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
+                    const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
+                    invalidReason = `结构破坏: 跌破多单中轴防守价 (${curStr} < ${midStr}) [中轴防守: ${(defense_pct * 100).toFixed(0)}%, 信号高: ${high.toFixed(4)}, 低: ${low.toFixed(4)}]`;
+                } else if (currentPrice >= (entryTrigger - triggerEpsilon) || bestPrice >= (entryTrigger - triggerEpsilon)) {
+                    if (config.enableRev3K && item.structure && item.structure.isBreakout3K === false) {
+                        momentumStatus = 'PENDING';
+                        invalidReason = '等待前三K突破 (已达突破线，未越过前3K收盘最高价)';
+                    } else {
+                        momentumStatus = 'TRIGGERED';
+                    }
+                } else {
+                    momentumStatus = 'PENDING';
                 }
             } else {
-                if (extreme > (midPoint + epsilon)) {
+                if (currentPrice > midPoint || extreme > midPoint) {
                     momentumStatus = 'INVALID';
-                    invalidReason = `结构破坏: 反弹(${extreme.toFixed(4)}) 突破防守线(${midPoint.toFixed(4)})`;
-                } else if (item.structure.postSignalMinLow !== undefined && item.structure.postSignalMinLow <= entryTrigger) {
-                    momentumStatus = 'INVALID';
-                    invalidReason = `过期突破: 信号后历史最低价(${item.structure.postSignalMinLow.toFixed(4)})已达到进攻突破线(${entryTrigger.toFixed(4)})，拒绝二次开仓`;
-                } else if (currentPrice <= entryTrigger) {
-                    momentumStatus = 'TRIGGERED';
+                    const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
+                    const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
+                    invalidReason = `结构破坏: 突破空单中轴防守价 (${curStr} > ${midStr}) [中轴防守: ${(defense_pct * 100).toFixed(0)}%, 信号低: ${low.toFixed(4)}, 高: ${high.toFixed(4)}]`;
+                } else if (currentPrice <= (entryTrigger + triggerEpsilon) || bestPrice <= (entryTrigger + triggerEpsilon)) {
+                    if (config.enableRev3K && item.structure && item.structure.isBreakout3K === false) {
+                        momentumStatus = 'PENDING';
+                        invalidReason = '等待前三K突破 (已达突破线，未越过前3K收盘最低价)';
+                    } else {
+                        momentumStatus = 'TRIGGERED';
+                    }
+                } else {
+                    momentumStatus = 'PENDING';
                 }
             }
         } else {
-            momentumStatus = 'TRIGGERED';
+            if (config.enableRev3K && item.structure && item.structure.isBreakout3K === false) {
+                momentumStatus = 'PENDING';
+                invalidReason = item.direction === 'LONG'
+                    ? '等待前三K突破 (未越过前3K收盘最高价)'
+                    : '等待前三K突破 (未越过前3K收盘最低价)';
+            } else {
+                momentumStatus = 'TRIGGERED';
+            }
         }
 
-        let fuseBlocked = item.fuseLatched || false;
-        let fuseReason = item.fuseLatched ? (item.fuseReason || '已锁定') : '';
-        let fuseDetails = item.fuseDetails;
+        const isAnyFuseEnabled = !!(config.enableAntiChase || config.enableThrust || config.enableAutoDirGuard || config.enableAdvancedFilter);
+
+        let fuseBlocked = isAnyFuseEnabled ? (item.fuseLatched || false) : false;
+        let fuseReason = (isAnyFuseEnabled && item.fuseLatched) ? (item.fuseReason || '已锁定') : '';
+        let fuseDetails = isAnyFuseEnabled ? item.fuseDetails : undefined;
         
         const antiChase = config.antiChaseConfig;
 
@@ -119,11 +163,6 @@ export function analyzeList4Momentum(
                     }
                 }
             }
-        }
-
-        if (config.enableRev3K && item.structure?.isReverse3K) {
-            fuseBlocked = true;
-            fuseReason = `逆势三连K拦截 (Rev 3K)`;
         }
 
         if (config.enableThrust && item.structure && !item.structure.thrustValid) {

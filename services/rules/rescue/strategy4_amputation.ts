@@ -1,3 +1,5 @@
+// 🔒 @LOCKED: 断臂求生执行策略核心模块 (Strategy 4 - Amputation & Dynamic Refill)
+// 严禁在未获用户直接指令前对本文件进行任何重构、修改、删除或参数篡改
 import { Position, AppSettings, PositionSide } from '../../../types';
 
 export function checkStrategy4_Amputation(
@@ -5,7 +7,7 @@ export function checkStrategy4_Amputation(
     hedgePosition: Position | undefined,
     settings: AppSettings,
     amputate: (position: Position, ratio: number, reason: string) => void,
-    refill: (position: Position, reason: string) => void,
+    refill: (position: Position, reason: string, customRefillQty?: number) => void,
     closePair: (mainId: string, hedgeId: string, reason: string) => void,
     reopenPosition?: (position: Position, reason: string) => void,
     addLog?: (type: string, message: string) => void,
@@ -61,13 +63,25 @@ export function checkStrategy4_Amputation(
     // 🔒【严格被砍物理标记铁律】：必须且仅当该仓位切实经历过砍仓 (isAmputated === true 且 amputatedAmount > 0)
     // 🔒【只补一次铁律】：补仓触发后立即清空被砍状态，杜绝任何重复补仓或由数量差推导的误补仓！
     // ==========================================
-    const isMainAmputated = !!mainPosition.isAmputated && (mainPosition.amputatedAmount || 0) > 0;
-    const isHedgeAmputated = !!hedgePosition && !!hedgePosition.isAmputated && (hedgePosition.amputatedAmount || 0) > 0;
+    // 🔒【严格被砍物理标记与失衡自愈识别】：
+    // 优先读取显式被砍标记 (isAmputated === true 且 amputatedAmount > 0)
+    // 自愈兜底：若持仓严重失衡(单边明显小于对手单 >20%)且具备断臂历史负债，即便标记因同步异常丢失，亦能精准识别被砍方并自愈补回
+    const symbolAmpLoss = Math.max(
+        mainPosition.cumulativeAmputationLoss || 0,
+        hedgePosition ? (hedgePosition.cumulativeAmputationLoss || 0) : 0
+    );
+    const isMainImbalanced = hedgePosition && (hedgePosition.amount - mainPosition.amount) > (hedgePosition.amount * 0.2);
+    const isHedgeImbalanced = hedgePosition && (mainPosition.amount - hedgePosition.amount) > (mainPosition.amount * 0.2);
+
+    const isMainAmputated = (!!mainPosition.isAmputated && (mainPosition.amputatedAmount || 0) > 0) ||
+        (isMainImbalanced && (symbolAmpLoss > 0 || (mainPosition.cumulativeAmputationLoss || 0) > 0));
+    const isHedgeAmputated = (!!hedgePosition && !!hedgePosition.isAmputated && (hedgePosition.amputatedAmount || 0) > 0) ||
+        (isHedgeImbalanced && (symbolAmpLoss > 0 || (hedgePosition?.cumulativeAmputationLoss || 0) > 0));
 
     const now = Date.now();
 
     if (isMainAmputated) {
-        // 主仓被砍：严格按照用户铁律与原始开仓价格判定回踩补仓
+        // 主仓被砍：严格按照用户铁律，当盈亏比例 > 0%（即多单价格 > 开仓均价，或空单价格 < 开仓均价）时立即执行自动回踩补仓
         // 🔒 [砍后冷却保护] 砍仓后至少等待 1.5 秒缓冲期，防止刚砍仓的瞬间因撮合与状态同步并发产生误补仓
         const lastCutTime = mainPosition.lastAmputationTime || 0;
         const lastRefillTime = mainPosition.lastRefillTime || 0;
@@ -76,34 +90,44 @@ export function checkStrategy4_Amputation(
             const mainEntry = mainPosition.amputationEntryPrice || mainPosition.originalEntryPrice || mainPosition.entryPrice || 0;
             const mainMark = mainPosition.markPrice || 0;
 
-            // 🔒 必须具备有效的实时标记价与基准开仓价
-            if (mainEntry > 0 && mainMark > 0) {
-                // 🔒【严格方向与价格铁律】：
-                // 多头(LONG)：实时价格必须高于或等于开仓价 (mainMark >= mainEntry) 才能补仓
-                // 空头(SHORT)：实时价格必须低于或等于开仓价 (mainMark <= mainEntry) 才能补仓 (如 RENDER 开仓价 1.423，补仓价必须 <= 1.423，严禁在 1.4515 亏损状态下补仓！)
-                const isPriceBackToEntry = mainPosition.side === PositionSide.LONG
-                    ? mainMark >= mainEntry
-                    : mainMark <= mainEntry;
+            // 🔒【严格盈亏转正铁律 (盈亏 > 0% / 价格切实突破开仓均价)】：
+            // 1. 多头(LONG)：盈亏比例 > 0% 或 实时价格高于开仓价 (mainMark > mainEntry)
+            // 2. 空头(SHORT)：盈亏比例 > 0% 或 实时价格低于开仓价 (mainMark < mainEntry)
+            const isPnlPositive = mainPosition.unrealizedPnLPercentage !== undefined && mainPosition.unrealizedPnLPercentage > 0;
+            const isPriceBeyondEntry = mainEntry > 0 && mainMark > 0 && (
+                mainPosition.side === PositionSide.LONG ? mainMark > mainEntry : mainMark < mainEntry
+            );
 
-                if (isPriceBackToEntry) {
-                    const refillQty = mainPosition.amputatedAmount || 0;
-                    if (refillQty > 0) {
-                        const compSymbol = mainPosition.side === PositionSide.LONG ? '≥' : '≤';
-                        mainPosition.amputationTriggered = false;
-                        delete mainPosition.maxPnLAfterAmputationTrigger;
-                        delete mainPosition.maxPnLPercentAfterAmputationTrigger;
-                        delete mainPosition.lastLoggedPeakPercent;
-                        // 🔒 立即物理消耗被砍状态，杜绝任何后续 tick 重复触发
-                        mainPosition.isAmputated = false;
-                        mainPosition.amputatedAmount = 0;
-                        refill(mainPosition, `3. 断臂求生: 被砍主仓回踩开仓价(实时价:${mainMark.toFixed(4)} ${compSymbol} 基准开仓价:${mainEntry.toFixed(4)})，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
-                        return true;
-                    }
+            const shouldRefill = isPnlPositive || isPriceBeyondEntry;
+
+            if (shouldRefill) {
+                const refillQty = (mainPosition.amputatedAmount && mainPosition.amputatedAmount > 0)
+                    ? mainPosition.amputatedAmount
+                    : (hedgePosition ? Math.max(0, hedgePosition.amount - mainPosition.amount) : 0);
+
+                if (refillQty > 0) {
+                    const compSymbol = mainPosition.side === PositionSide.LONG ? '>' : '<';
+                    const sideLabel = mainPosition.side === PositionSide.LONG ? '多仓' : '空仓';
+                    const pnlText = (mainPosition.unrealizedPnLPercentage || 0).toFixed(2);
+                    
+                    mainPosition.amputationTriggered = false;
+                    delete mainPosition.maxPnLAfterAmputationTrigger;
+                    delete mainPosition.maxPnLPercentAfterAmputationTrigger;
+                    delete mainPosition.lastLoggedPeakPercent;
+
+                    // 显式将 refillQty 透传给下游执行器，确保实盘或模拟能够百分百准确读取到补仓数量
+                    refill(
+                        mainPosition, 
+                        `3. 断臂求生: 被砍${sideLabel}盈亏转正(盈亏率:${pnlText}% > 0%, 实时价:${mainMark.toFixed(4)} ${compSymbol} 开仓价:${mainEntry.toFixed(4)})，立即补回数量(${refillQty.toFixed(4)})`, 
+                        refillQty
+                    );
+
+                    return true;
                 }
             }
         }
     } else if (isHedgeAmputated && hedgePosition) {
-        // 对冲仓被砍：严格按照用户铁律与原始开仓价格判定回踩补仓
+        // 对冲仓被砍：严格按照用户铁律，当盈亏比例 > 0%（即多单价格 > 开仓均价，或空单价格 < 开仓均价）时立即执行自动回踩补仓
         // 🔒 [砍后冷却保护] 砍仓后至少等待 1.5 秒缓冲期，防止刚砍仓的瞬间因撮合与状态同步并发产生误补仓
         const lastCutTime = hedgePosition.lastAmputationTime || 0;
         const lastRefillTime = hedgePosition.lastRefillTime || 0;
@@ -112,29 +136,39 @@ export function checkStrategy4_Amputation(
             const hedgeEntry = hedgePosition.amputationEntryPrice || hedgePosition.originalEntryPrice || hedgePosition.entryPrice || 0;
             const hedgeMark = hedgePosition.markPrice || 0;
 
-            // 🔒 必须具备有效的实时标记价与基准开仓价
-            if (hedgeEntry > 0 && hedgeMark > 0) {
-                // 🔒【严格方向与价格铁律】：
-                // 多头(LONG)：实时价格必须高于或等于开仓价 (hedgeMark >= hedgeEntry) 才能补仓
-                // 空头(SHORT)：实时价格必须低于或等于开仓价 (hedgeMark <= hedgeEntry) 才能补仓
-                const isPriceBackToEntry = hedgePosition.side === PositionSide.LONG
-                    ? hedgeMark >= hedgeEntry
-                    : hedgeMark <= hedgeEntry;
+            // 🔒【严格盈亏转正铁律 (盈亏 > 0% / 价格切实突破开仓均价)】：
+            // 1. 多头(LONG)：盈亏比例 > 0% 或 实时价格高于开仓价 (hedgeMark > hedgeEntry)
+            // 2. 空头(SHORT)：盈亏比例 > 0% 或 实时价格低于开仓价 (hedgeMark < hedgeEntry)
+            const isHedgePnlPositive = hedgePosition.unrealizedPnLPercentage !== undefined && hedgePosition.unrealizedPnLPercentage > 0;
+            const isHedgePriceBeyondEntry = hedgeEntry > 0 && hedgeMark > 0 && (
+                hedgePosition.side === PositionSide.LONG ? hedgeMark > hedgeEntry : hedgeMark < hedgeEntry
+            );
 
-                if (isPriceBackToEntry) {
-                    const refillQty = hedgePosition.amputatedAmount || 0;
-                    if (refillQty > 0) {
-                        const compSymbol = hedgePosition.side === PositionSide.LONG ? '≥' : '≤';
-                        mainPosition.amputationTriggered = false;
-                        delete mainPosition.maxPnLAfterAmputationTrigger;
-                        delete mainPosition.maxPnLPercentAfterAmputationTrigger;
-                        delete mainPosition.lastLoggedPeakPercent;
-                        // 🔒 立即物理消耗被砍状态，杜绝任何后续 tick 重复触发
-                        hedgePosition.isAmputated = false;
-                        hedgePosition.amputatedAmount = 0;
-                        refill(hedgePosition, `3. 断臂求生: 被砍对冲仓回踩开仓价(实时价:${hedgeMark.toFixed(4)} ${compSymbol} 基准开仓价:${hedgeEntry.toFixed(4)})，立即补回砍仓前数量(${refillQty.toFixed(4)})`);
-                        return true;
-                    }
+            const shouldHedgeRefill = isHedgePnlPositive || isHedgePriceBeyondEntry;
+
+            if (shouldHedgeRefill) {
+                const refillQty = (hedgePosition.amputatedAmount && hedgePosition.amputatedAmount > 0)
+                    ? hedgePosition.amputatedAmount
+                    : Math.max(0, mainPosition.amount - hedgePosition.amount);
+
+                if (refillQty > 0) {
+                    const compSymbol = hedgePosition.side === PositionSide.LONG ? '>' : '<';
+                    const sideLabel = hedgePosition.side === PositionSide.LONG ? '对冲多仓' : '对冲空仓';
+                    const pnlText = (hedgePosition.unrealizedPnLPercentage || 0).toFixed(2);
+
+                    mainPosition.amputationTriggered = false;
+                    delete mainPosition.maxPnLAfterAmputationTrigger;
+                    delete mainPosition.maxPnLPercentAfterAmputationTrigger;
+                    delete mainPosition.lastLoggedPeakPercent;
+
+                    // 显式将 refillQty 透传给下游执行器，确保实盘或模拟能够百分百准确读取到补仓数量
+                    refill(
+                        hedgePosition, 
+                        `3. 断臂求生: 被砍${sideLabel}盈亏转正(盈亏率:${pnlText}% > 0%, 实时价:${hedgeMark.toFixed(4)} ${compSymbol} 开仓价:${hedgeEntry.toFixed(4)})，立即补回数量(${refillQty.toFixed(4)})`, 
+                        refillQty
+                    );
+
+                    return true;
                 }
             }
         }

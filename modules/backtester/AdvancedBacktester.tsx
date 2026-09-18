@@ -198,7 +198,7 @@ export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
                 list1: JSON.parse(localStorage.getItem('SCANNER_CONFIG_24H') || '{"minVolume":1,"minChange":1,"limit":50}'),
                 list2: JSON.parse(localStorage.getItem('SCANNER_LIST2_CONFIG') || '{"maxLag":3,"volMultiplier":1.5,"squeezeThreshold":0.5,"maxAmplitude":5,"minBodyRatio":30,"checkEma80Conflict":true,"triggerMode":"NEW","enableFlatFilter":true,"flatLookback":20,"flatThreshold":10}'),
                 list3: JSON.parse(localStorage.getItem('SCANNER_LIST3_CONFIG') || '{"lookback":80,"enableResonance":true}'),
-                list4: JSON.parse(localStorage.getItem('SCANNER_LIST4_CONFIG') || '{"midlineThreshold":50,"breakoutThreshold":10,"enableThresholds":true,"enableAntiChase":true,"directionFilter":"BOTH"}')
+                list4: JSON.parse(localStorage.getItem('SCANNER_LIST4_CONFIG') || '{"midlineThreshold":90,"breakoutThreshold":10,"enableThresholds":true,"enableAntiChase":true,"directionFilter":"BOTH"}')
             };
 
             const res = await backtestEngine.run({
