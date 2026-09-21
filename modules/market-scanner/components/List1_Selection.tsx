@@ -841,8 +841,8 @@ const List1_Selection: React.FC<Props> = ({
             const cfg = (scanConfig.majorTrend || {}) as any;
             const enableLong = cfg.enableLong !== false;
             const enableShort = cfg.enableShort !== false;
-            const enableSideways = cfg.enableSideways === true; // 横盘蓄势开关
-            const enableLookbackFilter = cfg.enableLookbackFilter !== false; // 回溯周期开关
+            const enableSideways = cfg.enableSideways !== false; // 横盘蓄势开关 (默认开启)
+            const enableLookbackFilter = cfg.enableLookbackFilter !== false; // 回溯周期开关 (默认开启)
 
             // 🎯 第一步的输入源：若行情启动开启，读取【行情启动底池】；若行情启动关闭，自动向上一级读取【交易额过滤底池】
             const baseMajorSource = startTrendFilteredList;
@@ -865,35 +865,71 @@ const List1_Selection: React.FC<Props> = ({
             }
 
             // 🎯 第二步：回溯周期过滤
-            // - 若关闭【回溯周期过滤】，自动向上一级底池获取数据——直接使用 sidewaysFilteredList 作为最终初筛列表！
-            // - 若开启【回溯周期过滤】，则读取上级底池数据 (sidewaysFilteredList)，筛选符合回溯极值规则的数据进入“市场初筛”！
+            // - 🔒【用户指定明确规则】：
+            //   1. 只有当“回溯周期过滤”【未开启】时，市场初筛才直接读取“横盘蓄势过滤底池”数据！
+            //   2. 当“回溯周期过滤”【已开启】时，市场初筛必须严格按照回溯周期规则进行过滤，绝不能直接读取/展示整个横盘蓄势底池！
             if (!enableLookbackFilter) {
                 finalResult = sidewaysFilteredList;
-            } else if (hasRunMajorTrend || (effectiveMajorCandidates && effectiveMajorCandidates.size > 0)) {
-                // 🔒【用户特别强调的核心铁律】：
-                // 市场初筛的币，【平时不要增减】，必须是“回溯周期过滤”运行完成后，再和市场初筛列表的数量进行比对！
-                // 如果“回溯周期过滤”已产生候选集（或已完成扫描判定），市场初筛列表严格展示通过回溯周期过滤的有效候选集币种，
-                // 绝不因中途底池扫描、日K重算或临时变量波动而发生清零或闪烁！
+            } else {
+                // 开启【回溯周期过滤】：从横盘蓄势底池中只筛选符合回溯周期极值规则的币种
                 const matchedList = sidewaysFilteredList.filter(item => {
                     const sym = item.symbol;
                     if (!sym) return false;
-                    const matchLong = effectiveMajorCandidates.has(`${sym}_LONG`) || effectiveMajorCandidates.has(sym);
-                    const matchShort = effectiveMajorCandidates.has(`${sym}_SHORT`) || effectiveMajorCandidates.has(sym);
-                    if (enableLong && enableShort) return matchLong || matchShort;
-                    if (enableLong) return matchLong;
-                    if (enableShort) return matchShort;
+
+                    // 1. 若大行情发现已有候选集产出，严格比对候选集（支持带方向和不带方向）
+                    if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
+                        const matchLong = effectiveMajorCandidates.has(`${sym}_LONG`) || effectiveMajorCandidates.has(sym);
+                        const matchShort = effectiveMajorCandidates.has(`${sym}_SHORT`) || effectiveMajorCandidates.has(sym);
+                        if (enableLong && enableShort) return matchLong || matchShort;
+                        if (enableLong) return matchLong;
+                        if (enableShort) return matchShort;
+                        return false;
+                    }
+
+                    // 2. 实时指标校验（当全量扫描未生成候选集或初次加载时，直接校验日K极值指标）
+                    const m = metricsCache[sym];
+                    if (!m || m.loading) return false;
+
+                    const dropFromMax = Math.abs(m.maxDeclinePct || 0);
+                    const pumpFromMin = m.maxIncreasePct || 0;
+                    const distLong = m.lowToCurrentIncreasePct || 0;
+                    const distShort = m.highToCurrentDeclinePct || 0;
+                    const lowDaysAgo = m.lowDaysAgo ?? 0;
+                    const highDaysAgo = m.highDaysAgo ?? 0;
+
+                    const maxDistL = cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : (cfg.maxExtremeDistance ?? 10);
+                    const minDistL = cfg.minExtremeDistanceLong ?? 0;
+                    const minDaysL = cfg.extremeDaysMinLong ?? 0;
+                    const maxDaysL = cfg.extremeDaysMaxLong ?? 300;
+
+                    const isLongMatch = enableLong && (
+                        dropFromMax >= (cfg.minHistoryDrop ?? 30) &&
+                        distLong >= minDistL &&
+                        distLong <= maxDistL &&
+                        lowDaysAgo >= minDaysL &&
+                        lowDaysAgo <= maxDaysL
+                    );
+
+                    const maxDistS = cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : (cfg.maxExtremeDistance ?? 10);
+                    const minDistS = cfg.minExtremeDistanceShort ?? 0;
+                    const minDaysS = cfg.extremeDaysMinShort ?? 0;
+                    const maxDaysS = cfg.extremeDaysMaxShort ?? 300;
+
+                    const isShortMatch = enableShort && (
+                        pumpFromMin >= (cfg.minHistoryPump ?? 30) &&
+                        distShort >= minDistS &&
+                        distShort <= maxDistS &&
+                        highDaysAgo >= minDaysS &&
+                        highDaysAgo <= maxDaysS
+                    );
+
+                    if (enableLong && enableShort) return isLongMatch || isShortMatch;
+                    if (enableLong) return isLongMatch;
+                    if (enableShort) return isShortMatch;
                     return false;
                 });
+
                 finalResult = matchedList;
-            } else if (isMajorScanning) {
-                // 正在执行扫描中，等待扫描完成差量更新
-                finalResult = [];
-            } else if (sidewaysFilteredList.length > 0) {
-                // 🔒 若尚未完成首次全量回溯扫描，先呈现横盘蓄势底池币种待扫描
-                finalResult = sidewaysFilteredList;
-            } else {
-                // 兜底返回上级底池币种
-                finalResult = baseMajorSource;
             }
         }
 

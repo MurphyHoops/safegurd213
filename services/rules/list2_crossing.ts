@@ -422,11 +422,30 @@ export function analyzeList2Crossing(
 
             // The Grand Crossing Rule: High touches Max EMA, Low touches Min EMA (Physical Intersection)
             const isCrossing = kHigh >= maxEma && kLow <= minEma;
-            const crossingIdxL = checkIdx;
-            const crossingIdxS = checkIdx;
+            
+            // 🔒 [USER MANDATORY RULE] 做多信号K线必须是阳线 (Close > Open)；做空信号K线必须是阴线 (Close < Open)
+            // 穿越分支亦必须满足方向一致性要求 (实时未收盘K线 lag === 0 可待定变灰)
+            const crossingIsBullish = (closes[checkIdx] > opens[checkIdx]) || (lag === 0);
+            const crossingIsBearish = (closes[checkIdx] < opens[checkIdx]) || (lag === 0);
 
-            const targetIdxL = (config.requireAlignment && !config.requireCrossing) ? divConfirmedIdxL : checkIdx;
-            const targetIdxS = (config.requireAlignment && !config.requireCrossing) ? divConfirmedIdxS : checkIdx;
+            // 锁定做多与做空的目标确认K线索引 (优先采用符合阳/阴线条件的精确K线)
+            let targetIdxL = checkIdx;
+            if (config.requireAlignment && !config.requireCrossing) {
+                targetIdxL = divConfirmedIdxL;
+            } else if (divergenceValidL && !(isCrossing && closes[checkIdx] > opens[checkIdx])) {
+                targetIdxL = divConfirmedIdxL;
+            } else {
+                targetIdxL = checkIdx;
+            }
+
+            let targetIdxS = checkIdx;
+            if (config.requireAlignment && !config.requireCrossing) {
+                targetIdxS = divConfirmedIdxS;
+            } else if (divergenceValidS && !(isCrossing && closes[checkIdx] < opens[checkIdx])) {
+                targetIdxS = divConfirmedIdxS;
+            } else {
+                targetIdxS = checkIdx;
+            }
 
             // Amplitude and Volume for LONG signal candle
             const candleRangeL = highs[targetIdxL] - lows[targetIdxL];
@@ -480,8 +499,8 @@ export function analyzeList2Crossing(
             const strictOkL = !strictFiltering || (ampValidL && volValidL && bodyValidL);
             const strictOkS = !strictFiltering || (ampValidS && volValidS && bodyValidS);
 
-            const crossingValidL = isCrossing && !conflictL && strictOkL && directionGuardL;
-            const crossingValidS = isCrossing && !conflictS && strictOkS && directionGuardS;
+            const crossingValidL = isCrossing && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
+            const crossingValidS = isCrossing && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
 
             const divergenceStrictValidL = divergenceValidL && strictOkL;
             const divergenceStrictValidS = divergenceValidS && strictOkS;
@@ -507,8 +526,8 @@ export function analyzeList2Crossing(
                 patternMatchedS = divergenceStrictValidS;
             } else {
                 // Squeeze fallback
-                patternMatchedL = strictOkL && !conflictL;
-                patternMatchedS = strictOkS && !conflictS;
+                patternMatchedL = strictOkL && !conflictL && crossingIsBullish;
+                patternMatchedS = strictOkS && !conflictS && crossingIsBearish;
             }
 
             // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
@@ -517,41 +536,46 @@ export function analyzeList2Crossing(
                 patternMatchedS = patternMatchedS && crossedAllS;
             }
 
+            // 🔒 [USER MANDATORY RULE] 做多信号K线必须是阳线，做空信号K线必须是阴线
             let isValidL = false;
             let isPendingGrayL = false;
             if (patternMatchedL) {
-                if (config.requireAlignment && !config.requireCrossing) {
-                    isValidL = true;
-                    isPendingGrayL = divIsPendingGrayL;
-                } else {
-                    if (lag > 0) {
-                        if (kClose > kOpen || config.requireAlignment) {
-                            isValidL = true;
-                            isPendingGrayL = false;
-                        }
-                    } else {
+                const targetCloseL = closes[targetIdxL];
+                const targetOpenL = opens[targetIdxL];
+                const targetLagL = idx - targetIdxL;
+
+                if (targetLagL > 0) {
+                    if (targetCloseL > targetOpenL) {
                         isValidL = true;
-                        isPendingGrayL = !(kClose > kOpen);
+                        isPendingGrayL = false;
+                    } else {
+                        isValidL = false;
                     }
+                } else {
+                    // lag === 0 实时未收盘K线
+                    isValidL = true;
+                    isPendingGrayL = !(targetCloseL > targetOpenL);
                 }
             }
 
             let isValidS = false;
             let isPendingGrayS = false;
             if (patternMatchedS) {
-                if (config.requireAlignment && !config.requireCrossing) {
-                    isValidS = true;
-                    isPendingGrayS = divIsPendingGrayS;
-                } else {
-                    if (lag > 0) {
-                        if (kClose < kOpen || config.requireAlignment) {
-                            isValidS = true;
-                            isPendingGrayS = false;
-                        }
-                    } else {
+                const targetCloseS = closes[targetIdxS];
+                const targetOpenS = opens[targetIdxS];
+                const targetLagS = idx - targetIdxS;
+
+                if (targetLagS > 0) {
+                    if (targetCloseS < targetOpenS) {
                         isValidS = true;
-                        isPendingGrayS = !(kClose < kOpen);
+                        isPendingGrayS = false;
+                    } else {
+                        isValidS = false;
                     }
+                } else {
+                    // lag === 0 实时未收盘K线
+                    isValidS = true;
+                    isPendingGrayS = !(targetCloseS < targetOpenS);
                 }
             }
 
@@ -576,7 +600,7 @@ export function analyzeList2Crossing(
             }
 
             if (isValidL) {
-                const signalLagL = (config.requireAlignment && !config.requireCrossing) ? divConfirmedLagL : lag;
+                const signalLagL = idx - targetIdxL;
                 const signalTimeL = timestamps[targetIdxL];
                 longSignals.push({ 
                     lag: signalLagL, 
@@ -598,7 +622,7 @@ export function analyzeList2Crossing(
             }
 
             if (isValidS) {
-                const signalLagS = (config.requireAlignment && !config.requireCrossing) ? divConfirmedLagS : lag;
+                const signalLagS = idx - targetIdxS;
                 const signalTimeS = timestamps[targetIdxS];
                 shortSignals.push({ 
                     lag: signalLagS, 

@@ -1052,18 +1052,29 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           const e30Arr = calculateEMA(closes, 30);
           signals.forEach(s => {
               const sIdx = getCandleIdxFast(s.time, fullData);
-              if (sIdx !== -1 && sIdx >= 30) {
-                  const val10 = e10Arr[sIdx];
-                  const val20 = e20Arr[sIdx];
-                  const val30 = e30Arr[sIdx];
-                  if (val10 !== undefined && val20 !== undefined) {
-                      // 🔒 铁律门禁：做多信号所在K线绝不可处于空头死叉 (EMA10 < EMA20 且 EMA10 < EMA30)
-                      if (s.type === 'LONG' && val10 < val20 && (val30 === undefined || val10 < val30)) {
-                          return;
-                      }
-                      // 做空信号所在K线绝不可处于多头金叉 (EMA10 > EMA20 且 EMA10 > EMA30)
-                      if (s.type === 'SHORT' && val10 > val20 && (val30 === undefined || val10 > val30)) {
-                          return;
+              if (sIdx !== -1) {
+                  const d = fullData[sIdx];
+                  // 🔒 [USER MANDATORY RULE] 做多信号K线必须是阳线 (Close >= Open)，做空信号K线必须是阴线 (Close <= Open)
+                  if (s.type === 'LONG' && d.close < d.open && sIdx < fullData.length - 1) {
+                      return;
+                  }
+                  if (s.type === 'SHORT' && d.close > d.open && sIdx < fullData.length - 1) {
+                      return;
+                  }
+
+                  if (sIdx >= 30) {
+                      const val10 = e10Arr[sIdx];
+                      const val20 = e20Arr[sIdx];
+                      const val30 = e30Arr[sIdx];
+                      if (val10 !== undefined && val20 !== undefined) {
+                          // 🔒 铁律门禁：做多信号所在K线绝不可处于空头死叉 (EMA10 < EMA20 且 EMA10 < EMA30)
+                          if (s.type === 'LONG' && val10 < val20 && (val30 === undefined || val10 < val30)) {
+                              return;
+                          }
+                          // 做空信号所在K线绝不可处于多头金叉 (EMA10 > EMA20 且 EMA10 > EMA30)
+                          if (s.type === 'SHORT' && val10 > val20 && (val30 === undefined || val10 > val30)) {
+                              return;
+                          }
                       }
                   }
               }
