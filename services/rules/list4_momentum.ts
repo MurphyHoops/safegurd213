@@ -71,22 +71,79 @@ export function analyzeList4Momentum(
             midPoint = short_defense;
         }
 
-        let momentumStatus: 'INVALID' | 'PENDING' | 'TRIGGERED' = 'PENDING';
+        let momentumStatus: 'INVALID' | 'PENDING' | 'TRIGGERED' | 'DORMANT' | 'REVIVED' = 'PENDING';
         let invalidReason = '';
 
         const triggerEpsilon = currentPrice * 0.00001; // Float precision tolerance (0.001%)
 
-        if (config.enableThresholds !== false) {
+        const ema10 = item.structure?.ema10;
+        const ema30 = item.structure?.ema30;
+        const hasEmas = typeof ema10 === 'number' && typeof ema30 === 'number' && !isNaN(ema10) && !isNaN(ema30);
+
+        // 🎯 动态严密判定「前 NK 突破」：做多实时价格必须 > 前 NK 最高收盘价；做空实时价格必须 < 前 NK 最低收盘价
+        const kCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
+        let maxCloseN: number | undefined = undefined;
+        let minCloseN: number | undefined = undefined;
+
+        if (item.structure) {
+            if (item.structure.recentCloses && item.structure.recentCloses.length > 0) {
+                const slice = item.structure.recentCloses.slice(-kCount);
+                if (slice.length > 0) {
+                    maxCloseN = Math.max(...slice);
+                    minCloseN = Math.min(...slice);
+                }
+            }
+            if (typeof maxCloseN !== 'number') maxCloseN = item.structure.maxClose3;
+            if (typeof minCloseN !== 'number') minCloseN = item.structure.minClose3;
+        }
+
+        const is3KPassed = (() => {
+            if (config.enableRev3K !== true) return true;
+            if (!item.structure) return true;
             if (item.direction === 'LONG') {
-                if (currentPrice < midPoint || extreme < midPoint) {
-                    momentumStatus = 'INVALID';
-                    const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
-                    const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
-                    invalidReason = `结构破坏: 跌破多单中轴防守价 (${curStr} < ${midStr}) [中轴防守: ${(defense_pct * 100).toFixed(0)}%, 信号高: ${high.toFixed(4)}, 低: ${low.toFixed(4)}]`;
+                if (typeof maxCloseN === 'number') {
+                    return currentPrice > maxCloseN;
+                }
+                return item.structure.isBreakout3K !== false;
+            } else {
+                if (typeof minCloseN === 'number') {
+                    return currentPrice < minCloseN;
+                }
+                return item.structure.isBreakout3K !== false;
+            }
+        })();
+
+        const formatN = (val?: number) => typeof val === 'number' && isFinite(val) ? val.toFixed(4) : '';
+
+        if (config.enableThresholds === true) {
+            if (item.direction === 'LONG') {
+                const isDefenseBroken = currentPrice < midPoint || extreme < midPoint;
+                const isEmaTrendDead = hasEmas && ema10 < ema30;
+
+                if (isDefenseBroken) {
+                    if (isEmaTrendDead) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 下穿 EMA30(${ema30?.toFixed(4)})]`;
+                    } else if (currentPrice >= (entryTrigger - triggerEpsilon) || bestPrice >= (entryTrigger - triggerEpsilon)) {
+                        // 破中轴但均线未死，且价格再次强力打穿原始突破线 -> 满血复活！
+                        if (!is3KPassed) {
+                            momentumStatus = 'REVIVED';
+                            invalidReason = `破中轴后满血复活：等待前${kCount}K突破 (已达突破线，未越过前${kCount}K最高收盘价: ${formatN(maxCloseN)})`;
+                        } else {
+                            momentumStatus = 'TRIGGERED';
+                            invalidReason = '破中轴后蓄势反攻：已达突破线 (TRIGGERED)';
+                        }
+                    } else {
+                        // 破中轴，但 EMA10 依然在 EMA30 之上：进入休眠蓄势等待复活
+                        momentumStatus = 'DORMANT';
+                        const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
+                        const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
+                        invalidReason = `破中轴休眠蓄势中 [${curStr} < ${midStr}]，均线多头保持完好 (EMA10 > EMA30)，等待突破前高复活`;
+                    }
                 } else if (currentPrice >= (entryTrigger - triggerEpsilon) || bestPrice >= (entryTrigger - triggerEpsilon)) {
-                    if (config.enableRev3K && item.structure && item.structure.isBreakout3K === false) {
+                    if (!is3KPassed) {
                         momentumStatus = 'PENDING';
-                        invalidReason = '等待前三K突破 (已达突破线，未越过前3K收盘最高价)';
+                        invalidReason = `等待前${kCount}K突破 (已达突破线，未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`;
                     } else {
                         momentumStatus = 'TRIGGERED';
                     }
@@ -94,15 +151,33 @@ export function analyzeList4Momentum(
                     momentumStatus = 'PENDING';
                 }
             } else {
-                if (currentPrice > midPoint || extreme > midPoint) {
-                    momentumStatus = 'INVALID';
-                    const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
-                    const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
-                    invalidReason = `结构破坏: 突破空单中轴防守价 (${curStr} > ${midStr}) [中轴防守: ${(defense_pct * 100).toFixed(0)}%, 信号低: ${low.toFixed(4)}, 高: ${high.toFixed(4)}]`;
+                const isDefenseBroken = currentPrice > midPoint || extreme > midPoint;
+                const isEmaTrendDead = hasEmas && ema10 > ema30;
+
+                if (isDefenseBroken) {
+                    if (isEmaTrendDead) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 上穿 EMA30(${ema30?.toFixed(4)})]`;
+                    } else if (currentPrice <= (entryTrigger + triggerEpsilon) || bestPrice <= (entryTrigger + triggerEpsilon)) {
+                        // 破中轴但均线未死，且价格再次打穿原始突破线 -> 满血复活！
+                        if (!is3KPassed) {
+                            momentumStatus = 'REVIVED';
+                            invalidReason = `破中轴后满血复活：等待前${kCount}K突破 (已达突破线，未越过前${kCount}K最低收盘价: ${formatN(minCloseN)})`;
+                        } else {
+                            momentumStatus = 'TRIGGERED';
+                            invalidReason = '破中轴后蓄势反攻：已达突破线 (TRIGGERED)';
+                        }
+                    } else {
+                        // 破中轴，但 EMA10 依然在 EMA30 之下：进入休眠蓄势等待复活
+                        momentumStatus = 'DORMANT';
+                        const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
+                        const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
+                        invalidReason = `破中轴休眠蓄势中 [${curStr} > ${midStr}]，均线空头保持完好 (EMA10 < EMA30)，等待跌破前低复活`;
+                    }
                 } else if (currentPrice <= (entryTrigger + triggerEpsilon) || bestPrice <= (entryTrigger + triggerEpsilon)) {
-                    if (config.enableRev3K && item.structure && item.structure.isBreakout3K === false) {
+                    if (!is3KPassed) {
                         momentumStatus = 'PENDING';
-                        invalidReason = '等待前三K突破 (已达突破线，未越过前3K收盘最低价)';
+                        invalidReason = `等待前${kCount}K突破 (已达突破线，未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
                     } else {
                         momentumStatus = 'TRIGGERED';
                     }
@@ -111,17 +186,26 @@ export function analyzeList4Momentum(
                 }
             }
         } else {
-            if (config.enableRev3K && item.structure && item.structure.isBreakout3K === false) {
-                momentumStatus = 'PENDING';
-                invalidReason = item.direction === 'LONG'
-                    ? '等待前三K突破 (未越过前3K收盘最高价)'
-                    : '等待前三K突破 (未越过前3K收盘最低价)';
+            // When enableThresholds is OFF (false), never invalidate on defense line
+            const isBreakout = item.direction === 'LONG'
+                ? (currentPrice >= (entryTrigger - triggerEpsilon) || bestPrice >= (entryTrigger - triggerEpsilon))
+                : (currentPrice <= (entryTrigger + triggerEpsilon) || bestPrice <= (entryTrigger + triggerEpsilon));
+
+            if (isBreakout) {
+                if (!is3KPassed) {
+                    momentumStatus = 'PENDING';
+                    invalidReason = item.direction === 'LONG'
+                        ? `等待前${kCount}K突破 (未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`
+                        : `等待前${kCount}K突破 (未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
+                } else {
+                    momentumStatus = 'TRIGGERED';
+                }
             } else {
-                momentumStatus = 'TRIGGERED';
+                momentumStatus = 'PENDING';
             }
         }
 
-        const isAnyFuseEnabled = !!(config.enableAntiChase || config.enableThrust || config.enableAutoDirGuard || config.enableAdvancedFilter);
+        const isAnyFuseEnabled = !!(config.enableAntiChase === true || config.enableThrust === true || config.enableAutoDirGuard === true || config.enableAdvancedFilter === true);
 
         let fuseBlocked = isAnyFuseEnabled ? (item.fuseLatched || false) : false;
         let fuseReason = (isAnyFuseEnabled && item.fuseLatched) ? (item.fuseReason || '已锁定') : '';
@@ -129,10 +213,10 @@ export function analyzeList4Momentum(
         
         const antiChase = config.antiChaseConfig;
 
-        if (!item.fuseLatched && config.enableAntiChase && item.historyExtremes) {
+        if (!item.fuseLatched && config.enableAntiChase === true && item.historyExtremes && antiChase) {
             const { highs1h, lows1h } = item.historyExtremes;
 
-            if (item.direction === 'LONG') {
+            if (item.direction === 'LONG' && antiChase.longThresholds) {
                 for (const [hoursStr, threshold] of Object.entries(antiChase.longThresholds)) {
                     if (threshold <= 0) continue;
                     const hours = parseInt(hoursStr);
@@ -142,12 +226,12 @@ export function analyzeList4Momentum(
                     
                     if (pump > threshold) {
                         fuseBlocked = true;
-                        fuseReason = `防追高: ${hours}小时内涨幅 ${pump.toFixed(1)}% > ${threshold}%`;
+                        fuseReason = `由列表4防追高过滤规则删除 [${hours}小时内涨幅 ${pump.toFixed(1)}% > ${threshold}%]`;
                         fuseDetails = { period: `${hours}小时`, threshold: threshold, actual: parseFloat(pump.toFixed(1)) };
                         break;
                     }
                 }
-            } else if (item.direction === 'SHORT') {
+            } else if (item.direction === 'SHORT' && antiChase.shortThresholds) {
                 for (const [hoursStr, threshold] of Object.entries(antiChase.shortThresholds)) {
                     if (threshold <= 0) continue;
                     const hours = parseInt(hoursStr);
@@ -157,7 +241,7 @@ export function analyzeList4Momentum(
                     
                     if (drop > threshold) {
                         fuseBlocked = true;
-                        fuseReason = `防追跌: ${hours}小时内跌幅 ${drop.toFixed(1)}% > ${threshold}%`;
+                        fuseReason = `由列表4防追高过滤规则删除 [${hours}小时内跌幅 ${drop.toFixed(1)}% > ${threshold}%]`;
                         fuseDetails = { period: `${hours}小时`, threshold: threshold, actual: parseFloat(drop.toFixed(1)) };
                         break;
                     }
@@ -165,12 +249,12 @@ export function analyzeList4Momentum(
             }
         }
 
-        if (config.enableThrust && item.structure && !item.structure.thrustValid) {
+        if (config.enableThrust === true && item.structure && !item.structure.thrustValid) {
             fuseBlocked = true;
-            fuseReason = `7K推进力不足 (<1%)`;
+            fuseReason = `由列表4防过度交易过滤规则删除 [7K推进力不足 (<1%)]`;
         }
 
-        if (!item.fuseLatched && config.enableAutoDirGuard && item.historyExtremes && config.autoDirConfig) {
+        if (!item.fuseLatched && config.enableAutoDirGuard === true && item.historyExtremes && config.autoDirConfig) {
             const { highs1h, lows1h } = item.historyExtremes;
             const autoDir = config.autoDirConfig;
             
@@ -195,7 +279,7 @@ export function analyzeList4Momentum(
                     const pump = ((currentPrice - minPrice) / minPrice) * 100;
                     if (pump > p.limit) {
                         fuseBlocked = true;
-                        fuseReason = `动态方向锁: ${p.key} 涨幅过大 (${pump.toFixed(1)}% > ${p.limit}%)`;
+                        fuseReason = `由列表4防过度交易过滤规则删除 [动态方向锁: ${p.key} 涨幅过大 (${pump.toFixed(1)}% > ${p.limit}%)]`;
                         fuseDetails = { period: `${p.key}`, threshold: p.limit, actual: parseFloat(pump.toFixed(1)) };
                         break;
                     }
@@ -203,7 +287,7 @@ export function analyzeList4Momentum(
                     const drop = ((maxPrice - currentPrice) / maxPrice) * 100;
                     if (drop > p.limit) {
                         fuseBlocked = true;
-                        fuseReason = `动态方向锁: ${p.key} 跌幅过大 (${drop.toFixed(1)}% > ${p.limit}%)`;
+                        fuseReason = `由列表4防过度交易过滤规则删除 [动态方向锁: ${p.key} 跌幅过大 (${drop.toFixed(1)}% > ${p.limit}%)]`;
                         fuseDetails = { period: `${p.key}`, threshold: p.limit, actual: parseFloat(drop.toFixed(1)) };
                         break;
                     }
@@ -211,7 +295,7 @@ export function analyzeList4Momentum(
             }
         }
 
-        if (!item.fuseLatched && config.enableAdvancedFilter && item.historyExtremes) {
+        if (!item.fuseLatched && config.enableAdvancedFilter === true && item.historyExtremes) {
             const { highs1h, lows1h } = item.historyExtremes;
             
             // Build groups array

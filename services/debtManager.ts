@@ -20,6 +20,10 @@ export class DebtManager {
     // 🔒【负债记入防重注册表】已记入负债的砍仓订单与流水 Key 集合，确保单笔订单绝对只记入一次
     private processedDebtOrderKeys: Set<string> = new Set();
 
+    // 🔒【单币周期封存时间戳登记表】记录币种最近一次解套盈利清仓或盈利平仓的封存时间
+    // 任何发生在此时间点之前的历史止损/砍仓数据一律物理隔离封存，绝对严禁被新一轮开仓负债关联！
+    private cycleSealedTimestamps: Map<string, number> = new Map();
+
     private constructor() {}
 
     public static getInstance(): DebtManager {
@@ -27,6 +31,34 @@ export class DebtManager {
             DebtManager.instance = new DebtManager();
         }
         return DebtManager.instance;
+    }
+
+    /**
+     * 🔒【核心封存接口】：盈利平仓或解套盈利清仓后，将该币种之前的所有止损/对冲数据全部物理封存
+     * 记录该币种的封存截断时间，并将已有历史流水标记为 cycle_sealed = true
+     */
+    public sealSymbolCycle(symbol: string, tradeLogs?: TradeLog[]): void {
+        const cleanSym = normalizeSymbol(symbol);
+        const sealTime = Date.now();
+        this.cycleSealedTimestamps.set(cleanSym, sealTime);
+
+        // 如果传入了流水数组，将该币种在此之前产生的所有 CLOSED 流水全部标记为已封存
+        if (Array.isArray(tradeLogs)) {
+            for (const log of tradeLogs) {
+                if (normalizeSymbol(log.symbol) === cleanSym) {
+                    log.cycle_sealed = true;
+                }
+            }
+        }
+        console.log(`[DebtManager] 🔒 周期数据已封存: ${cleanSym} 封存时间点: ${sealTime}，前序所有止损数据已归档，新一轮开仓负债完全隔离！`);
+    }
+
+    /**
+     * 获取指定币种最近一次周期封存时间戳
+     */
+    public getCycleSealedTimestamp(symbol: string): number {
+        const cleanSym = normalizeSymbol(symbol);
+        return this.cycleSealedTimestamps.get(cleanSym) || 0;
     }
 
     /**
@@ -123,10 +155,15 @@ export class DebtManager {
             .filter(t => t > 0);
         const cycleStartTime = activeEntryTimes.length > 0 ? Math.min(...activeEntryTimes) : 0;
 
+        // 🔒 [周期封存隔离铁律] 获取最近一次解套盈利清仓/盈利平仓的封存时间戳
+        const sealedCutoff = this.getCycleSealedTimestamp(cleanSym);
+
         // 收集该币种在当前对冲生命周期内所有属于砍仓/断臂/减仓止损的真实流水记录
+        // 关键改动：必须严格过滤掉任何在封存时间点之前的旧数据，以及已标记 cycle_sealed 的流水！
         const relevantCutLogs = tradeLogs.filter(l => 
             normalizeSymbol(l.symbol) === cleanSym &&
             l.status === 'CLOSED' &&
+            !l.cycle_sealed && // 严禁读取已被封存的上一轮流水
             (l.profit_usdt || 0) < 0 &&
             (
                 l.exit_reason?.includes('砍仓') || 
@@ -136,6 +173,7 @@ export class DebtManager {
                 l.is_hedge ||
                 l.events?.some(e => e.action?.includes('砍仓') || e.action?.includes('断臂') || e.action?.includes('减仓') || e.action?.includes('止损'))
             ) &&
+            (sealedCutoff === 0 || ((l.exit_timestamp || l.entry_timestamp || 0) > sealedCutoff)) && // 严禁读取封存时间点之前的记录
             (cycleStartTime === 0 || (l.exit_timestamp || l.entry_timestamp || 0) >= cycleStartTime - 300000)
         );
 

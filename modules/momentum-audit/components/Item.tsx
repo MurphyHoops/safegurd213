@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Zap, Lock, Ban, Activity, AlertTriangle, Trash2 } from 'lucide-react';
+import { Zap, Lock, Ban, Activity, AlertTriangle, Trash2, Moon, Sparkles } from 'lucide-react';
 import { ScannerItem, List4Config } from '../../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../../types';
 import { formatPrice } from '../../../services/symbolUtils';
@@ -29,14 +29,16 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
     
     const status = m.status || 'PENDING';
     const isInvalid = status === 'INVALID';
-    const isPending = status === 'PENDING';
+    const isDormant = status === 'DORMANT';
+    const isRevived = status === 'REVIVED';
+    const isPending = status === 'PENDING' || isRevived;
     const isTriggered = status === 'TRIGGERED';
     const isLong = item.direction === 'LONG';
     const tf = item.tf || '15m';
 
     // Calculate distance to trigger for display
     let diffToTrigger = 0;
-    if (isPending && m.entryTrigger > 0 && item.price > 0) {
+    if ((isPending || isDormant) && m.entryTrigger > 0 && item.price > 0) {
         if (isLong) {
             diffToTrigger = ((m.entryTrigger - item.price) / item.price) * 100;
         } else {
@@ -136,14 +138,30 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                         {/* Status Indicator */}
                         <div className={`flex items-center justify-center py-1 rounded border text-[10px] font-bold gap-1.5 ${
                             isInvalid ? 'bg-red-900/20 border-red-500/30 text-red-400' :
+                            isDormant ? 'bg-amber-950/40 border-amber-500/30 text-amber-400/90' :
+                            isRevived ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300 animate-pulse' :
                             isPending ? 'bg-slate-800 border-slate-600 text-slate-400' :
                             'bg-amber-600 border-amber-500 text-white animate-pulse'
                         }`}>
                             {isInvalid && <Ban size={12} />}
-                            {isPending && <Lock size={12} />}
+                            {isDormant && <Moon size={12} className="text-amber-400" />}
+                            {isRevived && <Sparkles size={12} className="text-emerald-400" />}
+                            {isPending && !isRevived && <Lock size={12} />}
                             {isTriggered && <Activity size={12} />}
                             <span>
                                 {isInvalid ? '结构已破坏 (INVALID)' : 
+                                isDormant ? (
+                                    <span className="flex items-center gap-1">
+                                        破中轴休眠中 (待复活)
+                                        <span className="text-[9px] font-mono opacity-80">(距复活高点: {typeof diffToTrigger === 'number' && isFinite(diffToTrigger) ? diffToTrigger.toFixed(2) : '0.00'}%)</span>
+                                    </span>
+                                ) :
+                                isRevived ? (
+                                    <span className="flex items-center gap-1">
+                                        已复活等待进攻
+                                        <span className="text-[9px] font-mono opacity-80">(距触发: {typeof diffToTrigger === 'number' && isFinite(diffToTrigger) ? diffToTrigger.toFixed(2) : '0.00'}%)</span>
+                                    </span>
+                                ) :
                                 isPending ? (
                                     <span className="flex items-center gap-1">
                                         等待突破 
@@ -155,19 +173,19 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                         </div>
 
                         {m.invalidReason && (
-                            <div className={`text-[9px] text-center leading-tight ${isInvalid ? 'text-red-400' : 'text-amber-400 font-semibold'}`}>
+                            <div className={`text-[9px] text-center leading-tight ${isInvalid ? 'text-red-400' : isDormant ? 'text-amber-400/80 font-medium' : isRevived ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}`}>
                                 {m.invalidReason}
                             </div>
                         )}
 
                         <div className="grid grid-cols-2 gap-2 text-[9px]">
-                            <div className={`p-1.5 rounded border ${isInvalid ? 'bg-red-900/10 border-red-500/20' : 'bg-slate-800 border-slate-700'}`}>
-                                <span className="text-slate-500 block mb-0.5">中轴防守 (Backtrace)</span>
-                                <span className={`font-mono font-bold ${isInvalid ? 'text-red-400' : 'text-emerald-400'}`}>{m.midPoint ? formatPrice(m.midPoint) : '-'}</span>
+                            <div className={`p-1.5 rounded border ${isInvalid ? 'bg-red-900/10 border-red-500/20' : isDormant ? 'bg-amber-950/20 border-amber-500/20' : 'bg-slate-800 border-slate-700'}`}>
+                                <span className="text-slate-500 block mb-0.5">{isDormant ? '中轴已破 (休眠)' : '中轴防守 (Backtrace)'}</span>
+                                <span className={`font-mono font-bold ${isInvalid ? 'text-red-400' : isDormant ? 'text-amber-400/70' : 'text-emerald-400'}`}>{m.midPoint ? formatPrice(m.midPoint) : '-'}</span>
                             </div>
                             <div className={`p-1.5 rounded border ${!isInvalid && !isTriggered ? 'bg-blue-900/10 border-blue-500/20' : 'bg-slate-800 border-slate-700'}`}>
-                                <span className="text-slate-500 block mb-0.5">突破触发 (Trigger)</span>
-                                <span className={`font-mono font-bold ${isTriggered ? 'text-amber-400' : 'text-slate-300'}`}>{m.entryTrigger ? formatPrice(m.entryTrigger) : '-'}</span>
+                                <span className="text-slate-500 block mb-0.5">{isDormant ? '复活目标A (原基准)' : '突破触发 (Trigger)'}</span>
+                                <span className={`font-mono font-bold ${isTriggered ? 'text-amber-400' : isRevived ? 'text-emerald-400' : 'text-slate-300'}`}>{m.entryTrigger ? formatPrice(m.entryTrigger) : '-'}</span>
                             </div>
                         </div>
 
@@ -181,19 +199,23 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                                     open: item.structure.signalPrice, // Approximate
                                     amplitude: (item.structure.signalHigh - item.structure.signalLow) / item.structure.signalLow
                                 } : undefined;
-                                executeTradeSafe(item.symbol, item.direction as any, item.price, "Manual L4 Force", tf, signalCandle);
+                                executeTradeSafe(item.symbol, item.direction as any, item.price, isRevived ? "L4 Revived Force" : "Manual L4 Force", tf, signalCandle);
                             }} 
                             className={`w-full py-1.5 rounded text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-1.5 ${
                                 isTriggered 
                                 ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-900/40 cursor-pointer' 
-                                : isInvalid 
-                                    ? 'bg-slate-800 text-slate-600 cursor-not-allowed opacity-50'
-                                    : 'bg-slate-700 hover:bg-slate-600 text-slate-300 border border-slate-600'
+                                : isRevived
+                                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/40 cursor-pointer animate-pulse'
+                                    : isDormant
+                                        ? 'bg-slate-800/80 hover:bg-slate-800 text-amber-500/70 border border-amber-500/20'
+                                        : isInvalid 
+                                            ? 'bg-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                                            : 'bg-slate-700 hover:bg-slate-600 text-slate-300 border border-slate-600'
                             }`}
                             disabled={isInvalid}
                         >
-                            {isTriggered ? <Zap size={12} fill="currentColor"/> : <Lock size={12}/>}
-                            {isTriggered ? '确认离弦信号：立即部署' : isInvalid ? '信号已失效' : '强制执行 (Manual Force)'}
+                            {isTriggered ? <Zap size={12} fill="currentColor"/> : isRevived ? <Sparkles size={12} fill="currentColor"/> : isDormant ? <Moon size={12}/> : <Lock size={12}/>}
+                            {isTriggered ? '确认离弦信号：立即部署' : isRevived ? '已复活：等待突破/立即部署' : isDormant ? '休眠期：等待重新破高复活' : isInvalid ? '信号已失效' : '强制执行 (Manual Force)'}
                         </button>
                     </>
                 )}

@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { X, Loader2, Move, ZoomIn, ZoomOut, RefreshCw, AlertTriangle, WifiOff, Activity, ArrowRight, BarChart2, Ruler } from 'lucide-react';
+import { X, Loader2, Move, ZoomIn, ZoomOut, RefreshCw, AlertTriangle, WifiOff, Activity, ArrowRight, BarChart2, Ruler, Zap } from 'lucide-react';
 import { calculateEMA } from '../services/indicators';
 import { fetchWithFallback } from '../services/apiService';
 import { analyzeList2Crossing } from '../services/rules/list2_crossing'; // Import Rule Logic
@@ -373,9 +373,264 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   const [fullData, setFullData] = useState<KlineData[]>([]);
   const [emaData, setEmaData] = useState<Record<number, number[]>>({});
   const [lastUpdated, setLastUpdated] = useState<number>(0);
+  const [showDivergenceMarkers, setShowDivergenceMarkers] = useState<boolean>(true);
   
   // Computed Signals State (Full History)
   const [computedSignals, setComputedSignals] = useState<Signal[]>([]);
+
+  // List 2 EMA Alignment & Divergence Markers across full candlestick history (ONLY the 1st candle of each divergence run that passes crossing validation)
+  const divergenceMarkers = useMemo(() => {
+      if (fullData.length === 0) return [];
+      const markers: {
+          index: number;
+          time: number;
+          direction: 'LONG' | 'SHORT';
+          isStart: boolean;
+          divergenceStartIdx?: number;
+          delayBars?: number;
+          e10: number;
+          e20: number;
+          e30: number;
+          e40: number;
+          e80?: number;
+      }[] = [];
+
+      const getEmaAt = (period: number, idx: number) => {
+          const arr = emaData[period];
+          if (!arr) return null;
+          const offsetIdx = idx - (period - 1);
+          return (offsetIdx >= 0 && offsetIdx < arr.length) ? arr[offsetIdx] : null;
+      };
+
+      const enableDivergenceCrossCheck = list2Config?.enableDivergenceCrossCheck !== undefined ? !!list2Config.enableDivergenceCrossCheck : true;
+      const divergenceLookbackBars = (list2Config?.divergenceLookbackBars !== undefined && !Number.isNaN(list2Config.divergenceLookbackBars)) 
+          ? Math.max(1, list2Config.divergenceLookbackBars) 
+          : 20;
+      const scanLookbackLimit = (list2Config?.lookbackLimit !== undefined && !Number.isNaN(list2Config.lookbackLimit)) 
+          ? Math.max(1, list2Config.lookbackLimit) 
+          : 8;
+
+      let prevDir: 'LONG' | 'SHORT' | null = null;
+
+      for (let i = 0; i < fullData.length; i++) {
+          const e10 = getEmaAt(10, i);
+          const e20 = getEmaAt(20, i);
+          const e30 = getEmaAt(30, i);
+          const e40 = getEmaAt(40, i);
+          const e80 = getEmaAt(80, i);
+
+          if (e10 === null || e20 === null || e30 === null || e40 === null) {
+              prevDir = null;
+              continue;
+          }
+
+          // Bullish alignment: 10 > 20 > 30 > 40
+          const isLongDiv = e10 > e20 && e20 > e30 && e30 > e40;
+          // Bearish alignment: 10 < 20 < 30 < 40
+          const isShortDiv = e10 < e20 && e20 < e30 && e30 < e40;
+
+          if (isLongDiv) {
+              const isStart = prevDir !== 'LONG';
+              if (isStart) {
+                  let crossedAllL = true;
+                  if (enableDivergenceCrossCheck) {
+                      let crossed20L = false;
+                      let crossed30L = false;
+                      let crossed40L = false;
+                      let was10Below20 = false;
+                      let was10Below30 = false;
+                      let was10Below40 = false;
+
+                      for (let b = 0; b < divergenceLookbackBars; b++) {
+                          const bIdx = i - b;
+                          if (bIdx - 1 < 0) break;
+
+                          const cur10 = getEmaAt(10, bIdx);
+                          const cur20 = getEmaAt(20, bIdx);
+                          const cur30 = getEmaAt(30, bIdx);
+                          const cur40 = getEmaAt(40, bIdx);
+
+                          const prev10 = getEmaAt(10, bIdx - 1);
+                          const prev20 = getEmaAt(20, bIdx - 1);
+                          const prev30 = getEmaAt(30, bIdx - 1);
+                          const prev40 = getEmaAt(40, bIdx - 1);
+
+                          if (cur10 !== null) {
+                              if (cur20 !== null && cur10 <= cur20) was10Below20 = true;
+                              if (cur30 !== null && cur10 <= cur30) was10Below30 = true;
+                              if (cur40 !== null && cur10 <= cur40) was10Below40 = true;
+                          }
+
+                          if (cur10 !== null && prev10 !== null) {
+                              if (cur20 !== null && prev20 !== null && ((prev10 <= prev20 && cur10 >= cur20) || (prev10 < prev20 && cur10 > cur20))) crossed20L = true;
+                              if (cur30 !== null && prev30 !== null && ((prev10 <= prev30 && cur10 >= cur30) || (prev10 < prev30 && cur10 > cur30))) crossed30L = true;
+                              if (cur40 !== null && prev40 !== null && ((prev10 <= prev40 && cur10 >= cur40) || (prev10 < prev40 && cur10 > cur40))) crossed40L = true;
+                          }
+                      }
+
+                      if (e10 > e20 && was10Below20) crossed20L = true;
+                      if (e10 > e30 && was10Below30) crossed30L = true;
+                      if (e10 > e40 && was10Below40) crossed40L = true;
+
+                      crossedAllL = crossed20L && crossed30L && crossed40L;
+                  }
+
+                  if (crossedAllL) {
+                      // 🔒 [USER MANDATORY RULE] 发散K线同向确认：必须为阳线(Close > Open)。
+                      // 若发散起点为阴线，在 scanLookbackLimit 内寻找第一根收阳K线确认；超时未收阳则作废不予标记。
+                      if (fullData[i].close > fullData[i].open) {
+                          markers.push({
+                              index: i,
+                              time: fullData[i].time,
+                              direction: 'LONG',
+                              isStart: true,
+                              e10,
+                              e20,
+                              e30,
+                              e40,
+                              e80: e80 !== null ? e80 : undefined
+                          });
+                      } else {
+                          const maxForward = Math.min(fullData.length - 1, i + scanLookbackLimit);
+                          let foundIdx = -1;
+                          for (let j = i + 1; j <= maxForward; j++) {
+                              const j10 = getEmaAt(10, j);
+                              const j20 = getEmaAt(20, j);
+                              const j30 = getEmaAt(30, j);
+                              // 🔒 铁律门禁：向后确认期间若多头形态破坏，立即终止并作废
+                              if (j10 === null || j20 === null || j10 <= j20 || (j30 !== null && j10 <= j30)) {
+                                  break;
+                              }
+                              if (fullData[j].close > fullData[j].open) {
+                                  foundIdx = j;
+                                  break;
+                              }
+                          }
+                          if (foundIdx !== -1) {
+                              markers.push({
+                                  index: foundIdx,
+                                  time: fullData[foundIdx].time,
+                                  direction: 'LONG',
+                                  isStart: true,
+                                  divergenceStartIdx: i,
+                                  delayBars: foundIdx - i,
+                                  e10,
+                                  e20,
+                                  e30,
+                                  e40,
+                                  e80: e80 !== null ? e80 : undefined
+                              });
+                          }
+                      }
+                  }
+              }
+              prevDir = 'LONG';
+          } else if (isShortDiv) {
+              const isStart = prevDir !== 'SHORT';
+              if (isStart) {
+                  let crossedAllS = true;
+                  if (enableDivergenceCrossCheck) {
+                      let crossed20S = false;
+                      let crossed30S = false;
+                      let crossed40S = false;
+                      let was10Above20 = false;
+                      let was10Above30 = false;
+                      let was10Above40 = false;
+
+                      for (let b = 0; b < divergenceLookbackBars; b++) {
+                          const bIdx = i - b;
+                          if (bIdx - 1 < 0) break;
+
+                          const cur10 = getEmaAt(10, bIdx);
+                          const cur20 = getEmaAt(20, bIdx);
+                          const cur30 = getEmaAt(30, bIdx);
+                          const cur40 = getEmaAt(40, bIdx);
+
+                          const prev10 = getEmaAt(10, bIdx - 1);
+                          const prev20 = getEmaAt(20, bIdx - 1);
+                          const prev30 = getEmaAt(30, bIdx - 1);
+                          const prev40 = getEmaAt(40, bIdx - 1);
+
+                          if (cur10 !== null) {
+                              if (cur20 !== null && cur10 >= cur20) was10Above20 = true;
+                              if (cur30 !== null && cur10 >= cur30) was10Above30 = true;
+                              if (cur40 !== null && cur10 >= cur40) was10Above40 = true;
+                          }
+
+                          if (cur10 !== null && prev10 !== null) {
+                              if (cur20 !== null && prev20 !== null && ((prev10 >= prev20 && cur10 <= cur20) || (prev10 > prev20 && cur10 < cur20))) crossed20S = true;
+                              if (cur30 !== null && prev30 !== null && ((prev10 >= prev30 && cur10 <= cur30) || (prev10 > prev30 && cur10 < cur30))) crossed30S = true;
+                              if (cur40 !== null && prev40 !== null && ((prev10 >= prev40 && cur10 <= cur40) || (prev10 > prev40 && cur10 < cur40))) crossed40S = true;
+                          }
+                      }
+
+                      if (e10 < e20 && was10Above20) crossed20S = true;
+                      if (e10 < e30 && was10Above30) crossed30S = true;
+                      if (e10 < e40 && was10Above40) crossed40S = true;
+
+                      crossedAllS = crossed20S && crossed30S && crossed40S;
+                  }
+
+                  if (crossedAllS) {
+                      // 🔒 [USER MANDATORY RULE] 发散K线同向确认：必须为阴线(Close < Open)。
+                      // 若发散起点为阳线，在 scanLookbackLimit 内寻找第一根收阴K线确认；超时未收阴则作废不予标记。
+                      if (fullData[i].close < fullData[i].open) {
+                          markers.push({
+                              index: i,
+                              time: fullData[i].time,
+                              direction: 'SHORT',
+                              isStart: true,
+                              e10,
+                              e20,
+                              e30,
+                              e40,
+                              e80: e80 !== null ? e80 : undefined
+                          });
+                      } else {
+                          const maxForward = Math.min(fullData.length - 1, i + scanLookbackLimit);
+                          let foundIdx = -1;
+                          for (let j = i + 1; j <= maxForward; j++) {
+                              const j10 = getEmaAt(10, j);
+                              const j20 = getEmaAt(20, j);
+                              const j30 = getEmaAt(30, j);
+                              // 🔒 铁律门禁：向后确认期间若空头形态破坏，立即终止并作废
+                              if (j10 === null || j20 === null || j10 >= j20 || (j30 !== null && j10 >= j30)) {
+                                  break;
+                              }
+                              if (fullData[j].close < fullData[j].open) {
+                                  foundIdx = j;
+                                  break;
+                              }
+                          }
+                          if (foundIdx !== -1) {
+                              markers.push({
+                                  index: foundIdx,
+                                  time: fullData[foundIdx].time,
+                                  direction: 'SHORT',
+                                  isStart: true,
+                                  divergenceStartIdx: i,
+                                  delayBars: foundIdx - i,
+                                  e10,
+                                  e20,
+                                  e30,
+                                  e40,
+                                  e80: e80 !== null ? e80 : undefined
+                              });
+                          }
+                      }
+                  }
+              }
+              prevDir = 'SHORT';
+          } else {
+              prevDir = null;
+          }
+      }
+
+      return markers;
+  }, [fullData, emaData, list2Config]);
+
+  const bullishDivergenceCount = useMemo(() => divergenceMarkers.filter(m => m.direction === 'LONG').length, [divergenceMarkers]);
+  const bearishDivergenceCount = useMemo(() => divergenceMarkers.filter(m => m.direction === 'SHORT').length, [divergenceMarkers]);
 
   // Optimized O(log N) candle index lookup helper using binary search on timestamps
   const getCandleIdxFast = useCallback((time: number, data: KlineData[] = fullData): number => {
@@ -391,7 +646,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       // If exact timestamp not found, check closest neighbor within interval tolerance
       const tfMinutes = getTfMinutes(timeframe);
       const intervalMs = tfMinutes * 60 * 1000;
-      const tolerance = intervalMs * 0.6;
+      const tolerance = intervalMs * 0.8;
       let bestIdx = -1;
       let minDiff = Infinity;
       const candidates = [left - 1, left, left + 1];
@@ -404,7 +659,17 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               }
           }
       }
-      return bestIdx;
+      if (bestIdx !== -1) return bestIdx;
+      // Fallback: check if time falls within candle duration
+      for (let i = Math.max(0, left - 2); i <= Math.min(data.length - 1, left + 2); i++) {
+          if (time >= data[i].time && time < data[i].time + intervalMs) {
+              return i;
+          }
+      }
+      // Final fallback: closest existing candle
+      if (left >= 0 && left < data.length) return left;
+      if (left - 1 >= 0) return left - 1;
+      return -1;
   }, [fullData, timeframe]);
 
   // Analyze whether the current coin/timeframe signal is Crossing (穿越) or Divergence/Spread (发散)
@@ -690,7 +955,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
 
   // Viewport State
-  const [visibleCount, setVisibleCount] = useState(200); 
+  const [visibleCount, setVisibleCount] = useState(showAuditLines ? 48 : 200); 
   const [startIndex, setStartIndex] = useState(0); 
   const [hoverIndex, setHoverIndex] = useState<number | null>(null); 
   const [mouseY, setMouseY] = useState<number | null>(null); 
@@ -773,7 +1038,26 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       // NEW: Merge signals passed from parent (Scanner) to ensure consistency
       // Only merge if we are on the initial requested timeframe to avoid polluting other TFs
       if (timeframe === initialTimeframe && signals && signals.length > 0) {
+          const e10Arr = calculateEMA(closes, 10);
+          const e20Arr = calculateEMA(closes, 20);
+          const e30Arr = calculateEMA(closes, 30);
           signals.forEach(s => {
+              const sIdx = getCandleIdxFast(s.time, fullData);
+              if (sIdx !== -1 && sIdx >= 30) {
+                  const val10 = e10Arr[sIdx];
+                  const val20 = e20Arr[sIdx];
+                  const val30 = e30Arr[sIdx];
+                  if (val10 !== undefined && val20 !== undefined) {
+                      // 🔒 铁律门禁：做多信号所在K线绝不可处于空头死叉 (EMA10 < EMA20 且 EMA10 < EMA30)
+                      if (s.type === 'LONG' && val10 < val20 && (val30 === undefined || val10 < val30)) {
+                          return;
+                      }
+                      // 做空信号所在K线绝不可处于多头金叉 (EMA10 > EMA20 且 EMA10 > EMA30)
+                      if (s.type === 'SHORT' && val10 > val20 && (val30 === undefined || val10 > val30)) {
+                          return;
+                      }
+                  }
+              }
               // Avoid exact duplicates
               const exists = allSignals.some(existing => existing.time === s.time && existing.type === s.type);
               if (!exists) {
@@ -829,31 +1113,23 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setLastUpdated(Date.now());
 
                     if (isInitialLoad) {
-                        const defaultVisible = 200;
+                        const defaultVisible = showAuditLines ? 48 : 200;
                         setVisibleCount(defaultVisible);
                         
                         let targetIdx = -1;
-                        if (signals && signals.length > 0) {
-                            const sig = signals[0];
-                            targetIdx = mappedKlines.findIndex(k => k.time === sig.time);
-                            if (targetIdx === -1) {
-                                let minDiff = Infinity;
-                                mappedKlines.forEach((k, i) => {
-                                    const diff = Math.abs(k.time - sig.time);
-                                    if (diff < minDiff) {
-                                        minDiff = diff;
-                                        targetIdx = i;
-                                    }
-                                });
-                            }
+                        if (appearedTime) {
+                            targetIdx = getCandleIdxFast(appearedTime, mappedKlines);
+                        } else if (signals && signals.length > 0) {
+                            targetIdx = getCandleIdxFast(signals[0].time, mappedKlines);
                         } else if (highlightTime) {
-                            targetIdx = mappedKlines.findIndex(k => k.time === highlightTime);
+                            targetIdx = getCandleIdxFast(highlightTime, mappedKlines);
                         } else if (entryTime) {
-                            targetIdx = mappedKlines.findIndex(k => k.time === entryTime);
+                            targetIdx = getCandleIdxFast(entryTime, mappedKlines);
                         }
 
                         if (targetIdx !== -1) {
-                            const calculatedStart = targetIdx - (defaultVisible - 1 - 18);
+                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.35) : (defaultVisible - 1 - 18);
+                            const calculatedStart = targetIdx - offsetFromLeft;
                             setStartIndex(Math.max(0, Math.min(calculatedStart, mappedKlines.length - defaultVisible)));
                             setIsAutoScroll(false);
                         } else {
@@ -914,7 +1190,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setLastUpdated(Date.now());
 
                     if (isInitialLoad) {
-                        const defaultVisible = 200;
+                        const defaultVisible = showAuditLines ? 48 : 200;
                         setVisibleCount(defaultVisible);
                         
                         let targetIdx = -1;
@@ -929,7 +1205,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                         }
 
                         if (targetIdx !== -1) {
-                            const calculatedStart = targetIdx - (defaultVisible - 1 - 18);
+                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.35) : (defaultVisible - 1 - 18);
+                            const calculatedStart = targetIdx - offsetFromLeft;
                             setStartIndex(Math.max(0, Math.min(calculatedStart, klines.length - defaultVisible)));
                             setIsAutoScroll(false);
                         } else {
@@ -993,9 +1270,22 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           return (offsetIdx >= 0 && offsetIdx < arr.length) ? arr[offsetIdx] : null;
       };
       const amplitude = ((kline.high - kline.low) / kline.open) * 100;
+      const e10 = getEma(10);
+      const e20 = getEma(20);
+      const e30 = getEma(30);
+      const e40 = getEma(40);
+      const e80 = getEma(80);
+
+      let divergenceStatus: 'LONG' | 'SHORT' | null = null;
+      if (e10 !== null && e20 !== null && e30 !== null && e40 !== null && e10 > 0 && e20 > 0 && e30 > 0 && e40 > 0) {
+          if (e10 > e20 && e20 > e30 && e30 > e40) divergenceStatus = 'LONG';
+          else if (e10 < e20 && e20 < e30 && e30 < e40) divergenceStatus = 'SHORT';
+      }
+
       return {
           kline, amplitude,
-          ema10: getEma(10), ema20: getEma(20), ema30: getEma(30), ema40: getEma(40), ema80: getEma(80),
+          ema10: e10, ema20: e20, ema30: e30, ema40: e40, ema80: e80,
+          divergenceStatus
       };
   }, [fullData, emaData, hoverIndex]);
 
@@ -1137,7 +1427,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           if (d.volume > maxVol) maxVol = d.volume;
       });
       
-      // Ensure Entry Price and Extra Lines are visible in scale
+      // Ensure Entry Price and Extra Lines / Defense / Breakout lines are visible in scale
       if (entryPrice && entryPrice > 0) {
           minPrice = Math.min(minPrice, entryPrice * 0.995);
           maxPrice = Math.max(maxPrice, entryPrice * 1.005);
@@ -1218,264 +1508,573 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           );
       });
 
-      // Signals Rendering
-      const tfMinutes = getTfMinutes(timeframe);
-      const intervalMs = tfMinutes * 60 * 1000;
-      const signalsToShow = computedSignalsWithStats; 
+      // -------------------------------------------------------------
+      // Precise Signal Markers & Defense/Breakout Ray Calculations
+      // -------------------------------------------------------------
       const signalMarkers: React.ReactNode[] = [];
+      const signalsToShow = computedSignalsWithStats;
 
-      if (signalsToShow.length > 0) {
-          signalsToShow.forEach((sig, idx) => {
-              const signalIdx = sig.signalIdx ?? -1;
-              
-              if (signalIdx !== -1 && signalIdx >= startIndex && signalIdx < startIndex + visibleCount) {
-                  const i = signalIdx - startIndex;
-                  const d = fullData[signalIdx];
-                  if (d) {
-                      const x = getX(i) + candleWidth / 2;
-                      const isLong = sig.type === 'LONG';
-                      
-                      const amp = d.high - d.low;
-                      const safeAmp = amp > (d.close * 0.0005) ? amp : (d.close * 0.0005);
+      // Identify the single Focal Signal to anchor defense & breakout lines
+      let focalTime: number | null = entryTime || appearedTime || highlightTime || null;
+      let focalIdx = focalTime ? getCandleIdxFast(focalTime, fullData) : -1;
 
-                      const triggerExtra = extraLines?.find(l => l.label && (l.label.includes('TRIGGER') || l.label.includes('攻') || l.label.includes('突破')));
-                      const defenseExtra = extraLines?.find(l => l.label && (l.label.includes('DEFENSE') || l.label.includes('守') || l.label.includes('防守')));
+      if (focalIdx === -1 && signalsToShow.length > 0) {
+          const latest = signalsToShow[signalsToShow.length - 1];
+          focalIdx = latest.signalIdx ?? getCandleIdxFast(latest.time, fullData);
+      }
+      if (focalIdx === -1 && showAuditLines && fullData.length > 0) {
+          focalIdx = fullData.length - 1;
+      }
 
-                      const defPct = (sig.midlineThreshold !== undefined ? sig.midlineThreshold : 80) / 100;
-                      const brkPct = (sig.breakoutThreshold !== undefined ? sig.breakoutThreshold : 10) / 100;
+      // Calculate the exact prices for the focal signal
+      let focalDefensePrice: number | null = null;
+      let focalBreakoutPrice: number | null = null;
+      let focalIsLong = true;
+      let focalMidlinePct = 80;
+      let focalBreakoutPct = 10;
+      let focalX: number | null = null;
 
-                      const isCurrentSignal = entryTime ? sig.time === entryTime : true;
-                      const midPrice = (isCurrentSignal && defenseExtra && defenseExtra.price > 0) 
-                          ? defenseExtra.price 
-                          : (sig.midPrice ?? (isLong ? d.high - safeAmp * defPct : d.low + safeAmp * defPct));
-                      const midY = getY(midPrice);
-                      
-                      const breakthroughPrice = (isCurrentSignal && triggerExtra && triggerExtra.price > 0) 
-                          ? triggerExtra.price 
-                          : (sig.breakthroughPrice ?? (isLong ? d.high + safeAmp * brkPct : d.low - safeAmp * brkPct));
-                      const breakthroughY = getY(breakthroughPrice);
-                      
-                      if (showAuditLines && (!extraLines || extraLines.length === 0)) {
-                          const defenseLabel = sig.midlineThreshold !== undefined ? `中轴防守 (${sig.midlineThreshold}%)` : `中轴防守`;
-                          const breakLabel = sig.breakoutThreshold !== undefined ? `进攻突破 (${sig.breakoutThreshold}%)` : `进攻突破`;
+      if (focalIdx !== -1 && focalIdx < fullData.length) {
+          const fd = fullData[focalIdx];
+          const matchedSig = signalsToShow.find(s => s.signalIdx === focalIdx);
+          focalIsLong = matchedSig ? matchedSig.type === 'LONG' : true;
+          
+          if (extraLines) {
+              const hasShortExtra = extraLines.some(l => l.label && l.label.includes('空'));
+              if (hasShortExtra) focalIsLong = false;
+          }
 
-                          // Draw Mid-Axis Defense Line to the right
-                          signalMarkers.push(
-                              <g key={`sig-mid-${idx}`} pointerEvents="none">
-                                  <line 
-                                      x1={x} 
-                                      y1={midY} 
-                                      x2={width} 
-                                      y2={midY} 
-                                      stroke={isLong ? "#0ECB81" : "#F6465D"} 
-                                      strokeWidth={1} 
-                                      opacity={0.6} 
-                                      strokeDasharray="4 4" 
-                                  />
-                                  <text 
-                                      x={width - 4} 
-                                      y={midY - 4} 
-                                      fill={isLong ? "#0ECB81" : "#F6465D"} 
-                                      fontSize="9" 
-                                      textAnchor="end" 
-                                      opacity={0.8}
-                                  >
-                                      {defenseLabel} {formatPrice(midPrice)}
-                                  </text>
-                              </g>
-                          );
+          const amp = fd.high - fd.low;
+          const safeAmp = amp > (fd.close * 0.0005) ? amp : (fd.close * 0.0005);
 
-                          // Draw Breakthrough Line to the right
-                          signalMarkers.push(
-                              <g key={`sig-break-${idx}`} pointerEvents="none">
-                                  <line 
-                                      x1={x} 
-                                      y1={breakthroughY} 
-                                      x2={width} 
-                                      y2={breakthroughY} 
-                                      stroke={isLong ? "#0ECB81" : "#F6465D"} 
-                                      strokeWidth={1} 
-                                      opacity={0.8} 
-                                      strokeDasharray="2 2" 
-                                  />
-                                  <text 
-                                      x={width - 4} 
-                                      y={breakthroughY - 4} 
-                                      fill={isLong ? "#0ECB81" : "#F6465D"} 
-                                      fontSize="9" 
-                                      textAnchor="end" 
-                                      opacity={0.9} 
-                                      fontWeight="bold"
-                                  >
-                                      {breakLabel} {formatPrice(breakthroughPrice)}
-                                  </text>
-                              </g>
-                          );
-                      }
+          focalMidlinePct = matchedSig?.midlineThreshold ?? (propList4Config?.midlineThreshold ?? 80);
+          focalBreakoutPct = matchedSig?.breakoutThreshold ?? (propList4Config?.breakoutThreshold ?? 10);
 
-                      const ampVal = sig.ampVal ?? 0;
-                      const volRatioVal = sig.volRatioVal ?? 100;
-                      const bodyRatioVal = sig.bodyRatioVal ?? 0;
-                      const drop300 = sig.drop300 ?? 0;
-                      const rise300 = sig.rise300 ?? 0;
-                      const openRiseFromMin = sig.openRiseFromMin ?? 0;
-                      const openDropFromMax = sig.openDropFromMax ?? 0;
+          const triggerExtra = extraLines?.find(l => l.label && (l.label.includes('TRIGGER') || l.label.includes('攻') || l.label.includes('突破')));
+          const defenseExtra = extraLines?.find(l => l.label && (l.label.includes('DEFENSE') || l.label.includes('守') || l.label.includes('防守')));
 
-                      // Always draw the vertical guide line and parameters on its left and right sides
-                      const textGroupY = padding.top + 25;
-                      signalMarkers.push(
-                          <g key={`sig-guide-${idx}`} pointerEvents="none">
-                              {/* Vertical Guide Line */}
-                              <line 
-                                  x1={x} 
-                                  y1={padding.top} 
-                                  x2={x} 
-                                  y2={padding.top + 45} 
-                                  stroke={isLong ? "#0ECB81" : "#F6465D"} 
-                                  strokeWidth={1} 
-                                  strokeDasharray="3 3" 
-                                  opacity={0.6} 
-                              />
-                              <circle cx={x} cy={padding.top - 4} r={3} fill={isLong ? "#0ECB81" : "#F6465D"} opacity={0.8} />
-                              <text 
-                                  x={x} 
-                                  y={padding.top - 10} 
-                                  fill={isLong ? "#0ECB81" : "#F6465D"} 
-                                  fontSize="9" 
-                                  fontWeight="bold" 
-                                  textAnchor="middle" 
-                                  style={{ textShadow: '0 0 4px rgba(0,0,0,0.9)' }}
-                              >
-                                  信号K线
-                              </text>
+          focalBreakoutPrice = (triggerExtra && triggerExtra.price > 0)
+              ? triggerExtra.price
+              : (focalIsLong ? fd.high + safeAmp * (focalBreakoutPct / 100) : fd.low - safeAmp * (focalBreakoutPct / 100));
 
-                              {/* Left Side Parameters (End-aligned, x = x - 8) */}
-                              <text x={x - 8} y={textGroupY} fill="#CBD5E1" fontSize="9" textAnchor="end" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
-                                  振幅: {ampVal.toFixed(2)}%
-                              </text>
-                              <text x={x - 8} y={textGroupY + 13} fill="#CBD5E1" fontSize="9" textAnchor="end" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
-                                  量比: {volRatioVal.toFixed(1)}%
-                              </text>
-                              <text x={x - 8} y={textGroupY + 26} fill="#CBD5E1" fontSize="9" textAnchor="end" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
-                                  实体比例: {bodyRatioVal.toFixed(1)}%
-                              </text>
+          focalDefensePrice = (defenseExtra && defenseExtra.price > 0)
+              ? defenseExtra.price
+              : (focalIsLong ? fd.high - safeAmp * (focalMidlinePct / 100) : fd.low + safeAmp * (focalMidlinePct / 100));
 
-                              {/* Right Side Parameters (Start-aligned, x = x + 8) */}
-                              {isLong ? (
-                                  <>
-                                      <text x={x + 8} y={textGroupY} fill="#34D399" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
-                                          收盘距离过去300天跌幅: -{drop300.toFixed(2)}%
-                                      </text>
-                                      <text x={x + 8} y={textGroupY + 13} fill="#34D399" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
-                                          开盘距离最低涨幅: +{openRiseFromMin.toFixed(2)}%
-                                      </text>
-                                  </>
-                              ) : (
-                                  <>
-                                      <text x={x + 8} y={textGroupY} fill="#F87171" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
-                                          收盘距离过去300天涨幅: +{rise300.toFixed(2)}%
-                                      </text>
-                                      <text x={x + 8} y={textGroupY + 13} fill="#F87171" fontSize="9" textAnchor="start" style={{ textShadow: '1px 1px 2px black', fontFamily: 'monospace' }}>
-                                          开盘距离最高点跌幅: -{openDropFromMax.toFixed(2)}%
-                                      </text>
-                                  </>
-                              )}
-                          </g>
-                      );
+          if (focalIdx >= startIndex && focalIdx < startIndex + visibleCount) {
+              focalX = getX(focalIdx - startIndex) + candleWidth / 2;
+          }
+      }
 
-                      if (isLong) {
-                          const y = getY(d.low) + 15;
-                          signalMarkers.push(
-                              <g key={`sig-long-${idx}`} pointerEvents="none">
-                                  <text x={x} y={y + 12} fill="#0ECB81" fontSize="9" textAnchor="middle" fontWeight="bold">多</text>
-                                  <path d={`M ${x} ${y} L ${x-4} ${y+6} L ${x+4} ${y+6} Z`} fill="#0ECB81" />
-                                  {showAuditLines && (
-                                      <line x1={x} y1={getY(d.high)} x2={x} y2={getY(d.low)} stroke="#0ECB81" strokeWidth={1.5} opacity={0.6} strokeDasharray="2 2" />
-                                  )}
-                              </g>
-                          );
-                      } else {
-                          const y = getY(d.high) - 15;
-                          signalMarkers.push(
-                              <g key={`sig-short-${idx}`} pointerEvents="none">
-                                  <text x={x} y={y - 5} fill="#F6465D" fontSize="9" textAnchor="middle" fontWeight="bold">空</text>
-                                  <path d={`M ${x} ${y} L ${x-4} ${y-6} L ${x+4} ${y-6} Z`} fill="#F6465D" />
-                                  {showAuditLines && (
-                                      <line x1={x} y1={getY(d.high)} x2={x} y2={getY(d.low)} stroke="#F6465D" strokeWidth={1.5} opacity={0.6} strokeDasharray="2 2"/>
-                                  )}
-                              </g>
-                          );
+      // 🎯 通用标记空间布局与避障计算函数 (纵向保留1~3厘米距离，避开K线及EMA均线，多在下方，空在上方)
+      const getMarkerLayout = (
+          candleIdx: number,
+          dir: 'LONG' | 'SHORT',
+          candle: { high: number; low: number }
+      ) => {
+          const gap1to3cm = 48; // 纵向靠近K线的一端保留1~3厘米(~48px)距离
+          const yHigh = getY(candle.high);
+          const yLow = getY(candle.low);
+
+          if (dir === 'LONG') {
+              // 多方标记：置于K线及所有EMA均线下方
+              let lowestEmaY = yLow;
+              [10, 20, 30, 40, 80].forEach(p => {
+                  const arr = emaData[p];
+                  if (!arr) return;
+                  for (let offset = -2; offset <= 2; offset++) {
+                      const sIdx = candleIdx + offset;
+                      const eIdx = sIdx - (p - 1);
+                      if (eIdx >= 0 && eIdx < arr.length) {
+                          const val = arr[eIdx];
+                          if (val !== undefined && !isNaN(val)) {
+                              const yE = getY(val);
+                              if (!isNaN(yE) && yE > lowestEmaY) {
+                                  lowestEmaY = yE;
+                              }
+                          }
                       }
                   }
+              });
+
+              const dashStartY = yLow + gap1to3cm;
+              const labelY = Math.min(chartHeight - 12, Math.max(dashStartY + 26, lowestEmaY + 28));
+              const dashEndY = Math.max(dashStartY, labelY - 6);
+
+              return {
+                  dashStartY,
+                  dashEndY,
+                  labelY,
+                  hasDashedLine: dashEndY > dashStartY
+              };
+          } else {
+              // 空方标记：置于K线及所有EMA均线上方
+              let highestEmaY = yHigh;
+              [10, 20, 30, 40, 80].forEach(p => {
+                  const arr = emaData[p];
+                  if (!arr) return;
+                  for (let offset = -2; offset <= 2; offset++) {
+                      const sIdx = candleIdx + offset;
+                      const eIdx = sIdx - (p - 1);
+                      if (eIdx >= 0 && eIdx < arr.length) {
+                          const val = arr[eIdx];
+                          if (val !== undefined && !isNaN(val)) {
+                              const yE = getY(val);
+                              if (!isNaN(yE) && yE < highestEmaY) {
+                                  highestEmaY = yE;
+                              }
+                          }
+                      }
+                  }
+              });
+
+              const dashStartY = yHigh - gap1to3cm;
+              const labelY = Math.max(padding.top + 12, Math.min(dashStartY - 26, highestEmaY - 28));
+              const dashEndY = Math.min(dashStartY, labelY + 6);
+
+              return {
+                  dashStartY,
+                  dashEndY,
+                  labelY,
+                  hasDashedLine: dashEndY < dashStartY
+              };
+          }
+      };
+
+      // Render all signal markers (无背景框，无边框，多在下方，空在上方，虚线指引端保留1~3cm距离)
+      signalsToShow.forEach((sig, idx) => {
+          const signalIdx = sig.signalIdx ?? -1;
+          if (signalIdx === -1 || signalIdx < startIndex || signalIdx >= startIndex + visibleCount) return;
+
+          const i = signalIdx - startIndex;
+          const d = fullData[signalIdx];
+          if (!d) return;
+
+          const x = getX(i) + candleWidth / 2;
+          const isLong = sig.type === 'LONG';
+          const isFocal = signalIdx === focalIdx;
+          const guideColor = isLong ? '#0ECB81' : '#F6465D';
+          const layout = getMarkerLayout(signalIdx, isLong ? 'LONG' : 'SHORT', d);
+
+          if (isFocal) {
+              const badgeText = isLong ? '做多信号K线' : '做空信号K线';
+
+              signalMarkers.push(
+                  <g key={`sig-focal-anchor-${idx}`} pointerEvents="none">
+                      {/* 纵向指引虚线 (靠近K线的一端保留1~3cm距离) */}
+                      {layout.hasDashedLine && (
+                          <line 
+                              x1={x} 
+                              y1={layout.dashStartY} 
+                              x2={x} 
+                              y2={layout.dashEndY} 
+                              stroke={guideColor} 
+                              strokeWidth={1.5} 
+                              strokeDasharray="4 2" 
+                              opacity={0.85} 
+                          />
+                      )}
+                      {/* 指引小三角 */}
+                      {isLong ? (
+                          <polygon 
+                              points={`${x},${layout.dashStartY - 3} ${x - 3.5},${layout.dashStartY + 3} ${x + 3.5},${layout.dashStartY + 3}`} 
+                              fill={guideColor} 
+                          />
+                      ) : (
+                          <polygon 
+                              points={`${x},${layout.dashStartY + 3} ${x - 3.5},${layout.dashStartY - 3} ${x + 3.5},${layout.dashStartY - 3}`} 
+                              fill={guideColor} 
+                          />
+                      )}
+                      {/* 纯文字标记 (无背景、无边框) */}
+                      <text 
+                          x={x} 
+                          y={isLong ? layout.labelY + 2 : layout.labelY - 2} 
+                          fill={guideColor} 
+                          fontSize="10.5" 
+                          fontWeight="bold" 
+                          textAnchor="middle" 
+                          fontFamily="monospace"
+                      >
+                          {badgeText}
+                      </text>
+                  </g>
+              );
+          } else {
+              // 历史非焦点信号 (无背景、无边框，多在下方，空在上方)
+              signalMarkers.push(
+                  <g key={`sig-historical-${idx}`} pointerEvents="none">
+                      {layout.hasDashedLine && (
+                          <line 
+                              x1={x} 
+                              y1={layout.dashStartY} 
+                              x2={x} 
+                              y2={layout.dashEndY} 
+                              stroke={guideColor} 
+                              strokeWidth={1.2} 
+                              strokeDasharray="3 2" 
+                              opacity={0.65} 
+                          />
+                      )}
+                      {isLong ? (
+                          <polygon 
+                              points={`${x},${layout.dashStartY - 2} ${x - 3},${layout.dashStartY + 3} ${x + 3},${layout.dashStartY + 3}`} 
+                              fill={guideColor} 
+                              opacity={0.8}
+                          />
+                      ) : (
+                          <polygon 
+                              points={`${x},${layout.dashStartY + 2} ${x - 3},${layout.dashStartY - 3} ${x + 3},${layout.dashStartY - 3}`} 
+                              fill={guideColor} 
+                              opacity={0.8}
+                          />
+                      )}
+                      <text 
+                          x={x} 
+                          y={isLong ? layout.labelY + 2 : layout.labelY - 2} 
+                          fill={guideColor} 
+                          fontSize="9.5" 
+                          textAnchor="middle" 
+                          fontWeight="bold" 
+                          fontFamily="monospace"
+                      >
+                          {isLong ? '▲ 多' : '▼ 空'}
+                      </text>
+                  </g>
+              );
+          }
+      });
+
+      // Render the Stepped Orthogonal Lines for 进攻突破线 & 中轴防守线
+      // Layout faithfully matches the user's diagram:
+      // - Dashed lines start shifted 2 candles to the right (不接触信号K线)
+      // - Upper line extends horizontally, then turns UPWARDS with vertical dashed line and 2-row label above
+      // - Lower line extends horizontally, then turns DOWNWARDS with vertical dashed line and 2-row label below
+      // - Labels stacked vertically directly without border/background: Line 1 Title, Line 2 Price & Ratio
+      let focalLinesVisual: React.ReactNode = null;
+      if (focalBreakoutPrice !== null && focalDefensePrice !== null) {
+          const yBreakout = getY(focalBreakoutPrice);
+          const yDefense = getY(focalDefensePrice);
+          const xStart = focalX !== null ? focalX : 0;
+          const xEnd = width - padding.right;
+
+          // Colors
+          const breakoutColor = focalIsLong ? '#10B981' : '#F43F5E';
+          const defenseColor = '#F59E0B';
+
+          if (!isNaN(yBreakout) && !isNaN(yDefense)) {
+              // Stepped branch X position:
+              // 1. Start point is shifted 2 candles to the right from the signal candle (不接触信号K线)
+              const candleStep = (width - padding.right) / (effectiveCount || 1);
+              const shift2Candles = candleStep * 2;
+              const xLineStart = focalX !== null ? Math.min(xEnd - 50, focalX + shift2Candles) : 0;
+
+              // Stepped branch turn position:
+              const branchDist = Math.max(80, Math.min(180, candleWidth * 7));
+              const xTurn = Math.min(xEnd - 75, Math.max(xLineStart + 45, xLineStart + branchDist));
+
+              // Vertical offsets: Breakout turns UP (or DOWN if short), Defense turns DOWN (or UP if short)
+              const vOffset = 42;
+              
+              const yBreakoutVertical = focalIsLong 
+                  ? Math.max(padding.top + 36, yBreakout - vOffset) 
+                  : Math.min(chartHeight - 36, yBreakout + vOffset);
+
+              const yDefenseVertical = focalIsLong 
+                  ? Math.min(chartHeight - 36, yDefense + vOffset) 
+                  : Math.max(padding.top + 36, yDefense - vOffset);
+
+              const breakoutTitle = `${focalIsLong ? '多' : '空'}进攻突破线`;
+              const breakoutValue = `${formatPrice(focalBreakoutPrice)} (${focalIsLong ? '+' : '-'}${focalBreakoutPct}%)`;
+
+              const defenseTitle = '中轴防守线';
+              const defenseValue = `${formatPrice(focalDefensePrice)} (${focalMidlinePct}%)`;
+
+              focalLinesVisual = (
+                  <g key="focal-defense-breakout-stepped-group" pointerEvents="none">
+                      {/* --- 1. 进攻突破线 (Breakout Line) --- */}
+                      {/* Horizontal dashed line: starts 2 candles to the right of signal candle (does NOT touch signal K-line) */}
+                      <line 
+                          x1={xLineStart} 
+                          y1={yBreakout} 
+                          x2={xTurn} 
+                          y2={yBreakout} 
+                          stroke={breakoutColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="5 3" 
+                          opacity={0.95} 
+                      />
+                      {/* Faint continuation across to right edge for reference */}
+                      <line 
+                          x1={xTurn} 
+                          y1={yBreakout} 
+                          x2={xEnd} 
+                          y2={yBreakout} 
+                          stroke={breakoutColor} 
+                          strokeWidth={1} 
+                          strokeDasharray="2 3" 
+                          opacity={0.25} 
+                      />
+                      {/* Corner joint anchor */}
+                      <circle cx={xTurn} cy={yBreakout} r={3} fill={breakoutColor} />
+                      {/* Vertical line branching UP (for Long) or DOWN (for Short) */}
+                      <line 
+                          x1={xTurn} 
+                          y1={yBreakout} 
+                          x2={xTurn} 
+                          y2={yBreakoutVertical} 
+                          stroke={breakoutColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="4 2" 
+                          opacity={0.95} 
+                      />
+                      {/* Breakout Label: Stacked vertically without border/background */}
+                      <g transform={`translate(${xTurn}, ${yBreakoutVertical})`}>
+                          {/* Line 1: Title */}
+                          <text 
+                              x={0} 
+                              y={focalIsLong ? -18 : 13} 
+                              fill={breakoutColor} 
+                              fontSize="10.5" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                          >
+                              {breakoutTitle}
+                          </text>
+                          {/* Line 2: Price & Pct */}
+                          <text 
+                              x={0} 
+                              y={focalIsLong ? -5 : 26} 
+                              fill={breakoutColor} 
+                              fontSize="10" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                              fontFamily="monospace"
+                          >
+                              {breakoutValue}
+                          </text>
+                      </g>
+
+                      {/* --- 2. 中轴防守线 (Defense Line) --- */}
+                      {/* Horizontal dashed line: starts 2 candles to the right of signal candle (does NOT touch signal K-line) */}
+                      <line 
+                          x1={xLineStart} 
+                          y1={yDefense} 
+                          x2={xTurn} 
+                          y2={yDefense} 
+                          stroke={defenseColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="5 3" 
+                          opacity={0.95} 
+                      />
+                      {/* Faint continuation across to right edge for reference */}
+                      <line 
+                          x1={xTurn} 
+                          y1={yDefense} 
+                          x2={xEnd} 
+                          y2={yDefense} 
+                          stroke={defenseColor} 
+                          strokeWidth={1} 
+                          strokeDasharray="2 3" 
+                          opacity={0.25} 
+                      />
+                      {/* Corner joint anchor */}
+                      <circle cx={xTurn} cy={yDefense} r={3} fill={defenseColor} />
+                      {/* Vertical line branching DOWN (for Long) or UP (for Short) */}
+                      <line 
+                          x1={xTurn} 
+                          y1={yDefense} 
+                          x2={xTurn} 
+                          y2={yDefenseVertical} 
+                          stroke={defenseColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="4 2" 
+                          opacity={0.95} 
+                      />
+                      {/* Defense Label: Stacked vertically without border/background */}
+                      <g transform={`translate(${xTurn}, ${yDefenseVertical})`}>
+                          {/* Line 1: Title */}
+                          <text 
+                              x={0} 
+                              y={focalIsLong ? 13 : -18} 
+                              fill={defenseColor} 
+                              fontSize="10.5" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                          >
+                              {defenseTitle}
+                          </text>
+                          {/* Line 2: Price & Pct */}
+                          <text 
+                              x={0} 
+                              y={focalIsLong ? 26 : -5} 
+                              fill={defenseColor} 
+                              fontSize="10" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                              fontFamily="monospace"
+                          >
+                              {defenseValue}
+                          </text>
+                      </g>
+                  </g>
+              );
+          }
+      }
+
+      // List 2 Divergence (发散) Visual Markers - ONLY rendered on the 1st candle of each divergence onset
+      const divergenceVisuals: React.ReactNode[] = [];
+      if (showDivergenceMarkers && divergenceMarkers.length > 0) {
+          divergenceMarkers.forEach((m) => {
+              if (m.index >= startIndex && m.index < startIndex + visibleCount) {
+                  const i = m.index - startIndex;
+                  const x = getX(i) + candleWidth / 2;
+                  const d = fullData[m.index];
+                  if (!d) return;
+
+                  const isLong = m.direction === 'LONG';
+                  const layout = getMarkerLayout(m.index, isLong ? 'LONG' : 'SHORT', d);
+                  const color = isLong ? '#10B981' : '#F43F5E';
+                  const textLabel = isLong ? '▲ 多发散' : '▼ 空发散';
+
+                  divergenceVisuals.push(
+                      <g key={`div-start-${isLong ? 'long' : 'short'}-${m.index}`} pointerEvents="none">
+                          {/* 纵向指引虚线 (靠近K线的一端保留1~3cm距离) */}
+                          {layout.hasDashedLine && (
+                              <line 
+                                  x1={x} 
+                                  y1={layout.dashStartY} 
+                                  x2={x} 
+                                  y2={layout.dashEndY} 
+                                  stroke={color} 
+                                  strokeWidth={1.2} 
+                                  strokeDasharray="3 2" 
+                                  opacity={0.75} 
+                              />
+                          )}
+                          {/* 指引小三角 */}
+                          {isLong ? (
+                              <polygon 
+                                  points={`${x},${layout.dashStartY - 3} ${x - 3.5},${layout.dashStartY + 3} ${x + 3.5},${layout.dashStartY + 3}`} 
+                                  fill={color} 
+                              />
+                          ) : (
+                              <polygon 
+                                  points={`${x},${layout.dashStartY + 3} ${x - 3.5},${layout.dashStartY - 3} ${x + 3.5},${layout.dashStartY - 3}`} 
+                                  fill={color} 
+                              />
+                          )}
+                          {/* 纯文字标记 (无背景、无边框) */}
+                          <text 
+                              x={x} 
+                              y={isLong ? layout.labelY + 2 : layout.labelY - 2} 
+                              fill={color} 
+                              fontSize="9.5" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                              fontFamily="monospace"
+                          >
+                              {textLabel}
+                          </text>
+                      </g>
+                  );
               }
           });
       }
 
-      // Render Trade Markers
+      // Render Trade Markers (无背景、无边框，多标记在下方，空标记在上方，虚线指引端保留1~3cm距离)
       tradeMarkers.forEach((m, idx) => {
           let mIdx = getCandleIdx(m.time);
           if (mIdx !== -1 && mIdx >= startIndex && mIdx < startIndex + visibleCount) {
               const i = mIdx - startIndex;
               const x = getX(i) + candleWidth / 2;
-              const price = m.price || fullData[mIdx].close;
-              const y = getY(price);
+              const d = fullData[mIdx];
+              if (!d) return;
+
+              const price = m.price || d.close;
+              const yPrice = getY(price);
               
               let color = '#22d3ee';
-              let badgeBg = '#083344';
-              let isTop = false;
-
               if (m.type === 'OPEN') {
                   color = '#22d3ee'; // cyan
-                  badgeBg = '#083344';
-                  isTop = false;
               } else if (m.type === 'PROFIT_CLOSE') {
                   color = '#10b981'; // emerald
-                  badgeBg = '#064e3b';
-                  isTop = true;
               } else if (m.type === 'LOSS_CLOSE') {
                   color = '#ef4444'; // red
-                  badgeBg = '#450a0a';
-                  isTop = true;
               } else if (m.type === 'HEDGE_OPEN') {
-                  color = '#a855f7'; // purple
-                  badgeBg = '#3b0764';
-                  isTop = false;
+                  color = '#c084fc'; // purple
               } else if (m.type === 'HEDGE_CUT') {
-                  color = '#f97316'; // orange
-                  badgeBg = '#431407';
-                  isTop = true;
+                  color = '#fb923c'; // orange
               } else if (m.type === 'HEDGE_REFILL') {
-                  color = '#3b82f6'; // blue
-                  badgeBg = '#172554';
-                  isTop = false;
+                  color = '#60a5fa'; // blue
               } else if (m.type === 'HEDGE_CLEAR') {
-                  color = '#34d399'; // green/teal
-                  badgeBg = '#064e3b';
-                  isTop = true;
+                  color = '#34d399'; // teal
               } else if (m.type === 'HEDGE_CLOSE') {
                   color = '#c084fc'; // purple
-                  badgeBg = '#3b0764';
-                  isTop = true;
               } else if (m.type === 'CLOSE') {
                   color = '#fbbf24'; // amber
-                  badgeBg = '#451a03';
-                  isTop = true;
               } else if (m.type === 'SIGNAL') {
                   color = '#34d399';
-                  badgeBg = '#064e3b';
-                  isTop = false;
               }
 
-              const labelY = isTop ? y + 22 : y - 14;
-              const textWidth = Math.max(52, m.label.length * 9.5 + 10);
+              // 判断多空归属：空相关在K线上方，多相关在K线下方
+              const isShort = m.label.includes('空') || (m.type === 'LOSS_CLOSE' && m.label.includes('(空)'));
+              const layout = getMarkerLayout(mIdx, isShort ? 'SHORT' : 'LONG', d);
 
               signalMarkers.push(
                   <g key={`trade-${m.type}-${m.time}-${idx}`} pointerEvents="none">
-                      <circle cx={x} cy={y} r={4.5} stroke={color} strokeWidth={2} fill={badgeBg}/>
-                      <rect x={x - textWidth/2} y={labelY - 10} width={textWidth} height={16} rx={3} fill={badgeBg} stroke={color} strokeWidth={1} opacity={0.92}/>
-                      <text x={x} y={labelY + 2} fill={color} fontSize="9" fontWeight="bold" textAnchor="middle">
+                      {/* 价格锚点 */}
+                      <circle cx={x} cy={yPrice} r={3} fill={color} opacity={0.85} />
+                      {/* 纵向指引虚线 (靠近K线的一端保留1~3cm距离) */}
+                      {layout.hasDashedLine && (
+                          <line 
+                              x1={x} 
+                              y1={layout.dashStartY} 
+                              x2={x} 
+                              y2={layout.dashEndY} 
+                              stroke={color} 
+                              strokeWidth={1.2} 
+                              strokeDasharray="3 2" 
+                              opacity={0.75} 
+                          />
+                      )}
+                      {/* 指引小箭头 */}
+                      {isShort ? (
+                          <polygon 
+                              points={`${x},${layout.dashStartY + 3} ${x - 3},${layout.dashStartY - 2} ${x + 3},${layout.dashStartY - 2}`} 
+                              fill={color} 
+                          />
+                      ) : (
+                          <polygon 
+                              points={`${x},${layout.dashStartY - 3} ${x - 3},${layout.dashStartY + 2} ${x + 3},${layout.dashStartY + 2}`} 
+                              fill={color} 
+                          />
+                      )}
+                      {/* 纯文字标记 (无背景、无边框) */}
+                      <text 
+                          x={x} 
+                          y={isShort ? layout.labelY - (m.price ? 5 : 0) : layout.labelY + (m.price ? 0 : 2)} 
+                          fill={color} 
+                          fontSize="9.5" 
+                          fontWeight="bold" 
+                          textAnchor="middle" 
+                          fontFamily="monospace"
+                      >
                           {m.label}
                       </text>
+                      {m.price !== undefined && m.price > 0 && (
+                          <text 
+                              x={x} 
+                              y={isShort ? layout.labelY + 7 : layout.labelY + 12} 
+                              fill={color} 
+                              fontSize="8.5" 
+                              opacity={0.9} 
+                              textAnchor="middle" 
+                              fontFamily="monospace"
+                          >
+                              {formatPrice(m.price)}
+                          </text>
+                      )}
                   </g>
               );
           }
@@ -1486,19 +2085,19 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       if (showAuditLines && highlightTime) {
           const hlIdx = getCandleIdxFast(highlightTime, fullData);
 
-          if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
+          if (hlIdx !== -1 && hlIdx !== focalIdx && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
               const i = hlIdx - startIndex;
               const x = getX(i) + candleWidth / 2;
               highlightLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={padding.top} x2={x} y2={padding.top + 45} stroke="#A855F7" strokeWidth={1.5} strokeDasharray="4 2" />
-                      <text x={x} y={padding.top + 10} fill="#A855F7" fontSize="10" fontWeight="bold" textAnchor="middle" style={{textShadow: '0 0 3px black'}}>L4 ENTRY</text>
+                      <line x1={x} y1={padding.top} x2={x} y2={padding.top + 45} stroke="#A855F7" strokeWidth={1.5} strokeDasharray="4 2" opacity={0.8} />
+                      <text x={x} y={padding.top + 12} fill="#C084FC" fontSize="9.5" fontWeight="bold" textAnchor="middle" fontFamily="monospace">L4 ENTRY</text>
                   </g>
               );
           }
       }
 
-      // Appeared Line (发生)
+      // Appeared Line (发生) - 无背景无边框
       let appearedLine = null;
       if (appearedTime) {
           const hlIdx = getCandleIdxFast(appearedTime, fullData);
@@ -1508,15 +2107,14 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const x = getX(i) + candleWidth / 2;
               appearedLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke="#0ECB81" strokeWidth={1.5} strokeDasharray="3 3" />
-                      <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#0ECB81" rx={2} opacity={0.9} />
-                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">发生</text>
+                      <line x1={x} y1={padding.top + 5} x2={x} y2={padding.top + 42} stroke="#0ECB81" strokeWidth={1.2} strokeDasharray="3 3" opacity={0.8} />
+                      <text x={x} y={padding.top + 14} fill="#0ECB81" fontSize="9.5" fontWeight="bold" textAnchor="middle" fontFamily="monospace">发生</text>
                   </g>
               );
           }
       }
 
-      // Disappeared Line (消失)
+      // Disappeared Line (消失) - 无背景无边框
       let disappearedLine = null;
       if (disappearedTime) {
           const hlIdx = getCandleIdxFast(disappearedTime, fullData);
@@ -1526,15 +2124,14 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const x = getX(i) + candleWidth / 2;
               disappearedLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke="#F6465D" strokeWidth={1.5} strokeDasharray="3 3" />
-                      <rect x={x - 20} y={padding.top + 5} width={40} height={16} fill="#F6465D" rx={2} opacity={0.9} />
-                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">消失</text>
+                      <line x1={x} y1={padding.top + 5} x2={x} y2={padding.top + 42} stroke="#F6465D" strokeWidth={1.2} strokeDasharray="3 3" opacity={0.8} />
+                      <text x={x} y={padding.top + 14} fill="#F6465D" fontSize="9.5" fontWeight="bold" textAnchor="middle" fontFamily="monospace">消失</text>
                   </g>
               );
           }
       }
 
-      // Waiting / Triggered Line (等待 / 已触发 - for active coins in list)
+      // Waiting / Triggered Line (等待 / 已触发 - for active coins in list) - 无背景无边框
       let waitingLine = null;
       if (!disappearedTime && fullData.length > 0) {
           const lastIdx = fullData.length - 1;
@@ -1565,9 +2162,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
               waitingLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={padding.top + 22} x2={x} y2={padding.top + 42} stroke={tagColor} strokeWidth={1.5} strokeDasharray="2 2" />
-                      <rect x={x - 22} y={padding.top + 5} width={44} height={16} fill={tagColor} rx={2} opacity={0.9} />
-                      <text x={x} y={padding.top + 16} fill="black" fontSize="9" fontWeight="bold" textAnchor="middle">{tagText}</text>
+                      <line x1={x} y1={padding.top + 5} x2={x} y2={padding.top + 42} stroke={tagColor} strokeWidth={1.2} strokeDasharray="2 2" opacity={0.8} />
+                      <text x={x} y={padding.top + 14} fill={tagColor} fontSize="9.5" fontWeight="bold" textAnchor="middle" fontFamily="monospace">{tagText}</text>
                   </g>
               );
           }
@@ -1628,9 +2224,13 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       }
 
-      // EXTRA LINES (Trigger / Defense) - Only show in Audit mode
+      // EXTRA LINES (Other custom indicators) - Only show lines not already rendered by focalLinesVisual
       const extraVisuals = showAuditLines ? extraLines?.map((line, idx) => {
           if (!line.price || line.price <= 0) return null;
+          // Skip defense/breakout if already rendered by focalLinesVisual
+          if (focalLinesVisual && (line.label.includes('防守') || line.label.includes('突破') || line.label.includes('TRIGGER') || line.label.includes('DEFENSE') || line.label.includes('攻') || line.label.includes('守'))) {
+              return null;
+          }
           const y = getY(line.price);
           if (isNaN(y)) return null;
           const dash = line.style === 'dashed' ? '6 4' : undefined;
@@ -1742,7 +2342,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               {renderEMA(30, '#3B82F6')}
               {renderEMA(40, '#F97316')}
               {renderEMA(80, '#06B6D4')}
+              {divergenceVisuals}
               {signalMarkers}
+              {focalLinesVisual}
               {highlightLine}
               {appearedLine}
               {disappearedLine}
@@ -1774,11 +2376,30 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                            setIsMeasuring(!isMeasuring);
                            setMeasureStart(null);
                            setMeasureEnd(null);
-                       }}
+                       }} 
                        className={`p-1 rounded ${isMeasuring ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-300'}`}
                        title="测量涨跌幅"
                    >
                        <Ruler size={14} />
+                   </button>
+                   <button
+                       onClick={() => setShowDivergenceMarkers(!showDivergenceMarkers)}
+                       className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold transition-all border ${
+                           showDivergenceMarkers 
+                               ? 'bg-cyan-950/70 border-cyan-500/50 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.2)]' 
+                               : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                       }`}
+                       title="在K线图上标记列表2多/空发散形态的第1根K线（多在下方，空在上方）"
+                   >
+                       <Zap size={11} className={showDivergenceMarkers ? 'text-cyan-400 fill-cyan-400' : 'text-slate-500'} />
+                       <span>首根发散: {showDivergenceMarkers ? '开启' : '关闭'}</span>
+                       {showDivergenceMarkers && (
+                           <span className="flex items-center gap-1 ml-0.5 text-[9px] font-mono">
+                               <span className="text-emerald-400">多{bullishDivergenceCount}</span>
+                               <span className="text-slate-500">/</span>
+                               <span className="text-rose-400">空{bearishDivergenceCount}</span>
+                           </span>
+                       )}
                    </button>
                    <span className="text-[10px] text-slate-400 bg-slate-800 px-1 rounded">永续合约</span>
                    <span className={`text-[9px] px-2 py-0.5 rounded border flex items-center gap-1 transition-colors ${lastUpdated > Date.now() - 5000 ? 'bg-emerald-900/30 border-emerald-500/30 text-emerald-400' : 'bg-slate-800 border-slate-600 text-slate-500'}`}>
@@ -1974,6 +2595,19 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                         <span className="text-[#F97316]">EMA40: {infoData.ema40?.toFixed(8) || '-'}</span>
                         <span className="text-[#06B6D4]">EMA80: {infoData.ema80?.toFixed(8) || '-'}</span>
                     </div>
+                    {infoData.divergenceStatus && (
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                            {infoData.divergenceStatus === 'LONG' ? (
+                                <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-500/50 flex items-center gap-1">
+                                    <span>▲</span> 列表2多头发散 (10 &gt; 20 &gt; 30 &gt; 40)
+                                </span>
+                            ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-rose-950/80 text-rose-400 border border-rose-500/50 flex items-center gap-1">
+                                    <span>▼</span> 列表2空头发散 (10 &lt; 20 &lt; 30 &lt; 40)
+                                </span>
+                            )}
+                        </div>
+                    )}
                     <div className="mt-2 text-[9px] text-slate-500">时间: {new Date(infoData.kline.time).toLocaleString()} | 量: {infoData.kline.volume.toFixed(2)} | 振幅: {infoData.amplitude.toFixed(2)}%</div>
                 </div>
             )}

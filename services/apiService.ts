@@ -179,10 +179,15 @@ export const fetchWithFallback = async (
     const cached = clientSideCache.get(cacheKey);
     const now = Date.now();
     if (cached && (now - cached.timestamp < cached.ttl)) {
-        return new Response(JSON.stringify(cached.data), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json', 'X-Cache': 'HIT' }
-        });
+        if (!validator || validator(cached.data)) {
+            return new Response(JSON.stringify(cached.data), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json', 'X-Cache': 'HIT' }
+            });
+        } else {
+            // Invalidate corrupted/invalid cache entry
+            clientSideCache.delete(cacheKey);
+        }
     }
 
     // CLIENT INFLIGHT DEDUPLICATION (Thundering Herd Protection)

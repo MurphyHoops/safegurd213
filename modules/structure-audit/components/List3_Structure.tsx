@@ -21,6 +21,7 @@ import { List3Control } from "./Control";
 import { List3Item } from "./Item";
 import { ScannerVisualizerModal } from "../../../components/ScannerVisualizerModal";
 import { ScannerHistoryModal, useAutoHistoryLogger } from "../../momentum-audit/components/ScannerHistoryModal";
+import { checkList3SignalPasses } from "../../../services/rules/list3_structure";
 
 interface Props {
   config: List3Config;
@@ -58,66 +59,31 @@ const List3_Structure: React.FC<Props> = ({
   onClearItems,
 }) => {
   // Auto History Logger for List 3 (Structure Audit)
-  useAutoHistoryLogger('LIST3', list3 || [], activePositions || []);
-
   const [showVisualizer, setShowVisualizer] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
   // --- DYNAMIC FILTERING LOGIC ---
   const filteredList = useMemo(() => {
     if (!list3) return [];
-    const areAllRulesOff = !config.strictTrend && !config.checkCandleColor && !config.enableAmplitudeAudit && (config.enableRsi === false) && !config.enableMultiResonance;
 
     return list3
       .map((item) => {
         // Defensive Check: Ensure item and list3Results exist
         if (!item || !item.list3Results) return null;
 
-        let validResults = areAllRulesOff 
-          ? (item.list3Results || []) 
-          : (item.list3Results?.filter((r) => r.latched) || []);
+        const validResults = item.list3Results.filter((r) =>
+          checkList3SignalPasses(r, config, item.adjacentStrictTrends)
+        );
 
-        // 1. Minimum Results Check
+        // Minimum Results Check
         if (validResults.length === 0) return null;
-
-        // 2. Multi-Resonance Filtering (Adjacent Strict Trend)
-        if (!areAllRulesOff && config.enableMultiResonance && item.adjacentStrictTrends) {
-          const ALL_TFS = [
-            "1m",
-            "3m",
-            "5m",
-            "15m",
-            "30m",
-            "1h",
-            "2h",
-            "4h",
-            "8h",
-            "1d",
-          ];
-          validResults = validResults.filter((vr) => {
-            const idx = ALL_TFS.indexOf(vr.tf);
-            if (idx === -1) return true; // Fallback if tf not found
-
-            const prevTf = idx > 0 ? ALL_TFS[idx - 1] : null;
-            const nextTf = idx < ALL_TFS.length - 1 ? ALL_TFS[idx + 1] : null;
-
-            const dir = vr.direction;
-            const prevOk = prevTf
-              ? item.adjacentStrictTrends![`${prevTf}-${dir}`]
-              : false;
-            const nextOk = nextTf
-              ? item.adjacentStrictTrends![`${nextTf}-${dir}`]
-              : false;
-
-            return prevOk || nextOk;
-          });
-          if (validResults.length === 0) return null;
-        }
 
         return { ...item, list3Results: validResults };
       })
       .filter(Boolean) as ScannerItem[];
-  }, [list3, config.enableMultiResonance, config.strictTrend, config.checkCandleColor, config.enableAmplitudeAudit, config.enableRsi]);
+  }, [list3, config]);
+
+  useAutoHistoryLogger('LIST3', filteredList || [], activePositions || []);
 
   // --- AUTO EXECUTE LOGIC ---
   const executedRef = useRef<Set<string>>(new Set());

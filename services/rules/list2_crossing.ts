@@ -56,8 +56,8 @@ export function analyzeList2Crossing(
     // so we can expire them after 'retentionThreshold' bars.
     const effectiveScanRange = 120; 
 
-    // 1. Flat Filter (Zombie Coin Check) - Only when Crossing is enabled
-    if (enableFlatFilter && config.requireCrossing) {
+    // 1. Flat Filter (Zombie Coin Check) - Applies whenever enableFlatFilter is enabled
+    if (enableFlatFilter) {
         let flatCount = 0;
         const checkStart = Math.max(0, idx - flatLookback);
         
@@ -66,24 +66,32 @@ export function analyzeList2Crossing(
         const lowCounts: Record<number, number> = {};
 
         for (let k = checkStart; k <= idx; k++) {
-            // A. Standard Flat Candle Check
-            if (volumes[k] === 0 || highs[k] === lows[k] || Math.abs(closes[k] - opens[k]) < Number.EPSILON) {
+            const o = opens[k] || 0;
+            const h = highs[k] || 0;
+            const l = lows[k] || 0;
+            const c = closes[k] || 0;
+            const v = volumes[k] || 0;
+            const epsilon = o > 0 ? (o * 0.00001) : 0.0000001;
+
+            // A. Standard Flat Candle Check (Zero volume or pure flat horizontal line with no wick/range)
+            // Note: Standard Doji candlestick (high > low, open == close) is a normal market candlestick, NOT a zombie flat bar.
+            if (v <= 0 || h === l || ((h - l) <= epsilon)) {
                 flatCount++;
             }
 
-            // B. Repeated Price Check (Detecting Algo Control)
-            const h = highs[k];
-            const l = lows[k];
-            highCounts[h] = (highCounts[h] || 0) + 1;
-            lowCounts[l] = (lowCounts[l] || 0) + 1;
+            // B. Repeated Price Check (Detecting Algo Control / Pinning when candle has no range)
+            if (h === l || (h - l) <= epsilon) {
+                highCounts[h] = (highCounts[h] || 0) + 1;
+                lowCounts[l] = (lowCounts[l] || 0) + 1;
+            }
         }
 
-        // Check A Result
+        // Check A Result: Flat candles reach or exceed threshold
         if (flatCount >= flatThreshold) return [];
 
         // Check B Result: If same High or Low repeats >= Threshold * 3 times
-        const maxRepeatedHigh = Math.max(...Object.values(highCounts));
-        const maxRepeatedLow = Math.max(...Object.values(lowCounts));
+        const maxRepeatedHigh = Object.keys(highCounts).length > 0 ? Math.max(...Object.values(highCounts)) : 0;
+        const maxRepeatedLow = Object.keys(lowCounts).length > 0 ? Math.max(...Object.values(lowCounts)) : 0;
 
         if (maxRepeatedHigh >= flatThreshold * 3 || maxRepeatedLow >= flatThreshold * 3) {
             return []; // Rejected: Price Pinning Detected
@@ -161,277 +169,350 @@ export function analyzeList2Crossing(
             const kOpen = opens[checkIdx];
             const kTime = timestamps[checkIdx];
 
-            let conflict = false;
-
-            const isLongCandidate = kClose >= kOpen;
-            const isShortCandidate = kClose < kOpen;
-            
-            // 1. EMA80 Baseline Trend Check
+            // 1. EMA80 Baseline Trend Check (Evaluated separately per direction to prevent single-candle color misjudging trend)
+            let conflictL = false;
+            let conflictS = false;
             if (checkEma80Conflict) {
                 if (e80 === null) {
-                    conflict = true; // Safety: If no EMA80 data, assume conflict to be safe
+                    conflictL = true;
+                    conflictS = true;
                 } else {
                     // LONG: EMA80 must be strictly BELOW the lowest short-term EMA (minEma).
-                    if (isLongCandidate && e80 >= minEma) conflict = true; 
+                    if (e80 >= minEma) conflictL = true; 
                     
                     // SHORT: EMA80 must be strictly ABOVE the highest short-term EMA (maxEma).
-                    if (isShortCandidate && e80 <= maxEma) conflict = true;   
+                    if (e80 <= maxEma) conflictS = true;   
+                }
+            }
+
+            // =========================================================================
+            // 🔒 [USER MANDATORY RULE - 核心前置门禁 (Core Gate 1 & Gate 2)]
+            // 核心原则：
+            // 步骤一：只在“信号存续/访问过去”设定值（lookbackLimit）内检查是否有 EMA10/20/30/40 呈发散形态
+            // 步骤二：若满足发散，再在“发散回溯穿越”设定值（divergenceLookbackBars）内检查 EMA10 穿越 EMA20/30/40
+            // 这两个是绝对核心条件，必须首先同时满足，再进行其它已选过滤条件（振幅、实体比例、成交量等）
+            // =========================================================================
+
+            // Core Condition 1: 均线发散形态 (EMA10 > 20 > 30 > 40 多 / EMA10 < 20 < 30 < 40 空)
+            const isAlignedLong = e10 > e20 && e20 > e30 && e30 > e40;
+            const isAlignedShort = e10 < e20 && e20 < e30 && e30 < e40;
+
+            const isAlignedL = isAlignedLong && !conflictL;
+            const isAlignedS = isAlignedShort && !conflictS;
+
+            // Core Condition 2: 发散回溯穿越 (Directional Lookback Crossing)
+            let crossedAllL = true;
+            let crossedAllS = true;
+
+            if (enableDivergenceCrossCheck) {
+                let crossed20L = false;
+                let crossed30L = false;
+                let crossed40L = false;
+
+                let crossed20S = false;
+                let crossed30S = false;
+                let crossed40S = false;
+
+                // Track if EMA10 was on the opposing side at any point in the lookback window
+                let was10Below20 = false;
+                let was10Below30 = false;
+                let was10Below40 = false;
+
+                let was10Above20 = false;
+                let was10Above30 = false;
+                let was10Above40 = false;
+
+                for (let b = 0; b < divergenceLookbackBars; b++) {
+                    const bIdx = checkIdx - b;
+                    if (bIdx - 1 < 80) break;
+
+                    const cur10 = getEmaVal(ema10, bIdx, 10);
+                    const cur20 = getEmaVal(ema20, bIdx, 20);
+                    const cur30 = getEmaVal(ema30, bIdx, 30);
+                    const cur40 = getEmaVal(ema40, bIdx, 40);
+
+                    const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                    const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                    const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                    const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+
+                    if (cur10 !== null) {
+                        if (cur20 !== null && cur10 <= cur20) was10Below20 = true;
+                        if (cur30 !== null && cur10 <= cur30) was10Below30 = true;
+                        if (cur40 !== null && cur10 <= cur40) was10Below40 = true;
+
+                        if (cur20 !== null && cur10 >= cur20) was10Above20 = true;
+                        if (cur30 !== null && cur10 >= cur30) was10Above30 = true;
+                        if (cur40 !== null && cur10 >= cur40) was10Above40 = true;
+                    }
+
+                    if (cur10 !== null && prev10 !== null) {
+                        // 做多：EMA10 向上穿越 EMA20 / EMA30 / EMA40
+                        if (cur20 !== null && prev20 !== null) {
+                            if ((prev10 <= prev20 && cur10 >= cur20) || (prev10 < prev20 && cur10 > cur20)) {
+                                crossed20L = true;
+                            }
+                        }
+                        if (cur30 !== null && prev30 !== null) {
+                            if ((prev10 <= prev30 && cur10 >= cur30) || (prev10 < prev30 && cur10 > cur30)) {
+                                crossed30L = true;
+                            }
+                        }
+                        if (cur40 !== null && prev40 !== null) {
+                            if ((prev10 <= prev40 && cur10 >= cur40) || (prev10 < prev40 && cur10 > cur40)) {
+                                crossed40L = true;
+                            }
+                        }
+
+                        // 做空：EMA10 向下穿越 EMA20 / EMA30 / EMA40
+                        if (cur20 !== null && prev20 !== null) {
+                            if ((prev10 >= prev20 && cur10 <= cur20) || (prev10 > prev20 && cur10 < cur20)) {
+                                crossed20S = true;
+                            }
+                        }
+                        if (cur30 !== null && prev30 !== null) {
+                            if ((prev10 >= prev30 && cur10 <= cur30) || (prev10 > prev30 && cur10 < cur30)) {
+                                crossed30S = true;
+                            }
+                        }
+                        if (cur40 !== null && prev40 !== null) {
+                            if ((prev10 >= prev40 && cur10 <= cur40) || (prev10 > prev40 && cur10 < cur40)) {
+                                crossed40S = true;
+                            }
+                        }
+                    }
+                }
+
+                // If currently bullish aligned (e10 > e20/30/40) and EMA10 was <= target within lookback window, it crossed!
+                if (e10 > e20 && was10Below20) crossed20L = true;
+                if (e10 > e30 && was10Below30) crossed30L = true;
+                if (e10 > e40 && was10Below40) crossed40L = true;
+
+                // If currently bearish aligned (e10 < e20/30/40) and EMA10 was >= target within lookback window, it crossed!
+                if (e10 < e20 && was10Above20) crossed20S = true;
+                if (e10 < e30 && was10Above30) crossed30S = true;
+                if (e10 < e40 && was10Above40) crossed40S = true;
+
+                // 🔒 [USER MANDATORY RULE] 当开启发散回溯穿越时：在 divergenceLookbackBars 根K线内，EMA10必须完成对EMA20/30/40的完整方向性穿越
+                crossedAllL = crossed20L && crossed30L && crossed40L;
+                crossedAllS = crossed20S && crossed30S && crossed40S;
+            }
+
+            // 核心前置门禁判断：发散与穿越双重校验必须同时通过
+            const rawDivergenceValidL = isAlignedL && crossedAllL;
+            const rawDivergenceValidS = isAlignedS && crossedAllS;
+
+            // =========================================================================
+            // 🔒 [USER MANDATORY RULE - 发散K线同向确认与存续期超时作废机制]
+            // 多头发散：必须为阳线(Close > Open)。若发散时为阴线，在“信号存续/访问过去”(scanLookbackLimit)内
+            //           向后寻找第一根收阳的K线作为确认点；若超出设定根数仍未收阳，则本次发散形态彻底作废。
+            // 空头发散：必须为阴线(Close < Open)。若发散时为阳线，在“信号存续/访问过去”(scanLookbackLimit)内
+            //           向后寻找第一根收阴的K线作为确认点；若超出设定根数仍未收阴，则本次发散形态彻底作废。
+            // 当前实时K线(lag === 0)：若方向不符，挂起为待定灰色状态，等待同向收盘或后续K线确认。
+            // =========================================================================
+            let divergenceValidL = false;
+            let divConfirmedLagL = lag;
+            let divConfirmedIdxL = checkIdx;
+            let divIsPendingGrayL = false;
+
+            if (rawDivergenceValidL) {
+                if (kClose > kOpen) {
+                    divergenceValidL = true;
+                    divConfirmedLagL = lag;
+                    divConfirmedIdxL = checkIdx;
+                    divIsPendingGrayL = false;
+                } else {
+                    // 当前不符，向未来（右侧）在 scanLookbackLimit 根K线内寻找第一根阳线
+                    let foundBullish = false;
+                    const maxForwardIdx = Math.min(idx, checkIdx + scanLookbackLimit);
+                    for (let fIdx = checkIdx + 1; fIdx <= maxForwardIdx; fIdx++) {
+                        const fE10 = getEmaVal(ema10, fIdx, 10);
+                        const fE20 = getEmaVal(ema20, fIdx, 20);
+                        const fE30 = getEmaVal(ema30, fIdx, 30);
+                        const fE40 = getEmaVal(ema40, fIdx, 40);
+
+                        // 🔒 铁律门禁：向后寻找确认阳线期间，均线多头形态绝不可被破坏
+                        // 若 EMA10 下穿 EMA20 或 EMA30，说明多头形态已彻底崩塌死叉，直接作废并立即终止
+                        if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
+                            break;
+                        }
+
+                        if (closes[fIdx] > opens[fIdx]) {
+                            // 确认K线本身也必须保持多头排列 (EMA10 > EMA20 > EMA30)
+                            const isStillBullish = fE30 !== null ? (fE10 > fE20 && fE20 > fE30) : (fE10 > fE20);
+                            if (isStillBullish) {
+                                divergenceValidL = true;
+                                divConfirmedIdxL = fIdx;
+                                divConfirmedLagL = idx - fIdx;
+                                foundBullish = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!foundBullish) {
+                        if (lag === 0 && isAlignedLong) {
+                            // 实时第一根发散但暂时非阳线：挂起为待定灰色
+                            divergenceValidL = true;
+                            divConfirmedIdxL = checkIdx;
+                            divConfirmedLagL = 0;
+                            divIsPendingGrayL = true;
+                        } else {
+                            // 仍在等待窗口期但已被破坏或超时未收阳：彻底作废，绝不上榜
+                            divergenceValidL = false;
+                        }
+                    }
+                }
+            }
+
+            let divergenceValidS = false;
+            let divConfirmedLagS = lag;
+            let divConfirmedIdxS = checkIdx;
+            let divIsPendingGrayS = false;
+
+            if (rawDivergenceValidS) {
+                if (kClose < kOpen) {
+                    divergenceValidS = true;
+                    divConfirmedLagS = lag;
+                    divConfirmedIdxS = checkIdx;
+                    divIsPendingGrayS = false;
+                } else {
+                    // 当前不符，向未来（右侧）在 scanLookbackLimit 根K线内寻找第一根阴线
+                    let foundBearish = false;
+                    const maxForwardIdx = Math.min(idx, checkIdx + scanLookbackLimit);
+                    for (let fIdx = checkIdx + 1; fIdx <= maxForwardIdx; fIdx++) {
+                        const fE10 = getEmaVal(ema10, fIdx, 10);
+                        const fE20 = getEmaVal(ema20, fIdx, 20);
+                        const fE30 = getEmaVal(ema30, fIdx, 30);
+                        const fE40 = getEmaVal(ema40, fIdx, 40);
+
+                        // 🔒 铁律门禁：向后寻找确认阴线期间，均线空头形态绝不可被破坏
+                        // 若 EMA10 上穿 EMA20 或 EMA30，说明空头形态已彻底反弹金叉，直接作废并立即终止
+                        if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
+                            break;
+                        }
+
+                        if (closes[fIdx] < opens[fIdx]) {
+                            // 确认K线本身也必须保持空头排列 (EMA10 < EMA20 < EMA30)
+                            const isStillBearish = fE30 !== null ? (fE10 < fE20 && fE20 < fE30) : (fE10 < fE20);
+                            if (isStillBearish) {
+                                divergenceValidS = true;
+                                divConfirmedIdxS = fIdx;
+                                divConfirmedLagS = idx - fIdx;
+                                foundBearish = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!foundBearish) {
+                        if (lag === 0 && isAlignedShort) {
+                            // 实时第一根发散但暂时非阴线：挂起为待定灰色
+                            divergenceValidS = true;
+                            divConfirmedIdxS = checkIdx;
+                            divConfirmedLagS = 0;
+                            divIsPendingGrayS = true;
+                        } else {
+                            // 仍在等待窗口期但已被破坏或超时未收阴：彻底作废，绝不上榜
+                            divergenceValidS = false;
+                        }
+                    }
                 }
             }
 
             // The Grand Crossing Rule: High touches Max EMA, Low touches Min EMA (Physical Intersection)
             const isCrossing = kHigh >= maxEma && kLow <= minEma;
-            const isAlignedLong = e10 > e20 && e20 > e30 && e30 > e40;
-            const isAlignedShort = e10 < e20 && e20 < e30 && e30 < e40;
+            const crossingIdxL = checkIdx;
+            const crossingIdxS = checkIdx;
+
+            const targetIdxL = (config.requireAlignment && !config.requireCrossing) ? divConfirmedIdxL : checkIdx;
+            const targetIdxS = (config.requireAlignment && !config.requireCrossing) ? divConfirmedIdxS : checkIdx;
+
+            const candleRange = highs[targetIdxL] - lows[targetIdxL];
+            const amp = opens[targetIdxL] > 0 ? (candleRange / opens[targetIdxL]) * 100 : 0;
+            const volSlice = volumes.slice(Math.max(0, targetIdxL - 20), targetIdxL);
+            const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
             
-            if (!conflict) {
-                // Determine Alignment & Freshness for Long and Short separately
-                const isAlignedL = isAlignedLong;
-                const isAlignedS = isAlignedShort;
+            const volValid = volumes[targetIdxL] >= (avgVol * Math.max(0.1, volMultiplier));
+            const ampValid = amp >= squeezeThreshold && amp <= maxAmplitude;
 
-                let isFirstDivergenceL = true;
-                let isFirstDivergenceS = true;
+            // Calculate body ratio for targetIdxL and targetIdxS
+            const cHighL = highs[targetIdxL];
+            const cLowL = lows[targetIdxL];
+            const cCloseL = closes[targetIdxL];
+            const cOpenL = opens[targetIdxL];
+            const cCandleRangeL = cHighL - cLowL;
+            const cIsLongL = cCloseL >= cOpenL;
+            let bodyRatioL = 0;
+            if (cCandleRangeL > 0) {
+                bodyRatioL = (cIsLongL ? (cCloseL - cOpenL) : (cOpenL - cCloseL)) / cCandleRangeL * 100;
+            }
 
-                const prevIdx = checkIdx - 1;
-                if (prevIdx >= 80) {
-                    const pe10 = getEmaVal(ema10, prevIdx, 10);
-                    const pe20 = getEmaVal(ema20, prevIdx, 20);
-                    const pe30 = getEmaVal(ema30, prevIdx, 30);
-                    const pe40 = getEmaVal(ema40, prevIdx, 40);
-                    if (pe10 !== null && pe20 !== null && pe30 !== null && pe40 !== null) {
-                        const isPrevAlignedLong = pe10 > pe20 && pe20 > pe30 && pe30 > pe40;
-                        const isPrevAlignedShort = pe10 < pe20 && pe20 < pe30 && pe30 < pe40;
-                        
-                        if (isPrevAlignedLong) isFirstDivergenceL = false;
-                        if (isPrevAlignedShort) isFirstDivergenceS = false;
-                    }
-                }
+            const cHighS = highs[targetIdxS];
+            const cLowS = lows[targetIdxS];
+            const cCloseS = closes[targetIdxS];
+            const cOpenS = opens[targetIdxS];
+            const cCandleRangeS = cHighS - cLowS;
+            const cIsLongS = cCloseS >= cOpenS;
+            let bodyRatioS = 0;
+            if (cCandleRangeS > 0) {
+                bodyRatioS = (cIsLongS ? (cCloseS - cOpenS) : (cOpenS - cCloseS)) / cCandleRangeS * 100;
+            }
 
-                // [CRITICAL] Backtrack Crossing Validation for Alignment Mode
-                let alignmentValidByCrossingL = true;
-                let alignmentValidByCrossingS = true;
-                let crossingIdxL = checkIdx;
-                let crossingIdxS = checkIdx;
+            const bodyValidL = bodyRatioL >= minBodyRatio;
+            const bodyValidS = bodyRatioS >= minBodyRatio;
 
-                if (config.requireAlignment && isAlignedL && isFirstDivergenceL && !isCrossing) {
-                    alignmentValidByCrossingL = false;
-                    for (let backtrack = 1; backtrack <= 20; backtrack++) { 
-                        const bIdx = checkIdx - backtrack;
-                        if (bIdx < 80) break;
-                        
-                        const be10 = getEmaVal(ema10, bIdx, 10);
-                        const be20 = getEmaVal(ema20, bIdx, 20);
-                        const be30 = getEmaVal(ema30, bIdx, 30);
-                        const be40 = getEmaVal(ema40, bIdx, 40);
-                        
-                        if (be10 !== null && be20 !== null && be30 !== null && be40 !== null) {
-                            const bMaxEma = Math.max(be10, be20, be30, be40);
-                            const bMinEma = Math.min(be10, be20, be30, be40);
-                            const isBCrossing = highs[bIdx] >= bMaxEma && lows[bIdx] <= bMinEma;
-                            if (isBCrossing) {
-                                alignmentValidByCrossingL = true;
-                                crossingIdxL = bIdx;
-                                break;
-                            }
-                        }
-                    }
-                }
+            // Crossing Rules & Divergence Rules Evaluation with AND/OR Logic
+            // 🔒 核心方向门禁：做多信号绝对禁止在 EMA10 < EMA20 且 EMA10 < EMA30 的空头排列下触发；
+            // 做空信号绝对禁止在 EMA10 > EMA20 且 EMA10 > EMA30 的多头排列下触发
+            const directionGuardL = !(e10 < e20 && (e30 === null || e10 < e30));
+            const directionGuardS = !(e10 > e20 && (e30 === null || e10 > e30));
 
-                if (config.requireAlignment && isAlignedS && isFirstDivergenceS && !isCrossing) {
-                    alignmentValidByCrossingS = false;
-                    for (let backtrack = 1; backtrack <= 20; backtrack++) { 
-                        const bIdx = checkIdx - backtrack;
-                        if (bIdx < 80) break;
-                        
-                        const be10 = getEmaVal(ema10, bIdx, 10);
-                        const be20 = getEmaVal(ema20, bIdx, 20);
-                        const be30 = getEmaVal(ema30, bIdx, 30);
-                        const be40 = getEmaVal(ema40, bIdx, 40);
-                        
-                        if (be10 !== null && be20 !== null && be30 !== null && be40 !== null) {
-                            const bMaxEma = Math.max(be10, be20, be30, be40);
-                            const bMinEma = Math.min(be10, be20, be30, be40);
-                            const isBCrossing = highs[bIdx] >= bMaxEma && lows[bIdx] <= bMinEma;
-                            if (isBCrossing) {
-                                alignmentValidByCrossingS = true;
-                                crossingIdxS = bIdx;
-                                break;
-                            }
-                        }
-                    }
-                }
+            const crossingStrictOkL = !strictFiltering || (ampValid && volValid && bodyValidL);
+            const crossingStrictOkS = !strictFiltering || (ampValid && volValid && bodyValidS);
+            const crossingValidL = isCrossing && !conflictL && crossingStrictOkL && directionGuardL;
+            const crossingValidS = isCrossing && !conflictS && crossingStrictOkS && directionGuardS;
 
-                // 🔒 [USER MANDATORY RULE - 发散回溯穿越 (Directional Lookback Crossing)]
-                // 在设置的 divergenceLookbackBars 根K线内，EMA10必须穿越EMA20/30/40均线：
-                // 做多时：EMA10向上金叉穿越 EMA20/30/40 (prev10 <= prevTarget 且 cur10 > curTarget)
-                // 做空时：EMA10向下死叉穿越 EMA20/30/40 (prev10 >= prevTarget 且 cur10 < curTarget)
-                let crossedAllL = true;
-                let crossedAllS = true;
+            let patternMatchedL = false;
+            let patternMatchedS = false;
+            const logicMode = config.crossingDivergenceLogic || 'AND';
 
-                if (enableDivergenceCrossCheck) {
-                    let crossed20L = false;
-                    let crossed30L = false;
-                    let crossed40L = false;
-
-                    let crossed20S = false;
-                    let crossed30S = false;
-                    let crossed40S = false;
-
-                    for (let b = 0; b < divergenceLookbackBars; b++) {
-                        const bIdx = checkIdx - b;
-                        if (bIdx - 1 < 80) break;
-
-                        const cur10 = getEmaVal(ema10, bIdx, 10);
-                        const cur20 = getEmaVal(ema20, bIdx, 20);
-                        const cur30 = getEmaVal(ema30, bIdx, 30);
-                        const cur40 = getEmaVal(ema40, bIdx, 40);
-
-                        const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                        const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                        const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                        const prev40 = getEmaVal(ema40, bIdx - 1, 40);
-
-                        if (cur10 !== null && prev10 !== null) {
-                            // 做多：EMA10 向上穿越 EMA20 / EMA30 / EMA40
-                            if (cur20 !== null && prev20 !== null) {
-                                if ((prev10 <= prev20 && cur10 > cur20) || (prev10 < prev20 && cur10 >= cur20)) {
-                                    crossed20L = true;
-                                }
-                            }
-                            if (cur30 !== null && prev30 !== null) {
-                                if ((prev10 <= prev30 && cur10 > cur30) || (prev10 < prev30 && cur10 >= cur30)) {
-                                    crossed30L = true;
-                                }
-                            }
-                            if (cur40 !== null && prev40 !== null) {
-                                if ((prev10 <= prev40 && cur10 > cur40) || (prev10 < prev40 && cur10 >= cur40)) {
-                                    crossed40L = true;
-                                }
-                            }
-
-                            // 做空：EMA10 向下穿越 EMA20 / EMA30 / EMA40
-                            if (cur20 !== null && prev20 !== null) {
-                                if ((prev10 >= prev20 && cur10 < cur20) || (prev10 > prev20 && cur10 <= cur20)) {
-                                    crossed20S = true;
-                                }
-                            }
-                            if (cur30 !== null && prev30 !== null) {
-                                if ((prev10 >= prev30 && cur10 < cur30) || (prev10 > prev30 && cur10 <= cur30)) {
-                                    crossed30S = true;
-                                }
-                            }
-                            if (cur40 !== null && prev40 !== null) {
-                                if ((prev10 >= prev40 && cur10 < cur40) || (prev10 > prev40 && cur10 <= cur40)) {
-                                    crossed40S = true;
-                                }
-                            }
-                        }
-
-                        if (crossed20L && crossed30L && crossed40L && crossed20S && crossed30S && crossed40S) {
-                            break;
-                        }
-                    }
-
-                    crossedAllL = crossed20L && crossed30L && crossed40L;
-                    crossedAllS = crossed20S && crossed30S && crossed40S;
-                }
-
-                const candleRange = kHigh - kLow;
-                const amp = kOpen > 0 ? (candleRange / kOpen) * 100 : 0;
-                const volSlice = volumes.slice(Math.max(0, checkIdx - 20), checkIdx);
-                const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
-                
-                const volValid = volumes[checkIdx] >= (avgVol * Math.max(0.1, volMultiplier));
-                const ampValid = amp >= squeezeThreshold && amp <= maxAmplitude;
-
-                // Calculate body ratio for crossingIdxL and crossingIdxS
-                const cHighL = highs[crossingIdxL];
-                const cLowL = lows[crossingIdxL];
-                const cCloseL = closes[crossingIdxL];
-                const cOpenL = opens[crossingIdxL];
-                const cCandleRangeL = cHighL - cLowL;
-                const cIsLongL = cCloseL >= cOpenL;
-                let bodyRatioL = 0;
-                if (cCandleRangeL > 0) {
-                    bodyRatioL = (cIsLongL ? (cCloseL - cOpenL) : (cOpenL - cCloseL)) / cCandleRangeL * 100;
-                }
-
-                const cHighS = highs[crossingIdxS];
-                const cLowS = lows[crossingIdxS];
-                const cCloseS = closes[crossingIdxS];
-                const cOpenS = opens[crossingIdxS];
-                const cCandleRangeS = cHighS - cLowS;
-                const cIsLongS = cCloseS >= cOpenS;
-                let bodyRatioS = 0;
-                if (cCandleRangeS > 0) {
-                    bodyRatioS = (cIsLongS ? (cCloseS - cOpenS) : (cOpenS - cCloseS)) / cCandleRangeS * 100;
-                }
-
-                const kCandleRange = kHigh - kLow;
-                const kIsLong = kClose >= kOpen;
-                let currentBodyRatio = 0;
-                if (kCandleRange > 0) {
-                    currentBodyRatio = (kIsLong ? (kClose - kOpen) : (kOpen - kClose)) / kCandleRange * 100;
-                }
-
-                const finalBodyRatioL = Math.min(bodyRatioL, currentBodyRatio);
-                const bodyValidL = finalBodyRatioL >= minBodyRatio;
-
-                const finalBodyRatioS = Math.min(bodyRatioS, currentBodyRatio);
-                const bodyValidS = finalBodyRatioS >= minBodyRatio;
-
-                // Crossing Rules & Divergence Rules Evaluation with AND/OR Logic
-                const crossingStrictOkL = !strictFiltering || (ampValid && volValid && bodyValidL);
-                const crossingStrictOkS = !strictFiltering || (ampValid && volValid && bodyValidS);
-                const crossingValidL = isCrossing && crossingStrictOkL;
-                const crossingValidS = isCrossing && crossingStrictOkS;
-
-                const divergenceValidL = isAlignedL && crossedAllL;
-                const divergenceValidS = isAlignedS && crossedAllS;
-
-                let patternMatchedL = false;
-                let patternMatchedS = false;
-                const logicMode = config.crossingDivergenceLogic || 'AND';
-
-                if (config.requireCrossing && config.requireAlignment) {
-                    if (logicMode === 'OR') {
-                        patternMatchedL = crossingValidL || divergenceValidL;
-                        patternMatchedS = crossingValidS || divergenceValidS;
-                    } else {
-                        // AND
-                        patternMatchedL = crossingValidL && divergenceValidL;
-                        patternMatchedS = crossingValidS && divergenceValidS;
-                    }
-                } else if (config.requireCrossing) {
-                    patternMatchedL = crossingValidL;
-                    patternMatchedS = crossingValidS;
-                } else if (config.requireAlignment) {
-                    patternMatchedL = divergenceValidL;
-                    patternMatchedS = divergenceValidS;
+            if (config.requireCrossing && config.requireAlignment) {
+                if (logicMode === 'OR') {
+                    patternMatchedL = crossingValidL || divergenceValidL;
+                    patternMatchedS = crossingValidS || divergenceValidS;
                 } else {
-                    // Squeeze fallback
-                    patternMatchedL = crossingStrictOkL;
-                    patternMatchedS = crossingStrictOkS;
+                    // AND
+                    patternMatchedL = crossingValidL && divergenceValidL;
+                    patternMatchedS = crossingValidS && divergenceValidS;
                 }
+            } else if (config.requireCrossing) {
+                patternMatchedL = crossingValidL;
+                patternMatchedS = crossingValidS;
+            } else if (config.requireAlignment) {
+                patternMatchedL = divergenceValidL;
+                patternMatchedS = divergenceValidS;
+            } else {
+                // Squeeze fallback
+                patternMatchedL = crossingStrictOkL && !conflictL;
+                patternMatchedS = crossingStrictOkS && !conflictS;
+            }
 
-                // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
-                if (enableDivergenceCrossCheck) {
-                    patternMatchedL = patternMatchedL && crossedAllL;
-                    patternMatchedS = patternMatchedS && crossedAllS;
-                }
+            // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
+            if (enableDivergenceCrossCheck && config.requireAlignment) {
+                patternMatchedL = patternMatchedL && crossedAllL;
+                patternMatchedS = patternMatchedS && crossedAllS;
+            }
 
-                // [CRITICAL MANDATORY RULE - USER DEFINITION]:
-                // 1. 历史已收盘K线 (lag > 0):
-                //    - 多头: 收盘价必须严格大于开盘价 (kClose > kOpen，阳线)
-                //    - 空头: 收盘价必须严格小于开盘价 (kClose < kOpen，阴线)
-                // 2. 当前正在走动K线 (lag === 0):
-                //    - 多头形态: 当前价 > 开盘价 为正常多；当前价 <= 开盘价 显示为灰色待定态 (isPendingGray = true)
-                //    - 空头形态: 当前价 < 开盘价 为正常空；当前价 >= 开盘价 显示为灰色待定态 (isPendingGray = true)
-                let isValidL = false;
-                let isPendingGrayL = false;
-                if (patternMatchedL) {
+            let isValidL = false;
+            let isPendingGrayL = false;
+            if (patternMatchedL) {
+                if (config.requireAlignment && !config.requireCrossing) {
+                    isValidL = true;
+                    isPendingGrayL = divIsPendingGrayL;
+                } else {
                     if (lag > 0) {
-                        if (kClose > kOpen) {
+                        if (kClose > kOpen || config.requireAlignment) {
                             isValidL = true;
                             isPendingGrayL = false;
                         }
@@ -440,12 +521,17 @@ export function analyzeList2Crossing(
                         isPendingGrayL = !(kClose > kOpen);
                     }
                 }
+            }
 
-                let isValidS = false;
-                let isPendingGrayS = false;
-                if (patternMatchedS) {
+            let isValidS = false;
+            let isPendingGrayS = false;
+            if (patternMatchedS) {
+                if (config.requireAlignment && !config.requireCrossing) {
+                    isValidS = true;
+                    isPendingGrayS = divIsPendingGrayS;
+                } else {
                     if (lag > 0) {
-                        if (kClose < kOpen) {
+                        if (kClose < kOpen || config.requireAlignment) {
                             isValidS = true;
                             isPendingGrayS = false;
                         }
@@ -454,46 +540,70 @@ export function analyzeList2Crossing(
                         isPendingGrayS = !(kClose < kOpen);
                     }
                 }
+            }
 
-                if (isValidL) {
-                    longSignals.push({ 
-                        lag, 
-                        direction: 'LONG', 
-                        amp, 
-                        time: kTime, 
-                        bodyRatio: finalBodyRatioL, 
-                        isAligned: isAlignedLong,
-                        ampValid,
-                        volValid,
-                        bodyValid: bodyValidL,
-                        isClosed: lag > 0,
-                        isPendingGray: isPendingGrayL,
-                        kHigh,
-                        kLow,
-                        kClose,
-                        kOpen
-                    });
+            if (isValidL) {
+                // 🔒 铁律硬门禁：确认信号K线绝对禁止处于空头死叉向下发散排列 (EMA10 < EMA20 且 EMA10 < EMA30)
+                const targetE10L = getEmaVal(ema10, targetIdxL, 10);
+                const targetE20L = getEmaVal(ema20, targetIdxL, 20);
+                const targetE30L = getEmaVal(ema30, targetIdxL, 30);
+                if (targetE10L !== null && targetE20L !== null && targetE10L < targetE20L && (targetE30L === null || targetE10L < targetE30L)) {
+                    isValidL = false;
                 }
+            }
 
-                if (isValidS) {
-                    shortSignals.push({ 
-                        lag, 
-                        direction: 'SHORT', 
-                        amp, 
-                        time: kTime, 
-                        bodyRatio: finalBodyRatioS, 
-                        isAligned: isAlignedShort,
-                        ampValid,
-                        volValid,
-                        bodyValid: bodyValidS,
-                        isClosed: lag > 0,
-                        isPendingGray: isPendingGrayS,
-                        kHigh,
-                        kLow,
-                        kClose,
-                        kOpen
-                    });
+            if (isValidS) {
+                // 🔒 铁律硬门禁：确认信号K线绝对禁止处于多头金叉向上发散排列 (EMA10 > EMA20 且 EMA10 > EMA30)
+                const targetE10S = getEmaVal(ema10, targetIdxS, 10);
+                const targetE20S = getEmaVal(ema20, targetIdxS, 20);
+                const targetE30S = getEmaVal(ema30, targetIdxS, 30);
+                if (targetE10S !== null && targetE20S !== null && targetE10S > targetE20S && (targetE30S === null || targetE10S > targetE30S)) {
+                    isValidS = false;
                 }
+            }
+
+            if (isValidL) {
+                const signalLagL = (config.requireAlignment && !config.requireCrossing) ? divConfirmedLagL : lag;
+                const signalTimeL = timestamps[targetIdxL];
+                longSignals.push({ 
+                    lag: signalLagL, 
+                    direction: 'LONG', 
+                    amp, 
+                    time: signalTimeL, 
+                    bodyRatio: bodyRatioL, 
+                    isAligned: isAlignedLong,
+                    ampValid,
+                    volValid,
+                    bodyValid: bodyValidL,
+                    isClosed: signalLagL > 0,
+                    isPendingGray: isPendingGrayL,
+                    kHigh: highs[targetIdxL],
+                    kLow: lows[targetIdxL],
+                    kClose: closes[targetIdxL],
+                    kOpen: opens[targetIdxL]
+                });
+            }
+
+            if (isValidS) {
+                const signalLagS = (config.requireAlignment && !config.requireCrossing) ? divConfirmedLagS : lag;
+                const signalTimeS = timestamps[targetIdxS];
+                shortSignals.push({ 
+                    lag: signalLagS, 
+                    direction: 'SHORT', 
+                    amp, 
+                    time: signalTimeS, 
+                    bodyRatio: bodyRatioS, 
+                    isAligned: isAlignedShort,
+                    ampValid,
+                    volValid,
+                    bodyValid: bodyValidS,
+                    isClosed: signalLagS > 0,
+                    isPendingGray: isPendingGrayS,
+                    kHigh: highs[targetIdxS],
+                    kLow: lows[targetIdxS],
+                    kClose: closes[targetIdxS],
+                    kOpen: opens[targetIdxS]
+                });
             }
         }
     }
@@ -547,17 +657,14 @@ export function analyzeList2Crossing(
     if (longClusters.length > 0) {
         // Filter clusters that satisfy the 'new' requirement (backtest/real-time catchup)
         // AND satisfy the retention requirement:
-        // - Crossing Mode: Recognized by the LAST occurrence (Timer resets)
-        // - Alignment/Squeeze Mode: Recognized by the FIRST occurrence (Timer starts at beginning)
+        // - In alignment mode, signal is born at oldestMember (first candle of divergence/crossing sequence).
+        // - A cluster is valid ONLY if that signal candle was within scanLookbackLimit and has NOT exceeded retentionThreshold.
+        const isAlignmentModeL = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
         const validClusters = longClusters.filter(cluster => {
-            const hasRecentMember = cluster.some(s => s.lag <= scanLookbackLimit);
-            
-            const checkLag = config.requireCrossing 
-                ? cluster[0].lag  // Use most recent lag for Crossing (Resets)
-                : cluster[cluster.length - 1].lag; // Use oldest lag for Alignment/Squeeze (Starts at first)
-
-            const isWithinRetention = checkLag <= retentionThreshold;
-            return hasRecentMember && isWithinRetention;
+            const signalMember = isAlignmentModeL ? cluster[cluster.length - 1] : cluster[0];
+            const isWithinLookback = signalMember.lag <= scanLookbackLimit;
+            const isWithinRetention = signalMember.lag <= retentionThreshold;
+            return isWithinLookback && isWithinRetention;
         });
 
         if (validClusters.length > 0) {
@@ -565,71 +672,63 @@ export function analyzeList2Crossing(
             const cluster = validClusters[0];
             
             // CRITICAL: Determine Lag & Properties for results
-            // Alignment (发散): Use the OLDEST candle in the cluster as the base (timer starts at start of divergence)
-            // Crossing (穿越): Use the NEWEST candle in the cluster as the base (timer resets on every crossing)
-            // [UPDATE] If alignment is required, we ALWAYS use the first candle of the divergence sequence as the primary signal.
-            const useFirstMember = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
-            const targetMember = useFirstMember 
-                ? cluster[cluster.length - 1] // Oldest (First divergence/squeeze)
-                : cluster[0]; // Newest (Last crossing)
+            // In alignment mode, the signal anchor is oldestMember; in pure crossing, it is targetMember.
+            const targetMember = cluster[0];
+            const oldestMember = cluster[cluster.length - 1];
+            const signalMember = isAlignmentModeL ? oldestMember : targetMember;
 
             // 方式 A (振幅偏离限制 - LONG): 当前价格高于信号K线最高价超过其振幅的 X% 时，不进入列表2
             let passDeviationFilterL = true;
             if (enableSignalDeviationFilter) {
-                const signalCandleRange = Math.max(0, targetMember.kHigh - targetMember.kLow);
-                const maxAllowedPriceL = targetMember.kHigh + (signalCandleRange * (maxSignalDeviationPercent / 100));
+                const signalCandleRange = Math.max(0, signalMember.kHigh - signalMember.kLow);
+                const maxAllowedPriceL = signalMember.kHigh + (signalCandleRange * (maxSignalDeviationPercent / 100));
                 if (currentPrice > maxAllowedPriceL) {
                     passDeviationFilterL = false;
                 }
             }
 
             if (passDeviationFilterL) {
-                // For Alignment/Squeeze modes, we only want to mark the STARTING candle on the chart.
-                // For Crossing mode, we usually want to show all crossing points in the cluster.
-                const reportLags = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment)) 
-                    ? [targetMember.lag]
+                const reportLags = isAlignmentModeL 
+                    ? [signalMember.lag]
                     : cluster.map(s => s.lag);
                     
-                const reportTimes = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment))
-                    ? [targetMember.time]
+                const reportTimes = isAlignmentModeL
+                    ? [signalMember.time]
                     : cluster.map(s => s.time);
 
                 results.push({
                     tf,
-                    lag: targetMember.lag, 
+                    lag: signalMember.lag, 
                     crossingCount: cluster.length,
                     isSqueeze: !config.requireCrossing && !config.requireAlignment, 
-                    squeezeVal: targetMember.amp,
+                    squeezeVal: signalMember.amp,
                     direction: 'LONG',
                     crossingLags: reportLags,
                     crossingTimes: reportTimes,
-                    bodyRatio: targetMember.bodyRatio,
-                    ampValid: targetMember.ampValid,
-                    volValid: targetMember.volValid,
-                    bodyValid: targetMember.bodyValid,
-                    isAligned: targetMember.isAligned,
-                    isClosed: targetMember.isClosed,
-                    isPendingGray: targetMember.isPendingGray,
-                    kOpen: targetMember.kOpen,
-                    kClose: targetMember.kClose,
-                    kHigh: targetMember.kHigh,
-                    kLow: targetMember.kLow,
-                    signalTime: targetMember.time
+                    bodyRatio: signalMember.bodyRatio,
+                    ampValid: signalMember.ampValid,
+                    volValid: signalMember.volValid,
+                    bodyValid: signalMember.bodyValid,
+                    isAligned: signalMember.isAligned,
+                    isClosed: signalMember.isClosed,
+                    isPendingGray: signalMember.isPendingGray,
+                    kOpen: signalMember.kOpen,
+                    kClose: signalMember.kClose,
+                    kHigh: signalMember.kHigh,
+                    kLow: signalMember.kLow,
+                    signalTime: signalMember.time
                 });
             }
         }
     }
 
     if (shortClusters.length > 0) {
+        const isAlignmentModeS = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
         const validClusters = shortClusters.filter(cluster => {
-            const hasRecentMember = cluster.some(s => s.lag <= scanLookbackLimit);
-
-            const checkLag = config.requireCrossing 
-                ? cluster[0].lag  // Use most recent lag for Crossing (Resets)
-                : cluster[cluster.length - 1].lag; // Use oldest lag for Alignment/Squeeze (Starts at first)
-
-            const isWithinRetention = checkLag <= retentionThreshold;
-            return hasRecentMember && isWithinRetention;
+            const signalMember = isAlignmentModeS ? cluster[cluster.length - 1] : cluster[0];
+            const isWithinLookback = signalMember.lag <= scanLookbackLimit;
+            const isWithinRetention = signalMember.lag <= retentionThreshold;
+            return isWithinLookback && isWithinRetention;
         });
 
         if (validClusters.length > 0) {
@@ -637,51 +736,50 @@ export function analyzeList2Crossing(
             const cluster = validClusters[0];
             
             // CRITICAL: Determine Lag & Properties for results
-            const useFirstMember = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
-            const targetMember = useFirstMember 
-                ? cluster[cluster.length - 1] // Oldest (First divergence/squeeze)
-                : cluster[0]; // Newest (Last crossing)
+            const targetMember = cluster[0];
+            const oldestMember = cluster[cluster.length - 1];
+            const signalMember = isAlignmentModeS ? oldestMember : targetMember;
 
             // 方式 A (振幅偏离限制 - SHORT): 当前价格低于信号K线最低价超过其振幅的 X% 时，不进入列表2
             let passDeviationFilterS = true;
             if (enableSignalDeviationFilter) {
-                const signalCandleRange = Math.max(0, targetMember.kHigh - targetMember.kLow);
-                const minAllowedPriceS = targetMember.kLow - (signalCandleRange * (maxSignalDeviationPercent / 100));
+                const signalCandleRange = Math.max(0, signalMember.kHigh - signalMember.kLow);
+                const minAllowedPriceS = signalMember.kLow - (signalCandleRange * (maxSignalDeviationPercent / 100));
                 if (currentPrice < minAllowedPriceS) {
                     passDeviationFilterS = false;
                 }
             }
 
             if (passDeviationFilterS) {
-                const reportLags = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment)) 
-                    ? [targetMember.lag]
+                const reportLags = isAlignmentModeS 
+                    ? [signalMember.lag]
                     : cluster.map(s => s.lag);
 
-                const reportTimes = (config.requireAlignment || (!config.requireCrossing && !config.requireAlignment))
-                    ? [targetMember.time]
+                const reportTimes = isAlignmentModeS
+                    ? [signalMember.time]
                     : cluster.map(s => s.time);
 
                 results.push({
                     tf,
-                    lag: targetMember.lag,
+                    lag: signalMember.lag, 
                     crossingCount: cluster.length,
                     isSqueeze: !config.requireCrossing && !config.requireAlignment, 
-                    squeezeVal: targetMember.amp,
+                    squeezeVal: signalMember.amp,
                     direction: 'SHORT',
                     crossingLags: reportLags,
                     crossingTimes: reportTimes,
-                    bodyRatio: targetMember.bodyRatio,
-                    ampValid: targetMember.ampValid,
-                    volValid: targetMember.volValid,
-                    bodyValid: targetMember.bodyValid,
-                    isAligned: targetMember.isAligned,
-                    isClosed: targetMember.isClosed,
-                    isPendingGray: targetMember.isPendingGray,
-                    kOpen: targetMember.kOpen,
-                    kClose: targetMember.kClose,
-                    kHigh: targetMember.kHigh,
-                    kLow: targetMember.kLow,
-                    signalTime: targetMember.time
+                    bodyRatio: signalMember.bodyRatio,
+                    ampValid: signalMember.ampValid,
+                    volValid: signalMember.volValid,
+                    bodyValid: signalMember.bodyValid,
+                    isAligned: signalMember.isAligned,
+                    isClosed: signalMember.isClosed,
+                    isPendingGray: signalMember.isPendingGray,
+                    kOpen: signalMember.kOpen,
+                    kClose: signalMember.kClose,
+                    kHigh: signalMember.kHigh,
+                    kLow: signalMember.kLow,
+                    signalTime: signalMember.time
                 });
             }
         }

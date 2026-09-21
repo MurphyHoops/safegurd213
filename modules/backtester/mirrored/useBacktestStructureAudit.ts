@@ -17,11 +17,11 @@ export const useBacktestStructureAudit = (
     const { fetchVirtualKlines, virtualTime } = useBacktest();
     const [config, setConfig] = usePersistedState<List3Config>('SCANNER_LIST3_CONFIG', { 
         lookback: 80, 
-        enableAmplitudeAudit: true,
+        enableAmplitudeAudit: false,
         enableMultiResonance: false,
         minResonanceCount: 2,
         timeframes: ['5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'], 
-        strictTrend: true,
+        strictTrend: false,
         checkCandleColor: false, 
         maxBBW: 1.0, 
         validityPeriod: 5, 
@@ -32,7 +32,7 @@ export const useBacktestStructureAudit = (
         rsiLongMax: 90, 
         rsiShortMin: 10, 
         rsiShortMax: 60, 
-        enableRsi: true,
+        enableRsi: false,
         autoSimOpen: false
     });
     const [results, setResults] = useState<ScannerItem[]>([]);

@@ -6,7 +6,7 @@ import {
   List3SignalResult,
   StructureScanStatus,
 } from "../../components/Scanner/scannerTypes";
-import { analyzeList3Structure } from "../../services/rules/list3_structure";
+import { analyzeList3Structure, checkList3SignalPasses, getList3SignalRejectReason } from "../../services/rules/list3_structure";
 import { fetchWithFallback } from "../../services/apiService";
 import { KLineSynthesizer } from "../../services/klineSynthesizer";
 import { KLine } from "../../types";
@@ -183,22 +183,18 @@ export const useStructureAudit = (
 
   useEffect(() => {
     configRef.current = config;
-    const areAllRulesOff = !config.strictTrend && !config.checkCandleColor && !config.enableAmplitudeAudit && (config.enableRsi === false) && !config.enableMultiResonance;
     
-    // When all rules are toggled off, immediately unblock and latch all existing candidates and cached signals
-    if (areAllRulesOff) {
-      let changed = false;
-      const curCandidates = candidatesRef.current || [];
-      curCandidates.forEach((c) => {
-        if (!c.symbol) return;
-        const validGrouped = (c.groupedResults || []).filter(r => !r.isPendingGray);
-        if (validGrouped.length === 0) return;
+    let changed = false;
+    const curCandidates = candidatesRef.current || [];
+    curCandidates.forEach((c) => {
+      if (!c.symbol) return;
+      const validGrouped = (c.groupedResults || []).filter(r => !r.isPendingGray);
+      if (validGrouped.length === 0) return;
 
-        const mappedResults = validGrouped.map((r) => ({
-          tf: r.tf,
-          direction: r.direction || 'LONG',
-          latched: true,
-          structure: {
+      const cached = cacheRef.current.get(c.symbol);
+      if (!cached) {
+        const mappedResults = validGrouped.map((r) => {
+          const defaultStructure = {
             rsi: 50,
             bbw: 0.1,
             crossCount: 2,
@@ -216,32 +212,40 @@ export const useStructureAudit = (
             ema30: c.emaDetails?.ema30 || c.price,
             ema40: c.emaDetails?.ema40 || c.price,
             ema80: c.emaDetails?.ema80 || c.price,
-          }
-        })).filter(r => !expiredSignalCacheRef.current.has(`${c.symbol}-${r.tf}-${r.direction}`));
+          };
+          return {
+            tf: r.tf,
+            direction: r.direction || 'LONG',
+            structure: defaultStructure,
+            latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, config),
+          };
+        }).filter(r => !expiredSignalCacheRef.current.has(`${c.symbol}-${r.tf}-${r.direction}`));
 
         if (mappedResults.length > 0) {
           cacheRef.current.set(c.symbol, {
             ...c,
-            list3Results: mappedResults
+            list3Results: mappedResults,
           });
           changed = true;
         }
-      });
-
-      cacheRef.current.forEach((cachedItem) => {
-        if (cachedItem.list3Results) {
-          cachedItem.list3Results.forEach((r) => {
-            if (!r.latched) {
-              r.latched = true;
-              changed = true;
-            }
-          });
-        }
-      });
-
-      if (changed) {
-        updateList3FromCache();
       }
+    });
+
+    // Re-evaluate latched status for all items currently in cache
+    cacheRef.current.forEach((cachedItem) => {
+      if (cachedItem.list3Results) {
+        cachedItem.list3Results.forEach((r) => {
+          const newPasses = checkList3SignalPasses(r, config, cachedItem.adjacentStrictTrends);
+          if (r.latched !== newPasses) {
+            r.latched = newPasses;
+            changed = true;
+          }
+        });
+      }
+    });
+
+    if (changed) {
+      updateList3FromCache();
     }
   }, [config, updateList3FromCache]);
   useEffect(() => {
@@ -334,45 +338,22 @@ export const useStructureAudit = (
           lastCandleTime: klines.length > 0 ? klines[klines.length - 1].time : undefined,
         };
 
-        const s = entry.structure;
-        const cfg = configRef.current;
-        const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
-        
-        let passes = true;
-        if (!areAllRulesOff) {
-            if (cfg.strictTrend && !s.isStrictTrend) passes = false;
-            if (cfg.checkCandleColor && !s.isColorValid) passes = false;
-            if (cfg.enableAmplitudeAudit) {
-              if (s.locationPct > cfg.maxLocation) passes = false;
-              if (s.crossCount < cfg.minCrossCount) passes = false;
-              if (s.bbw > cfg.maxBBW) passes = false;
-            }
-            if (cfg.enableRsi !== false) {
-              if (entry.direction === "LONG") {
-                if (s.rsi < cfg.rsiLongMin || s.rsi > cfg.rsiLongMax)
-                  passes = false;
-              } else {
-                if (s.rsi < cfg.rsiShortMin || s.rsi > cfg.rsiShortMax)
-                  passes = false;
-              }
-            }
+        const rejectReason = getList3SignalRejectReason(
+          entry,
+          configRef.current,
+          cached.adjacentStrictTrends,
+        );
+        const passes = rejectReason === null;
+        if (!passes && rejectReason) {
+          entry.removalReason = rejectReason;
+          cached.removalReason = rejectReason;
         }
-        
-        if (
-          cfg.timeframes &&
-          cfg.timeframes.length > 0 &&
-          !cfg.timeframes.includes(entry.tf)
-        )
-          passes = false;
 
         const idx = cached.list3Results.findIndex(
           (r) => r.tf === entry.tf && r.direction === entry.direction,
         );
         if (idx >= 0) {
-          const prevEntry = cached.list3Results[idx];
-          const isNewCandle = prevEntry.lastCandleTime !== undefined && entry.lastCandleTime !== undefined && prevEntry.lastCandleTime < entry.lastCandleTime;
-          const wasLatched = isNewCandle ? false : (prevEntry.latched || false);
-          entry.latched = wasLatched || passes;
+          entry.latched = passes;
           cached.list3Results[idx] = entry;
         } else {
           entry.latched = passes;
@@ -487,6 +468,12 @@ export const useStructureAudit = (
   const runPriorityAnalysisInternal = useCallback(
     async (itemsToScan: ScannerItem[], triggerReason: string) => {
       if (itemsToScan.length === 0) return;
+
+      const cfg = configRef.current;
+      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
+      if (areAllRulesOff) {
+        return; // 限制规则未开启时绝对禁止后台执行审计
+      }
 
       console.log(`[List3 Priority] Starting ultra-fast priority analysis for ${itemsToScan.length} items. Reason: ${triggerReason}`);
 
@@ -784,22 +771,6 @@ export const useStructureAudit = (
             }
 
             structureHashRef.current.set(item.symbol, getStructureHash(item));
-
-            // [MILLISECOND-LEVEL FAILURE CLEARANCE]
-            // If some rules are selected, and this coin has 0 latched results, immediately clear/remove it!
-            const cfg = configRef.current;
-            const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
-            if (!areAllRulesOff) {
-              const cachedItem = cacheRef.current.get(item.symbol);
-              if (cachedItem && cachedItem.list3Results) {
-                const hasPassedAny = cachedItem.list3Results.some(r => r.latched);
-                if (!hasPassedAny) {
-                  console.log(`[List3 Priority] ❌ ${item.symbol} 未能通过过滤规则，立即清除!`);
-                  cacheRef.current.delete(item.symbol);
-                  hasChanges = true;
-                }
-              }
-            }
           })
         );
 
@@ -817,6 +788,12 @@ export const useStructureAudit = (
   const runAnalysisInternal = useCallback(
     async (itemsToScan: ScannerItem[], triggerReason: string) => {
       if (itemsToScan.length === 0) return;
+
+      const cfg = configRef.current;
+      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
+      if (areAllRulesOff) {
+        return; // 限制规则未开启时绝对禁止后台执行审计
+      }
 
       // If already scanning, add to pending and return
       if (isScanningRef.current) {
@@ -1146,21 +1123,6 @@ export const useStructureAudit = (
                 } catch (e) {}
               }
               structureHashRef.current.set(item.symbol, getStructureHash(item));
-
-              // [MILLISECOND-LEVEL FAILURE CLEARANCE]
-              const cfg = configRef.current;
-              const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
-              if (!areAllRulesOff) {
-                const cachedItem = cacheRef.current.get(item.symbol);
-                if (cachedItem && cachedItem.list3Results) {
-                  const hasPassedAny = cachedItem.list3Results.some(r => r.latched);
-                  if (!hasPassedAny) {
-                    console.log(`[List3 Sweep] ❌ ${item.symbol} 周期性审计未通过，立即清除!`);
-                    cacheRef.current.delete(item.symbol);
-                    hasChanges = true;
-                  }
-                }
-              }
             }),
           );
 
@@ -1277,12 +1239,9 @@ export const useStructureAudit = (
       const nonGrayGrouped = (c.groupedResults || []).filter(r => !r.isPendingGray);
       if (nonGrayGrouped.length === 0) return;
 
-      if (areAllRulesOff) {
-        const results = nonGrayGrouped.map((r) => ({
-          tf: r.tf,
-          direction: r.direction || 'LONG',
-          latched: true,
-          structure: {
+      if (!cached || !cached.list3Results || cached.list3Results.length === 0) {
+        const results = nonGrayGrouped.map((r) => {
+          const defaultStructure = {
             rsi: 50,
             bbw: 0.1,
             crossCount: 2,
@@ -1300,8 +1259,14 @@ export const useStructureAudit = (
             ema30: c.emaDetails?.ema30 || c.price,
             ema40: c.emaDetails?.ema40 || c.price,
             ema80: c.emaDetails?.ema80 || c.price,
-          }
-        })).filter((r) => {
+          };
+          return {
+            tf: r.tf,
+            direction: r.direction || 'LONG',
+            structure: defaultStructure,
+            latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, cfg),
+          };
+        }).filter((r) => {
           const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;
           return !expiredSignalCacheRef.current.has(uniqueId);
         });
@@ -1314,86 +1279,50 @@ export const useStructureAudit = (
           cacheRef.current.set(c.symbol, immediateItem);
           instantAdded = true;
         }
-      } else {
-        if (!cached || !cached.list3Results || cached.list3Results.length === 0) {
-          const results = nonGrayGrouped.map((r) => ({
-            tf: r.tf,
-            direction: r.direction || 'LONG',
-            latched: false,
-            structure: {
-              rsi: 50,
-              bbw: 0.1,
-              crossCount: 2,
-              locationPct: 10,
-              thrustValid: true,
-              isStrictTrend: true,
-              isColorValid: true,
-              lag: r.lag || 0,
-              signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
-              signalPrice: c.price,
-              signalHigh: r.kHigh ?? c.price,
-              signalLow: r.kLow ?? c.price,
-              ema10: c.emaDetails?.ema10 || c.price,
-              ema20: c.emaDetails?.ema20 || c.price,
-              ema30: c.emaDetails?.ema30 || c.price,
-              ema40: c.emaDetails?.ema40 || c.price,
-              ema80: c.emaDetails?.ema80 || c.price,
-            }
-          })).filter((r) => {
-            const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;
-            return !expiredSignalCacheRef.current.has(uniqueId);
-          });
-
-          if (results.length > 0) {
-            const immediateItem: ScannerItem = {
-              ...c,
-              list3Results: results,
-            };
-            cacheRef.current.set(c.symbol, immediateItem);
-            instantAdded = true;
-          }
+        if (!areAllRulesOff) {
           itemsToScan.push(c);
-        } else {
-          // If cached exists, sync any new timeframes
-          let addedTf = false;
-          nonGrayGrouped.forEach((r) => {
-            const exists = cached.list3Results?.some(cr => cr.tf === r.tf && cr.direction === r.direction);
-            if (!exists) {
-              const uniqueId = `${c.symbol}-${r.tf}-${r.direction || 'LONG'}`;
-              if (!expiredSignalCacheRef.current.has(uniqueId)) {
-                cached.list3Results?.push({
-                  tf: r.tf,
-                  direction: r.direction || 'LONG',
-                  latched: false,
-                  structure: {
-                    rsi: 50,
-                    bbw: 0.1,
-                    crossCount: 2,
-                    locationPct: 10,
-                    thrustValid: true,
-                    isStrictTrend: true,
-                    isColorValid: true,
-                    lag: r.lag || 0,
-                    signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
-                    signalPrice: c.price,
-                    signalHigh: r.kHigh ?? c.price,
-                    signalLow: r.kLow ?? c.price,
-                    ema10: c.emaDetails?.ema10 || c.price,
-                    ema20: c.emaDetails?.ema20 || c.price,
-                    ema30: c.emaDetails?.ema30 || c.price,
-                    ema40: c.emaDetails?.ema40 || c.price,
-                    ema80: c.emaDetails?.ema80 || c.price,
-                  }
-                });
-                addedTf = true;
-              }
+        }
+      } else {
+        // If cached exists, sync any new timeframes
+        let addedTf = false;
+        nonGrayGrouped.forEach((r) => {
+          const exists = cached.list3Results?.some(cr => cr.tf === r.tf && cr.direction === r.direction);
+          if (!exists) {
+            const uniqueId = `${c.symbol}-${r.tf}-${r.direction || 'LONG'}`;
+            if (!expiredSignalCacheRef.current.has(uniqueId)) {
+              const defaultStructure = {
+                rsi: 50,
+                bbw: 0.1,
+                crossCount: 2,
+                locationPct: 10,
+                thrustValid: true,
+                isStrictTrend: true,
+                isColorValid: true,
+                lag: r.lag || 0,
+                signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
+                signalPrice: c.price,
+                signalHigh: r.kHigh ?? c.price,
+                signalLow: r.kLow ?? c.price,
+                ema10: c.emaDetails?.ema10 || c.price,
+                ema20: c.emaDetails?.ema20 || c.price,
+                ema30: c.emaDetails?.ema30 || c.price,
+                ema40: c.emaDetails?.ema40 || c.price,
+                ema80: c.emaDetails?.ema80 || c.price,
+              };
+              cached.list3Results?.push({
+                tf: r.tf,
+                direction: r.direction || 'LONG',
+                structure: defaultStructure,
+                latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, cfg, cached.adjacentStrictTrends),
+              });
+              addedTf = true;
             }
-          });
-          if (addedTf) instantAdded = true;
-
-          if (currentHash !== lastHash) {
-            itemsToScan.push(c);
           }
+        });
+        if (addedTf) instantAdded = true;
+
+        if (currentHash !== lastHash && !areAllRulesOff) {
+          itemsToScan.push(c);
         }
       }
     });
@@ -1402,7 +1331,7 @@ export const useStructureAudit = (
       updateList3FromCache();
     }
 
-    if (itemsToScan.length > 0 && !areAllRulesOff) {
+    if (!areAllRulesOff && itemsToScan.length > 0) {
       runPriorityAnalysisInternal(itemsToScan, `增量分析 (${itemsToScan.length})`);
     }
   }, [candidates, runPriorityAnalysisInternal, updateList3FromCache]);
@@ -1410,6 +1339,12 @@ export const useStructureAudit = (
   useEffect(() => {
     let verifyCounter = 0;
     const checkTimer = setInterval(() => {
+      const cfg = configRef.current;
+      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
+      if (areAllRulesOff) {
+        return; // 列表3限制规则未开启时，绝对禁止在后台执行高频动态审计
+      }
+
       const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
       const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
       if (isBg) {

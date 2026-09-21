@@ -2,6 +2,90 @@
 import { calculateEMA, calculateRSI, calculateBollingerBands } from '../indicators';
 import { List3Config, ScannerItem } from '../../components/Scanner/scannerTypes';
 
+/**
+ * Centrally check whether a List 3 signal passes the currently active filter configurations.
+ * If a filter switch is turned OFF (false), that filter rule is completely bypassed.
+ */
+export function checkList3SignalPasses(
+    signal: { tf: string; direction: 'LONG' | 'SHORT'; structure?: any; latched?: boolean },
+    config: List3Config,
+    adjacentStrictTrends?: Record<string, boolean>
+): boolean {
+    return getList3SignalRejectReason(signal, config, adjacentStrictTrends) === null;
+}
+
+export function getList3SignalRejectReason(
+    signal: { tf: string; direction: 'LONG' | 'SHORT'; structure?: any; latched?: boolean },
+    config: List3Config,
+    adjacentStrictTrends?: Record<string, boolean>
+): string | null {
+    // 1. Timeframe filter: If specific timeframes are configured, check inclusion
+    if (config.timeframes && config.timeframes.length > 0 && !config.timeframes.includes(signal.tf)) {
+        return `由列表3周期过滤规则删除 [未选中${signal.tf}周期]`;
+    }
+
+    const s = signal.structure;
+    if (!s) return null;
+
+    // 2. Strict Trend (严格趋势) - ONLY filter if switch is explicitly ON
+    if (config.strictTrend === true && !s.isStrictTrend) {
+        return '由列表3严格趋势过滤规则删除';
+    }
+
+    // 3. Candle Color (同色交叉) - ONLY filter if switch is explicitly ON
+    if (config.checkCandleColor === true && !s.isColorValid) {
+        return '由列表3同色交叉规则删除';
+    }
+
+    // 4. Amplitude Audit (波幅审计) - ONLY filter if switch is explicitly ON
+    if (config.enableAmplitudeAudit === true) {
+        if (typeof config.maxLocation === 'number' && !isNaN(config.maxLocation) && s.locationPct > config.maxLocation) {
+            return `由列表3波幅审计规则删除 [通道位置 ${s.locationPct.toFixed(1)}% > ${config.maxLocation}%]`;
+        }
+        if (typeof config.minCrossCount === 'number' && !isNaN(config.minCrossCount) && s.crossCount < config.minCrossCount) {
+            return `由列表3波幅审计规则删除 [穿越次数 ${s.crossCount} < ${config.minCrossCount}]`;
+        }
+        if (typeof config.maxBBW === 'number' && !isNaN(config.maxBBW) && s.bbw > config.maxBBW) {
+            return `由列表3波幅审计规则删除 [布林带宽 ${(s.bbw * 100).toFixed(1)}% > ${(config.maxBBW * 100).toFixed(1)}%]`;
+        }
+    }
+
+    // 5. RSI Filter (RSI 动能过滤) - ONLY filter if switch is explicitly ON (enableRsi === true)
+    if (config.enableRsi === true) {
+        if (signal.direction === 'LONG') {
+            const min = (typeof config.rsiLongMin === 'number' && !isNaN(config.rsiLongMin)) ? config.rsiLongMin : 40;
+            const max = (typeof config.rsiLongMax === 'number' && !isNaN(config.rsiLongMax)) ? config.rsiLongMax : 90;
+            if (s.rsi < min || s.rsi > max) {
+                return `由列表3RSI过滤规则删除 [多单RSI: ${typeof s.rsi === 'number' ? s.rsi.toFixed(1) : '--'}, 范围: ${min}-${max}]`;
+            }
+        } else {
+            const min = (typeof config.rsiShortMin === 'number' && !isNaN(config.rsiShortMin)) ? config.rsiShortMin : 10;
+            const max = (typeof config.rsiShortMax === 'number' && !isNaN(config.rsiShortMax)) ? config.rsiShortMax : 60;
+            if (s.rsi < min || s.rsi > max) {
+                return `由列表3RSI过滤规则删除 [空单RSI: ${typeof s.rsi === 'number' ? s.rsi.toFixed(1) : '--'}, 范围: ${min}-${max}]`;
+            }
+        }
+    }
+
+    // 6. Multi-Resonance (时空共振) - ONLY filter if switch is explicitly ON
+    if (config.enableMultiResonance === true && adjacentStrictTrends) {
+        const ALL_TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+        const idx = ALL_TFS.indexOf(signal.tf);
+        if (idx !== -1) {
+            const prevTf = idx > 0 ? ALL_TFS[idx - 1] : null;
+            const nextTf = idx < ALL_TFS.length - 1 ? ALL_TFS[idx + 1] : null;
+            const dir = signal.direction;
+            const prevOk = prevTf ? !!adjacentStrictTrends[`${prevTf}-${dir}`] : false;
+            const nextOk = nextTf ? !!adjacentStrictTrends[`${nextTf}-${dir}`] : false;
+            if (!prevOk && !nextOk) {
+                return '由列表3时空共振规则删除';
+            }
+        }
+    }
+
+    return null;
+}
+
 export function analyzeList3Structure(
     task: { symbol: string, tf: string, direction: 'LONG' | 'SHORT', time: number, price: number, periodChange?: number },
     closes: number[],
@@ -14,13 +98,7 @@ export function analyzeList3Structure(
 ): ScannerItem | null {
     
     const idx = closes.length - 1;
-    if (idx < 0) return null;
-
-    const areAllRulesOff = !config.strictTrend && !config.checkCandleColor && !config.enableAmplitudeAudit && (config.enableRsi === false) && !config.enableMultiResonance;
-    
-    // Safety check: Needs at least 40 candles for basic EMA alignment. 
-    // If all rules are off, we can still construct a basic structure item without requiring 40 candles.
-    if (idx < 40 && !areAllRulesOff) return null; 
+    if (idx < 0) return null; 
 
     // 0. FIND THE SIGNAL INDEX
     // Locate the exact candle index where the List 2 signal occurred using the timestamp
@@ -106,19 +184,26 @@ export function analyzeList3Structure(
         }
     };
 
-    isSignalTrendValid = checkFan(signalIdx);
-    isCurrentTrendValid = checkFan(idx);
-
-    let isStrictTrend = isSignalTrendValid && isCurrentTrendValid;
+    let isStrictTrend = true;
+    if (config.strictTrend === true) {
+        isSignalTrendValid = checkFan(signalIdx);
+        isCurrentTrendValid = checkFan(idx);
+        isStrictTrend = isSignalTrendValid && isCurrentTrendValid;
+    } else {
+        isSignalTrendValid = true;
+        isCurrentTrendValid = true;
+    }
 
     // --- METRIC 2: Candle Color Check ---
     let isColorValid = true; 
-    const sClose = closes[signalIdx];
-    const sOpen = opens[signalIdx];
-    const isGreen = sClose >= sOpen;
-    
-    if (task.direction === 'LONG' && !isGreen) isColorValid = false;
-    if (task.direction === 'SHORT' && isGreen) isColorValid = false;
+    if (config.checkCandleColor === true) {
+        const sClose = closes[signalIdx];
+        const sOpen = opens[signalIdx];
+        const isGreen = sClose >= sOpen;
+        
+        if (task.direction === 'LONG' && !isGreen) isColorValid = false;
+        if (task.direction === 'SHORT' && isGreen) isColorValid = false;
+    }
 
     // --- METRIC 3: Post-Signal Extreme (DEFENSE & BREAKOUT PURITY BACKTRACE) ---
     const signalClose = closes[signalIdx];
@@ -237,17 +322,19 @@ export function analyzeList3Structure(
 
     // --- METRIC 7: 3K Breakout Check (前三K突破: 做多 > Max(Close[1..3]), 做空 < Min(Close[1..3])) ---
     let isBreakout3K = false;
+    let maxClose3: number | undefined = undefined;
+    let minClose3: number | undefined = undefined;
     if (idx >= 3) {
         const c1 = closes[idx - 1];
         const c2 = closes[idx - 2];
         const c3 = closes[idx - 3];
+        maxClose3 = Math.max(c1, c2, c3);
+        minClose3 = Math.min(c1, c2, c3);
         if (task.direction === 'LONG') {
-            const maxClose3 = Math.max(c1, c2, c3);
             if (task.price > maxClose3) {
                 isBreakout3K = true;
             }
         } else {
-            const minClose3 = Math.min(c1, c2, c3);
             if (task.price < minClose3) {
                 isBreakout3K = true;
             }
@@ -283,6 +370,9 @@ export function analyzeList3Structure(
             periodChange: task.periodChange, // Pass-through
             isReverse3K,
             isBreakout3K,
+            maxClose3,
+            minClose3,
+            recentCloses: idx > 0 ? closes.slice(Math.max(0, idx - 50), idx) : [],
             ema10: getVal(ema10, idx, 10),
             ema20: getVal(ema20, idx, 20),
             ema30: getVal(ema30, idx, 30),

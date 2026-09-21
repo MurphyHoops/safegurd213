@@ -165,6 +165,9 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                                 <div className="flex flex-col">
                                     <div className="flex items-center gap-1">
                                         <span className={`text-[9px] font-bold ${isFiltered ? 'text-amber-300' : 'text-indigo-300'}`}>{res.tf}</span>
+                                        <span className={`text-[8px] px-0.5 rounded font-bold ${res.direction === 'LONG' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                                            {res.direction === 'LONG' ? '多' : '空'}
+                                        </span>
                                         {res.isAligned && (
                                             <span className="text-[7px] bg-indigo-500/20 text-indigo-300 px-0.5 rounded border border-indigo-500/30 font-bold" title="EMA 发散已对齐">顺</span>
                                         )}

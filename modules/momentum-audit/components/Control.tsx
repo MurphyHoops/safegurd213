@@ -333,17 +333,37 @@ export const List4Control: React.FC<List4PanelProps> = ({
           </div>
         </div>
 
-        {/* NEW: Independent Momentum Conditions (3K & 7K) */}
+        {/* NEW: Independent Momentum Conditions (NK & 7K) */}
         <div className="grid grid-cols-2 gap-2 py-1">
-          <div className="bg-slate-800 p-1.5 rounded border border-slate-700 flex items-center justify-between">
-            <span className="text-[8px] text-slate-400 font-bold" title="做多: Price > Max(Close[1..3]) / 做空: Price < Min(Close[1..3])">
-              前三K突破
-            </span>
+          <div className="bg-slate-800 p-1.5 rounded border border-slate-700 flex items-center justify-between gap-1">
+            <div className="flex items-center gap-1">
+              <span className="text-[8px] text-slate-400 font-bold" title={`做多: Price > Max(前${config.rev3KCandles ?? 3}K收盘价) / 做空: Price < Min(前${config.rev3KCandles ?? 3}K收盘价)`}>
+                前
+              </span>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={config.rev3KCandles ?? 3}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setConfig((p) => ({
+                    ...p,
+                    rev3KCandles: isNaN(val) ? 3 : Math.max(1, Math.min(50, val)),
+                  }));
+                }}
+                className="w-7 bg-slate-900 border border-slate-700 rounded text-center text-[9px] text-amber-400 font-bold outline-none py-0.5"
+                title="设置检测前 N 根 K 线的实体收盘价突破 (默认3，可自由设为9/12等)"
+              />
+              <span className="text-[8px] text-slate-400 font-bold" title={`做多: Price > Max(前${config.rev3KCandles ?? 3}K收盘价) / 做空: Price < Min(前${config.rev3KCandles ?? 3}K收盘价)`}>
+                K突破
+              </span>
+            </div>
             <div
               onClick={() =>
                 setConfig((p) => ({ ...p, enableRev3K: !p.enableRev3K }))
               }
-              className={`w-6 h-3 rounded-full p-0.5 transition-colors cursor-pointer ${config.enableRev3K ? "bg-red-500" : "bg-slate-700"}`}
+              className={`w-6 h-3 rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${config.enableRev3K ? "bg-red-500" : "bg-slate-700"}`}
             >
               <div
                 className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${config.enableRev3K ? "translate-x-3" : "translate-x-0"}`}
@@ -882,6 +902,31 @@ export const List4Control: React.FC<List4PanelProps> = ({
                   className="w-10 bg-slate-900 border border-slate-700 rounded text-center text-[10px] text-emerald-400 font-bold outline-none"
                 />
                 <span className="text-[8px] text-slate-600">根K线</span>
+              </div>
+            </div>
+            <div className="bg-slate-800 p-1.5 rounded border border-slate-700 flex flex-col gap-1 col-span-2">
+              <span className="text-[8px] text-amber-400 font-bold">
+                破中轴休眠保留寿命 (复活观察期)
+              </span>
+              <div className="flex items-center justify-between gap-1">
+                <input
+                  type="number"
+                  min="1"
+                  max="200"
+                  value={
+                    Number.isNaN(config.dormantRetentionCandles)
+                      ? ""
+                      : (config.dormantRetentionCandles ?? 20)
+                  }
+                  onChange={(e) =>
+                    setConfig((p) => ({
+                      ...p,
+                      dormantRetentionCandles: parseInt(e.target.value) || 20,
+                    }))
+                  }
+                  className="w-16 bg-slate-900 border border-amber-500/40 rounded text-center text-[10px] text-amber-300 font-bold outline-none"
+                />
+                <span className="text-[8px] text-slate-500 font-medium">根K线 (默认20根，超期彻底清除)</span>
               </div>
             </div>
           </div>

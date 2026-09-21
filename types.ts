@@ -173,6 +173,7 @@ export interface TradeLog {
     binance_order_id?: string; // Binance Official Trade/Order ID for reconciliation
     commission?: number; // Binance Trading Fee
     events?: TradeEvent[]; // Collection of all actions during the trade lifecycle
+    cycle_sealed?: boolean; // 🔒 周期已封存标记：解套盈利清仓或盈利平仓后设为 true，严禁与新一轮开仓负债关联
 }
 
 export interface SystemEvent {

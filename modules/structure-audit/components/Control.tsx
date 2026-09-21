@@ -121,12 +121,12 @@ export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, cou
                                 <Activity size={10} className="text-pink-500"/>
                                 启用 RSI 动能过滤
                             </div>
-                            <div onClick={() => setConfig(p => ({...p, enableRsi: p.enableRsi === undefined ? false : !p.enableRsi}))} className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${config.enableRsi !== false ? 'bg-pink-600' : 'bg-slate-700'}`}>
-                                <div className={`w-2 h-2 bg-white rounded-full transition-transform shadow-sm ${config.enableRsi !== false ? 'translate-x-3' : ''}`} />
+                            <div onClick={() => setConfig(p => ({...p, enableRsi: !p.enableRsi}))} className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${config.enableRsi ? 'bg-pink-600' : 'bg-slate-700'}`}>
+                                <div className={`w-2 h-2 bg-white rounded-full transition-transform shadow-sm ${config.enableRsi ? 'translate-x-3' : ''}`} />
                             </div>
                         </div>
                         
-                        <div className={`grid grid-cols-2 gap-2 transition-opacity ${config.enableRsi !== false ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                        <div className={`grid grid-cols-2 gap-2 transition-opacity ${config.enableRsi ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
                             <div className="flex flex-col bg-slate-800 rounded border border-slate-700 p-1">
                                 <span className="text-[8px] text-slate-500 mb-0.5 flex items-center justify-center gap-1"><Activity size={8}/> RSI (多) 区间</span>
                                 <div className="flex items-center justify-center gap-1">

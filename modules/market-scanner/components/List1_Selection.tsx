@@ -136,6 +136,8 @@ const List1_Selection: React.FC<Props> = ({
 
     // 🚀 定向推送至列表2控制面板折叠/展开状态
     const [isPushConfigOpen, setIsPushConfigOpen] = useState(true);
+    // 🎯 是否仅在列表1中查看定向截取推送池
+    const [viewOnlyPushed, setViewOnlyPushed] = useState(false);
 
     // 🌊 行情启动底池数据监听 (用于当未开启大行情发现时，市场初筛列表直接展示行情启动底池里的币)
     const [startTrendPool, setStartTrendPool] = useState<any[]>(() => {
@@ -794,7 +796,7 @@ const List1_Selection: React.FC<Props> = ({
         if (symbols.length > 0) {
             fetchVolume8amBatch(symbols);
         }
-    }, [sortedSymbolsKey, _8amUpdateTick, scanConfig.enableVol8am, scanConfig.timeBasis]);
+    }, [sortedSymbolsKey, _8amUpdateTick, scanConfig.enableVol8am, scanConfig.timeBasis, scanConfig.list2PushConfig?.topNSortKey, scanConfig.list2PushConfig?.enableTopN]);
 
     const filteredList = useMemo(() => {
         // 🔒 [第一步严格 24H 交易额与早上8点起交易额刚性拦截与过滤]:
@@ -840,12 +842,14 @@ const List1_Selection: React.FC<Props> = ({
             const enableLong = cfg.enableLong !== false;
             const enableShort = cfg.enableShort !== false;
             const enableSideways = cfg.enableSideways === true; // 横盘蓄势开关
-            const enableLookbackFilter = cfg.enableLookbackFilter !== false && (cfg.enableLookbackFilter === true || (enableLong || enableShort)); // 回溯周期开关
+            const enableLookbackFilter = cfg.enableLookbackFilter !== false; // 回溯周期开关
 
-            // 🎯 第一步的输入源：100% 严格读取【行情启动底池】
+            // 🎯 第一步的输入源：若行情启动开启，读取【行情启动底池】；若行情启动关闭，自动向上一级读取【交易额过滤底池】
             const baseMajorSource = startTrendFilteredList;
 
-            // 🎯 第一步：横盘蓄势过滤读取“行情启动底池”的数据，符合“横盘蓄势过滤”规则的币进入“横盘蓄势过滤底池”
+            // 🎯 第一步：横盘蓄势过滤
+            // - 若开启【横盘蓄势过滤】，筛选出符合横盘规则的币进入 sidewaysFilteredList；
+            // - 若关闭【横盘蓄势过滤】，自动向上一级底池获取数据——直接继承 baseMajorSource！
             let sidewaysFilteredList = baseMajorSource;
             if (enableSideways) {
                 if (sidewaysPool && sidewaysPool.length > 0) {
@@ -860,16 +864,17 @@ const List1_Selection: React.FC<Props> = ({
                 }
             }
 
-            // 🎯 第二步：若未开启【回溯周期过滤】，则“横盘蓄势过滤底池”即为最终“市场初筛”列表
+            // 🎯 第二步：回溯周期过滤
+            // - 若关闭【回溯周期过滤】，自动向上一级底池获取数据——直接使用 sidewaysFilteredList 作为最终初筛列表！
+            // - 若开启【回溯周期过滤】，则读取上级底池数据 (sidewaysFilteredList)，筛选符合回溯极值规则的数据进入“市场初筛”！
             if (!enableLookbackFilter) {
                 finalResult = sidewaysFilteredList;
             } else if (hasRunMajorTrend || (effectiveMajorCandidates && effectiveMajorCandidates.size > 0)) {
-                // 🎯 第三步：”回溯周期过滤“读取“横盘蓄势过滤底池”数据，符合“回溯周期过滤”规则的数据进入“市场初筛”列表！
                 // 🔒【用户特别强调的核心铁律】：
                 // 市场初筛的币，【平时不要增减】，必须是“回溯周期过滤”运行完成后，再和市场初筛列表的数量进行比对！
                 // 如果“回溯周期过滤”已产生候选集（或已完成扫描判定），市场初筛列表严格展示通过回溯周期过滤的有效候选集币种，
                 // 绝不因中途底池扫描、日K重算或临时变量波动而发生清零或闪烁！
-                const matchedList = sortedList1.filter(item => {
+                const matchedList = sidewaysFilteredList.filter(item => {
                     const sym = item.symbol;
                     if (!sym) return false;
                     const matchLong = effectiveMajorCandidates.has(`${sym}_LONG`) || effectiveMajorCandidates.has(sym);
@@ -887,7 +892,7 @@ const List1_Selection: React.FC<Props> = ({
                 // 🔒 若尚未完成首次全量回溯扫描，先呈现横盘蓄势底池币种待扫描
                 finalResult = sidewaysFilteredList;
             } else {
-                // 兜底返回行情启动底池币种
+                // 兜底返回上级底池币种
                 finalResult = baseMajorSource;
             }
         }
@@ -903,11 +908,58 @@ const List1_Selection: React.FC<Props> = ({
 
     // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
     const pushConfig = scanConfig.list2PushConfig;
+    const isPushEffectivelyEnabled = Boolean(pushConfig?.enabled || pushConfig?.enableTopN || pushConfig?.enableChg24h || pushConfig?.enableChg8am || pushConfig?.enableVol24h || pushConfig?.enableVol8am);
+
     const list2PushCandidates = useMemo(() => {
-        if (!pushConfig || !pushConfig.enabled) {
+        if (!pushConfig || !isPushEffectivelyEnabled) {
             // 未启用定向推送时，默认初筛列表全量直接进入列表2
             return filteredList;
         }
+
+        // 统一提取24H交易额 (单位: 百万M USDT)
+        const getVol24 = (item: ScannerItem): number => {
+            if (item.volume24h !== undefined && item.volume24h !== null && !isNaN(Number(item.volume24h)) && Number(item.volume24h) > 0) {
+                return Number(item.volume24h);
+            }
+            if (item.quoteVolume !== undefined && item.quoteVolume !== null && !isNaN(Number(item.quoteVolume))) {
+                const qv = Number(item.quoteVolume);
+                return qv > 10000 ? qv / 1_000_000 : qv;
+            }
+            if (item.price && item.volume) {
+                const pv = Number(item.price) * Number(item.volume);
+                return pv > 10000 ? pv / 1_000_000 : pv;
+            }
+            return 0;
+        };
+
+        // 统一提取8AM交易额 (单位: 百万M USDT)
+        const getVol8 = (item: ScannerItem): number => {
+            const v8 = getVolume8am(item.symbol);
+            if (v8?.volume8am !== undefined && !isNaN(Number(v8.volume8am))) {
+                return Number(v8.volume8am);
+            }
+            if (item.volume8am !== undefined && item.volume8am !== null && !isNaN(Number(item.volume8am))) {
+                return Number(item.volume8am);
+            }
+            return 0;
+        };
+
+        // 统一提取24H涨跌幅 (%)
+        const getChg24 = (item: ScannerItem): number => {
+            return item.change !== undefined && !isNaN(Number(item.change)) ? Number(item.change) : 0;
+        };
+
+        // 统一提取8AM涨跌幅 (%)，优先使用日K8AM计算值，兜底降级至当前24H涨跌幅
+        const getChg8 = (item: ScannerItem): number => {
+            const v8 = getVolume8am(item.symbol);
+            if (v8?.change8am !== undefined && !isNaN(Number(v8.change8am))) {
+                return Number(v8.change8am);
+            }
+            if (item.change8am !== undefined && item.change8am !== null && !isNaN(Number(item.change8am))) {
+                return Number(item.change8am);
+            }
+            return item.change !== undefined && !isNaN(Number(item.change)) ? Number(item.change) : 0;
+        };
 
         // 1. 获取已启用的过滤指标判断条件
         const activeFilterChecks: ((item: ScannerItem) => boolean)[] = [];
@@ -915,34 +967,28 @@ const List1_Selection: React.FC<Props> = ({
         if (pushConfig.enableChg24h) {
             const minVal = Number(pushConfig.minChg24h) || 0;
             activeFilterChecks.push((item) => {
-                const chg = item.change !== undefined && item.change !== null ? Math.abs(Number(item.change)) : 0;
-                return chg >= minVal;
+                return Math.abs(getChg24(item)) >= minVal;
             });
         }
 
         if (pushConfig.enableChg8am) {
             const minVal = Number(pushConfig.minChg8am) || 0;
             activeFilterChecks.push((item) => {
-                const v8 = getVolume8am(item.symbol);
-                const chg8 = v8?.change8am !== undefined && !isNaN(v8.change8am) ? Math.abs(v8.change8am) : (item.change8am ? Math.abs(item.change8am) : 0);
-                return chg8 >= minVal;
+                return Math.abs(getChg8(item)) >= minVal;
             });
         }
 
         if (pushConfig.enableVol24h) {
             const minVal = Number(pushConfig.minVol24h) || 0;
             activeFilterChecks.push((item) => {
-                const volM = item.quoteVolume ? Number(item.quoteVolume) / 1_000_000 : ((Number(item.price || 0) * Number(item.volume || 0)) / 1_000_000);
-                return (volM || 0) >= minVal;
+                return getVol24(item) >= minVal;
             });
         }
 
         if (pushConfig.enableVol8am) {
             const minVal = Number(pushConfig.minVol8am) || 0;
             activeFilterChecks.push((item) => {
-                const v8 = getVolume8am(item.symbol);
-                const vol8M = v8?.volume8am ? v8.volume8am / 1_000_000 : (item.volume8am ? item.volume8am / 1_000_000 : 0);
-                return (vol8M || 0) >= minVal;
+                return getVol8(item) >= minVal;
             });
         }
 
@@ -962,47 +1008,69 @@ const List1_Selection: React.FC<Props> = ({
             const count = Math.max(1, Number(pushConfig.topNCount) || 10);
 
             const sorted = [...candidates].sort((a, b) => {
-                const chg24_a = a.change !== undefined && a.change !== null ? Number(a.change) : 0;
-                const chg24_b = b.change !== undefined && b.change !== null ? Number(b.change) : 0;
-                
-                const v8_a = getVolume8am(a.symbol);
-                const v8_b = getVolume8am(b.symbol);
-                const chg8_a = v8_a?.change8am !== undefined && !isNaN(v8_a.change8am) ? v8_a.change8am : (a.change8am || 0);
-                const chg8_b = v8_b?.change8am !== undefined && !isNaN(v8_b.change8am) ? v8_b.change8am : (b.change8am || 0);
+                const chg24_a = getChg24(a);
+                const chg24_b = getChg24(b);
+                const chg8_a = getChg8(a);
+                const chg8_b = getChg8(b);
+                const vol24_a = getVol24(a);
+                const vol24_b = getVol24(b);
+                const vol8_a = getVol8(a);
+                const vol8_b = getVol8(b);
 
-                const vol24_a = a.quoteVolume ? Number(a.quoteVolume) : ((Number(a.price || 0) * Number(a.volume || 0)));
-                const vol24_b = b.quoteVolume ? Number(b.quoteVolume) : ((Number(b.price || 0) * Number(b.volume || 0)));
-
-                const vol8_a = v8_a?.volume8am || a.volume8am || 0;
-                const vol8_b = v8_b?.volume8am || b.volume8am || 0;
-
+                let diff = 0;
                 switch (sortKey) {
                     case 'CHG_24H_ABS':
-                        return Math.abs(chg24_b) - Math.abs(chg24_a);
+                        diff = Math.abs(chg24_b) - Math.abs(chg24_a);
+                        break;
                     case 'CHG_8AM_ABS':
-                        return Math.abs(chg8_b) - Math.abs(chg8_a);
+                        diff = Math.abs(chg8_b) - Math.abs(chg8_a);
+                        break;
                     case 'VOL_24H':
-                        return vol24_b - vol24_a;
+                        diff = vol24_b - vol24_a;
+                        break;
                     case 'VOL_8AM':
-                        return vol8_b - vol8_a;
+                        diff = vol8_b - vol8_a;
+                        break;
                     case 'CHG_24H_DESC':
-                        return chg24_b - chg24_a;
+                        diff = chg24_b - chg24_a;
+                        break;
                     case 'CHG_24H_ASC':
-                        return chg24_a - chg24_b;
+                        diff = chg24_a - chg24_b;
+                        break;
                     case 'CHG_8AM_DESC':
-                        return chg8_b - chg8_a;
+                        diff = chg8_b - chg8_a;
+                        break;
                     case 'CHG_8AM_ASC':
-                        return chg8_a - chg8_b;
+                        diff = chg8_a - chg8_b;
+                        break;
                     default:
-                        return Math.abs(chg8_b) - Math.abs(chg8_a);
+                        diff = Math.abs(chg8_b) - Math.abs(chg8_a);
+                        break;
                 }
+
+                if (diff !== 0) return diff;
+                // 次级排序：交易额兜底，保证排序稳定性
+                const secDiff = vol24_b - vol24_a;
+                if (secDiff !== 0) return secDiff;
+                return a.symbol.localeCompare(b.symbol);
             });
 
             candidates = sorted.slice(0, count);
         }
 
         return candidates;
-    }, [filteredList, pushConfig, _8amUpdateTick]);
+    }, [filteredList, pushConfig, isPushEffectivelyEnabled, _8amUpdateTick]);
+
+    // 映射 Top N 排名 (用于在初筛卡片上醒目标注 #1, #2, ...)
+    const pushRankMap = useMemo(() => {
+        const map = new Map<string, number>();
+        if (pushConfig?.enableTopN || isPushEffectivelyEnabled) {
+            list2PushCandidates.forEach((item, index) => {
+                map.set(item.symbol, index + 1);
+            });
+        }
+        return map;
+    }, [list2PushCandidates, pushConfig?.enableTopN, isPushEffectivelyEnabled]);
 
     const lastFilteredStrRef = useRef('');
 
@@ -1331,46 +1399,58 @@ const List1_Selection: React.FC<Props> = ({
                     </div>
 
                     <div className="flex items-center gap-2">
-                        {/* 实时命中统计反馈 */}
-                        <div className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800">
+                        {/* 实时命中统计反馈 (可点击切换：仅看推送截取 / 查看全量初筛) */}
+                        <button
+                            type="button"
+                            onClick={() => setViewOnlyPushed(prev => !prev)}
+                            className={`flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded border transition-all cursor-pointer ${
+                                viewOnlyPushed 
+                                    ? 'bg-amber-950/60 border-amber-500/60 text-amber-300 ring-1 ring-amber-500/40' 
+                                    : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                            }`}
+                            title={viewOnlyPushed ? "当前为仅看推送截取币种，点击切回全量初筛" : "点击仅看定向截取推送池"}
+                        >
                             <span className="text-slate-500">推送池:</span>
-                            <span className={`font-bold ${pushConfig?.enabled ? 'text-indigo-400' : 'text-slate-300'}`}>
+                            <span className={`font-bold ${isPushEffectivelyEnabled ? 'text-amber-400' : 'text-slate-300'}`}>
                                 {list2PushCandidates.length}
                             </span>
                             <span className="text-slate-600">/</span>
                             <span className="text-slate-400">{filteredList.length} 币</span>
-                        </div>
+                            {viewOnlyPushed && <span className="text-[7.5px] bg-amber-500 text-black px-1 rounded font-black ml-0.5">仅看推送</span>}
+                        </button>
 
                         {/* 定向推送总开关 */}
                         <label className="flex items-center gap-1 cursor-pointer select-none">
                             <input 
                                 type="checkbox"
-                                checked={!!pushConfig?.enabled}
+                                checked={!!(pushConfig?.enabled || pushConfig?.enableTopN)}
                                 onChange={(e) => {
                                     const checked = e.target.checked;
                                     setScanConfig(prev => ({
                                         ...prev,
                                         list2PushConfig: {
+                                            ...(prev.list2PushConfig || {
+                                                mode: 'OR',
+                                                enableChg24h: false,
+                                                minChg24h: 5.0,
+                                                enableChg8am: true,
+                                                minChg8am: 3.0,
+                                                enableVol24h: false,
+                                                minVol24h: 30.0,
+                                                enableVol8am: false,
+                                                minVol8am: 15.0,
+                                                topNCount: 10,
+                                                topNSortKey: 'CHG_8AM_ABS',
+                                            }),
                                             enabled: checked,
-                                            mode: prev.list2PushConfig?.mode || 'OR',
-                                            enableChg24h: prev.list2PushConfig?.enableChg24h ?? false,
-                                            minChg24h: prev.list2PushConfig?.minChg24h ?? 5.0,
-                                            enableChg8am: prev.list2PushConfig?.enableChg8am ?? true,
-                                            minChg8am: prev.list2PushConfig?.minChg8am ?? 3.0,
-                                            enableVol24h: prev.list2PushConfig?.enableVol24h ?? false,
-                                            minVol24h: prev.list2PushConfig?.minVol24h ?? 30.0,
-                                            enableVol8am: prev.list2PushConfig?.enableVol8am ?? false,
-                                            minVol8am: prev.list2PushConfig?.minVol8am ?? 15.0,
-                                            enableTopN: prev.list2PushConfig?.enableTopN ?? true,
-                                            topNCount: prev.list2PushConfig?.topNCount ?? 10,
-                                            topNSortKey: prev.list2PushConfig?.topNSortKey || 'CHG_8AM_ABS',
+                                            enableTopN: checked ? (prev.list2PushConfig?.enableTopN ?? true) : false,
                                         }
                                     }));
                                 }}
                                 className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 border-slate-700 bg-slate-800 accent-indigo-500 cursor-pointer"
                             />
-                            <span className={`font-bold text-[9.5px] ${pushConfig?.enabled ? 'text-indigo-300' : 'text-slate-400'}`}>
-                                {pushConfig?.enabled ? '已开启定向' : '全量直推'}
+                            <span className={`font-bold text-[9.5px] ${isPushEffectivelyEnabled ? 'text-indigo-300' : 'text-slate-400'}`}>
+                                {isPushEffectivelyEnabled ? '已开启定向' : '全量直推'}
                             </span>
                         </label>
                     </div>
@@ -1770,6 +1850,43 @@ const List1_Selection: React.FC<Props> = ({
                 </div>
             )}
 
+            {/* Top N 截取生效提示条 */}
+            {(pushConfig?.enableTopN || isPushEffectivelyEnabled) && (
+                <div className="flex items-center justify-between px-3 py-1 bg-indigo-950/40 border-b border-indigo-500/30 text-[9px]">
+                    <div className="flex items-center gap-1 text-slate-300 font-mono">
+                        <span className="text-amber-300 font-bold">🎯 {pushConfig?.enableTopN ? `Top ${pushConfig?.topNCount || 10} 截取生效:` : '定向推送规则生效:'}</span>
+                        <span className="text-indigo-200 font-bold">
+                            {(() => {
+                                switch (pushConfig?.topNSortKey) {
+                                    case 'CHG_8AM_ABS': return '8AM 涨跌幅绝对值 (动能)';
+                                    case 'CHG_24H_ABS': return '24H 涨跌幅绝对值 (全天)';
+                                    case 'VOL_8AM': return '8AM 成交额 (今日热钱)';
+                                    case 'VOL_24H': return '24H 成交额 (全天流动性)';
+                                    case 'CHG_8AM_DESC': return '8AM 纯涨幅 (多头最强)';
+                                    case 'CHG_8AM_ASC': return '8AM 纯跌幅 (空头最强)';
+                                    case 'CHG_24H_DESC': return '24H 纯涨幅 (涨幅榜)';
+                                    case 'CHG_24H_ASC': return '24H 纯跌幅 (跌幅榜)';
+                                    default: return '8AM 涨跌幅绝对值';
+                                }
+                            })()}
+                        </span>
+                        <span className="text-slate-400 font-normal">({list2PushCandidates.length} 币命中推向列表2)</span>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => setViewOnlyPushed(p => !p)}
+                        className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded border transition-colors cursor-pointer ${
+                            viewOnlyPushed 
+                                ? 'bg-amber-600 text-white border-amber-400 shadow-sm' 
+                                : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
+                        }`}
+                        title={viewOnlyPushed ? "点击查看全量初筛列表" : "点击仅查看被截取推入列表2的币种"}
+                    >
+                        {viewOnlyPushed ? '切回全量初筛' : '仅看推送截取'}
+                    </button>
+                </div>
+            )}
+
             {filteredList.length > 0 && (
                 <div className="px-3 py-1 bg-slate-900/60 border-b border-slate-800/80 flex items-center text-[9px] font-bold text-slate-400 font-mono">
                     <div className="flex items-center gap-1.5 shrink-0">
@@ -1820,7 +1937,7 @@ const List1_Selection: React.FC<Props> = ({
                         )}
                     </div>
                 ) : (
-                    filteredList.map((item, idx) => (
+                    (viewOnlyPushed ? list2PushCandidates : filteredList).map((item, idx) => (
                         <List1Item 
                             key={item.symbol}
                             item={item}
@@ -1835,6 +1952,7 @@ const List1_Selection: React.FC<Props> = ({
                             extremeMetrics={metricsCache[item.symbol]}
                             downloadProgress={downloadProgressMap[item.symbol]}
                             onDownload={onDownload}
+                            pushRank={pushRankMap.get(item.symbol)}
                         />
                     ))
                 )}

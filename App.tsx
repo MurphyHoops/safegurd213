@@ -2152,6 +2152,8 @@ const AppContent: React.FC = () => {
                         simulatorRef.current.setPositions(nextPositions);
                         setPositions(nextPositions);
                         setBinanceRealPositions(nextPositions);
+                        saveState('SAVIOR_POSITIONS_LIVE', nextPositions);
+                        saveState('SAVIOR_POSITIONS', nextPositions);
                         if (resData.orderId) {
                             simulatorRef.current.registerExecutedOrderId(resData.orderId);
                         }
@@ -2197,7 +2199,15 @@ const AppContent: React.FC = () => {
                 pendingOpenPositionsRef.current.delete(cleanSymbol);
             }
         } else {
-            simulatorRef.current?.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas, extraProps);
+            if (simulatorRef.current) {
+                simulatorRef.current.openPosition(cleanSymbol, side, amount, price, signalTf, signalCandle, entryEmas, extraProps);
+                const updatedPositions = [...simulatorRef.current.getPositions()];
+                setPositions(updatedPositions);
+                const isRealMode = settingsRef.current.system.realTrading;
+                const posKey = isRealMode ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
+                saveState(posKey, updatedPositions);
+                saveState('SAVIOR_POSITIONS', updatedPositions);
+            }
             speakOpenPosition();
         }
     }, []);

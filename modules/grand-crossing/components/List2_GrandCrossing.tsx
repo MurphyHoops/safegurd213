@@ -6,6 +6,7 @@ import { List2Item } from './Item';
 import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History } from 'lucide-react';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { ScannerHistoryModal, useAutoHistoryLogger } from '../../momentum-audit/components/ScannerHistoryModal';
+import { TimeframeDiagnosticRecord } from '../types';
 
 interface Props {
     networkStatus?: 'healthy' | 'delayed' | 'disconnected';
@@ -24,11 +25,12 @@ interface Props {
     pollingStatus?: string; 
     activeScanTfs?: Set<string>; // New prop
     scanningSymbols?: Record<string, string>;
+    diagnostics?: Record<string, TimeframeDiagnosticRecord>;
     onRemoveItem: (symbol: string) => void;
     onClearItems: () => void;
 }
 
-const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, allList2, setChartData, pollingStatus, activeScanTfs, scanningSymbols, onRemoveItem, onClearItems }) => {
+const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, allList2, setChartData, pollingStatus, activeScanTfs, scanningSymbols, diagnostics, onRemoveItem, onClearItems }) => {
     
     // Auto History Logger for List 2 (Grand Crossing) - track all active signals across all timeframes
     useAutoHistoryLogger('LIST2', allList2 || filteredList2 || []);
@@ -94,6 +96,8 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                 activeScanTfs={activeScanTfs}
                 scanningSymbols={scanningSymbols}
                 pollingStatus={pollingStatus}
+                diagnostics={diagnostics}
+                setChartData={setChartData}
             />
             
             {/* Header & Filter Tabs */}

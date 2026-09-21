@@ -548,9 +548,41 @@ export const useScannerLogic = (
 
             if (scanSessionIdRef.current !== sessionId) return;
             
-            const data = await res.json();
+            const rawParsed = await res.json();
             lastFetchFinishedTimeRef.current = Date.now();
             
+            // Defensive guard: Ensure data is an array
+            let data: any[] = [];
+            if (Array.isArray(rawParsed)) {
+                data = rawParsed;
+            } else if (rawParsed && typeof rawParsed === 'object') {
+                // If API returned an error object or wrapped data
+                if (Array.isArray((rawParsed as any).data)) {
+                    data = (rawParsed as any).data;
+                } else {
+                    console.warn("[Scanner] Received non-array data response from upstream:", rawParsed);
+                    // Attempt fallback to cached raw data
+                    if (Array.isArray(rawDataRef.current) && rawDataRef.current.length > 0) {
+                        data = rawDataRef.current;
+                    } else {
+                        try {
+                            const cached = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
+                            if (cached) {
+                                const parsed = JSON.parse(cached);
+                                if (Array.isArray(parsed) && parsed.length > 0) {
+                                    data = parsed;
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                }
+            }
+
+            if (!Array.isArray(data) || data.length === 0) {
+                console.warn("[Scanner] No valid ticker array obtained, skipping tick update");
+                return;
+            }
+
             // Save raw data for instant re-filtering
             rawDataRef.current = data;
             try {
@@ -839,33 +871,64 @@ export const useScannerLogic = (
         try {
             if (majorScanAbortRef.current) return;
 
-            // 🔒 [严格遵循数据流水线 - 用户指定规则]:
-            // 1. 列表1由”成交额范围过滤“进入”交易额过滤底池“
-            // 2. ”行情启动趋势“读取”交易额过滤底池“，筛选后的币进入”行情启动底池“ (SCANNER_START_TREND_POOL)
-            // 3. ”大行情发现“ 的第一步，”横盘蓄势过滤“读取”行情启动底池“的数据，符合规则的币进入”横盘蓄势过滤底池“ (SCANNER_SIDEWAYS_FILTERED_POOL)
-            // 4. ”回溯周期过滤“读取“横盘蓄势过滤底池”数据，符合规则的数据进入“市场初筛”列表！
-            // 5. “回溯周期过滤”扫描完毕后，交接给“行情启动趋势”重新读取“交易额过滤底池”，周而复始！
+            // 🔒 [严格遵循数据流水线 - 级联向上一级底池获取数据机制]:
+            // 1. 列表1由”成交额范围过滤“进入”交易额过滤底池“ (SCANNER_VOLUME_FILTERED_POOL)
+            // 2. 若”行情启动趋势“开启，读取”交易额过滤底池“，筛选后的币进入”行情启动底池“ (SCANNER_START_TREND_POOL)
+            //    若”行情启动趋势“关闭，自动向上一级底池获取数据——直接从【交易额过滤底池】输入！
+            // 3. ”大行情发现“ 的第一步，”横盘蓄势过滤“读取上级底池数据，符合规则的币进入”横盘蓄势过滤底池“ (SCANNER_SIDEWAYS_FILTERED_POOL)
+            //    若”横盘蓄势过滤“关闭，自动向上一级底池获取数据——全部币种直接放行进入下一级！
+            // 4. ”回溯周期过滤“读取上级底池数据，符合规则的数据进入“市场初筛”列表！
+            //    若”回溯周期过滤“关闭，自动向上一级底池获取数据——上级底池数据直接作为“市场初筛”列表！
+            const isStartTrendActive = Boolean(
+                cfg.enableStartTrend && (cfg.enableStartTrendLong || cfg.enableStartTrendShort)
+            );
             let startTrendSymbols: string[] = [];
-            try {
-                const rawStartPool = localStorage.getItem('SCANNER_START_TREND_POOL');
-                if (rawStartPool) {
-                    const parsed = JSON.parse(rawStartPool);
-                    if (Array.isArray(parsed)) {
-                        startTrendSymbols = parsed
-                            .map((item: any) => typeof item === 'string' ? item : item?.symbol)
-                            .filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym));
+            if (isStartTrendActive) {
+                try {
+                    const rawStartPool = localStorage.getItem('SCANNER_START_TREND_POOL');
+                    if (rawStartPool) {
+                        const parsed = JSON.parse(rawStartPool);
+                        if (Array.isArray(parsed)) {
+                            startTrendSymbols = parsed
+                                .map((item: any) => typeof item === 'string' ? item : item?.symbol)
+                                .filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym));
+                        }
                     }
-                }
-            } catch (_) {}
+                } catch (_) {}
+            }
 
-            // 目标币种必须100%严格来自【行情启动底池】
-            const targetSymbols = startTrendSymbols;
+            // 🎯 目标输入源：
+            // - 若“行情启动”开启且底池有数据，读取【行情启动底池】；
+            // - 若“行情启动”关闭（或未开启多/空），自动向上一级底池获取数据——直接读取【交易额过滤底池】！
+            let targetSymbols: string[] = [];
+            if (isStartTrendActive && startTrendSymbols.length > 0) {
+                targetSymbols = startTrendSymbols;
+            } else {
+                let volumePoolSymbols: string[] = [];
+                try {
+                    const rawVolumePool = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+                    if (rawVolumePool) {
+                        const parsed = JSON.parse(rawVolumePool);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            volumePoolSymbols = parsed.filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym));
+                        }
+                    }
+                } catch (_) {}
+
+                if (volumePoolSymbols.length === 0 && list1Ref.current && list1Ref.current.length > 0) {
+                    volumePoolSymbols = list1Ref.current
+                        .map(i => i.symbol)
+                        .filter(sym => Boolean(sym) && !blacklistRef.current.has(sym));
+                }
+
+                targetSymbols = volumePoolSymbols;
+            }
 
             // 候选币种集合：初始继承已有大行情候选币（支持增量与方向剔除）
             const validSymbols = new Set<string>(majorTrendCandidatesRef.current);
 
             if (targetSymbols.length === 0) {
-                console.log("[useScannerLogic] 行情启动底池暂无币种，保持既有底池并等待启动底池产出数据...");
+                console.log("[useScannerLogic] 输入底池暂无币种，保持既有底池并等待上级底池产出数据...");
                 setIsMajorScanning(false);
                 (window as any).IS_MAJOR_TREND_SCANNING = false;
                 setMajorProgress({

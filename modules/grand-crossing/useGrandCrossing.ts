@@ -19,6 +19,8 @@ import { saveState } from "../../utils/persistence";
 import { audioService } from "../../services/audioService";
 import { priceRegistry } from "../../services/priceRegistry";
 import { normalizeSymbol } from "../../services/symbolUtils";
+import { TimeframeDiagnosticRecord } from "./types";
+import { getLatestEMA } from "../../services/indicators";
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
@@ -30,6 +32,57 @@ const getTfMinutes = (tf: string) => {
   if (unit === "w") return val * 10080;
   if (unit === "M") return val * 43200;
   return 0;
+};
+
+const ALL_ORDERED_TIMEFRAMES = [
+  "15s",
+  "30s",
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "2h",
+  "4h",
+  "8h",
+  "1d",
+];
+
+const getTfScanIntervalMs = (tf: string): number => {
+  switch (tf) {
+    // 15秒、30秒、60秒、3分钟周期
+    case "15s":
+      return 3000; // 15秒周期，每3秒扫描一个币
+    case "30s":
+      return 4000; // 30秒周期，每4秒扫描一个币
+    case "1m":
+      return 5000; // 60秒周期，每5秒扫描一个币
+    case "3m":
+      return 6000; // 3分钟周期，每6秒扫描一个币
+
+    // 5分钟、15分钟、30分钟、60分钟周期
+    case "5m":
+      return 3000; // 5分钟周期，每3秒扫描一个币
+    case "15m":
+      return 5000; // 15分钟周期，每5秒扫描一个币
+    case "30m":
+      return 6000; // 30分钟周期，每6秒扫描一个币
+    case "1h":
+      return 8000; // 60分钟周期，每8秒扫描一个币
+
+    // 2小时、4小时、8小时、24小时周期
+    case "2h":
+      return 10000; // 2小时周期，每10秒扫描一个币
+    case "4h":
+      return 15000; // 4小时周期，每15秒扫描一个币
+    case "8h":
+      return 20000; // 8小时周期，每20秒扫描一个币
+    case "1d":
+      return 60000; // 24小时周期，每60秒扫描一个币
+    default:
+      return 5000;
+  }
 };
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,6 +145,10 @@ export const useGrandCrossing = (
   const [scanningSymbols, setScanningSymbols] = useState<Record<string, string>>({});
   const [lastScanTime, setLastScanTime] = useState<number | null>(null);
 
+  // 🔍 [DIAGNOSTICS TELEMETRY]: Real-time multi-period data and rejection audit records
+  const [diagnostics, setDiagnostics] = useState<Record<string, TimeframeDiagnosticRecord>>({});
+  const diagnosticsRef = useRef<Record<string, TimeframeDiagnosticRecord>>({});
+
   const fetchKlinesForTf = async (safeSymbol: string, tf: string, limit: number = 200): Promise<KLine[]> => {
     const now = Date.now();
     if (tf === '15s' || tf === '30s') {
@@ -103,7 +160,7 @@ export const useGrandCrossing = (
       let baseline1mKlines: KLine[] = [];
       try {
         const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=100&_t=${now}`;
-        const res1m = await fetchWithFallback(url1m, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+        const res1m = await fetchWithFallback(url1m, { cache: "no-store", timeout: 5000 }, (d) => Array.isArray(d), directMode);
         if (res1m.ok) {
           const raw1m = await res1m.json();
           if (Array.isArray(raw1m)) {
@@ -123,7 +180,7 @@ export const useGrandCrossing = (
       let synthRecent: KLine[] = [];
       try {
         const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${now}`;
-        const res1s = await fetchWithFallback(spot1sUrl, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
+        const res1s = await fetchWithFallback(spot1sUrl, { cache: "no-store", timeout: 5000 }, (d) => Array.isArray(d), directMode);
         if (res1s.ok) {
           const raw1s = await res1s.json();
           if (Array.isArray(raw1s) && raw1s.length > 0) {
@@ -185,22 +242,39 @@ export const useGrandCrossing = (
       return [];
     }
 
-    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=${limit}&_t=${now}`;
-    const res = await fetchWithFallback(url, { cache: "no-store" }, (d) => Array.isArray(d), directMode);
-    if (res.ok) {
-      const raw = await res.json();
-      if (Array.isArray(raw)) {
-        return raw.map((k: any) => ({
-          time: Number(k[0]),
-          open: parseFloat(k[1]),
-          high: parseFloat(k[2]),
-          low: parseFloat(k[3]),
-          close: parseFloat(k[4]),
-          volume: parseFloat(k[5]),
-        }));
+    const tryFetch = async (sym: string): Promise<KLine[]> => {
+      try {
+        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=${limit}&_t=${Date.now()}`;
+        const res = await fetchWithFallback(url, { cache: "no-store", timeout: 5000 }, (d) => Array.isArray(d), directMode);
+        if (res.ok) {
+          const raw = await res.json();
+          if (Array.isArray(raw) && raw.length > 0) {
+            return raw.map((k: any) => ({
+              time: Number(k[0]),
+              open: parseFloat(k[1]),
+              high: parseFloat(k[2]),
+              low: parseFloat(k[3]),
+              close: parseFloat(k[4]),
+              volume: parseFloat(k[5]),
+            }));
+          }
+        }
+      } catch (e) {}
+      return [];
+    };
+
+    let result = await tryFetch(safeSymbol);
+    // If not found and symbol is 1000-scaled meme or vice-versa, try fallback
+    if (result.length === 0) {
+      if (safeSymbol.startsWith('1000')) {
+        const base = safeSymbol.replace(/^1000/, '');
+        result = await tryFetch(base);
+      } else {
+        const scaled = '1000' + safeSymbol;
+        result = await tryFetch(scaled);
       }
     }
-    return [];
+    return result;
   };
 
   const startScanTf = useCallback((tf: string, symbol?: string) => {
@@ -248,6 +322,7 @@ export const useGrandCrossing = (
 
   // --- REFS ---
   const configRef = useRef(config); // For async access
+  configRef.current = config;
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
 
@@ -323,18 +398,13 @@ export const useGrandCrossing = (
     const currentCandidates = candidatesRef.current || [];
     const allowedNorm = new Set(currentCandidates.map((c) => normalizeSymbol(c.symbol)));
 
-    // 🔒 [STRICT DATA SOURCE ENFORCEMENT]: 列表2的数据源绝对且只能从列表1市场初筛中获取
-    // 任何不在列表1当前初筛候选集中的币种，立即从缓存中剔除并绝不渲染
-    for (const [key, item] of cacheRef.current.entries()) {
-      if (!item || !item.symbol || !allowedNorm.has(normalizeSymbol(item.symbol))) {
-        cacheRef.current.delete(key);
-      }
-    }
-
+    // 🔒 [USER MANDATORY RULE - 列表2独立生命周期与信号存续]:
+    // 只要进入列表2的币种与信号，其存续期完全由“信号存续/寿命根数”(newModeRetention)独立控制，
+    // 不受列表1市场初筛瞬时变动的影响。只有当寿命根数耗尽、或被列表3/4过滤、或开仓联动时才主动移除。
     let items: ScannerItem[] = [];
     try {
       items = Array.from(cacheRef.current.values()).filter(
-        (item) => item && item.symbol && allowedNorm.has(normalizeSymbol(item.symbol))
+        (item) => item && item.symbol
       );
     } catch (e) {
       console.error("Cache iteration error", e);
@@ -363,12 +433,17 @@ export const useGrandCrossing = (
           tfMinutes > 0 ? timeDiffMs / (tfMinutes * 60 * 1000) : 0;
         r.lag = (r.lag || 0) + lagIncrease;
 
-        // 严格根数检查
-        if (r.lag >= retention) {
-          const signalTime =
-            r.crossingTimes && r.crossingTimes.length > 0
-              ? Math.max(...r.crossingTimes)
-              : 0;
+        // 严格寿命根数检查：结合真实流逝时间与 r.lag 双重核验
+        const signalTime =
+          r.crossingTimes && r.crossingTimes.length > 0
+            ? Math.max(...r.crossingTimes)
+            : (r.signalTime ?? 0);
+        const realTimeLag = (signalTime > 0 && tfMinutes > 0)
+          ? (Date.now() - signalTime) / (tfMinutes * 60 * 1000)
+          : (r.lag || 0);
+        const effectiveLag = Math.max(r.lag || 0, realTimeLag);
+
+        if (effectiveLag >= retention) {
           const id = `${item.symbol}-${r.tf}-${r.direction}-${signalTime}`;
           capturedSignalsRef.current.delete(id);
           return false;
@@ -383,8 +458,9 @@ export const useGrandCrossing = (
         }
 
         // --- RE-FILTERING LOGIC (Reactive to Config Changes) ---
-        // If strict filtering is ON, strictly verify all 3 conditions: body ratio, amplitude range, and volume/valid flags
-        if (cfg.strictFiltering) {
+        // If strict filtering is ON, strictly verify all conditions for CROSSING candlesticks.
+        // For pure divergence (isAligned), moving average alignment is the primary criteria.
+        if (cfg.strictFiltering && !r.isAligned) {
           const ratio = r.bodyRatio ?? 0; // Set default to 0 to be strictly compliant and filter out malformed/legacy signals
           if (ratio < (cfg.minBodyRatio || 0)) return false;
 
@@ -424,21 +500,21 @@ export const useGrandCrossing = (
 
         if (!satisfiesTrigger) return false;
 
-        // 2. 实时交叉判定
+        // 2. 实时交叉判定 (必须在寿命内)
         const hasRecentCrossing =
           r.crossingLags && r.crossingLags.some((l) => l <= 1.05); // Small buffer for network latency
-        if (hasRecentCrossing) return true;
+        if (hasRecentCrossing && effectiveLag < retention) return true;
 
-        // 3. 捕获信号校验 (基于 K 线时间的持久化 ID)
-        const signalTime =
-          r.crossingTimes && r.crossingTimes.length > 0
-            ? Math.max(...r.crossingTimes)
-            : 0;
+        // 3. 捕获信号校验 (基于 K 线时间的持久化 ID，绝不可超出生效寿命)
         const id = `${item.symbol}-${r.tf}-${r.direction}-${signalTime}`;
-        if (capturedSignalsRef.current.has(id)) return true;
+        if (capturedSignalsRef.current.has(id)) {
+          if (effectiveLag < retention) return true;
+          capturedSignalsRef.current.delete(id);
+          return false;
+        }
 
         // 4. 在有效滞后容忍根数内且满足触发规则的信号持续有效留存
-        if ((r.lag || 0) <= retention) return true;
+        if (effectiveLag < retention) return true;
 
         return false;
       });
@@ -471,9 +547,11 @@ export const useGrandCrossing = (
     // Delete fully expired items
     itemIdsToDelete.forEach((id) => cacheRef.current.delete(id));
 
-    // Re-read items from cache after filter, strictly filtered by List 1 candidates
+    // 🔒 [USER MANDATORY RULE - 列表2独立生命周期与信号存续]:
+    // 只要进入列表2的币种与信号，其存续期完全由“信号存续/寿命根数”(newModeRetention)独立控制，
+    // 严禁因列表1初筛池的瞬时浮动而过滤或删除。
     items = Array.from(cacheRef.current.values()).filter(
-      (item) => item && item.symbol && allowedNorm.has(normalizeSymbol(item.symbol))
+      (item) => item && item.symbol
     );
 
     const sortMode = cfg.sortMode;
@@ -482,9 +560,7 @@ export const useGrandCrossing = (
     const priceMap = new Map(currentCandidates.map((c) => [normalizeSymbol(c.symbol), c]));
     const realPrices = priceRegistry.getAllPrices();
 
-    items = items
-      .filter((item) => allowedNorm.has(normalizeSymbol(item.symbol)))
-      .map((item) => {
+    items = items.map((item) => {
         const normSym = normalizeSymbol(item.symbol);
         const candidate = priceMap.get(normSym);
         const regPrice = realPrices[normSym];
@@ -723,18 +799,9 @@ export const useGrandCrossing = (
         }
       }
 
-      const currentCandidates = candidatesRef.current || [];
-      const allowedNorm = new Set(currentCandidates.map((c) => normalizeSymbol(c.symbol)));
-
-      // 剔除任何不在列表1初筛中的幽灵币种
-      for (const [key, item] of cacheRef.current.entries()) {
-        if (!item || !item.symbol || !allowedNorm.has(normalizeSymbol(item.symbol))) {
-          cacheRef.current.delete(key);
-        }
-      }
-
+      // 🔒 [USER MANDATORY RULE - 列表2独立生命周期]: 只要进入列表2，不因离开列表1而被移出
       const activeItems = Array.from(cacheRef.current.values()).filter(
-        (item) => item && item.symbol && allowedNorm.has(normalizeSymbol(item.symbol))
+        (item) => item && item.symbol
       );
       if (activeItems.length === 0) {
         performUpdate();
@@ -790,7 +857,7 @@ export const useGrandCrossing = (
                 actualBodyRatio = match.bodyRatio ?? 0;
                 
                 let isStrictValid = true;
-                if (configRef.current.strictFiltering) {
+                if (configRef.current.strictFiltering && !match.isAligned) {
                   if (actualBodyRatio < currentMinBody) isStrictValid = false;
                   if (match.ampValid !== undefined && !match.ampValid) isStrictValid = false;
                   if (match.volValid !== undefined && !match.volValid) isStrictValid = false;
@@ -799,7 +866,7 @@ export const useGrandCrossing = (
                   if (squeezeVal < (configRef.current.squeezeThreshold || 0) || squeezeVal > (configRef.current.maxAmplitude || 50)) {
                     isStrictValid = false;
                   }
-                } else {
+                } else if (!match.isAligned) {
                   if (actualBodyRatio < currentMinBody) isStrictValid = false;
                 }
 
@@ -891,21 +958,9 @@ export const useGrandCrossing = (
   useEffect(() => {
     candidatesRef.current = candidates;
 
-    // 🔒 [ATOMIC CODE LOCK - 列表2数据源严格且绝对只来源于列表1当前市场初筛列表中的币种]
-    // 列表2后台轮询扫描队列与数据展示严格只对列表1传入的币种执行穿越与发散分析，绝不引入或保留任何外部或历史残留币种。
-    const allowedNorm = new Set((candidates || []).map((c) => normalizeSymbol(c.symbol)));
-    for (const [key, item] of cacheRef.current.entries()) {
-      if (!item || !item.symbol || !allowedNorm.has(normalizeSymbol(item.symbol))) {
-        cacheRef.current.delete(key);
-      }
-    }
-    for (const id of capturedSignalsRef.current) {
-      const sym = id.split("-")[0];
-      if (sym && !allowedNorm.has(normalizeSymbol(sym))) {
-        capturedSignalsRef.current.delete(id);
-      }
-    }
-
+    // 🔒 [USER MANDATORY RULE - 列表1仅作为发现新币源，不控制列表2存续币的删减]:
+    // 只要币进入列表2，其生命周期严格由自身设置的寿命根数(retention)控制。
+    // 列表1 candidates 刷新时，严禁清退已入驻列表2的币种和捕获信号。
     if (candidates.length > 0) {
       sortedCandidatesRef.current = [...candidates].sort((a, b) => {
         const volA = parseFloat(a.volume || "0");
@@ -948,17 +1003,10 @@ export const useGrandCrossing = (
     const candidateItem = candidatesRef.current.find(
       (c) => normalizeSymbol(c.symbol) === normSym,
     );
-
-    // 🔒 [STRICT DATA SOURCE RULE]: 列表2只能且绝对只能从列表1市场初筛获取数据
-    // 若当前币种不属于列表1候选，立即终止并从列表2缓存中彻底删除
-    if (!candidateItem) {
-      cacheRef.current.delete(`${symbol}-FULL`);
-      return;
-    }
-
-    const cacheKey = `${candidateItem.symbol}-FULL`;
-    const existingItem = cacheRef.current.get(cacheKey);
-    const item = candidateItem;
+    const safeSym = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
+    const cacheKey = `${safeSym}-FULL`;
+    const existingItem = cacheRef.current.get(cacheKey) || cacheRef.current.get(`${symbol}-FULL`);
+    const item = candidateItem || existingItem;
     if (!item) return;
 
     // Throttle duplicate fetches to 2s to protect against race conditions under fast ticks
@@ -975,25 +1023,134 @@ export const useGrandCrossing = (
     try {
       let mergedResults = [...(existingItem?.groupedResults || [])];
 
+      const fetchStart = Date.now();
       const safeSymbol = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
       const klines: KLine[] = await fetchKlinesForTf(safeSymbol, tf, 200);
-      if (!klines || klines.length === 0) return;
+      const latency = Date.now() - fetchStart;
+
+      if (!klines || klines.length === 0) {
+        const diagKey = `${symbol}-${tf}`;
+        const record: TimeframeDiagnosticRecord = {
+          symbol,
+          tf,
+          fetchStatus: 'EMPTY',
+          fetchLatencyMs: latency,
+          klineCount: 0,
+          latestPrice: Number(item.price) || 0,
+          kOpen: 0,
+          kHigh: 0,
+          kLow: 0,
+          kClose: 0,
+          ema10: 0,
+          ema20: 0,
+          ema30: 0,
+          ema40: 0,
+          ema80: 0,
+          divergenceState: 'NONE',
+          isCrossing: false,
+          isPassed: false,
+          rejectionReason: 'K线接口未返回数据或返回为空 (400/网络超时/丢包)',
+          timestamp: Date.now(),
+        };
+        diagnosticsRef.current[diagKey] = record;
+        setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
+        return;
+      }
+
+      const closes = klines.map((k) => k.close);
+      const highs = klines.map((k) => k.high);
+      const lows = klines.map((k) => k.low);
+      const opens = klines.map((k) => k.open);
+      const volumes = klines.map((k) => k.volume);
+      const times = klines.map((k) => k.time);
+
+      const latestIdx = closes.length - 1;
+      const latestClose = closes[latestIdx] || 0;
+      const latestOpen = opens[latestIdx] || 0;
+      const latestHigh = highs[latestIdx] || 0;
+      const latestLow = lows[latestIdx] || 0;
+
+      const e10 = getLatestEMA(closes, 10);
+      const e20 = getLatestEMA(closes, 20);
+      const e30 = getLatestEMA(closes, 30);
+      const e40 = getLatestEMA(closes, 40);
+      const e80 = getLatestEMA(closes, 80);
+
+      const isLongDivergence = e10 > e20 && e20 > e30 && e30 > e40;
+      const isShortDivergence = e10 < e20 && e20 < e30 && e30 < e40;
+      const divState = isLongDivergence ? 'BULLISH' : isShortDivergence ? 'BEARISH' : 'NONE';
+
+      const maxEma = Math.max(e10, e20, e30, e40);
+      const minEma = Math.min(e10, e20, e30, e40);
+      const isCrossing = latestHigh >= maxEma && latestLow <= minEma;
 
       const results = analyzeList2Crossing(
         symbol,
         tf,
-        klines.map((k) => k.close),
-        klines.map((k) => k.high),
-        klines.map((k) => k.low),
-        klines.map((k) => k.open),
-        klines.map((k) => k.volume),
-        klines.map((k) => k.time),
+        closes,
+        highs,
+        lows,
+        opens,
+        volumes,
+        times,
         configRef.current,
         configRef.current.lookbackBars ?? 5,
       );
 
+      // Audit Rejection Reason for Diagnostics Panel
+      let diagReason = '';
       if (results.length > 0) {
-        mergedResults = mergedResults.filter((r) => r.tf !== tf);
+        const top = results[0];
+        diagReason = `✅ 成功入榜 [${top.direction === 'LONG' ? '多' : '空'} - 滞后 ${top.lag ?? 0} 根]`;
+      } else {
+        if (!isLongDivergence && !isShortDivergence && !isCrossing) {
+          diagReason = '均线未顺序发散 (EMA10/20/30/40 处于缠绕交叉)';
+        } else if (configRef.current.requireCrossing && configRef.current.requireAlignment && (configRef.current.crossingDivergenceLogic || 'AND') === 'AND' && !isCrossing) {
+          diagReason = '未满足 AND 条件 (已发散，但 K 线未物理穿透全部均线)';
+        } else if (configRef.current.checkEma80Conflict && ((isLongDivergence && e80 >= minEma) || (isShortDivergence && e80 <= maxEma))) {
+          diagReason = 'EMA80 大趋势方向冲突拦截';
+        } else if (configRef.current.enableDivergenceCrossCheck && configRef.current.requireAlignment) {
+          diagReason = '回溯窗口内未满足 EMA10 穿越全部均线条件';
+        } else if (configRef.current.strictFiltering) {
+          diagReason = '严苛过滤拦截 (实体比例不足或振幅未达标)';
+        } else {
+          diagReason = '未满足当前所选过滤规则组合或已过存续期';
+        }
+      }
+
+      const diagKey = `${symbol}-${tf}`;
+      const record: TimeframeDiagnosticRecord = {
+        symbol,
+        tf,
+        fetchStatus: 'SUCCESS',
+        fetchLatencyMs: latency,
+        klineCount: klines.length,
+        latestPrice: latestClose,
+        kOpen: latestOpen,
+        kHigh: latestHigh,
+        kLow: latestLow,
+        kClose: latestClose,
+        ema10: e10,
+        ema20: e20,
+        ema30: e30,
+        ema40: e40,
+        ema80: e80,
+        divergenceState: divState,
+        isCrossing,
+        isPassed: results.length > 0,
+        rejectionReason: diagReason,
+        timestamp: Date.now(),
+      };
+      diagnosticsRef.current[diagKey] = record;
+      setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
+
+      if (results.length > 0) {
+        // 🔒 [USER MANDATORY RULE] 多空独立存续：反向新信号出现时，不覆盖抹除仍在存续寿命内的旧方向信号
+        // 仅替换当前 tf 且相同 direction 的信号，未过期的不同 direction 信号予以保留并独立计时
+        const newDirections = new Set(results.map((r) => r.direction));
+        mergedResults = mergedResults.filter(
+          (r) => !(r.tf === tf && newDirections.has(r.direction))
+        );
         mergedResults.push(...results);
 
         results.forEach((res) => {
@@ -1013,12 +1170,13 @@ export const useGrandCrossing = (
           if (!capturedSignalsRef.current.has(id)) {
             capturedSignalsRef.current.add(id);
             console.log(
-              `[List2 Captured] ${symbol} ${tf} at ${new Date(signalTime).toLocaleTimeString()}`,
+              `[List2 Captured] ${symbol} ${tf} ${res.direction} at ${new Date(signalTime).toLocaleTimeString()}`,
             );
             try {
               const cleanSym = symbol.replace('USDT', '');
               const patternName = res.isAligned ? '发散' : '穿越';
-              const speechText = `${cleanSym}出现${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
+              const dirText = res.direction === 'LONG' ? '多头' : '空头';
+              const speechText = `${cleanSym}出现${dirText}${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
               audioService.speak(speechText, true);
             } catch (speechErr) {
               console.warn("Speech synthesis error inside List 2", speechErr);
@@ -1026,14 +1184,17 @@ export const useGrandCrossing = (
           }
         });
       } else {
-        const oldSignal = existingItem?.groupedResults?.find(
-          (r) => r.tf === tf,
-        );
-        if (oldSignal && oldSignal.lag < retention) {
-          // Keep active old signals
-        } else {
-          mergedResults = mergedResults.filter((r) => r.tf !== tf);
-        }
+        // 当前扫描轮次没有检测到新信号时，过滤掉该 tf 下已超出生效寿命 (lag >= retention) 的过期信号
+        mergedResults = mergedResults.filter((r) => {
+          if (r.tf === tf) {
+            const sigT = r.crossingTimes && r.crossingTimes.length > 0 ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0);
+            const tfM = getTfMinutes(r.tf || "1m");
+            const rtLag = (sigT > 0 && tfM > 0) ? (Date.now() - sigT) / (tfM * 60 * 1000) : (r.lag || 0);
+            const effLag = Math.max(r.lag || 0, rtLag);
+            return effLag < retention;
+          }
+          return true;
+        });
       }
 
       const finalCacheKey = `${symbol}-FULL`;
@@ -1041,13 +1202,31 @@ export const useGrandCrossing = (
       let finalResults = mergedResults;
 
       if (latestItem && latestItem.groupedResults) {
-        const otherTfResults = latestItem.groupedResults.filter((r) => r.tf !== tf);
-        const seenTfs = new Set(mergedResults.map((r) => r.tf));
+        // 保留其他 tf 以及本 tf 下不同 direction 且未过期的活跃信号
+        const existingSignals = latestItem.groupedResults.filter((r) => {
+          const sigT = r.crossingTimes && r.crossingTimes.length > 0 ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0);
+          const tfM = getTfMinutes(r.tf || "1m");
+          const rtLag = (sigT > 0 && tfM > 0) ? (Date.now() - sigT) / (tfM * 60 * 1000) : (r.lag || 0);
+          const effLag = Math.max(r.lag || 0, rtLag);
+          return effLag < retention;
+        });
+        const mergedKeys = new Set(
+          mergedResults.map((r) => `${r.tf}-${r.direction}`)
+        );
         finalResults = [
           ...mergedResults,
-          ...otherTfResults.filter((r) => !seenTfs.has(r.tf)),
+          ...existingSignals.filter((r) => !mergedKeys.has(`${r.tf}-${r.direction}`)),
         ];
       }
+
+      // 🔒 寿命根数终极安全门禁：剔除所有已超出寿命根数的信号
+      finalResults = finalResults.filter((r) => {
+        const sigT = r.crossingTimes && r.crossingTimes.length > 0 ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0);
+        const tfM = getTfMinutes(r.tf || "1m");
+        const rtLag = (sigT > 0 && tfM > 0) ? (Date.now() - sigT) / (tfM * 60 * 1000) : (r.lag || 0);
+        const effLag = Math.max(r.lag || 0, rtLag);
+        return effLag < retention;
+      });
 
       if (finalResults.length > 0) {
         finalResults.sort((a, b) => (a.lag || 0) - (b.lag || 0));
@@ -1061,30 +1240,10 @@ export const useGrandCrossing = (
           lastUpdated: Date.now(),
         });
         scheduleUpdate();
-      } else if (existingItem && existingItem.groupedResults) {
-        const stillValidSignals = existingItem.groupedResults.filter((r) => {
-          const rTf = r.tf || "";
-          if (rTf === tf) return false;
-
-          const isNotExpired = r.lag < retention;
-          if (!isNotExpired) return false;
-
-          if (configRef.current.strictFiltering) {
-            const ratio = r.bodyRatio ?? 0;
-            if (ratio < (configRef.current.minBodyRatio || 0)) return false;
-          }
-          return true;
-        });
-
-        if (stillValidSignals.length > 0) {
-          cacheRef.current.set(finalCacheKey, {
-            ...existingItem,
-            groupedResults: stillValidSignals,
-            lastUpdated: Date.now(),
-          });
-        } else {
-          cacheRef.current.delete(finalCacheKey);
-        }
+      } else {
+        cacheRef.current.delete(finalCacheKey);
+        cacheRef.current.delete(`${symbol}-FULL`);
+        cacheRef.current.delete(symbol);
         scheduleUpdate();
       }
     } catch (e: any) {
@@ -1092,81 +1251,74 @@ export const useGrandCrossing = (
     }
   };
 
-  // --- WORKER FACTORY ---
+  // --- 🔒 [LOCKED_MODULE - 列表2多周期并发·全周期独立轮询扫描引擎] ---
+  // 每个选中的K线周期（如 5m, 15m, 1h, 4h 等）均拥有独立生命周期的 Worker 协程并发运行。
+  // 各周期按照自身预设间隔独立对候选币进行逐一请求与指标计算，互不阻塞，真正实现所选多周期同时运行！
   useEffect(() => {
-    const startWorker = (
-      tf: string,
-      tickRate: number,
-    ) => {
-      if (workersRef.current[tf]) return;
-      workersRef.current[tf] = true;
+    let isRunning = true;
+    const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
 
-      const run = async () => {
-        // 检查该周期是否在配置中
-        const isSelected = configRef.current.timeframes.includes(tf);
+    if (activeTfs.length === 0) {
+      return;
+    }
 
-        if (isSelected && sortedCandidatesRef.current.length > 0) {
-          const now = Date.now();
-          const candidates = sortedCandidatesRef.current;
+    activeTfs.forEach((tf, idx) => {
+      const runTfWorker = async () => {
+        let coinIndex = 0;
+        // 初始轻微错开启动时间（各周期错开200ms），避免同一毫秒全部发起初始网络请求
+        const staggerOffset = (idx % 6) * 200;
+        if (staggerOffset > 0) {
+          await delay(staggerOffset);
+        }
 
-          // Find candidate pool with age since last scan for this timeframe
-          const candidatePool = candidates.map((c) => {
-            const fetchKey = `${c.symbol}-${tf}`;
-            const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
-            return {
-              symbol: c.symbol,
-              lastFetch,
-              age: now - lastFetch,
-            };
-          });
+        while (isRunning) {
+          const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+          const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
+          const candidates = sortedCandidatesRef.current || [];
 
-          // Sort so un-scanned (lastFetch === 0) or oldest fetched coins are processed first
-          candidatePool.sort((a, b) => a.lastFetch - b.lastFetch);
+          if (candidates.length === 0) {
+            await delay(1000);
+            continue;
+          }
 
-          const target = candidatePool[0];
-          // As long as the oldest candidate has passed minimal anti-burst cooldown (2500ms), process it immediately
-          if (target && (target.lastFetch === 0 || target.age >= 2500)) {
-            // Trigger active scanning indicator with specific symbol name
+          const target = candidates[coinIndex % candidates.length];
+          coinIndex = (coinIndex + 1) % candidates.length;
+
+          // 校验该币种是否仍在列表1中
+          const normSym = normalizeSymbol(target.symbol);
+          const isStillCandidate = (candidatesRef.current || []).some(
+            (c) => normalizeSymbol(c.symbol) === normSym
+          );
+
+          if (isStillCandidate) {
             startScanTf(tf, target.symbol);
             try {
-              await processSymbol(target.symbol, tf);
+              // 6.5s strict timeout race guard to guarantee the worker NEVER freezes on any single coin
+              await Promise.race([
+                processSymbol(target.symbol, tf),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Symbol scan timeout')), 6500))
+              ]);
+            } catch (err) {
+              console.warn(`[Tf Worker] Error processing ${target.symbol} (${tf}):`, err);
             } finally {
               endScanTf(tf);
             }
           }
-        }
 
-        // 只有当 worker 标记还在时才继续
-        if (workersRef.current[tf]) {
-          const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
-          const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
-          // Background mode multiplier to save resources when tab is inactive
-          const finalTickRate = isBg ? tickRate * 8 : tickRate;
-          setTimeout(run, finalTickRate);
+          const baseIntervalMs = getTfScanIntervalMs(tf);
+          const intervalMs = isBg ? baseIntervalMs * 2 : baseIntervalMs;
+          await delay(intervalMs);
         }
       };
 
-      run();
-    };
-
-    // 启动 12 大周期专属高频/低迟 Ticker 调度器 (包含 15s, 30s, 1m, 3m 等全周期)
-    startWorker("15s", 100);
-    startWorker("30s", 120);
-    startWorker("1m", 150);
-    startWorker("3m", 150);
-    startWorker("5m", 150);
-    startWorker("15m", 200);
-    startWorker("30m", 250);
-    startWorker("1h", 300);
-    startWorker("2h", 400);
-    startWorker("4h", 500);
-    startWorker("8h", 800);
-    startWorker("1d", 1200);
+      runTfWorker();
+    });
 
     return () => {
-      workersRef.current = {}; // Stop all on unmount
+      isRunning = false;
+      setActiveScanTfs(new Set());
     };
-  }, [startScanTf, endScanTf, strategyId]);
+  }, [config.timeframes, startScanTf, endScanTf, strategyId]);
 
   // 状态轮询更新 UI
   useEffect(() => {
@@ -1228,6 +1380,7 @@ export const useGrandCrossing = (
     activeScanTfs,
     scanningSymbols,
     lastScanTime,
+    diagnostics,
     removeItem,
     clearItems,
     removeSignal,

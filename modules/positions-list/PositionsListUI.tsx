@@ -121,14 +121,17 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const livePositionsFiltered = positions.filter(p => !p.isBacktestRecord && (p.amount || 0) > 0.0001);
     const hasBacktestPositions = btPositions.length > 0;
 
-    // Auto-switch to BACKTEST tab if there are active backtest positions
+    // Auto-switch to BACKTEST tab ONLY if there are active backtest positions AND NO live positions
+    const prevLiveCountRef = useRef(livePositionsFiltered.length);
     useEffect(() => {
-        if (hasBacktestPositions) {
-            setActiveTab('BACKTEST');
-        } else {
+        // If a new live position was opened, immediately force activeTab to 'LIVE'
+        if (livePositionsFiltered.length > prevLiveCountRef.current) {
             setActiveTab('LIVE');
+        } else if (hasBacktestPositions && livePositionsFiltered.length === 0) {
+            setActiveTab('BACKTEST');
         }
-    }, [hasBacktestPositions]);
+        prevLiveCountRef.current = livePositionsFiltered.length;
+    }, [hasBacktestPositions, livePositionsFiltered.length]);
 
     // Load latest report stats
     useEffect(() => {

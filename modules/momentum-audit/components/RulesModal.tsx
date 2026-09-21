@@ -73,25 +73,25 @@ export const RulesModal: React.FC<Props> = ({ onClose }) => (
                 </div>
             </div>
 
-            {/* Section 3: 3K Breakout Confirmation */}
+            {/* Section 3: NK Breakout Confirmation */}
             <div className="bg-slate-800/50 p-2 rounded border border-slate-700">
                 <div className="text-[10px] font-bold text-cyan-400 mb-1 flex items-center gap-1">
-                    <Zap size={10} fill="currentColor"/> 3. 前三K突破双重确认 (3K Close Breakout)
+                    <Zap size={10} fill="currentColor"/> 3. 前 NK 突破双重确认 (N-Candle Close Breakout)
                 </div>
                 <p className="text-[9px] text-slate-400 leading-relaxed mb-2">
-                    <strong>定义：</strong> 开启后，价格达到“进攻突破线”后仍需满足突破前 3 根 K 线的实体收盘极值，否则保持 PENDING 等待状态。
+                    <strong>定义：</strong> 开启后，价格达到“进攻突破线”后仍需满足突破前 <strong>N 根 K 线（可自由设置 1~50 根，如 3K、9K、12K）</strong>的实体收盘极值，否则保持 PENDING 等待状态。
                 </p>
                 <div className="bg-slate-900 p-1.5 rounded text-[9px] font-mono text-slate-300 space-y-1">
                     <div className="flex justify-between border-b border-slate-800 pb-1 mb-1">
                         <span className="text-emerald-500">做多条件:</span>
-                        <span>Price &gt; Max(Close[1], Close[2], Close[3])</span>
+                        <span>Price &gt; Max(Close[1], Close[2], ..., Close[N])</span>
                     </div>
                     <div className="flex justify-between">
                         <span className="text-red-500">做空条件:</span>
-                        <span>Price &lt; Min(Close[1], Close[2], Close[3])</span>
+                        <span>Price &lt; Min(Close[1], Close[2], ..., Close[N])</span>
                     </div>
                     <div className="text-[8px] text-slate-500 mt-1 pt-1 border-t border-slate-800">
-                        * 若价格已达进攻突破线但未越过前3K极值，系统保持 PENDING 等待，直到后续K线突破后自动触发 TRIGGERED 开仓。
+                        * 若价格已达进攻突破线但未越过前 NK 极值，系统保持 PENDING 等待，直到后续 K 线打破过去 N 根实体平台后自动触发 TRIGGERED 开仓。
                     </div>
                 </div>
             </div>

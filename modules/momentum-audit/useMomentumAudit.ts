@@ -68,6 +68,7 @@ export const useMomentumAudit = (
 
     // Cache for retention logic
     const invalidSignalCacheRef = useRef<Map<string, number>>(new Map());
+    const dormantSignalCacheRef = useRef<Map<string, number>>(new Map());
     const tradedSignalCacheRef = useRef<Map<string, number>>(new Map());
     const triggeredSignalCacheRef = useRef<Map<string, number>>(new Map());
     const fuseBlockedSignalCacheRef = useRef<Map<string, number>>(new Map());
@@ -222,16 +223,41 @@ export const useMomentumAudit = (
             let shouldKeep = true;
             const tfMinutes = getTfMinutes(item.tf || '15m');
             
-            // Check "Structure Broken" (INVALID) - 立即清除 (达到中轴防守突破价格，立即从列表4清除)
+            // Check "Structure Broken" (INVALID) - 均线瓦解彻底清除 (EMA10 穿过 EMA30)
             if (item.momentum?.status === 'INVALID') {
                 expiredSignalCacheRef.current.add(uniqueId);
                 shouldKeep = false;
-                item.removalReason = item.momentum.invalidReason || '中轴防守突破 (结构破坏立即清除)';
+                item.removalReason = item.momentum.invalidReason || '由列表4中轴防守线规则删除';
                 safeRemoveSignal(uniqueId);
                 logToHistory(item, item.removalReason);
             } else {
                 // Reset if it becomes valid again
                 invalidSignalCacheRef.current.delete(uniqueId);
+            }
+
+            // Check "Dormant Retention" (DORMANT) - 破中轴进入保留期，限制最大寿命K线根数 (默认20根)
+            if (item.momentum?.status === 'DORMANT') {
+                if (!dormantSignalCacheRef.current.has(uniqueId)) {
+                    dormantSignalCacheRef.current.set(uniqueId, now);
+                }
+
+                const maxCandles = currentConfig.dormantRetentionCandles ?? 20;
+                if (maxCandles > 0) {
+                    const enterDormantTime = dormantSignalCacheRef.current.get(uniqueId) || now;
+                    const elapsedMs = now - enterDormantTime;
+                    const maxMs = maxCandles * tfMinutes * 60 * 1000;
+
+                    if (elapsedMs >= maxMs) {
+                        expiredSignalCacheRef.current.add(uniqueId);
+                        shouldKeep = false;
+                        item.removalReason = `破中轴休眠超期彻底清除 [已休眠 ${Math.round(elapsedMs / (tfMinutes * 60 * 1000))} / ${maxCandles} 根K线]`;
+                        safeRemoveSignal(uniqueId);
+                        logToHistory(item, item.removalReason);
+                    }
+                }
+            } else {
+                // When signal is REVIVED, PENDING, or TRIGGERED, clear dormant timer
+                dormantSignalCacheRef.current.delete(uniqueId);
             }
             
             // Check "Triggered" (TRIGGERED)
@@ -248,7 +274,7 @@ export const useMomentumAudit = (
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
-                        item.removalReason = `触发后超时 (设定: ${currentConfig.removeTriggeredMinutes}分钟, 持续: ${Math.round(elapsedMs / 60000)}分钟)`;
+                        item.removalReason = `由列表4触发后超时规则删除 [已持续: ${Math.round(elapsedMs / 60000)}分钟]`;
                         safeRemoveSignal(uniqueId);
                     }
                 }
@@ -260,7 +286,7 @@ export const useMomentumAudit = (
             if (item.fuseBlocked) {
                 expiredSignalCacheRef.current.add(uniqueId);
                 shouldKeep = false;
-                item.removalReason = `过滤未通过 (立即清除): ${item.fuseReason}`;
+                item.removalReason = item.fuseReason || '由列表4防追高过滤规则删除';
                 
                 // Clear from latch to be safe
                 fuseAuditLatchRef.current.delete(uniqueId);
@@ -269,7 +295,7 @@ export const useMomentumAudit = (
                 safeRemoveSignal(uniqueId);
                 
                 // Background log to history
-                logToHistory(item, `过滤清除: ${item.fuseReason}`);
+                logToHistory(item, item.removalReason);
             } else {
                 fuseBlockedSignalCacheRef.current.delete(uniqueId);
                 advancedFilterBlockedSignalCacheRef.current.delete(uniqueId);
@@ -290,7 +316,7 @@ export const useMomentumAudit = (
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
-                        item.removalReason = `已开仓后超时 (设定K线: ${currentConfig.removeTradedCandles}, 持续时间: ${Math.round(elapsedMs / 60000)}分钟)`;
+                        item.removalReason = `满足动能突破开仓成功，建立仓位后移出 [持仓持续: ${Math.round(elapsedMs / 60000)}分钟]`;
                         safeRemoveSignal(uniqueId);
                     }
                 }
@@ -308,6 +334,9 @@ export const useMomentumAudit = (
         const currentIds = new Set(analyzedItems.map(item => `${item.symbol}-${item.tf}-${item.direction}`));
         for (const key of invalidSignalCacheRef.current.keys()) {
             if (!currentIds.has(key)) invalidSignalCacheRef.current.delete(key);
+        }
+        for (const key of dormantSignalCacheRef.current.keys()) {
+            if (!currentIds.has(key)) dormantSignalCacheRef.current.delete(key);
         }
         for (const key of tradedSignalCacheRef.current.keys()) {
             if (!currentIds.has(key)) tradedSignalCacheRef.current.delete(key);

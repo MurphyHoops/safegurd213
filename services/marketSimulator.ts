@@ -969,6 +969,14 @@ export class MarketSimulator {
         );
     }
 
+    /**
+     * 🔒【周期数据彻底封存】：盈利平仓或解套盈利清仓后，将该币种之前的所有数据全部封存，严禁与新一轮开仓负债关联
+     */
+    public sealSymbolCycle(symbol: string): void {
+        debtManager.sealSymbolCycle(symbol, this.tradeLogs);
+        this.addLog('INFO', `🔒 [周期封存] ${symbol} 盈利清仓结算完成，前序对冲止损数据已全额物理封存，新周期开仓零负债起步！`);
+    }
+
     public cleanAmputatedPositionsForSymbol(symbol: string) {
         const cleanSymbol = normalizeSymbol(symbol);
         // 🔒 [彻底清除0持仓铁律] 任何数量归零或标记为0的持仓，立即移出持仓列表
@@ -1490,6 +1498,13 @@ export class MarketSimulator {
                 // Filter out immediately locally to avoid double-triggering before sync
                 this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
                 this.cleanAmputatedPositionsForSymbol(pos.symbol);
+
+                // 🔒 [盈利清仓即时封存] 若为盈利平仓且该币种持仓已完全清空，立即执行单币周期物理封存
+                const remainingSameSymbolReal = this.positions.filter(p => normalizeSymbol(p.symbol) === cleanTarget && (p.amount || 0) > 0.0001);
+                if (remainingSameSymbolReal.length === 0 && (pos.unrealizedPnL || 0) >= 0) {
+                    this.sealSymbolCycle(pos.symbol);
+                }
+
                 this.emitUpdate(true);
                 return;
             }
@@ -1504,6 +1519,12 @@ export class MarketSimulator {
             this.recordTradeLog(pos, reason);
             this.positions = this.positions.filter(p => p.entryId !== pos.entryId);
             this.cleanAmputatedPositionsForSymbol(pos.symbol);
+
+            // 🔒 [盈利清仓即时封存] 若为盈利平仓且该币种持仓已完全清空，立即执行单币周期物理封存
+            const remainingSameSymbolSim = this.positions.filter(p => normalizeSymbol(p.symbol) === cleanTarget && (p.amount || 0) > 0.0001);
+            if (remainingSameSymbolSim.length === 0 && (pos.unrealizedPnL || 0) >= 0) {
+                this.sealSymbolCycle(pos.symbol);
+            }
 
             // Voice announcement for simulated close
             const cleanSym = pos.symbol.replace('USDT', '');
@@ -1590,6 +1611,9 @@ export class MarketSimulator {
             this.cleanAmputatedPositionsForSymbol(main.symbol);
             this.positions = this.positions.filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed);
 
+            // 🔒 [核心封存] 对冲盈利解套清仓或断臂清仓成功，将该币种前序所有止损/砍仓数据彻底封存隔离！
+            this.sealSymbolCycle(main.symbol);
+
             // Voice announcement for simulated closePair
             const cleanSym = main.symbol.replace('USDT', '');
             if (isAmputationProfitExit) {
@@ -1668,7 +1692,15 @@ export class MarketSimulator {
             reopenCount: nextReopenCount,
             refillCount: nextTotalRefill,
             correlationId: corrId,
-            parentEntryId: pos.entryId
+            parentEntryId: pos.entryId,
+            // 🔒 [新周期绝对零负债] 复开属于全新一轮开仓生命周期，坚决物理隔离历史负债
+            cumulativeAmputationLoss: 0,
+            cumulativeHedgeLoss: 0,
+            cumulativeAmputationProfit: 0,
+            cumulativeHedgeProfit: 0,
+            isAmputated: false,
+            amputatedAmount: 0,
+            isHedged: false
         };
 
         // 检查复开后是否达到熔断上限
@@ -2385,6 +2417,10 @@ export class MarketSimulator {
         this.positions = this.positions.filter(p => normalizeSymbol(p.symbol) !== cleanSym);
         this.cleanAmputatedPositionsForSymbol(symbol);
         this.amputatedSymbolsInCycle.delete(cleanSym);
+
+        // 🔒 [一键全平/熔断清仓封存] 仓位已全部出局，彻底封存前序周期所有负债数据
+        this.sealSymbolCycle(symbol);
+
         this.emitUpdate(true);
     }
 

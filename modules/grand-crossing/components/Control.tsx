@@ -1,10 +1,12 @@
 
 import React, { useState } from 'react';
-import { Activity, History, ChevronDown, ChevronUp } from 'lucide-react';
+import { Activity, History, ChevronDown, ChevronUp, Maximize2, Layers, Search, Eye } from 'lucide-react';
 import { List2Config, ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { TimeframeSelector } from './TimeframeSelector';
 import { ConfigSection } from './ConfigSection';
 import { ScannerHistoryModal } from '../../momentum-audit/components/ScannerHistoryModal';
+import { TimeframeDiagnosticsModal } from './TimeframeDiagnosticsModal';
+import { TimeframeDiagnosticRecord } from '../types';
 
 interface List2PanelProps {
     config: List2Config;
@@ -19,10 +21,13 @@ interface List2PanelProps {
     activeScanTfs?: Set<string>;
     scanningSymbols?: Record<string, string>;
     pollingStatus?: string;
+    diagnostics?: Record<string, TimeframeDiagnosticRecord>;
+    setChartData?: (data: any) => void;
 }
 
-export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, scanningSymbols, pollingStatus }) => {
+export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, scanningSymbols, pollingStatus, diagnostics = {}, setChartData }) => {
     const [showHistory, setShowHistory] = useState(false);
+    const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
     const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('list2_control_collapsed') === 'true');
 
     const toggleCollapse = () => {
@@ -31,6 +36,15 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
             localStorage.setItem('list2_control_collapsed', String(next));
             return next;
         });
+    };
+
+    const handleSelectSymbol = (sym: string) => {
+        if (setChartData) {
+            setChartData({
+                symbol: sym,
+                interval: activeFilterTf || config.timeframes[0] || '5m'
+            });
+        }
     };
     
     return (
@@ -110,6 +124,7 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
             
             {!isCollapsed && (
                 <>
+                    {/* Timeframe Grid */}
                     <TimeframeSelector 
                         timeframes={config.timeframes}
                         countdowns={countdowns}
@@ -122,9 +137,38 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
                         pollingStatus={pollingStatus}
                     />
 
+                    {/* 🔍 放大图与周期数据透视看板按钮 (位于周期列表下方) */}
+                    <div className="pt-0.5">
+                        <button
+                            onClick={() => setShowDiagnosticsModal(true)}
+                            className="w-full flex items-center justify-between px-2.5 py-1.5 bg-gradient-to-r from-blue-950/90 via-indigo-950/80 to-slate-900 border border-blue-500/40 hover:border-blue-400 text-blue-200 rounded-md transition-all shadow-sm group hover:shadow-[0_0_12px_rgba(59,130,246,0.25)] text-[10px] font-bold"
+                            title="打开每个周期的K线获取情况、EMA具体数值与未入榜原因诊断透视看板"
+                        >
+                            <div className="flex items-center gap-1.5">
+                                <Maximize2 size={12} className="text-blue-400 group-hover:scale-110 transition-transform" />
+                                <span>🔍 打开各周期获取与实际数据看板 (放大图)</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[9px] text-blue-300 font-mono">
+                                <span>点击透视</span>
+                                <span className="text-xs">»</span>
+                            </div>
+                        </button>
+                    </div>
+
                     <ConfigSection config={config} setConfig={setConfig} />
                 </>
             )}
+
+            {/* Timeframe Diagnostics Modal */}
+            <TimeframeDiagnosticsModal 
+                isOpen={showDiagnosticsModal}
+                onClose={() => setShowDiagnosticsModal(false)}
+                diagnostics={diagnostics}
+                activeTimeframes={config.timeframes}
+                countdowns={countdowns}
+                scanningSymbols={scanningSymbols}
+                onSelectSymbol={handleSelectSymbol}
+            />
         </div>
     );
 };

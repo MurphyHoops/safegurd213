@@ -27,11 +27,12 @@ interface Props {
     };
     downloadProgress?: number; // 0-100
     onDownload?: (symbol: string) => void;
+    pushRank?: number;
 }
 
 export const List1Item: React.FC<Props> = ({ 
     item, idx, scanConfig, fixedModeView, customSymbolSet, onToggleSymbol, onDeleteSymbol, setChartData,
-    mode = 'LIVE', extremeMetrics, downloadProgress, onDownload
+    mode = 'LIVE', extremeMetrics, downloadProgress, onDownload, pushRank
 }) => {
     if (!item || !item.symbol) return null;
     
@@ -104,8 +105,16 @@ export const List1Item: React.FC<Props> = ({
                     </div>
 
                     {/* 币名 (已移除中文显示，固定宽度紧靠左侧，保证纵向对齐) */}
-                    <div className="w-[52px] shrink-0 font-black text-[11px] text-slate-100 truncate text-left" title={item.symbol}>
+                    <div className="w-[52px] shrink-0 font-black text-[11px] text-slate-100 truncate text-left flex items-center gap-1" title={item.symbol}>
                         <span>{item.symbol.replace('USDT','')}</span>
+                        {pushRank !== undefined && pushRank > 0 && (
+                            <span 
+                                className="text-[7.5px] bg-amber-500/20 text-amber-300 border border-amber-500/50 px-0.5 rounded font-mono font-bold shrink-0 tracking-tight"
+                                title={`Top N截取: 第 ${pushRank} 名推入列表2`}
+                            >
+                                #{pushRank}
+                            </span>
+                        )}
                     </div>
 
                     {(() => {

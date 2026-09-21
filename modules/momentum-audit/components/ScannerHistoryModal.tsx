@@ -534,40 +534,69 @@ export const useAutoHistoryLogger = (
                         // Check if position is active for this symbol/direction
                         const hasPosition = activePositionsRef.current?.some(p => p.symbol === symbol && p.side === direction);
                         if (hasPosition) {
-                            disappearanceReason = `动能审计确认开仓成功\n[过滤规则]: 满足突破触发机制，系统自动开仓并建立实盘/回测仓位\n[细节]: 仓位方向: ${direction}, 进入价格: ${prevItem.price || '动态实时价'}`;
+                            disappearanceReason = `满足动能突破开仓成功，建立仓位后移出\n[规则详情]: 满足突破触发机制，系统自动开仓并建立实盘/模拟仓位 (进入价: ${prevItem.price || '实时价'})`;
                         } else if (prevItem.removalReason) {
-                            disappearanceReason = `动能信号自动清理/超时清除\n[过滤规则]: ${prevItem.removalReason}\n[细节]: 信号周期: ${tf}, 方向: ${direction}`;
-                        } else if (prevItem.fuseBlocked) {
-                            disappearanceReason = `触发熔断/方向锁拦截被清除\n[过滤规则]: 价格严重偏离趋势安全通道(防追高熔断)或处于禁止开仓区间\n[细节]: 拦截原因: ${prevItem.fuseReason || '未踩稳均线支撑/阻力线，高位追多/低位追空拦截'}`;
+                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 信号周期: ${tf}, 方向: ${direction}`;
+                        } else if (prevItem.fuseBlocked || prevItem.fuseReason) {
+                            disappearanceReason = `${prevItem.fuseReason || '由列表4防追高过滤规则删除'}\n[规则详情]: 触发熔断保护或过度交易拦截`;
                         } else if (prevItem.momentum?.status === 'INVALID') {
-                            disappearanceReason = `动能指标失效/结构破坏\n[过滤规则]: K线实体变向，主趋势多空排列对齐在周期内被打破\n[细节]: 破坏原因: ${prevItem.momentum?.invalidReason || '多空多级阻力逆转'}`;
+                            disappearanceReason = `${prevItem.momentum?.invalidReason || '由列表4中轴防守线规则删除'}\n[规则详情]: 突破中轴防守线，结构破坏`;
                         } else {
-                            disappearanceReason = `动能衰减/K线回调或结构破坏\n[过滤规则]: 价格回踩反转或动能指标不再满足突破条件，信号解除监控\n[细节]: 周期: ${tf}, 方向: ${direction}`;
+                            disappearanceReason = `由列表4动能衰减规则删除\n[规则详情]: 周期: ${tf}, 方向: ${direction}, 动能衰减移出`;
                         }
                     } else if (listType === 'LIST3') {
-                        const matchedRes = prevItem.list3Results?.find((r: any) => r.tf === tf && r.direction === direction);
-                        const struct = matchedRes?.structure || prevItem.structure || {};
-                        if (struct.isStrictTrend === false) {
-                            disappearanceReason = `主趋势对齐失效\n[过滤规则]: 趋势审计 EMA10/20/30/40 短期排列被打破，多空共振排列瓦解\n[细节]: 当前不再满足严格的主趋势共振排序`;
-                        } else if (struct.isColorValid === false) {
-                            disappearanceReason = `K线颜色不一致/结构破坏\n[过滤规则]: 信号K线(Signal Candle)实体颜色与预测方向相反(如多头出阴线/空头出阳线)\n[细节]: 判定为假突破或多空反转`;
+                        if (prevItem.removalReason) {
+                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 周期: ${tf}, 方向: ${direction}`;
                         } else {
-                            disappearanceReason = `未在有效期内触发后续审计，信号到期衰减\n[过滤规则]: 信号在指定的 Validity Period 周期内未能获得 List 4 动能审计确认，自动过期衰减\n[细节]: 周期: ${tf}, 限时到期`;
+                            let activeL3Cfg: any = null;
+                            try {
+                                const raw = localStorage.getItem('SCANNER_LIST3_CONFIG');
+                                if (raw) activeL3Cfg = JSON.parse(raw);
+                            } catch (e) {}
+
+                            const isStrictTrendOn = activeL3Cfg ? (activeL3Cfg.strictTrend === true) : false;
+                            const isCandleColorOn = activeL3Cfg ? (activeL3Cfg.checkCandleColor === true) : false;
+                            const isRsiOn = activeL3Cfg ? (activeL3Cfg.enableRsi === true) : false;
+                            const isAmpOn = activeL3Cfg ? (activeL3Cfg.enableAmplitudeAudit === true) : false;
+
+                            const matchedRes = prevItem.list3Results?.find((r: any) => r.tf === tf && r.direction === direction);
+                            const struct = matchedRes?.structure || prevItem.structure || {};
+                            if (isStrictTrendOn && struct.isStrictTrend === false) {
+                                disappearanceReason = `由列表3严格趋势过滤规则删除\n[规则详情]: 趋势审计 EMA10/20/30/40 未形成严格发散共振排列`;
+                            } else if (isCandleColorOn && struct.isColorValid === false) {
+                                disappearanceReason = `由列表3同色交叉规则删除\n[规则详情]: 信号K线实体颜色与预测方向相反 (如多头出阴线/空头出阳线)`;
+                            } else if (isRsiOn && typeof struct.rsi === 'number' && (struct.rsi < (activeL3Cfg?.rsiLongMin ?? 40) || struct.rsi > (activeL3Cfg?.rsiLongMax ?? 90))) {
+                                disappearanceReason = `由列表3RSI过滤规则删除\n[规则详情]: RSI指标 (${struct.rsi.toFixed(1)}) 超出设定区间`;
+                            } else if (isAmpOn) {
+                                disappearanceReason = `由列表3波幅审计规则删除\n[规则详情]: 周期: ${tf}, 限时到期或波幅通道指标未达标`;
+                            } else {
+                                disappearanceReason = `由列表2前序信号变动移出\n[规则详情]: 周期: ${tf}, 方向: ${direction}, 上游列表2交叉状态结束、未收盘K线波动回抽或离开初筛池 (列表3限制规则未开启或已放行)`;
+                            }
                         }
                     } else if (listType === 'LIST2') {
-                        const matchedGroup = prevItem.groupedResults?.find((g: any) => g.tf === tf);
-                        if (matchedGroup && !matchedGroup.isSqueeze) {
-                            const ratioStr = typeof matchedGroup.squeezeRatio === 'number' && isFinite(matchedGroup.squeezeRatio) ? matchedGroup.squeezeRatio.toFixed(2) : '0.50';
-                            disappearanceReason = `波动性释放/通道变宽\n[过滤规则]: 波动通道(Bollinger Bands Squeeze)挤压释放，不再满足低波、窄幅安全蓄势条件\n[细节]: 波动率(带宽)超过阀值: ${ratioStr}`;
+                        if (prevItem.removalReason) {
+                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 周期: ${tf}, 移出`;
                         } else {
-                            disappearanceReason = `均线交叉结束/均线排列对齐形态失效\n[过滤规则]: K线实体偏离或不再交织于短期均线，且不满足对齐对绞状态\n[细节]: EMA均线交叉已结束或对齐模式被破坏`;
+                            const matchedGroup = prevItem.groupedResults?.find((g: any) => g.tf === tf && g.direction === direction) || prevItem.groupedResults?.[0];
+                            const lag = matchedGroup?.lag ?? prevItem.lag ?? 0;
+                            const retention = 9; // Default retention bars
+                            
+                            if (lag >= retention) {
+                                disappearanceReason = `由列表2，寿命根数规则删除\n[规则详情]: 周期: ${tf}, 信号存续寿命到达上限 (${lag.toFixed(1)} / ${retention} 根K线)，自动移出`;
+                            } else {
+                                disappearanceReason = `由列表2实时K线变动移出\n[规则详情]: 周期: ${tf}, 当前未收盘K线发生价格回抽或状态未维持 (当前仅存续 ${lag.toFixed(1)} 根，未达寿命上限 ${retention} 根)`;
+                            }
                         }
                     }
                 }
                 
                 // Fallback ONLY if no specific reason was determined above
                 if (!disappearanceReason) {
-                    disappearanceReason = `币种活跃度低于筛选阈值或从初筛池移出\n[过滤规则]: 币种的24H成交额或涨跌幅低于全局过滤器(List 1)设定阈值，不再列为全局监控候选币种\n[细节]: 该币种 (${symbol}) 已离开候选池`;
+                    disappearanceReason = listType === 'LIST2'
+                        ? `由列表2实时K线变动移出\n[规则详情]: 币种 (${symbol}) 未收盘K线波动或离开初筛池移出`
+                        : listType === 'LIST3'
+                            ? `由列表3波幅审计规则删除\n[规则详情]: 币种 (${symbol}) 未通过列表3结构审计`
+                            : `由列表4中轴防守线规则删除\n[规则详情]: 币种 (${symbol}) 动能未达标自动移出`;
                 }
                 
                 markSignalDisappeared(listType, symbol, tf, direction, userId, disappearanceReason);

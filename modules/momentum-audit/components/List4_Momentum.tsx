@@ -1,6 +1,6 @@
 
 import React, { useMemo, useState } from 'react';
-import { Flame, Compass, AlertTriangle, Maximize2, Trash2, History } from 'lucide-react';
+import { Flame, Compass, AlertTriangle, Maximize2, Trash2, History, Moon, ChevronRight } from 'lucide-react';
 import { List4Config, List3Config, ScannerItem, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../../types';
 import { List4Control } from './Control';
@@ -23,8 +23,26 @@ interface Props {
 const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config, executeTradeSafe, setChartData, onRemoveItem, onClearItems }) => {
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
+    const [isDormantCollapsed, setIsDormantCollapsed] = useState(true);
     
-    // --- DYNAMIC SUBSET FILTERING ---
+    // --- DYNAMIC SUBSET FILTERING (Active vs Dormant) ---
+    const { activeList, dormantList } = useMemo(() => {
+        if (!list4) return { activeList: [], dormantList: [] };
+        
+        const active: ScannerItem[] = [];
+        const dormant: ScannerItem[] = [];
+        
+        list4.forEach(item => {
+            if (item.momentum?.status === 'DORMANT') {
+                dormant.push(item);
+            } else {
+                active.push(item);
+            }
+        });
+        
+        return { activeList: active, dormantList: dormant };
+    }, [list4]);
+
     const filteredList = useMemo(() => {
         if (!list4) return [];
         return list4; // Items are already latched upstream in useMomentumAudit
@@ -106,9 +124,10 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                 {showHistory && <ScannerHistoryModal listType="LIST4" setChartData={setChartData} onClose={() => setShowHistory(false)} />}
                 
                 <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar bg-amber-900/5">
-                    {filteredList.map((item, idx) => (
+                    {/* 正常进攻与等待突破列表 */}
+                    {activeList.map((item, idx) => (
                         <List4Item 
-                            key={`${item.symbol}-${idx}`}
+                            key={`${item.symbol}-${item.tf}-${idx}`}
                             item={item}
                             config={config}
                             executeTradeSafe={executeTradeSafe}
@@ -117,7 +136,53 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                             idx={idx}
                         />
                     ))}
-                    {filteredList.length === 0 && <div className="h-full flex flex-col items-center justify-center opacity-20 text-slate-500 py-10"><Compass size={40} className="mb-2"/><span className="text-[10px] font-bold">等待结构确认信号</span></div>}
+                    {activeList.length === 0 && dormantList.length === 0 && (
+                        <div className="h-full flex flex-col items-center justify-center opacity-20 text-slate-500 py-10">
+                            <Compass size={40} className="mb-2"/>
+                            <span className="text-[10px] font-bold">等待结构确认信号</span>
+                        </div>
+                    )}
+
+                    {/* 底部折叠：破中轴休眠待复活列表 */}
+                    {dormantList.length > 0 && (
+                        <div className="pt-2 mt-3 border-t border-dashed border-amber-500/20">
+                            <button 
+                                onClick={() => setIsDormantCollapsed(!isDormantCollapsed)}
+                                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded bg-amber-950/30 hover:bg-amber-950/50 border border-amber-500/20 text-amber-400/90 transition-all text-[11px] font-bold"
+                            >
+                                <div className="flex items-center gap-1.5">
+                                    <Moon size={13} className="text-amber-400" />
+                                    <span>破中轴休眠保留区 (待复活)</span>
+                                    <span className="px-1.5 py-0.2 bg-amber-500/20 rounded-full text-[9px] font-mono text-amber-300">
+                                        {dormantList.length}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-1 text-[9px] text-amber-400/60 font-normal">
+                                    <span>{isDormantCollapsed ? '展开' : '折叠'}</span>
+                                    <ChevronRight 
+                                        size={12} 
+                                        className={`transition-transform duration-200 ${!isDormantCollapsed ? 'rotate-90' : ''}`}
+                                    />
+                                </div>
+                            </button>
+
+                            {!isDormantCollapsed && (
+                                <div className="mt-2 space-y-2 pl-1 border-l-2 border-amber-500/20">
+                                    {dormantList.map((item, idx) => (
+                                        <List4Item 
+                                            key={`dormant-${item.symbol}-${item.tf}-${idx}`}
+                                            item={item}
+                                            config={config}
+                                            executeTradeSafe={executeTradeSafe}
+                                            setChartData={setChartData}
+                                            onRemove={() => onRemoveItem(item.symbol)}
+                                            idx={idx}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
         </ErrorBoundary>

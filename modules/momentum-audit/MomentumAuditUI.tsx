@@ -28,6 +28,7 @@ const DEFAULT_CONFIG: List4Config = {
     enableThresholds: true, 
     enableAntiChase: false, 
     enableRev3K: false,
+    rev3KCandles: 3,
     enableThrust: false,
     invalidRetentionMinutes: 10, 
     removeInvalidMinutes: 15,
@@ -35,6 +36,7 @@ const DEFAULT_CONFIG: List4Config = {
     removeFuseMinutes: 15,
     removeInvalidCandles: 0,
     removeTradedCandles: 0,
+    dormantRetentionCandles: 20,
     antiChaseConfig: { 
         longThresholds: { "2160": 0, "720": 0, "168": 0, "24": 0, "1": 0 },
         shortThresholds: { "2160": 0, "720": 0, "168": 0, "24": 0, "1": 0 },
@@ -97,6 +99,26 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                         executionStatusRef.current.set(uniqueId + '-fused', 'SUCCESS');
                     }
                     return;
+                }
+
+                // 🔒 前 NK 突破规则终极保险丝：若开启，开仓价必须严格高于前 NK 最高收盘价(多)或低于前 NK 最低收盘价(空)
+                if (config.enableRev3K === true && item.structure) {
+                    const kCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
+                    let maxClose = item.structure.maxClose3;
+                    let minClose = item.structure.minClose3;
+                    if (item.structure.recentCloses && item.structure.recentCloses.length > 0) {
+                        const slice = item.structure.recentCloses.slice(-kCount);
+                        if (slice.length > 0) {
+                            maxClose = Math.max(...slice);
+                            minClose = Math.min(...slice);
+                        }
+                    }
+                    if (item.direction === 'LONG' && typeof maxClose === 'number' && item.price <= maxClose) {
+                        return;
+                    }
+                    if (item.direction === 'SHORT' && typeof minClose === 'number' && item.price >= minClose) {
+                        return;
+                    }
                 }
                 
                 // Check 1: Execution Status

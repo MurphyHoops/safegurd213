@@ -228,7 +228,9 @@ export const SYMBOL_TO_CHINESE_MAP: Record<string, string> = {
     'AI16Z': '小安德森',
     'FARTCOIN': '放屁币',
     'GRIFFAIN': '狮鹫',
-    'SWARMS': '蜂群'
+    'SWARMS': '蜂群',
+    'CAT': '猫咪',
+    '1000CAT': '哈基米'
 };
 
 // 中文别称/简称/行话 -> 英文代码映射
@@ -402,7 +404,8 @@ export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
     '放屁币': 'FARTCOIN', '屁币': 'FARTCOIN',
     '小安德森': 'AI16Z',
     '狮鹫': 'GRIFFAIN',
-    '蜂群': 'SWARMS'
+    '蜂群': 'SWARMS',
+    '哈基米': '1000CAT'
 };
 
 // 自动将 SYMBOL_TO_CHINESE_MAP 中的中文反向同步到 CHINESE_TO_SYMBOL_MAP（确保 100% 双向覆盖）

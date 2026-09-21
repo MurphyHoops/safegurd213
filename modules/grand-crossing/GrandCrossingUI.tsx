@@ -70,7 +70,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
 
     // --- LOGIC HOOK ---
     const { 
-        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, scanningSymbols, lastScanTime, removeItem, clearItems, removeSignal
+        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, scanningSymbols, lastScanTime, diagnostics, removeItem, clearItems, removeSignal
     } = useGrandCrossing(effectiveCandidates, initialConfig || DEFAULT_CONFIG, directMode, onLog, strategyId);
 
     const onRemoveSignalReadyRef = React.useRef(onRemoveSignalReady);
@@ -86,14 +86,43 @@ export const GrandCrossingModule: React.FC<Props> = ({
         }
     }, [removeSignal]);
 
-    // 🔒 [STRICT DATA SOURCE ENFORCEMENT]: 列表2的数据源与渲染绝对只能来源于列表1当前候选币种
+    // 🔒 [STRICT DATA SOURCE ENFORCEMENT & 寿命根数门禁]: 列表2的数据源与渲染绝对只能来源于列表1当前候选币种且未超过设定寿命根数
     const allowedSymbolSet = React.useMemo(() => {
         return new Set((effectiveCandidates || []).map(c => normalizeSymbol(c.symbol)));
     }, [effectiveCandidates]);
 
     const sanitizedList2 = React.useMemo(() => {
-        return (list2 || []).filter(item => item && item.symbol && allowedSymbolSet.has(normalizeSymbol(item.symbol)));
-    }, [list2, allowedSymbolSet]);
+        const retention = config?.newModeRetention ?? 9;
+        const now = Date.now();
+        const getTfM = (tf: string) => {
+            const unit = tf.slice(-1);
+            const val = parseInt(tf);
+            if (unit === 's') return val / 60;
+            if (unit === 'm') return val;
+            if (unit === 'h') return val * 60;
+            if (unit === 'd') return val * 1440;
+            return 15;
+        };
+
+        return (list2 || [])
+            .filter(item => item && item.symbol && allowedSymbolSet.has(normalizeSymbol(item.symbol)))
+            .map(item => {
+                if (!item.groupedResults || item.groupedResults.length === 0) return null;
+                const unexpiredGrouped = item.groupedResults.filter(r => {
+                    const sigT = r.crossingTimes && r.crossingTimes.length > 0 ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0);
+                    const tfM = getTfM(r.tf || '15m');
+                    const rtLag = (sigT > 0 && tfM > 0) ? (now - sigT) / (tfM * 60 * 1000) : (r.lag || 0);
+                    const effLag = Math.max(r.lag || 0, rtLag);
+                    return effLag < retention;
+                });
+                if (unexpiredGrouped.length === 0) return null;
+                return {
+                    ...item,
+                    groupedResults: unexpiredGrouped
+                };
+            })
+            .filter(Boolean) as ScannerItem[];
+    }, [list2, allowedSymbolSet, config?.newModeRetention]);
 
     // --- SYNC OUTPUT (All non-pending signals pass to List 3) ---
     const lastListStrRef = React.useRef<string>('');
@@ -198,6 +227,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
             pollingStatus={status === 'SCANNING' ? scanText : (lastScanTime ? `最后扫描: ${new Date(lastScanTime).toLocaleTimeString()}` : undefined)}
             activeScanTfs={activeScanTfs}
             scanningSymbols={scanningSymbols}
+            diagnostics={diagnostics}
             onRemoveItem={removeItem}
             onClearItems={clearItems}
         />

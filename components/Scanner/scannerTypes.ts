@@ -29,6 +29,7 @@ export interface List3SignalResult {
     tf: string;
     direction: 'LONG' | 'SHORT';
     latched?: boolean; // Added to keep signal alive until List 2 drops
+    removalReason?: string;
     lastCandleTime?: number; // Track last candle time to reset intra-candle latching on new candle
     structure: {
         rsi: number;
@@ -123,6 +124,9 @@ export interface ScannerItem {
         periodChange?: number; 
         isReverse3K?: boolean;
         isBreakout3K?: boolean;
+        maxClose3?: number;
+        minClose3?: number;
+        recentCloses?: number[];
     };
     list3Results?: List3SignalResult[]; 
     momentum?: {
@@ -131,7 +135,7 @@ export interface ScannerItem {
         purityValid: boolean;
         breakoutValid: boolean;
         reverseTrend?: boolean;
-        status: 'INVALID' | 'PENDING' | 'TRIGGERED'; 
+        status: 'INVALID' | 'PENDING' | 'TRIGGERED' | 'DORMANT' | 'REVIVED'; 
         invalidReason?: string;
     };
     smartExit?: {
@@ -176,6 +180,7 @@ export interface List2Config {
     timeframes: string[];
     newModeRetention?: number; 
     lookbackBars?: number;
+    lookbackLimit?: number;
     volMultiplier: number;
     squeezeThreshold: number; 
     maxAmplitude: number;     
@@ -226,6 +231,7 @@ export interface List4Config {
     enableThresholds: boolean;
     enableAntiChase: boolean;
     enableRev3K: boolean;
+    rev3KCandles?: number; // 前 N 根 K 线突破检测根数 (默认 3，可设 1~50)
     enableThrust: boolean;
     invalidRetentionMinutes: number; 
     removeInvalidMinutes?: number; // 结构破坏后多少分钟消除 (0 = 不按分钟消除)
@@ -233,6 +239,7 @@ export interface List4Config {
     removeFuseMinutes?: number; // 触发防防高后多少分钟消除 (0 = 不按分钟消除)
     removeInvalidCandles?: number; // 结构破坏后多少根K线消除 (0 = 不消除)
     removeTradedCandles?: number;  // 已开仓后多少根K线消除 (0 = 不消除)
+    dormantRetentionCandles?: number; // 破中轴休眠期最大保留K线根数 (默认20根)
     antiChaseConfig: {
         longThresholds: { [key: string]: number };
         shortThresholds: { [key: string]: number };
