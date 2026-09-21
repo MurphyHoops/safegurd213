@@ -428,13 +428,21 @@ export function analyzeList2Crossing(
             const targetIdxL = (config.requireAlignment && !config.requireCrossing) ? divConfirmedIdxL : checkIdx;
             const targetIdxS = (config.requireAlignment && !config.requireCrossing) ? divConfirmedIdxS : checkIdx;
 
-            const candleRange = highs[targetIdxL] - lows[targetIdxL];
-            const amp = opens[targetIdxL] > 0 ? (candleRange / opens[targetIdxL]) * 100 : 0;
-            const volSlice = volumes.slice(Math.max(0, targetIdxL - 20), targetIdxL);
-            const avgVol = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
-            
-            const volValid = volumes[targetIdxL] >= (avgVol * Math.max(0.1, volMultiplier));
-            const ampValid = amp >= squeezeThreshold && amp <= maxAmplitude;
+            // Amplitude and Volume for LONG signal candle
+            const candleRangeL = highs[targetIdxL] - lows[targetIdxL];
+            const ampL = opens[targetIdxL] > 0 ? (candleRangeL / opens[targetIdxL]) * 100 : 0;
+            const volSliceL = volumes.slice(Math.max(0, targetIdxL - 20), targetIdxL);
+            const avgVolL = volSliceL.length > 0 ? volSliceL.reduce((a, b) => a + b, 0) / volSliceL.length : 0;
+            const volValidL = volumes[targetIdxL] >= (avgVolL * Math.max(0.1, volMultiplier));
+            const ampValidL = ampL >= squeezeThreshold && ampL <= maxAmplitude;
+
+            // Amplitude and Volume for SHORT signal candle
+            const candleRangeS = highs[targetIdxS] - lows[targetIdxS];
+            const ampS = opens[targetIdxS] > 0 ? (candleRangeS / opens[targetIdxS]) * 100 : 0;
+            const volSliceS = volumes.slice(Math.max(0, targetIdxS - 20), targetIdxS);
+            const avgVolS = volSliceS.length > 0 ? volSliceS.reduce((a, b) => a + b, 0) / volSliceS.length : 0;
+            const volValidS = volumes[targetIdxS] >= (avgVolS * Math.max(0.1, volMultiplier));
+            const ampValidS = ampS >= squeezeThreshold && ampS <= maxAmplitude;
 
             // Calculate body ratio for targetIdxL and targetIdxS
             const cHighL = highs[targetIdxL];
@@ -468,10 +476,15 @@ export function analyzeList2Crossing(
             const directionGuardL = !(e10 < e20 && (e30 === null || e10 < e30));
             const directionGuardS = !(e10 > e20 && (e30 === null || e10 > e30));
 
-            const crossingStrictOkL = !strictFiltering || (ampValid && volValid && bodyValidL);
-            const crossingStrictOkS = !strictFiltering || (ampValid && volValid && bodyValidS);
-            const crossingValidL = isCrossing && !conflictL && crossingStrictOkL && directionGuardL;
-            const crossingValidS = isCrossing && !conflictS && crossingStrictOkS && directionGuardS;
+            // 🔒 严格过滤条件 (严格趋势/严格过滤)：振幅范围、放量倍数与实体比例
+            const strictOkL = !strictFiltering || (ampValidL && volValidL && bodyValidL);
+            const strictOkS = !strictFiltering || (ampValidS && volValidS && bodyValidS);
+
+            const crossingValidL = isCrossing && !conflictL && strictOkL && directionGuardL;
+            const crossingValidS = isCrossing && !conflictS && strictOkS && directionGuardS;
+
+            const divergenceStrictValidL = divergenceValidL && strictOkL;
+            const divergenceStrictValidS = divergenceValidS && strictOkS;
 
             let patternMatchedL = false;
             let patternMatchedS = false;
@@ -479,23 +492,23 @@ export function analyzeList2Crossing(
 
             if (config.requireCrossing && config.requireAlignment) {
                 if (logicMode === 'OR') {
-                    patternMatchedL = crossingValidL || divergenceValidL;
-                    patternMatchedS = crossingValidS || divergenceValidS;
+                    patternMatchedL = crossingValidL || divergenceStrictValidL;
+                    patternMatchedS = crossingValidS || divergenceStrictValidS;
                 } else {
                     // AND
-                    patternMatchedL = crossingValidL && divergenceValidL;
-                    patternMatchedS = crossingValidS && divergenceValidS;
+                    patternMatchedL = crossingValidL && divergenceStrictValidL;
+                    patternMatchedS = crossingValidS && divergenceStrictValidS;
                 }
             } else if (config.requireCrossing) {
                 patternMatchedL = crossingValidL;
                 patternMatchedS = crossingValidS;
             } else if (config.requireAlignment) {
-                patternMatchedL = divergenceValidL;
-                patternMatchedS = divergenceValidS;
+                patternMatchedL = divergenceStrictValidL;
+                patternMatchedS = divergenceStrictValidS;
             } else {
                 // Squeeze fallback
-                patternMatchedL = crossingStrictOkL && !conflictL;
-                patternMatchedS = crossingStrictOkS && !conflictS;
+                patternMatchedL = strictOkL && !conflictL;
+                patternMatchedS = strictOkS && !conflictS;
             }
 
             // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
@@ -568,12 +581,12 @@ export function analyzeList2Crossing(
                 longSignals.push({ 
                     lag: signalLagL, 
                     direction: 'LONG', 
-                    amp, 
+                    amp: ampL, 
                     time: signalTimeL, 
                     bodyRatio: bodyRatioL, 
                     isAligned: isAlignedLong,
-                    ampValid,
-                    volValid,
+                    ampValid: ampValidL,
+                    volValid: volValidL,
                     bodyValid: bodyValidL,
                     isClosed: signalLagL > 0,
                     isPendingGray: isPendingGrayL,
@@ -590,12 +603,12 @@ export function analyzeList2Crossing(
                 shortSignals.push({ 
                     lag: signalLagS, 
                     direction: 'SHORT', 
-                    amp, 
+                    amp: ampS, 
                     time: signalTimeS, 
                     bodyRatio: bodyRatioS, 
                     isAligned: isAlignedShort,
-                    ampValid,
-                    volValid,
+                    ampValid: ampValidS,
+                    volValid: volValidS,
                     bodyValid: bodyValidS,
                     isClosed: signalLagS > 0,
                     isPendingGray: isPendingGrayS,

@@ -458,9 +458,8 @@ export const useGrandCrossing = (
         }
 
         // --- RE-FILTERING LOGIC (Reactive to Config Changes) ---
-        // If strict filtering is ON, strictly verify all conditions for CROSSING candlesticks.
-        // For pure divergence (isAligned), moving average alignment is the primary criteria.
-        if (cfg.strictFiltering && !r.isAligned) {
+        // If strict filtering is ON, strictly verify all conditions (body ratio, amplitude bounds, volume).
+        if (cfg.strictFiltering) {
           const ratio = r.bodyRatio ?? 0; // Set default to 0 to be strictly compliant and filter out malformed/legacy signals
           if (ratio < (cfg.minBodyRatio || 0)) return false;
 
@@ -857,7 +856,7 @@ export const useGrandCrossing = (
                 actualBodyRatio = match.bodyRatio ?? 0;
                 
                 let isStrictValid = true;
-                if (configRef.current.strictFiltering && !match.isAligned) {
+                if (configRef.current.strictFiltering) {
                   if (actualBodyRatio < currentMinBody) isStrictValid = false;
                   if (match.ampValid !== undefined && !match.ampValid) isStrictValid = false;
                   if (match.volValid !== undefined && !match.volValid) isStrictValid = false;
@@ -866,7 +865,7 @@ export const useGrandCrossing = (
                   if (squeezeVal < (configRef.current.squeezeThreshold || 0) || squeezeVal > (configRef.current.maxAmplitude || 50)) {
                     isStrictValid = false;
                   }
-                } else if (!match.isAligned) {
+                } else {
                   if (actualBodyRatio < currentMinBody) isStrictValid = false;
                 }
 

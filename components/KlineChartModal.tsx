@@ -626,7 +626,16 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       }
 
-      return markers;
+      // Deduplicate divergence markers by direction + index so each onset is unique
+      const uniqueMarkers = new Map<string, typeof markers[0]>();
+      markers.forEach(m => {
+          const key = `${m.direction}_${m.index}`;
+          if (!uniqueMarkers.has(key)) {
+              uniqueMarkers.set(key, m);
+          }
+      });
+
+      return Array.from(uniqueMarkers.values());
   }, [fullData, emaData, list2Config]);
 
   const bullishDivergenceCount = useMemo(() => divergenceMarkers.filter(m => m.direction === 'LONG').length, [divergenceMarkers]);
@@ -1925,7 +1934,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       // List 2 Divergence (发散) Visual Markers - ONLY rendered on the 1st candle of each divergence onset
       const divergenceVisuals: React.ReactNode[] = [];
       if (showDivergenceMarkers && divergenceMarkers.length > 0) {
-          divergenceMarkers.forEach((m) => {
+          divergenceMarkers.forEach((m, idx) => {
               if (m.index >= startIndex && m.index < startIndex + visibleCount) {
                   const i = m.index - startIndex;
                   const x = getX(i) + candleWidth / 2;
@@ -1938,7 +1947,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                   const textLabel = isLong ? '▲ 多发散' : '▼ 空发散';
 
                   divergenceVisuals.push(
-                      <g key={`div-start-${isLong ? 'long' : 'short'}-${m.index}`} pointerEvents="none">
+                      <g key={`div-start-${isLong ? 'long' : 'short'}-${m.index}-${m.time}-${idx}`} pointerEvents="none">
                           {/* 纵向指引虚线 (靠近K线的一端保留1~3cm距离) */}
                           {layout.hasDashedLine && (
                               <line 
