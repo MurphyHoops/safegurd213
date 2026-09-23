@@ -589,34 +589,29 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             {/* Header with Title, Count Badge, (Manual/Auto), Speed (3m), Scan Trigger, and Collapse Button */}
             <div 
                 onClick={() => setIsCollapsed(!isCollapsed)}
-                className="p-2 bg-slate-800/60 hover:bg-slate-800/90 flex items-center justify-between cursor-pointer transition-colors select-none"
+                className="p-2 bg-slate-800/60 hover:bg-slate-800/90 flex items-center justify-between cursor-pointer transition-colors select-none gap-2"
             >
-                <div className="flex items-center gap-2">
-                    <div className="p-1 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                        <Flame size={13} />
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-bold text-white tracking-wide">
-                            行情启动底池
+                <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+                    <span className="text-[10.5px] font-bold text-white tracking-wide whitespace-nowrap">
+                        行情启动底池
+                    </span>
+                    {/* 三段式显示: 【交易额过滤底池数量 / 正在扫描位置 / 本轮行情启动趋势过滤入选数量】 */}
+                    <span 
+                        className="px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/60 text-amber-300 font-mono font-bold text-[9px] tracking-tight flex items-center gap-1 whitespace-nowrap shrink-0"
+                        title="【交易额过滤底池数量 / 正在扫描位置 / 本轮行情启动趋势过滤结果数量】"
+                    >
+                        <span>
+                            {totalCandidates} / {isScanning ? progress.current : totalCandidates} / {isScanning ? progress.passed : pool.length}
                         </span>
-                        {/* 三段式显示: 【交易额过滤底池数量 / 正在扫描位置 / 本轮行情启动趋势过滤入选数量】 */}
-                        <span 
-                            className="px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/60 text-amber-300 font-mono font-bold text-[9px] tracking-tight flex items-center gap-1"
-                            title="【交易额过滤底池数量 / 正在扫描位置 / 本轮行情启动趋势过滤结果数量】"
-                        >
-                            <span>
-                                {totalCandidates} / {isScanning ? progress.current : totalCandidates} / {isScanning ? progress.passed : pool.length}
+                        {isScanning && progress.currentSymbol && (
+                            <span className="text-[8px] text-amber-200 bg-amber-950/80 px-1 rounded animate-pulse font-sans">
+                                {progress.currentSymbol.replace('USDT', '')}
                             </span>
-                            {isScanning && progress.currentSymbol && (
-                                <span className="text-[8px] text-amber-200 bg-amber-950/80 px-1 rounded animate-pulse font-sans">
-                                    {progress.currentSymbol.replace('USDT', '')}
-                                </span>
-                            )}
-                        </span>
-                    </div>
+                        )}
+                    </span>
                 </div>
 
-                <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
                     {/* (手动/自动) 读取开关 */}
                     <div className="flex items-center bg-slate-950/80 rounded border border-slate-700/80 p-0.5" title="行情启动底池扫描模式：自动实时跟踪交易额底池 / 手动单次扫描">
                         <button
