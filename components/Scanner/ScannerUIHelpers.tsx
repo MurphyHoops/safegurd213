@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react';
 
 // --- 1. Smart Number Input ---
 // Handles float parsing, focus states, and empty values gracefully
-export const SmartNumberInput = ({ value, onChange, className }: { value: number | undefined | null, onChange: (val: number) => void, className: string }) => {
+export const SmartNumberInput = ({ value, onChange, className, disabled }: { value: number | undefined | null, onChange: (val: number) => void, className: string, disabled?: boolean }) => {
     const safeValue = (value === undefined || value === null || isNaN(value)) ? 0 : value;
     const [localVal, setLocalVal] = useState(safeValue.toString());
     const [isFocused, setIsFocused] = useState(false);
@@ -30,6 +30,7 @@ export const SmartNumberInput = ({ value, onChange, className }: { value: number
             onChange={handleChange}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
+            disabled={disabled}
             className={className}
             step="any" 
         />

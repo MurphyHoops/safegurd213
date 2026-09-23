@@ -156,7 +156,7 @@ interface Props {
     isHedgedMode: boolean;
     isModule1Active: boolean;
     hasAmmo: boolean;
-    onOpenChart: (symbol: string, price: number, time: number) => void;
+    onOpenChart: (symbol: string, price?: number, time?: number, timeframe?: string) => void;
     onShowHistory: (symbol: string) => void;
     onClosePosition: (symbol: string, side: PositionSide) => void;
     onVerifyPosition: (position: Position) => void;
@@ -274,7 +274,7 @@ export const PositionItem: React.FC<Props> = React.memo(({
 
     return (
         <div 
-            onClick={() => onOpenChart(p.symbol, p.entryPrice, p.entryTime)}
+            onClick={() => onOpenChart(p.symbol, p.entryPrice, p.entryTime, p.signalTf || '15m')}
             className={`flex items-center px-4 py-2 border-b border-slate-800/40 hover:bg-[#1e2329]/50 transition-colors group relative overflow-hidden shrink-0 cursor-pointer ${p.isHedged ? 'bg-indigo-900/5' : ''} ${isManuallyClosed ? 'bg-amber-900/20' : ''} ${hasCustomSettings ? (currentProfitMode === 'AI' ? 'bg-emerald-950/10 border-l-4 border-l-emerald-500/80 shadow-[inset_1px_0_0_rgba(16,185,129,0.2)]' : 'bg-red-950/20 border-l-4 border-l-red-500/80 shadow-[inset_1px_0_0_rgba(239,68,68,0.2)]') : ''}`}
         >
             <div className={`absolute left-0 top-1 bottom-1 w-0.5 rounded-r ${currentPnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
@@ -618,7 +618,7 @@ export const PositionItem: React.FC<Props> = React.memo(({
                         );
                     })()}
                     <button onClick={(e) => { e.stopPropagation(); onShowHistory(p.symbol); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="交易记录"><Clock size={12}/></button>
-                    <button onClick={(e) => { e.stopPropagation(); onOpenChart(p.symbol, p.entryPrice, p.entryTime); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="K线图"><BarChart2 size={12}/></button>
+                    <button onClick={(e) => { e.stopPropagation(); onOpenChart(p.symbol, p.entryPrice, p.entryTime, p.signalTf || '15m'); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="K线图"><BarChart2 size={12}/></button>
                     {onManualAmputate && (
                         <button 
                             onClick={(e) => { e.stopPropagation(); onManualAmputate(p); }} 

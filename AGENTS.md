@@ -12,7 +12,8 @@
 
 | 模块单元 (Atomic Unit) | 物理路径 (Path) | 锁定级别 | 责任范围 |
 | :--- | :--- | :--- | :--- |
-| **List 1 [全域底边扫描]** | `modules/market-scanner/`<br>`services/rules/list1_market.ts` | 🔴 LOCKED | 底边价格偏离与基础形态扫描 |
+| **List 1 [全域底边扫描 & 过滤规则]** | `modules/market-scanner/`<br>`services/rules/list1_market.ts`<br>`modules/market-scanner/components/StartTrendPoolBox.tsx` | 🔴 LOCKED | 行情启动趋势、横盘蓄势、回溯周期等全部过滤算法与流转规则（严禁擅自修改） |
+| **市场初筛列表 [增删/差量更新机制]** | `modules/market-scanner/components/List1_Selection.tsx`<br>`modules/market-scanner/useScannerLogic.ts` | 🔴 LOCKED | 最后一项过滤完成后的差量对比、永不清零、精准增删同步机制（严禁擅自修改） |
 | **List 2 [大十字星监控]** | `modules/grand-crossing/`<br>`services/rules/list2_crossing.ts` | 🔴 LOCKED | 大十字星 K 线特征与极值监控 |
 | **List 3 [结构深度审计]** | `modules/structure-audit/`<br>`services/rules/list3_structure.ts` | 🔴 LOCKED | 支撑阻力与市场结构多周期审计 |
 | **List 4 [动能趋势审计]** | `modules/momentum-audit/`<br>`services/rules/list4_momentum.ts` | 🔴 LOCKED | EMA交叉过滤与多周期动能趋势算法 |

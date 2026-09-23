@@ -12,11 +12,12 @@ interface Props {
     setChartData: (data: { 
         symbol: string, 
         tf: string, 
-        signals?: { time: number, type: 'LONG' | 'SHORT' }[], 
+        signals?: any[], 
         entryPrice?: number, 
         entryTime?: number, 
         currentPrice?: number,
-        showAuditLines?: boolean
+        showAuditLines?: boolean,
+        extraLines?: any[]
     } | null) => void;
     onClosePosition: (symbol: string, side: PositionSide) => void;
     auditStatus?: {
@@ -86,14 +87,32 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
             e.preventDefault();
         }
         
+        const extraLines: any[] = [];
+        if (position.entryPrice && position.entryPrice > 0) {
+            extraLines.push({
+                price: position.entryPrice,
+                label: `开仓信号线(${isLong ? '多' : '空'})`,
+                color: isLong ? '#10b981' : '#ef4444',
+                style: 'dashed'
+            });
+        }
+
         setChartData({ 
             symbol: position.symbol, 
             tf: rawTf, // CRITICAL: Use raw TF for Binance API compatibility
             entryPrice: position.entryPrice, 
             entryTime: position.entryTime, 
-            signals: [], 
+            signals: position.signalCandle ? [{
+                time: position.entryTime,
+                type: isLong ? 'BUY' : 'SELL',
+                price: position.entryPrice,
+                direction: isLong ? 'LONG' : 'SHORT',
+                tf: rawTf,
+                source: 'LIST5'
+            }] : [], 
             currentPrice: currentPrice,
-            showAuditLines: false
+            showAuditLines: true,
+            extraLines: extraLines.length > 0 ? extraLines : undefined
         });
     };
 

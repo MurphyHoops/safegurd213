@@ -4,8 +4,8 @@ let continuousFailures = 0;
 let circuitBreakerUntil = 0;
 
 // --- GLOBAL CONCURRENCY LOCK (Semaphore) ---
-// To prevent Chrome browser from choking and crashing (White Screen) when spawning 60+ parallel Fetches
-const MAX_CONCURRENT = 20; // Increased from 12 to 20 to ensure user interactions (charts) always have headroom
+// High-throughput concurrency limit to ensure 20+ position background checks never block List 1 market scanning
+const MAX_CONCURRENT = 60; // Increased from 20 to 60 to prevent scanner starvation when holding 20+ positions
 let activeRequests = 0;
 
 interface QueueItem {
@@ -15,28 +15,20 @@ interface QueueItem {
 const requestQueue: QueueItem[] = [];
 
 const acquireSlot = async (priority: 'HIGH' | 'NORMAL' | 'LOW' = 'NORMAL') => {
-    if (activeRequests < MAX_CONCURRENT) {
+    // High priority requests can always acquire immediate capacity
+    if (priority === 'HIGH' || activeRequests < MAX_CONCURRENT) {
         activeRequests++;
         return;
     }
     return new Promise<void>(resolve => {
         const item = { resolve, priority };
-        if (priority === 'HIGH') {
-            // Find the last high priority item or start of queue
-            let lastHighIdx = -1;
-            for (let i = 0; i < requestQueue.length; i++) {
-                if (requestQueue[i].priority === 'HIGH') lastHighIdx = i;
-                else break; 
+        if (priority === 'NORMAL') {
+            // Insert after any existing high priority items
+            let insertIdx = 0;
+            while (insertIdx < requestQueue.length && requestQueue[insertIdx].priority === 'HIGH') {
+                insertIdx++;
             }
-            requestQueue.splice(lastHighIdx + 1, 0, item);
-        } else if (priority === 'NORMAL') {
-            // Insert after high and normal items
-            let lastNormalIdx = -1;
-            for (let i = 0; i < requestQueue.length; i++) {
-                if (requestQueue[i].priority === 'HIGH' || requestQueue[i].priority === 'NORMAL') lastNormalIdx = i;
-                else break;
-            }
-            requestQueue.splice(lastNormalIdx + 1, 0, item);
+            requestQueue.splice(insertIdx, 0, item);
         } else {
             requestQueue.push(item);
         }

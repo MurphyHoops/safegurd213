@@ -6,7 +6,7 @@ import { fetchWithFallback } from '../services/apiService';
 import { analyzeList2Crossing } from '../services/rules/list2_crossing'; // Import Rule Logic
 import { List2Config } from './Scanner/scannerTypes';
 import { useOptionalBacktest } from '../modules/backtester/BacktestContext';
-import { formatPrice } from '../services/symbolUtils';
+import { formatPrice, normalizeSymbol } from '../services/symbolUtils';
 import { KLineSynthesizer } from '../services/klineSynthesizer';
 
 interface Signal {
@@ -1368,33 +1368,115 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   // Trade Logs Marker Logic
   const tradeMarkers = useMemo(() => {
       const markers: { time: number; type: string; label: string; price?: number }[] = [];
-      if (!tradeLogs) return markers;
-
-      tradeLogs.filter(l => l.symbol === symbol).forEach(l => {
-          const dirLabel = ((l.direction as any) === PositionSide.LONG || (l.direction as any) === 'LONG' || (l.direction as any) === 'BUY' || (l.direction as any) === '多') ? '多' : '空';
-          const isHedge = l.is_hedge || !!l.main_entry_id;
-          const isCut = !!l.parent_entry_id && (l.entry_id?.includes('_cut_') || l.exit_reason?.includes('减仓') || l.exit_reason?.includes('砍仓'));
-          const isRefill = l.entry_id?.includes('_refill_');
-          const isClear = l.exit_reason?.includes('解套') || l.exit_reason?.includes('断臂') || l.exit_reason?.includes('对冲清仓') || l.exit_reason?.includes('防爆安全') || l.exit_reason?.includes('断臂全清');
-
-          if (l.entry_timestamp) {
-              if (isHedge) {
-                  markers.push({ time: l.entry_timestamp, type: 'HEDGE_OPEN', label: `防爆对冲(${dirLabel})`, price: l.entry_price });
-              } else if (isRefill) {
-                  markers.push({ time: l.entry_timestamp, type: 'HEDGE_REFILL', label: `防爆对冲补仓(${dirLabel})`, price: l.entry_price });
-              } else {
-                  markers.push({ time: l.entry_timestamp, type: 'OPEN', label: `开仓(${dirLabel})`, price: l.entry_price });
+      
+      // Load trade logs from props or fallback to localStorage if props are empty
+      let logsToScan = tradeLogs;
+      if (!logsToScan || logsToScan.length === 0) {
+          try {
+              const saved = localStorage.getItem('SAVIOR_TRADELOGS') || localStorage.getItem('SAVIOR_TRADELOGS_LIVE') || localStorage.getItem('SAVIOR_TRADELOGS_SIM');
+              if (saved) {
+                  const parsed = JSON.parse(saved);
+                  if (Array.isArray(parsed)) {
+                      logsToScan = parsed;
+                  }
               }
+          } catch (e) {}
+      }
+      if (!logsToScan || logsToScan.length === 0) return markers;
+
+      const normTarget = normalizeSymbol(symbol);
+      const matchedLogs = logsToScan.filter(l => {
+          if (!l || !l.symbol) return false;
+          const normL = normalizeSymbol(l.symbol);
+          return normL === normTarget || l.symbol.toUpperCase() === symbol.toUpperCase() || normL === symbol.toUpperCase();
+      });
+
+      const resolveDirection = (l: TradeLog | any, fallbackText?: string): '多' | '空' => {
+          const rawDir = (l.direction || l.side || '') as string;
+          if (rawDir === PositionSide.SHORT || rawDir === 'SHORT' || rawDir === '空') return '空';
+          if (rawDir === PositionSide.LONG || rawDir === 'LONG' || rawDir === '多') return '多';
+
+          const allText = `${l.exit_reason || ''} ${l.entry_id || ''} ${fallbackText || ''} ${l.events?.map((e: any) => `${e.action || ''} ${e.reason || ''}`).join(' ') || ''}`;
+          if (/做空|空单|平空|空头|\(空\)|_SHORT_/i.test(allText)) return '空';
+          if (/做多|多单|平多|多头|\(多\)|_LONG_/i.test(allText)) return '多';
+
+          if (rawDir === 'BUY') {
+              if (l.status === 'CLOSED' || l.entry_id?.includes('_cut_') || /砍仓|减仓|平仓|断臂|止损|止盈/.test(allText)) {
+                  return '空';
+              }
+              return '多';
           }
-          if (l.exit_timestamp && l.status === 'CLOSED') {
-              if (isCut) {
-                  markers.push({ time: l.exit_timestamp, type: 'HEDGE_CUT', label: `砍仓(${dirLabel})`, price: l.exit_price || l.entry_price });
-              } else if (isClear) {
-                  markers.push({ time: l.exit_timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${dirLabel})`, price: l.exit_price || 0 });
-              } else if (l.profit_usdt !== undefined && l.profit_usdt >= 0) {
-                  markers.push({ time: l.exit_timestamp, type: 'PROFIT_CLOSE', label: `盈利平仓(${dirLabel})`, price: l.exit_price || 0 });
-              } else {
-                  markers.push({ time: l.exit_timestamp, type: 'LOSS_CLOSE', label: `止损平仓(${dirLabel})`, price: l.exit_price || 0 });
+          if (rawDir === 'SELL') {
+              if (l.status === 'CLOSED' || l.entry_id?.includes('_cut_') || /砍仓|减仓|平仓|断臂|止损|止盈/.test(allText)) {
+                  return '多';
+              }
+              return '空';
+          }
+
+          if (allText.includes('空')) return '空';
+          return '多';
+      };
+
+      matchedLogs.forEach(l => {
+          const dirLabel = resolveDirection(l);
+          const isHedge = l.is_hedge || !!l.main_entry_id;
+          const isCut = (
+              l.entry_id?.includes('_cut_') || 
+              l.entry_id?.includes('_amputate_') || 
+              /砍仓|断臂砍仓|断臂求生.*砍|断臂求生.*削减|部分止损|部分减仓|减仓/i.test(l.exit_reason || '') ||
+              (l.events && l.events.some((e: any) => /砍仓|减仓/i.test(e.action || '')))
+          );
+          const isRefill = (
+              l.entry_id?.includes('_refill_') || 
+              /补仓|回踩补回|回踩补仓/i.test(l.exit_reason || '') ||
+              (l.events && l.events.some((e: any) => /补仓|补回/i.test(e.action || '')))
+          );
+          const isClear = (
+              !isCut && (
+                  /解套|断臂全清|断臂盈利清仓|对冲清仓|防爆安全|成对清仓|双向清仓|保本清仓/i.test(l.exit_reason || '') ||
+                  (l.events && l.events.some((e: any) => /解套|对冲清仓|断臂全清|成对清仓/i.test(e.action || '')))
+              )
+          );
+
+          if (isCut) {
+              // 砍仓标记：在砍仓发生时间 (exit_timestamp 或 entry_timestamp) 标记
+              const cutTime = l.exit_timestamp || l.entry_timestamp;
+              if (cutTime) {
+                  markers.push({ 
+                      time: cutTime, 
+                      type: 'HEDGE_CUT', 
+                      label: `砍仓(${dirLabel})`, 
+                      price: l.exit_price || l.entry_price 
+                  });
+              }
+          } else if (isRefill) {
+              const refillTime = l.entry_timestamp || l.exit_timestamp;
+              if (refillTime) {
+                  markers.push({ 
+                      time: refillTime, 
+                      type: 'HEDGE_REFILL', 
+                      label: `防爆对冲补仓(${dirLabel})`, 
+                      price: l.entry_price || l.exit_price 
+                  });
+              }
+          } else {
+              // 普通开仓 / 对冲开仓
+              if (l.entry_timestamp) {
+                  if (isHedge) {
+                      markers.push({ time: l.entry_timestamp, type: 'HEDGE_OPEN', label: `防爆对冲(${dirLabel})`, price: l.entry_price });
+                  } else {
+                      markers.push({ time: l.entry_timestamp, type: 'OPEN', label: `开仓(${dirLabel})`, price: l.entry_price });
+                  }
+              }
+              // 普通平仓 / 对冲清仓
+              if (l.exit_timestamp && l.status === 'CLOSED') {
+                  if (isClear) {
+                      markers.push({ time: l.exit_timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${dirLabel})`, price: l.exit_price || l.entry_price || 0 });
+                  } else if (l.profit_usdt !== undefined && l.profit_usdt >= 0) {
+                      markers.push({ time: l.exit_timestamp, type: 'PROFIT_CLOSE', label: `盈利平仓(${dirLabel})`, price: l.exit_price || l.entry_price || 0 });
+                  } else {
+                      markers.push({ time: l.exit_timestamp, type: 'LOSS_CLOSE', label: `止损平仓(${dirLabel})`, price: l.exit_price || l.entry_price || 0 });
+                  }
               }
           }
           
@@ -1402,25 +1484,40 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                 markers.push({ time: l.signal_details.timestamp, type: 'SIGNAL', label: '信号' });
           }
           
-          l.events?.forEach(e => {
-             const eventDir = (e.action.includes('LONG') || e.action.includes('(多)') || e.action.includes('多')) ? '多' : ((e.action.includes('SHORT') || e.action.includes('(空)') || e.action.includes('空')) ? '空' : dirLabel);
-             if (e.action.includes('对冲开') || e.action.includes('HEDGE_OPEN') || e.action.includes('对冲开启')) {
+          l.events?.forEach((e: any) => {
+             const eventText = `${e.action || ''} ${e.reason || ''}`;
+             let eventDir: '多' | '空' = dirLabel;
+             if (/做空|空单|平空|空头|\(空\)|SHORT/i.test(eventText)) {
+                 eventDir = '空';
+             } else if (/做多|多单|平多|多头|\(多\)|LONG/i.test(eventText)) {
+                 eventDir = '多';
+             }
+
+             if (/对冲开|HEDGE_OPEN|对冲开启/i.test(e.action)) {
                  markers.push({ time: e.timestamp, type: 'HEDGE_OPEN', label: `防爆对冲(${eventDir})`, price: e.price });
-             } else if (e.action.includes('砍仓') || e.action.includes('减仓')) {
+             } else if (/砍仓|减仓/i.test(e.action)) {
                  markers.push({ time: e.timestamp, type: 'HEDGE_CUT', label: `砍仓(${eventDir})`, price: e.price });
-             } else if (e.action.includes('补仓') || e.action.includes('补回')) {
+             } else if (/补仓|补回/i.test(e.action)) {
                  markers.push({ time: e.timestamp, type: 'HEDGE_REFILL', label: `防爆对冲补仓(${eventDir})`, price: e.price });
-             } else if (e.action.includes('清仓')) {
+             } else if (/清仓|解套/i.test(e.action)) {
                  markers.push({ time: e.timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${eventDir})`, price: e.price });
              }
           });
       });
 
-      // Deduplicate markers by time and label
+      // Deduplicate markers by time and label (tolerate +/- 1000ms timestamp variances)
       const unique = new Map<string, { time: number; type: string; label: string; price?: number }>();
       markers.forEach(m => {
-          const key = `${m.time}-${m.label}`;
-          if (!unique.has(key)) unique.set(key, m);
+          const roundedTimeSec = Math.floor(m.time / 1000);
+          const key = `${roundedTimeSec}-${m.type}-${m.label}`;
+          if (!unique.has(key)) {
+              unique.set(key, m);
+          } else {
+              const existing = unique.get(key)!;
+              if ((!existing.price || existing.price === 0) && m.price && m.price > 0) {
+                  unique.set(key, m);
+              }
+          }
       });
       return Array.from(unique.values());
   }, [tradeLogs, symbol]);
@@ -2205,7 +2302,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       }
 
-      // ENTRY PRICE & TIME VISUALIZATION
+      // ENTRY PRICE & TIME VISUALIZATION (开仓信号线与开仓位置标注)
       let entryVisuals = null;
       if (entryPrice && entryPrice > 0) {
           const yEntry = getY(entryPrice);
@@ -2213,32 +2310,126 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const entryColor = "#22d3ee"; // Cyan-400
               
               let entryX = -1;
+              let candleHighY = NaN;
+              let candleLowY = NaN;
+
               // Find Entry Candle X if visible
               if (entryTime) {
                   const eIdx = getCandleIdxFast(entryTime, fullData);
                   if (eIdx !== -1 && eIdx >= startIndex && eIdx < startIndex + visibleCount) {
                       entryX = getX(eIdx - startIndex) + candleWidth / 2;
+                      const candle = fullData[eIdx];
+                      if (candle) {
+                          candleHighY = getY(candle.high);
+                          candleLowY = getY(candle.low);
+                      }
                   }
+              }
+
+              let entryMarkerVisual = null;
+              if (entryX !== -1 && !isNaN(entryX)) {
+                  // Place badge in clear space above or below K-lines & EMAs without overlap
+                  const topSafe = !isNaN(candleHighY) ? candleHighY : yEntry;
+                  const bottomSafe = !isNaN(candleLowY) ? candleLowY : yEntry;
+                  
+                  const isPlaceAbove = topSafe > (padding.top + 48);
+                  const badgeWidth = 84;
+                  const badgeHeight = 20;
+                  const badgeX = Math.max(10, Math.min(width - padding.right - badgeWidth - 5, entryX - badgeWidth / 2));
+                  
+                  let badgeY = 0;
+                  let lineStartY = 0;
+                  let lineEndY = 0;
+
+                  if (isPlaceAbove) {
+                      // Badge placed safely above the highest point of the candle & EMAs
+                      badgeY = Math.max(padding.top + 6, topSafe - 32);
+                      lineStartY = badgeY + badgeHeight;
+                      lineEndY = yEntry;
+                  } else {
+                      // Badge placed safely below the lowest point of the candle & EMAs
+                      badgeY = Math.min(chartHeight - badgeHeight - 6, bottomSafe + 16);
+                      lineStartY = badgeY;
+                      lineEndY = yEntry;
+                  }
+
+                  entryMarkerVisual = (
+                      <g>
+                          {/* Dashed Guideline from badge to exact entry price point */}
+                          <line 
+                              x1={entryX} 
+                              y1={lineStartY} 
+                              x2={entryX} 
+                              y2={lineEndY} 
+                              stroke={entryColor} 
+                              strokeWidth={1.2} 
+                              strokeDasharray="3 3" 
+                              opacity={0.85} 
+                          />
+                          
+                          {/* Pinpoint Target at Entry Point (Small, Precise, Non-intrusive) */}
+                          <circle cx={entryX} cy={yEntry} r={3} fill={entryColor} />
+                          <circle cx={entryX} cy={yEntry} r={6} stroke={entryColor} strokeWidth={1} fill="none" opacity={0.7} />
+                          
+                          {/* Small directional pointer at target */}
+                          {isPlaceAbove ? (
+                              <polygon 
+                                  points={`${entryX - 3},${yEntry - 5} ${entryX + 3},${yEntry - 5} ${entryX},${yEntry - 1}`} 
+                                  fill={entryColor} 
+                              />
+                          ) : (
+                              <polygon 
+                                  points={`${entryX - 3},${yEntry + 5} ${entryX + 3},${yEntry + 5} ${entryX},${yEntry + 1}`} 
+                                  fill={entryColor} 
+                              />
+                          )}
+
+                          {/* Badge Tag placed safely in clear space outside K-line/EMA zone */}
+                          <rect 
+                              x={badgeX} 
+                              y={badgeY} 
+                              width={badgeWidth} 
+                              height={badgeHeight} 
+                              rx={4} 
+                              fill="#0a192f" 
+                              stroke={entryColor} 
+                              strokeWidth={1} 
+                              opacity={0.95} 
+                          />
+                          <text 
+                              x={badgeX + badgeWidth / 2} 
+                              y={badgeY + 14} 
+                              fill={entryColor} 
+                              fontSize="9.5" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                              fontFamily="monospace"
+                          >
+                              🎯 开仓信号点
+                          </text>
+                      </g>
+                  );
               }
 
               entryVisuals = (
                   <g pointerEvents="none">
-                      {/* Horizontal Line */}
-                      <line x1={0} y1={yEntry} x2={width - padding.right} y2={yEntry} stroke={entryColor} strokeWidth={1} strokeDasharray="4 2" opacity={0.8} />
+                      {/* Full Width Horizontal Entry Line */}
+                      <line x1={0} y1={yEntry} x2={width - padding.right} y2={yEntry} stroke={entryColor} strokeWidth={1.5} strokeDasharray="5 3" opacity={0.9} />
                       
-                      {/* Right Axis Label */}
-                      <rect x={width - 80} y={yEntry - 9} width={80} height={18} fill={entryColor} rx={2} opacity={0.2} />
-                      <text x={width - 76} y={yEntry + 3} fill={entryColor} fontSize="9" fontWeight="bold" fontFamily="monospace">
-                          ENTRY: {formatPrice(entryPrice)}
+                      {/* Left Anchor Label */}
+                      <rect x={10} y={yEntry - 10} width={135} height={20} fill="#083344" stroke={entryColor} strokeWidth={1} rx={3} opacity={0.95} />
+                      <text x={18} y={yEntry + 4} fill={entryColor} fontSize="10" fontWeight="bold" fontFamily="monospace">
+                          🎯 开仓信号线: {formatPrice(entryPrice)}
                       </text>
 
-                      {/* Specific Entry Time Marker (if visible) */}
-                      {entryX !== -1 && !isNaN(entryX) && (
-                          <g>
-                              <circle cx={entryX} cy={yEntry} r={4} fill={entryColor} />
-                              <circle cx={entryX} cy={yEntry} r={8} stroke={entryColor} strokeWidth={1} fill="none" opacity={0.5} />
-                          </g>
-                      )}
+                      {/* Right Axis Label */}
+                      <rect x={width - 80} y={yEntry - 10} width={80} height={20} fill="#0e7490" rx={2} opacity={0.9} />
+                      <text x={width - 76} y={yEntry + 4} fill="#ffffff" fontSize="10" fontWeight="bold" fontFamily="monospace">
+                          开仓: {formatPrice(entryPrice)}
+                      </text>
+
+                      {/* Specific Entry Marker with Dashed Guideline */}
+                      {entryMarkerVisual}
                   </g>
               );
           }

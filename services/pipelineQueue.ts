@@ -1,53 +1,70 @@
 /**
- * Pipeline Execution Queue Coordinator - Channel-based Independent Pipelines
- * 确保各业务线各行其道、互不干扰、互不阻塞：
- * Channel 1: volume_pool (交易额过滤底池)
- * Channel 2: start_trend (行情启动底池)
- * Channel 3: major_trend (大行情发现)
+ * Pipeline Execution Queue Coordinator - Strict Sequential Pipeline
+ * 严格按照流水线由上至下顺序单线执行，严禁【行情启动趋势】与【横盘蓄势/大行情】同时并发运行！
  * 
- * 🔒 铁律保障：每个通道各自独立运行，启动底池扫描与大行情扫描各行其道，绝不互相排队阻塞死锁！
+ * 顺序闭环：
+ * 1. start_trend (行情启动底池扫描) -> 完成后生成底池并派发接力
+ * 2. major_trend (横盘蓄势过滤 -> 回溯周期过滤) -> 完成后更新初筛并交回接力
  */
 
 export type TaskId = 'volume_pool' | 'start_trend' | 'major_trend';
 
 class PipelineCoordinator {
-    private runningTasks: Set<TaskId> = new Set();
-    private pendingTasks: Map<TaskId, () => Promise<any>> = new Map();
+    private currentRunning: TaskId | null = null;
+    private queue: { id: TaskId; fn: () => Promise<any> }[] = [];
 
     /**
-     * 将任务加入指定独立通道，不同通道完全并发运行（各行其道）
+     * 将任务加入顺序队列。如果当前有正在执行的流水线任务，排队等待上一阶段完成后依次执行。
      */
     public enqueue(id: TaskId, fn: () => Promise<any>) {
-        // 如果该通道当前正在执行中，更新该通道的待执行任务为最新函数（保鲜），防止同一通道内部重入混乱
-        if (this.runningTasks.has(id)) {
-            this.pendingTasks.set(id, fn);
+        // 如果队列中已有相同 id 的待执行任务，替换为最新函数以保持参数最新
+        const existingIdx = this.queue.findIndex(item => item.id === id);
+        if (existingIdx !== -1) {
+            this.queue[existingIdx].fn = fn;
+        } else {
+            this.queue.push({ id, fn });
+        }
+
+        if (!this.currentRunning) {
+            this.processNext();
+        }
+    }
+
+    private async processNext() {
+        if (this.queue.length === 0) {
+            this.currentRunning = null;
             return;
         }
 
-        this.executeChannel(id, fn);
-    }
+        const nextTask = this.queue.shift();
+        if (!nextTask) {
+            this.currentRunning = null;
+            return;
+        }
 
-    private async executeChannel(id: TaskId, fn: () => Promise<any>) {
-        this.runningTasks.add(id);
+        this.currentRunning = nextTask.id;
         try {
-            console.log(`[PipelineQueue] Executing independent track: ${id}...`);
-            await fn();
-            console.log(`[PipelineQueue] Finished independent track: ${id}`);
+            console.log(`[PipelineQueue] 正在按序执行流水线环节: ${nextTask.id}...`);
+            await nextTask.fn();
+            console.log(`[PipelineQueue] 流水线环节执行完毕: ${nextTask.id}`);
         } catch (err) {
-            console.error(`[PipelineQueue] Error in track (${id}):`, err);
+            console.error(`[PipelineQueue] 流水线环节 (${nextTask.id}) 出现异常:`, err);
         } finally {
-            this.runningTasks.delete(id);
-            // 检查该通道是否有排队的最新待执行任务，若有则在微小间隔后平滑执行
-            const nextFn = this.pendingTasks.get(id);
-            if (nextFn) {
-                this.pendingTasks.delete(id);
-                setTimeout(() => this.executeChannel(id, nextFn), 50);
-            }
+            this.currentRunning = null;
+            // 稍作 50ms 缓冲后依次执行下一棒任务
+            setTimeout(() => {
+                this.processNext();
+            }, 50);
         }
     }
 
-    public isTaskRunning(id: TaskId): boolean {
-        return this.runningTasks.has(id);
+    public isTaskRunning(id?: TaskId): boolean {
+        if (id) return this.currentRunning === id;
+        return this.currentRunning !== null;
+    }
+
+    public getCurrentRunning(): TaskId | null {
+        return this.currentRunning;
     }
 }
 

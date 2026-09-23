@@ -19,7 +19,7 @@ interface Props {
     onClearRecords: () => void;
     onUpdateCustomSettings?: (symbol: string, customSettings?: any) => void;
     onResetBalance: (amount: number) => void;
-    onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number) => void;
+    onOpenChart: (symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string) => void;
     onVerifyPosition: (position: Position | string) => void;
     onManualHedge?: (position: Position) => void;
     onManualAmputate?: (position: Position) => void;

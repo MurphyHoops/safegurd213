@@ -324,6 +324,20 @@ export interface StartTrendGroup {
     maxPullbackShort?: number; // 做空：当前价格距最低点最大涨幅% (正数表示，需小于该值)
 }
 
+export interface SidewaysRuleGroup {
+    id?: string;
+    enabled?: boolean;
+    days: number;      // 观察周期 (Z天)
+    maxDrop: number;   // 跌幅上限 (X%)
+    maxPump: number;   // 涨幅上限 (Y%)
+    daysLong?: number;     // 做多观察周期
+    maxDropLong?: number;  // 做多跌幅上限
+    maxPumpLong?: number;  // 做多涨幅上限
+    daysShort?: number;    // 做空观察周期
+    maxDropShort?: number; // 做空跌幅上限
+    maxPumpShort?: number; // 做空涨幅上限
+}
+
 export interface MajorTrendConfig {
     enabled: boolean;
     updateIntervalHours: number; // 默认 4 小时
@@ -334,17 +348,22 @@ export interface MajorTrendConfig {
     minHistoryDrop: number; // 默认 50%
     minHistoryPump: number; // 默认 100%
     maxExtremeDistance: number; // 离极值点距离，默认 5%
-    sidewaysDays: number; // Z 天前，默认 7
-    sidewaysMaxPump: number; // 涨跌幅小于 A%
-    sidewaysMaxDrop: number; // 跌幅小于 B%
+    sidewaysDays: number; // Z 天前，默认 7 (兼容单组旧字段)
+    sidewaysMaxPump: number; // 涨跌幅小于 A% (兼容单组旧字段)
+    sidewaysMaxDrop: number; // 跌幅小于 B% (兼容单组旧字段)
+    sidewaysLogic?: 'OR' | 'AND'; // 多组横盘过滤组合逻辑：'OR'(满足任意一组) | 'AND'(同时满足全部)，默认 'OR'
+    sidewaysGroups?: SidewaysRuleGroup[]; // 多组“横盘蓄势过滤”设置
     autoTransfer?: boolean; // 自动移入监控列表
     autoMode?: boolean; // 手动/自动读取运行开关 (true: 自动, false: 手动)
     
-    // New switches
-    enableLong?: boolean;   // "多"选项开关
-    enableShort?: boolean;  // "空"选项开关
-    enableSideways?: boolean; // "横盘蓄势"功能开关
-    enableLookbackFilter?: boolean; // "回溯周期过滤"功能开关
+    // Direction and Sync switches
+    enableLong?: boolean;   // "回溯周期过滤 - 多"选项开关
+    enableShort?: boolean;  // "回溯周期过滤 - 空"选项开关
+    enableSideways?: boolean; // "横盘蓄势"功能总开关
+    enableSidewaysLong?: boolean; // "横盘蓄势 - 多"选项开关
+    enableSidewaysShort?: boolean; // "横盘蓄势 - 空"选项开关
+    enableLookbackFilter?: boolean; // "回溯周期过滤"功能总开关
+    syncDirectionLock?: boolean; // 列表1三大过滤（启动趋势、横盘蓄势、回溯周期）智能多空联动同步开关 (默认 true)
     maxExtremeDistanceLong?: number;  // 多单最低点到当前价格涨幅低于 (设定值)%
     minExtremeDistanceLong?: number;  // 多单最低点到当前价格涨幅高于 (设定值)%
     maxExtremeDistanceShort?: number; // 空单最高点到当前价格跌幅低于 (设定值)%

@@ -165,6 +165,7 @@ const AppContent: React.FC = () => {
     const [systemEvents, setSystemEvents] = useState<SystemEvent[]>([]);
     const [realPrices, setRealPrices] = useState<Record<string, number>>({});
     const lastUiUpdateRef = useRef<number>(0);
+    const lastInstantTickRef = useRef<number>(0);
     const priceBufferRef = useRef<Record<string, number>>({});
     const simulatorBootTimeRef = useRef<number>(Date.now());
     const [networkStatus, setNetworkStatus] = useState<'healthy' | 'delayed' | 'disconnected'>('disconnected');
@@ -740,10 +741,11 @@ const AppContent: React.FC = () => {
             if (simulatorRef.current) {
                 simulatorRef.current.updateRealPrices(normalized);
                 
-                // CRITICAL INSTANT-TICK:
-                // When active positions exist, tick immediately upon new price arrival for sub-millisecond trigger reaction!
+                // CRITICAL INSTANT-TICK (Throttled to 100ms max to prevent CPU thread starvation when holding 20+ positions):
                 const simPositionsCount = simulatorRef.current.getPositions().length;
-                if (simPositionsCount > 0 || activePositionsRef.current.length > 0) {
+                const nowTick = Date.now();
+                if ((simPositionsCount > 0 || activePositionsRef.current.length > 0) && (nowTick - lastInstantTickRef.current >= 100)) {
+                    lastInstantTickRef.current = nowTick;
                     try {
                         simulatorRef.current.tick(true);
                     } catch (tickErr) {
@@ -4501,6 +4503,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     directMode={settings.system.directMode}
                     onLog={handleLog}
                     logs={logs}
+                    tradeLogs={tradeLogs}
                     onBacktestPositionsUpdate={handleBacktestPositionsUpdate}
                     isRealTrading={settings.system.realTrading}
                     onAddTradeLog={(logItem: TradeLog) => {

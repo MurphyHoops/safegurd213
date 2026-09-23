@@ -708,6 +708,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
           winCount: number;
           lossCount: number;
           lastTime: number;
+          latestLog?: TradeLog;
       }> = {};
 
       filteredLogs.forEach(log => {
@@ -718,7 +719,8 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                   totalPnL: 0,
                   winCount: 0,
                   lossCount: 0,
-                  lastTime: 0
+                  lastTime: 0,
+                  latestLog: log
               };
           }
           const g = groups[log.symbol];
@@ -736,7 +738,10 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
              else g.lossCount++;
           }
           const time = log.exit_timestamp || log.entry_timestamp;
-          if (time > g.lastTime) g.lastTime = time;
+          if (time >= g.lastTime) {
+              g.lastTime = time;
+              g.latestLog = log;
+          }
       });
 
       return Object.values(groups).sort((a, b) => {
@@ -1135,7 +1140,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         <div className="flex items-center gap-2">
                                             <span 
                                                 className="cursor-pointer hover:text-indigo-400 transition-colors"
-                                                onClick={() => onOpenChart?.(group.symbol)}
+                                                onClick={() => onOpenChart?.(group.symbol, group.latestLog?.entry_price, group.latestLog?.entry_timestamp, group.latestLog?.timeframe)}
                                             >
                                                 <span>{group.symbol}</span>
                                                 {getCoinChineseName(group.symbol) && (
@@ -1145,7 +1150,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             {activeFilter === 'DEBT' && <Banknote size={12} className="text-red-400"/>}
                                             {activeFilter === 'RECOVERY' && <RotateCcw size={12} className="text-emerald-400"/>}
                                             <button 
-                                                onClick={() => onOpenChart?.(group.symbol)}
+                                                onClick={() => onOpenChart?.(group.symbol, group.latestLog?.entry_price, group.latestLog?.entry_timestamp, group.latestLog?.timeframe)}
                                                 className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-indigo-400 transition-all"
                                                 title="查看K线"
                                             >

@@ -132,6 +132,7 @@ interface Props {
   onBatchClose?: () => void;
   isRealTrading?: boolean;
   onAddTradeLog?: (log: TradeLog) => void;
+  tradeLogs?: TradeLog[];
 }
 
 const UnconfiguredColumn: React.FC<{
@@ -181,6 +182,7 @@ const ScannerDashboardInner: React.FC<
   onBacktestPositionsUpdate,
   isRealTrading = false,
   onAddTradeLog,
+  tradeLogs = [],
 }) => {
   const {
     virtualTime,
@@ -2218,6 +2220,7 @@ const ScannerDashboardInner: React.FC<
           extraLines={chartData.extraLines}
           directMode={directMode}
           showAuditLines={chartData.showAuditLines}
+          tradeLogs={tradeLogs}
           appearedTime={chartData.appearedTime}
           disappearedTime={chartData.disappearedTime}
           onClose={() => setChartData(null)}

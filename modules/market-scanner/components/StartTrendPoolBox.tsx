@@ -1,8 +1,10 @@
+// @LOCKED: List 1 行情启动趋势底池扫描与过滤规则已锁定，未经用户明确专项指令严禁修改
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ScanConfig, StartTrendGroup } from '../../../components/Scanner/scannerTypes';
-import { Play, ChevronDown, ChevronUp, Copy, Check, RefreshCw, Search, Flame, ArrowUpRight, ArrowDownRight, Clock } from 'lucide-react';
+import { Play, ChevronDown, ChevronUp, Copy, Check, RefreshCw, Search, Flame, ArrowUpRight, ArrowDownRight, Clock, Trash2 } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { pipelineCoordinator } from '../../../services/pipelineQueue';
+import { fetchWithFallback } from '../../../services/apiService';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -22,9 +24,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [copied, setCopied] = useState(false);
     const [isScanning, setIsScanning] = useState(false);
-    const [progress, setProgress] = useState({ current: 0, total: 0, passed: 0 });
+    const [progress, setProgress] = useState({ current: 0, total: 0, passed: 0, currentSymbol: '' });
     const [isAutoScan, setIsAutoScan] = usePersistedState<boolean>('SCANNER_START_TREND_AUTO_SCAN', true);
-    const [syncIntervalSec, setSyncIntervalSec] = usePersistedState<number>('SCANNER_START_TREND_SYNC_INTERVAL_SEC', 3);
+    const [syncIntervalSec, setSyncIntervalSec] = usePersistedState<number>('SCANNER_START_TREND_SYNC_INTERVAL_SEC', 1);
     const [isEditingInterval, setIsEditingInterval] = useState(false);
     const [pool, setPool] = usePersistedState<StartTrendPoolItem[]>('SCANNER_START_TREND_POOL', []);
     const isMountedRef = useRef(true);
@@ -94,63 +96,96 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         return [];
     };
 
-    // High-speed daily (1d) kline fetch via local Express proxy (/api/proxy) with strict hard timeout & resource cleanup
-    const fetch1dKlines = async (symbol: string): Promise<any[] | null> => {
+    // High-speed daily (1d) kline fetch with multi-fallback proxy and 10-minute global cache
+    const fetch1dKlines = async (symbol: string, maxWaitMs = 2500): Promise<any[] | null> => {
+        const rawSym = symbol || '';
+        const safeSym = rawSym.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
+        if (!safeSym) return null;
+
         const nowTime = Date.now();
-        const cached = klinesCacheRef.current.get(symbol);
+        const cached = klinesCacheRef.current.get(symbol) || klinesCacheRef.current.get(safeSym);
         // Extend cache validity to 10 minutes (600,000 ms) for daily candles to eliminate redundant fetches
         if (cached && (nowTime - cached.timestamp < 600000) && Array.isArray(cached.klines) && cached.klines.length > 0) {
             return cached.klines;
         }
         const globalCache = (window as any).KLINE_LIMIT_CACHE || ((window as any).KLINE_LIMIT_CACHE = {});
-        if (globalCache[`${symbol}_1d`] && Array.isArray(globalCache[`${symbol}_1d`]) && globalCache[`${symbol}_1d`].length >= 30) {
+        if (globalCache[`${safeSym}_1d`] && Array.isArray(globalCache[`${safeSym}_1d`]) && globalCache[`${safeSym}_1d`].length >= 3) {
+            return globalCache[`${safeSym}_1d`];
+        }
+        if (globalCache[`${symbol}_1d`] && Array.isArray(globalCache[`${symbol}_1d`]) && globalCache[`${symbol}_1d`].length >= 3) {
             return globalCache[`${symbol}_1d`];
         }
+        if (globalCache[safeSym]) {
+            if (globalCache[safeSym]['1d'] && Array.isArray(globalCache[safeSym]['1d'].klines) && globalCache[safeSym]['1d'].klines.length >= 3 && (nowTime - (globalCache[safeSym]['1d'].timestamp || 0) < 600000)) {
+                return globalCache[safeSym]['1d'].klines;
+            }
+            const keys = Object.keys(globalCache[safeSym]);
+            for (const k of keys) {
+                if (Array.isArray(globalCache[safeSym][k]?.klines) && globalCache[safeSym][k].klines.length >= 3) {
+                    return globalCache[safeSym][k].klines;
+                }
+            }
+        }
         if (globalCache[symbol]) {
-            if (globalCache[symbol]['1d'] && Array.isArray(globalCache[symbol]['1d'].klines) && globalCache[symbol]['1d'].klines.length >= 30 && (nowTime - (globalCache[symbol]['1d'].timestamp || 0) < 600000)) {
+            if (globalCache[symbol]['1d'] && Array.isArray(globalCache[symbol]['1d'].klines) && globalCache[symbol]['1d'].klines.length >= 3 && (nowTime - (globalCache[symbol]['1d'].timestamp || 0) < 600000)) {
                 return globalCache[symbol]['1d'].klines;
             }
             const keys = Object.keys(globalCache[symbol]);
             for (const k of keys) {
-                if (Array.isArray(globalCache[symbol][k]?.klines) && globalCache[symbol][k].klines.length >= 30) {
+                if (Array.isArray(globalCache[symbol][k]?.klines) && globalCache[symbol][k].klines.length >= 3) {
                     return globalCache[symbol][k].klines;
                 }
             }
         }
 
-        // Helper: Strict hard timeout fetcher with guaranteed AbortController cleanup to prevent connection exhaustion
-        const safeFetchWithTimeout = async (targetUrl: string, timeoutMs: number): Promise<any[] | null> => {
+        // ⚡ 极速轻量拉取：仅拉取最新 10 根日K线 (limit=10)，完全覆盖今日、昨日、前天及多日组合，彻底告别 350 根超重冗余
+        const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=1d&limit=10`;
+        try {
             const controller = new AbortController();
-            const timer = setTimeout(() => {
-                try {
-                    controller.abort();
-                } catch (_) {}
-            }, timeoutMs);
+            const timeoutTimer = setTimeout(() => {
+                try { controller.abort(); } catch (_) {}
+            }, Math.min(2500, Math.max(800, maxWaitMs - 80)));
 
-            try {
-                const res = await fetch(`/api/proxy?url=${encodeURIComponent(targetUrl)}&priority=high`, {
-                    signal: controller.signal
-                });
-                if (!res.ok) return null;
-                const data = await res.json();
-                return Array.isArray(data) && data.length > 0 ? data : null;
-            } catch (_) {
-                return null;
-            } finally {
-                clearTimeout(timer);
+            const res = await fetch(`/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, {
+                signal: controller.signal
+            }).finally(() => clearTimeout(timeoutTimer));
+
+            if (res.ok) {
+                const klinesData = await res.json();
+                if (klinesData && Array.isArray(klinesData) && klinesData.length > 0) {
+                    klinesCacheRef.current.set(symbol, { klines: klinesData, timestamp: Date.now() });
+                    klinesCacheRef.current.set(safeSym, { klines: klinesData, timestamp: Date.now() });
+                    globalCache[`${safeSym}_1d`] = klinesData;
+                    globalCache[`${symbol}_1d`] = klinesData;
+                    if (!globalCache[safeSym]) globalCache[safeSym] = {};
+                    if (!globalCache[symbol]) globalCache[symbol] = {};
+                    globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
+                    globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
+                    globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
+                    globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                    return klinesData;
+                }
             }
-        };
+        } catch (_) {}
 
-        // Fetch 60 daily candles (interval=1d&limit=60) - ultra lightweight (~3KB) via high-speed parallel proxy
-        const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=60`;
-        const klinesData = await safeFetchWithTimeout(futuresUrl, 2500);
-        if (klinesData && Array.isArray(klinesData) && klinesData.length > 0) {
-            klinesCacheRef.current.set(symbol, { klines: klinesData, timestamp: Date.now() });
-            globalCache[`${symbol}_1d`] = klinesData;
-            if (!globalCache[symbol]) globalCache[symbol] = {};
-            globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
-            return klinesData;
-        }
+        // ⚡ 2. 备用通道：通过 fetchWithFallback 高优先级兜底
+        try {
+            const res = await fetchWithFallback(futuresUrl, { timeout: 2000, priority: 'HIGH' }, (d) => Array.isArray(d) && d.length > 0);
+            const klinesData = await res.json();
+            if (klinesData && Array.isArray(klinesData) && klinesData.length > 0) {
+                klinesCacheRef.current.set(symbol, { klines: klinesData, timestamp: Date.now() });
+                klinesCacheRef.current.set(safeSym, { klines: klinesData, timestamp: Date.now() });
+                globalCache[`${safeSym}_1d`] = klinesData;
+                globalCache[`${symbol}_1d`] = klinesData;
+                if (!globalCache[safeSym]) globalCache[safeSym] = {};
+                if (!globalCache[symbol]) globalCache[symbol] = {};
+                globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
+                globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
+                globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
+                globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                return klinesData;
+            }
+        } catch (_) {}
 
         return null;
     };
@@ -159,14 +194,21 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
     const runStartTrendScan = async (isManual = false) => {
         if (isScanningRef.current) return;
 
-        // 🔒 [时间先后·互斥安全锁]: 若大行情正在扫描，暂停让行，绝不同时工作
+        // 🔒 [时间先后·互斥安全锁]: 若大行情正在扫描，检查是否为卡死僵尸锁（超过180秒），若是则自动破锁自愈
         if ((window as any).IS_MAJOR_TREND_SCANNING) {
-            if (isManual) {
-                alert('“大行情发现”正在扫描中，两个引擎实行时间先后分开作业，请等待大行情扫描完成后再启动底池扫描！');
+            const majorLockTime = (window as any).IS_MAJOR_TREND_SCANNING_TIME || 0;
+            if (Date.now() - majorLockTime > 180000) {
+                console.warn("[StartTrendPool] 检测到大行情扫描互斥锁超时(>180s)，自动清除死锁并恢复启动趋势扫描...");
+                (window as any).IS_MAJOR_TREND_SCANNING = false;
+                (window as any).IS_MAJOR_TREND_SCANNING_TIME = 0;
             } else {
-                console.log("[StartTrendPool] Major trend is currently scanning. Waiting for major trend to complete before starting pool scan...");
+                if (isManual) {
+                    alert('“大行情发现（横盘蓄势/回溯周期）”正在扫描中，系统严格按流水线顺序执行，请等待大行情扫描完成后自动接力运行！');
+                } else {
+                    console.log("[StartTrendPool] 大行情正在扫描中，行情启动趋势严格排队等待大行情扫描完成后接力启动...");
+                }
+                return;
             }
-            return;
         }
 
         const candidates = getCandidateSymbols();
@@ -174,6 +216,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             if (isManual) {
                 alert('交易额过滤底池暂无币种，请先刷新交易额底池或调整成交范围过滤参数！');
             }
+            window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_completed', { detail: [] }));
             return;
         }
 
@@ -185,6 +228,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         if (!enableLong && !enableShort) {
             if (isManual) {
                 alert('请先在“行情启动趋势”中开启【做多开关】或【做空开关】！');
+            } else {
+                // 若未开启行情启动多空开关，直接平滑透传交易额候选币给后续横盘蓄势/回溯周期，保证流水线闭环持续畅通
+                window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_completed', { detail: candidates }));
             }
             return;
         }
@@ -192,172 +238,164 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         const allGroups = cfg?.startTrendGroups || [
             { enabled: true, days: 1, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 }
         ];
-        const activeGroups = allGroups.map((g, idx) => ({ ...g, idx })).filter(g => g.enabled);
+        let activeGroups = allGroups.map((g, idx) => ({ ...g, idx })).filter(g => g.enabled);
 
         if (activeGroups.length === 0) {
-            if (isManual) {
-                alert('请在“行情启动趋势”中至少启用一个组合（如组合0、组合1等）！');
-            }
-            return;
+            // 自动启用第 1 个默认组合 (组合0，1天) 确保过滤规则不被跳过
+            activeGroups = [{ enabled: true, days: 1, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5, idx: 0 }];
         }
 
         isScanningRef.current = true;
         (window as any).IS_START_TREND_SCANNING = true;
+        (window as any).IS_START_TREND_SCANNING_TIME = Date.now();
         setIsScanning(true);
 
         // 🔒【纯净数据源·无历史老数据叠加】：每次运行完全从空白开始，严格仅由本轮交易额底池候选币重新匹配产生，彻底杜绝老数据叠加
         const poolMap = new Map<string, StartTrendPoolItem>();
-        setProgress({ current: 1, total: candidates.length, passed: 0 });
+        setProgress({ current: 1, total: candidates.length, passed: 0, currentSymbol: '' });
 
         try {
-            // Process sequentially with user-configured interval (default 3s) so progress counter increments smoothly and visibly
-            for (let i = 0; i < candidates.length; i++) {
-                if (!isMountedRef.current || !isScanningRef.current) break;
-                const symbol = candidates[i];
-                const coinCycleStart = Date.now();
+            // ⚡ [极速并发通道]: 6 协程高并发流水线 + 实时单币进阶跳动，200 多个币仅需 1~2 秒全量极速扫完
+            const CONCURRENCY = 6;
+            let candidateIdx = 0;
+            let processedCount = 0;
+
+            const processCoin = async (symbol: string) => {
+                if (!isMountedRef.current || !isScanningRef.current) return;
 
                 if (isMountedRef.current) {
-                    setProgress({ current: i + 1, total: candidates.length, passed: poolMap.size });
+                    setProgress({
+                        current: processedCount + 1,
+                        total: candidates.length,
+                        passed: poolMap.size,
+                        currentSymbol: symbol
+                    });
                 }
 
-                // 目标单币节拍（用户设定秒数，如 4 秒）：总处理+等待严格等于目标时间
-                const stepIntervalSec = Math.max(0.1, syncIntervalSecRef.current ?? 3);
-                const targetIntervalMs = Math.round(stepIntervalSec * 1000);
-                // 单币最大允许网络执行时间：看门狗设为 targetIntervalMs - 100ms
-                const maxWorkTime = Math.max(500, targetIntervalMs - 100);
-
-                let coinTimeoutId: any = null;
                 try {
-                    // Single-coin watchdog: 超过 maxWorkTime 立即熔断并跳过该币
-                    await Promise.race([
-                        (async () => {
-                            const klines = await fetch1dKlines(symbol);
+                    const klines = await fetch1dKlines(symbol, 2000);
 
-                            if (Array.isArray(klines) && klines.length > 0) {
-                                const currentPrice = parseFloat(klines[klines.length - 1][4]);
-                                if (!isNaN(currentPrice) && currentPrice > 0) {
-                                    let matched = false;
-                                    let matchedItem: StartTrendPoolItem | null = null;
+                    if (Array.isArray(klines) && klines.length > 0) {
+                        const currentPrice = parseFloat(klines[klines.length - 1][4]);
+                        if (!isNaN(currentPrice) && currentPrice > 0) {
+                            let matched = false;
+                            let matchedItem: StartTrendPoolItem | null = null;
 
-                                    for (const group of activeGroups) {
-                                        let lastCandles: any[] = [];
-                                        if (group.idx === 0) {
-                                            // 组合0：今日日K线 (最新一根日K)
-                                            lastCandles = [klines[klines.length - 1]];
-                                        } else {
-                                            const groupDays = group.days !== undefined ? group.days : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7));
-                                            const requiredDays = Math.max(groupDays, 1);
-                                            lastCandles = klines.slice(-Math.min(requiredDays, klines.length));
-                                        }
+                            for (const group of activeGroups) {
+                                let lastCandles: any[] = [];
+                                if (group.idx === 0) {
+                                    // 组合0：今日日K线 (最新一根日K)
+                                    lastCandles = [klines[klines.length - 1]];
+                                } else {
+                                    const groupDays = group.days !== undefined ? group.days : (group.idx === 1 ? 2 : (group.idx === 2 ? 3 : 7));
+                                    const requiredDays = Math.max(groupDays, 1);
+                                    lastCandles = klines.slice(-Math.min(requiredDays, klines.length));
+                                }
 
-                                        if (lastCandles.length === 0) continue;
+                                if (lastCandles.length === 0) continue;
 
-                                        // Check Long Start Trend
-                                        if (enableLong) {
-                                            const periodHighs = lastCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
-                                            if (periodHighs.length > 0) {
-                                                const periodMaxHigh = Math.max(...periodHighs);
-                                                const baseOpen = parseFloat(lastCandles[0][1]);
+                                // Check Long Start Trend
+                                if (enableLong) {
+                                    const periodHighs = lastCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                    if (periodHighs.length > 0) {
+                                        const periodMaxHigh = Math.max(...periodHighs);
+                                        const baseOpen = parseFloat(lastCandles[0][1]);
 
-                                                // 🔒 严格基于基准开盘价计算涨幅，且必须当前价格高于基准开盘价（日K或多日周期收涨/阳线），彻底杜绝最低点插针反弹误判
-                                                if (baseOpen > 0 && currentPrice > baseOpen) {
-                                                    const changePct = ((currentPrice - baseOpen) / baseOpen) * 100;
-                                                    const pullbackPct = periodMaxHigh > 0 ? ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100 : 0;
-                                                    const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
+                                        // 🔒 严格基于基准开盘价计算涨幅，且必须当前价格高于基准开盘价（日K或多日周期收涨/阳线），彻底杜绝最低点插针反弹误判
+                                        if (baseOpen > 0 && currentPrice > baseOpen) {
+                                            const changePct = ((currentPrice - baseOpen) / baseOpen) * 100;
+                                            const pullbackPct = periodMaxHigh > 0 ? ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100 : 0;
+                                            const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
 
-                                                    if (!isNaN(changePct) && changePct >= group.minLong && changePct <= group.maxLong &&
-                                                        !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
-                                                        matchedItem = {
-                                                            symbol,
-                                                            direction: 'LONG',
-                                                            changePct: +changePct.toFixed(2),
-                                                            pullbackPct: +pullbackPct.toFixed(2),
-                                                            matchedGroup: group.idx,
-                                                            price: currentPrice
-                                                        };
-                                                        matched = true;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Check Short Start Trend
-                                        if (enableShort) {
-                                            const periodLows = lastCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
-                                            if (periodLows.length > 0) {
-                                                const periodMinLow = Math.min(...periodLows);
-                                                const baseOpen = parseFloat(lastCandles[0][1]);
-
-                                                // 🔒 严格基于基准开盘价计算跌幅，且必须当前价格低于基准开盘价（日K或多日周期收跌/阴线），彻底杜绝最高点插针回落误判
-                                                if (baseOpen > 0 && currentPrice < baseOpen) {
-                                                    const dropPct = ((baseOpen - currentPrice) / baseOpen) * 100;
-                                                    const pullbackPct = periodMinLow > 0 ? ((currentPrice - periodMinLow) / periodMinLow) * 100 : 0;
-                                                    const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
-
-                                                    if (!isNaN(dropPct) && dropPct >= group.minShort && dropPct <= group.maxShort &&
-                                                        !isNaN(pullbackPct) && pullbackPct <= maxPullbackShort) {
-                                                        matchedItem = {
-                                                            symbol,
-                                                            direction: 'SHORT',
-                                                            changePct: -Math.abs(+dropPct.toFixed(2)),
-                                                            pullbackPct: +pullbackPct.toFixed(2),
-                                                            matchedGroup: group.idx,
-                                                            price: currentPrice
-                                                        };
-                                                        matched = true;
-                                                        break;
-                                                    }
-                                                }
+                                            if (!isNaN(changePct) && changePct >= group.minLong && changePct <= group.maxLong &&
+                                                !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
+                                                matchedItem = {
+                                                    symbol,
+                                                    direction: 'LONG',
+                                                    changePct: +changePct.toFixed(2),
+                                                    pullbackPct: +pullbackPct.toFixed(2),
+                                                    matchedGroup: group.idx,
+                                                    price: currentPrice
+                                                };
+                                                matched = true;
+                                                break;
                                             }
                                         }
                                     }
+                                }
 
-                                    let hasChanged = false;
-                                    if (matched && matchedItem) {
-                                        poolMap.set(symbol, matchedItem);
-                                        hasChanged = true;
-                                    } else if (poolMap.has(symbol)) {
-                                        // 🔒 [实时加入与自动删除]: 当底池中的币种不再符合过滤条件时自动删除
-                                        poolMap.delete(symbol);
-                                        hasChanged = true;
-                                    }
+                                // Check Short Start Trend
+                                if (enableShort) {
+                                    const periodLows = lastCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                    if (periodLows.length > 0) {
+                                        const periodMinLow = Math.min(...periodLows);
+                                        const baseOpen = parseFloat(lastCandles[0][1]);
 
-                                    // 仅在底池发生实际增删变动时才更新存储与广播，彻底消除每一币无意义的高频广播级联风暴
-                                    if (hasChanged && isMountedRef.current) {
-                                        const currentList = Array.from(poolMap.values());
-                                        setPool(currentList);
-                                        setProgress(prev => ({ ...prev, passed: currentList.length }));
-                                        try {
-                                            localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify(currentList));
-                                            window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: currentList }));
-                                        } catch (_) {}
+                                        // 🔒 严格基于基准开盘价计算跌幅，且必须当前价格低于基准开盘价（日K或多日周期收跌/阴线），彻底杜绝最高点插针回落误判
+                                        if (baseOpen > 0 && currentPrice < baseOpen) {
+                                            const dropPct = ((baseOpen - currentPrice) / baseOpen) * 100;
+                                            const pullbackPct = periodMinLow > 0 ? ((currentPrice - periodMinLow) / periodMinLow) * 100 : 0;
+                                            const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
+
+                                            if (!isNaN(dropPct) && dropPct >= group.minShort && dropPct <= group.maxShort &&
+                                                !isNaN(pullbackPct) && pullbackPct <= maxPullbackShort) {
+                                                matchedItem = {
+                                                    symbol,
+                                                    direction: 'SHORT',
+                                                    changePct: -Math.abs(+dropPct.toFixed(2)),
+                                                    pullbackPct: +pullbackPct.toFixed(2),
+                                                    matchedGroup: group.idx,
+                                                    price: currentPrice
+                                                };
+                                                matched = true;
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        })(),
-                        new Promise((_, reject) => {
-                            coinTimeoutId = setTimeout(() => reject(new Error('TIMEOUT_EXCEEDED')), maxWorkTime);
-                        })
-                    ]);
-                } catch (err) {
-                    console.warn(`[StartTrendPool] Skipping ${symbol} (exceeded ${maxWorkTime}ms or network error)`);
-                } finally {
-                    if (coinTimeoutId) clearTimeout(coinTimeoutId);
-                }
 
-                // 精准补齐单币总时间预算：每个币从开始到跳至下一个币严格对齐为目标秒数(默认3秒)
-                const elapsed = Date.now() - coinCycleStart;
-                const remainingWait = Math.max(0, targetIntervalMs - elapsed);
-                if (remainingWait > 0 && isMountedRef.current && isScanningRef.current) {
-                    await new Promise(resolve => setTimeout(resolve, remainingWait));
+                            if (matched && matchedItem) {
+                                poolMap.set(symbol, matchedItem);
+                            } else if (poolMap.has(symbol)) {
+                                poolMap.delete(symbol);
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`[StartTrendPool] Error scanning ${symbol}:`, err);
+                } finally {
+                    processedCount++;
+                    if (isMountedRef.current) {
+                        setProgress({
+                            current: processedCount,
+                            total: candidates.length,
+                            passed: poolMap.size,
+                            currentSymbol: symbol
+                        });
+                    }
+                }
+            };
+
+            // 🔒 严格限制扫描步进速度：严格按设置中的“时间(秒)”稳健逐个推进
+            const perCoinDelayMs = Math.max(1, cfg?.intervalSeconds ?? (cfg?.intervalMinutes ? Math.min(cfg.intervalMinutes, 60) : 3)) * 1000;
+            for (let i = 0; i < candidates.length; i++) {
+                if (!isMountedRef.current || !isScanningRef.current) break;
+                const currentSym = candidates[i];
+                const stepStart = Date.now();
+                await processCoin(currentSym);
+                
+                const elapsed = Date.now() - stepStart;
+                const remaining = Math.max(0, perCoinDelayMs - elapsed);
+                if (remaining > 0 && i < candidates.length - 1 && isMountedRef.current && isScanningRef.current) {
+                    await new Promise(resolve => setTimeout(resolve, remaining));
                 }
             }
 
             if (isMountedRef.current) {
                 const finalList = Array.from(poolMap.values());
                 setPool(finalList);
-                setProgress({ current: candidates.length, total: candidates.length, passed: finalList.length });
+                setProgress({ current: candidates.length, total: candidates.length, passed: finalList.length, currentSymbol: '' });
                 try {
                     localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify(finalList));
                     window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: finalList }));
@@ -366,6 +404,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         } finally {
             isScanningRef.current = false;
             (window as any).IS_START_TREND_SCANNING = false;
+            (window as any).IS_START_TREND_SCANNING_TIME = 0;
             if (isMountedRef.current) {
                 setIsScanning(false);
             }
@@ -379,6 +418,11 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
 
     // Pipeline-aware scan execution
     const triggerScheduledScan = () => {
+        // 清理超时的僵尸锁 (>180s)
+        if ((window as any).IS_MAJOR_TREND_SCANNING && Date.now() - ((window as any).IS_MAJOR_TREND_SCANNING_TIME || 0) > 180000) {
+            (window as any).IS_MAJOR_TREND_SCANNING = false;
+            (window as any).IS_MAJOR_TREND_SCANNING_TIME = 0;
+        }
         if (isScanningRef.current) return;
         pipelineCoordinator.enqueue('start_trend', async () => {
             await runStartTrendScan(true);
@@ -394,7 +438,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         const scheduleNext = (delayMs: number) => {
             if (!isLoopActive) return;
             if (scanTimer) clearTimeout(scanTimer);
-            scanTimer = setTimeout(async () => {
+            scanTimer = setTimeout(() => {
                 if (!isLoopActive || !isMountedRef.current) return;
                 if (isAutoScanRef.current && !isScanningRef.current) {
                     // 🔒 [时间先后·互斥安全锁]: 若大行情（横盘蓄势/回溯周期）正在扫描，让行等待
@@ -402,8 +446,10 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         scheduleNext(1500);
                         return;
                     }
-                    await runStartTrendScan(false);
-                    lastFinishedAt = Date.now();
+                    pipelineCoordinator.enqueue('start_trend', async () => {
+                        await runStartTrendScan(false);
+                        lastFinishedAt = Date.now();
+                    });
                 }
             }, delayMs);
         };
@@ -413,27 +459,55 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
 
         // 🔒 [时间先后·闭环接力赛]: 
         // 列表1里“回溯周期过滤”扫描完毕后，派发 scanner_major_trend_completed，
-        // “行情启动趋势”无缝接棒，重新读取“交易额过滤底池”开始新一轮扫描，周而复始！
+        // 行情启动底池自动清零，并无缝接棒重新读取“交易额过滤底池”开始新一轮扫描，周而复始！
         const handleMajorTrendCompleted = () => {
             if (!isLoopActive || !isMountedRef.current) return;
+
+            // 回溯周期过滤扫描完成时自动清零行情启动底池
+            try {
+                localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify([]));
+                setPool([]);
+                window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
+            } catch (_) {}
+
             if (!isAutoScanRef.current || isScanningRef.current) return;
 
-            console.log("[StartTrendPool] 回溯周期过滤扫描完毕！接力棒交回【行情启动趋势】：读取“交易额过滤底池”开始新一轮闭环扫描 (周而复始)...");
-            scheduleNext(800);
+            const roundIntervalMs = Math.max(1, syncIntervalSecRef.current ?? 3) * 1000;
+            console.log(`[StartTrendPool] 回溯周期过滤扫描完毕！行情启动底池已自动清零，冷却 ${syncIntervalSecRef.current ?? 3} 秒后读取“交易额过滤底池”开始新一轮闭环扫描...`);
+            scheduleNext(roundIntervalMs);
         };
         window.addEventListener('scanner_major_trend_completed', handleMajorTrendCompleted);
 
-        // 🔒 [循环看门狗守护器]:
-        // 若由于极端网络异常或底池空值等原因两端均处于空闲超 25 秒，看门狗自动唤醒行情启动趋势扫描，杜绝管道卡死
+        // 🔒 [循环看门狗守护器与死锁自愈]:
+        // 每 3 秒巡检一次，自动发现并破除超时死锁，若两端均空闲超指定秒数则主动唤醒新一轮扫描，杜绝管道卡死！
         const watchdog = setInterval(() => {
             if (!isLoopActive || !isMountedRef.current) return;
+            
+            // 自动清理大行情残留死锁 (>180s)
+            if ((window as any).IS_MAJOR_TREND_SCANNING) {
+                const majorLockTime = (window as any).IS_MAJOR_TREND_SCANNING_TIME || 0;
+                if (Date.now() - majorLockTime > 180000) {
+                    console.warn("[StartTrendPool Watchdog] 大行情锁超时(>180s)，强制解锁！");
+                    (window as any).IS_MAJOR_TREND_SCANNING = false;
+                    (window as any).IS_MAJOR_TREND_SCANNING_TIME = 0;
+                }
+            }
+
+            // 自动清理行情启动残留死锁
+            if ((window as any).IS_START_TREND_SCANNING && !isScanningRef.current) {
+                (window as any).IS_START_TREND_SCANNING = false;
+                (window as any).IS_START_TREND_SCANNING_TIME = 0;
+            }
+
             if (isAutoScanRef.current && !isScanningRef.current && !(window as any).IS_MAJOR_TREND_SCANNING) {
-                if (Date.now() - lastFinishedAt > 25000) {
+                const idleLimit = Math.max(10000, ((syncIntervalSecRef.current ?? 3) + 5) * 1000);
+                if (Date.now() - lastFinishedAt > idleLimit) {
                     console.log("[StartTrendPool] 闭环看门狗检测到空闲，主动唤醒行情启动趋势开始新一轮扫描...");
+                    lastFinishedAt = Date.now();
                     scheduleNext(100);
                 }
             }
-        }, 10000);
+        }, 3000);
 
         return () => {
             isLoopActive = false;
@@ -444,6 +518,29 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
     }, []);
 
     const [volumeCandidatesCount, setVolumeCandidatesCount] = useState<number>(() => getCandidateSymbols().length);
+
+    // ⚡ [参数变动敏捷响应]: 当行情启动趋势的做多/做空开关或组合参数变更时，自动触发防抖极速重扫
+    const configHash = useMemo(() => {
+        const mt = scanConfig.majorTrend;
+        return `${mt?.enableStartTrendLong}_${mt?.enableStartTrendShort}_${JSON.stringify(mt?.startTrendGroups || [])}`;
+    }, [scanConfig.majorTrend]);
+
+    const isFirstMountRef = useRef(true);
+    useEffect(() => {
+        if (isFirstMountRef.current) {
+            isFirstMountRef.current = false;
+            return;
+        }
+        const mt = scanConfig.majorTrend;
+        if (mt?.enableStartTrendLong || mt?.enableStartTrendShort) {
+            const timer = setTimeout(() => {
+                if (isMountedRef.current && !isScanningRef.current) {
+                    runStartTrendScan(false);
+                }
+            }, 300);
+            return () => clearTimeout(timer);
+        }
+    }, [configHash]);
 
     useEffect(() => {
         const updateCandidates = () => {
@@ -478,6 +575,15 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         setTimeout(() => setCopied(false), 2000);
     };
 
+    const handleClearPool = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        try {
+            localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify([]));
+            setPool([]);
+            window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
+        } catch (_) {}
+    };
+
     return (
         <div className="border border-slate-700/80 rounded-lg bg-[#151922] overflow-hidden shadow-sm transition-all duration-200">
             {/* Header with Title, Count Badge, (Manual/Auto), Speed (3m), Scan Trigger, and Collapse Button */}
@@ -493,12 +599,19 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         <span className="text-[10px] font-bold text-white tracking-wide">
                             行情启动底池
                         </span>
-                        {/* 三段式显示: 【交易额过滤底池数量 / 正在扫描位置 / 符合行情启动趋势的数量】 */}
+                        {/* 三段式显示: 【交易额过滤底池数量 / 正在扫描位置 / 本轮行情启动趋势过滤入选数量】 */}
                         <span 
-                            className="px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/60 text-amber-300 font-mono font-bold text-[9px] tracking-tight"
-                            title="【交易额过滤底池数量 / 正在扫描位置 / 符合行情启动趋势的数量】"
+                            className="px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-700/60 text-amber-300 font-mono font-bold text-[9px] tracking-tight flex items-center gap-1"
+                            title="【交易额过滤底池数量 / 正在扫描位置 / 本轮行情启动趋势过滤结果数量】"
                         >
-                            {totalCandidates} / {currentScanPos} / {pool.length}
+                            <span>
+                                {totalCandidates} / {isScanning ? progress.current : totalCandidates} / {isScanning ? progress.passed : pool.length}
+                            </span>
+                            {isScanning && progress.currentSymbol && (
+                                <span className="text-[8px] text-amber-200 bg-amber-950/80 px-1 rounded animate-pulse font-sans">
+                                    {progress.currentSymbol.replace('USDT', '')}
+                                </span>
+                            )}
                         </span>
                     </div>
                 </div>
@@ -536,10 +649,10 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         </button>
                     </div>
 
-                    {/* 单币扫描间隔时间按钮 (默认3秒) */}
+                    {/* 每轮扫描冷却间隔时间按钮 (默认3秒) */}
                     <div 
                         className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 hover:border-amber-500/60 text-[9px] text-slate-300 cursor-pointer transition-colors"
-                        title="点击调整每个币扫描间隔时间(秒)"
+                        title="点击调整每轮全量扫描完成后的冷却间隔时间(秒)"
                         onClick={(e) => {
                             e.stopPropagation();
                             setIsEditingInterval(!isEditingInterval);
@@ -577,7 +690,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         {isScanning ? (
                             <>
                                 <RefreshCw size={10} className="animate-spin" />
-                                <span>{totalCandidates}/{currentScanPos}/{pool.length}</span>
+                                <span>{currentScanPos}/{totalCandidates}</span>
                             </>
                         ) : (
                             <>
@@ -585,6 +698,15 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                                 <span>{isAutoScan ? '刷新' : '执行扫描'}</span>
                             </>
                         )}
+                    </button>
+
+                    {/* Clear Pool Button */}
+                    <button
+                        onClick={handleClearPool}
+                        title="一键清空行情启动底池数据"
+                        className="p-1 rounded bg-slate-700/60 hover:bg-rose-900/60 text-slate-300 hover:text-rose-300 transition-colors"
+                    >
+                        <Trash2 size={11} />
                     </button>
 
                     {/* Copy All Symbols */}

@@ -1,4 +1,5 @@
 
+// @LOCKED: 市场初筛列表增删对比更新规则已锁定（最后一项过滤规则执行完后比对增删，永不清零），未经用户明确专项指令严禁修改
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Loader2, AlertTriangle, RotateCw, Maximize2, Upload, Download, Plus, Trash2, Edit3, Check, X as XIcon, Zap, ArrowUpDown, Filter, ChevronDown, ChevronRight, Send, Sliders } from 'lucide-react';
 import { fetchWithFallback } from '../../../services/apiService';
@@ -81,6 +82,25 @@ interface Props {
     onFilteredUpdate?: (list: ScannerItem[]) => void;
     directMode?: boolean;
 }
+
+// 🔒 统一标准化币种代码辅助函数 (去除下划线、斜杠、USDT后缀与方向标识)，实现跨模块、跨底池 100% 绝对一致匹配
+export const normalizeSym = (s: string) => {
+    if (!s) return '';
+    return s.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').replace(/USDT$/i, '').trim();
+};
+
+// 🔒 校验大行情候选集条目与币种是否匹配（支持方向校验）
+export const isCandidateMatched = (candStr: string, itemSymbol: string, enableLong: boolean, enableShort: boolean) => {
+    if (!candStr || !itemSymbol) return false;
+    const isLongCand = candStr.endsWith('_LONG');
+    const isShortCand = candStr.endsWith('_SHORT');
+    if (isLongCand && !enableLong) return false;
+    if (isShortCand && !enableShort) return false;
+
+    const normCand = candStr.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').replace(/USDT$/i, '').trim();
+    const normSym = itemSymbol.toUpperCase().replace(/[\/_]/g, '').replace(/USDT$/i, '').trim();
+    return normCand === normSym;
+};
 
 const List1_Selection: React.FC<Props> = ({ 
     scanConfig, setScanConfig, isScanning, scanStatusText, isPaused, setIsPaused, list1, onScan, 
@@ -248,54 +268,6 @@ const List1_Selection: React.FC<Props> = ({
         };
     }, [selectedStrategyId]);
 
-    // 🌊【数据流水线核心保障：行情启动底池 -> 横盘蓄势过滤底池 联动同步】
-    // 1. 凡不在行情启动底池中的币种，不得滞留在横盘蓄势底池中（平稳同步，绝不在中途瞬时清零）
-    // 2. 行情启动底池中的币种一旦计算出横盘蓄势指标符合(isSidewaysMatch === true)，实时增量写入横盘蓄势底池
-    useEffect(() => {
-        const cfg = scanConfig.majorTrend;
-        if (!cfg?.enabled || cfg?.enableSideways === false) return;
-        if (!startTrendPool || startTrendPool.length === 0) return;
-
-        const startTrendSymbolSet = new Set(startTrendPool.map(p => p.symbol));
-        let changed = false;
-        const currentSidewaysMap = new Map<string, any>();
-
-        // 清理已离开行情启动底池的币
-        (sidewaysPool || []).forEach(item => {
-            if (startTrendSymbolSet.has(item.symbol)) {
-                currentSidewaysMap.set(item.symbol, item);
-            } else {
-                changed = true;
-            }
-        });
-
-        // 将行情启动底池中已满足横盘蓄势条件的币种增量加入
-        startTrendPool.forEach(p => {
-            const m = metricsCache[p.symbol];
-            if (m && !m.loading && m.isSidewaysMatch === true && !currentSidewaysMap.has(p.symbol)) {
-                currentSidewaysMap.set(p.symbol, {
-                    symbol: p.symbol,
-                    dropFromMax: m.highToCurrentDeclinePct ?? 0,
-                    riseFromMin: m.lowToCurrentIncreasePct ?? 0,
-                    maxZ: m.maxPeriodHigh ?? p.price,
-                    minZ: m.minPeriodLow ?? p.price,
-                    currentPrice: p.price,
-                    timestamp: Date.now()
-                });
-                changed = true;
-            }
-        });
-
-        if (changed) {
-            const newList = Array.from(currentSidewaysMap.values());
-            setSidewaysPool(newList);
-            try {
-                localStorage.setItem('SCANNER_SIDEWAYS_FILTERED_POOL', JSON.stringify(newList));
-                window.dispatchEvent(new CustomEvent('scanner_sideways_pool_updated', { detail: newList }));
-            } catch (_) {}
-        }
-    }, [startTrendPool, metricsCache, scanConfig.majorTrend?.enabled, scanConfig.majorTrend?.enableSideways, sidewaysPool, setSidewaysPool]);
-
     // 合并 Props 与 Local state 中的大行情候选集
     const effectiveMajorCandidates = useMemo(() => {
         const merged = new Set<string>();
@@ -403,24 +375,27 @@ const List1_Selection: React.FC<Props> = ({
         } catch (_) {}
 
         const enrichItem = (sym: string, partial?: any) => {
-            const existing = list1.find(item => item.symbol === sym);
-            const startItem = startTrendPool?.find(p => p.symbol === sym);
-            const sidewaysItem = sidewaysPool?.find(p => p.symbol === sym);
-            const raw = rawCacheMap.get(sym);
-            const cached8am = getVolume8am(sym);
+            const norm = normalizeSym(sym);
+            const existing = list1.find(item => normalizeSym(item.symbol) === norm);
+            const startItem = startTrendPool?.find(p => normalizeSym(p.symbol) === norm);
+            const sidewaysItem = sidewaysPool?.find(p => normalizeSym(p.symbol) === norm);
+            const raw = rawCacheMap.get(sym) || rawCacheMap.get(`${norm}USDT`) || rawCacheMap.get(norm);
+            const cached8am = getVolume8am(sym) || getVolume8am(`${norm}USDT`);
 
             let price = partial?.price || startItem?.price || sidewaysItem?.currentPrice || existing?.price || raw?.price || 0;
             let change = partial?.changePct !== undefined ? partial.changePct : (partial?.change !== undefined ? partial.change : (startItem?.changePct !== undefined ? startItem.changePct : (existing?.change !== undefined ? existing.change : (raw?.change || 0))));
-            let volume24h = partial?.volume24h !== undefined ? partial.volume24h : (existing?.volume24h !== undefined ? existing.volume24h : raw?.volM);
+            let volume24h = partial?.volume24h !== undefined ? partial.volume24h : (existing?.volume24h !== undefined ? existing.volume24h : (raw?.volM || 0));
             let volume8am = partial?.volume8am !== undefined ? partial.volume8am : (existing?.volume8am !== undefined ? existing.volume8am : cached8am?.volume8am);
             let change8am = partial?.change8am !== undefined ? partial.change8am : (existing?.change8am !== undefined ? existing.change8am : cached8am?.change8am);
+
+            const displaySymbol = existing?.symbol || startItem?.symbol || (sym.includes('/') ? sym : `${norm}/USDT`);
 
             return {
                 ...existing,
                 ...startItem,
                 ...(sidewaysItem ? { sidewaysDrop: sidewaysItem.dropFromMax, sidewaysRise: sidewaysItem.riseFromMin } : {}),
                 ...partial,
-                symbol: sym,
+                symbol: displaySymbol,
                 price: price || existing?.price || raw?.price || 0,
                 change: change !== undefined ? change : (existing?.change !== undefined ? existing.change : (raw?.change || 0)),
                 volume24h: (volume24h !== undefined && volume24h > 0) ? volume24h : (existing?.volume24h || raw?.volM || 0),
@@ -432,14 +407,18 @@ const List1_Selection: React.FC<Props> = ({
 
         // 🔒【市场初筛核心底池】：必须首先载入 list1 的全部初筛币种，绝不允许因启动底池有币而丢弃初筛基础数据
         list1.forEach(item => {
-            poolMap.set(item.symbol, enrichItem(item.symbol, item));
+            const norm = normalizeSym(item.symbol);
+            if (norm) {
+                poolMap.set(norm, enrichItem(item.symbol, item));
+            }
         });
 
         // 补齐行情启动底池中的币种及属性
         if (startTrendPool && startTrendPool.length > 0) {
             startTrendPool.forEach(p => {
-                if (!poolMap.has(p.symbol)) {
-                    poolMap.set(p.symbol, enrichItem(p.symbol, p));
+                const norm = normalizeSym(p.symbol);
+                if (norm && !poolMap.has(norm)) {
+                    poolMap.set(norm, enrichItem(p.symbol, p));
                 }
             });
         }
@@ -447,8 +426,9 @@ const List1_Selection: React.FC<Props> = ({
         // 补齐横盘底池中的币种及属性
         if (sidewaysPool && sidewaysPool.length > 0) {
             sidewaysPool.forEach(p => {
-                if (!poolMap.has(p.symbol)) {
-                    poolMap.set(p.symbol, enrichItem(p.symbol, p));
+                const norm = normalizeSym(p.symbol);
+                if (norm && !poolMap.has(norm)) {
+                    poolMap.set(norm, enrichItem(p.symbol, p));
                 }
             });
         }
@@ -456,9 +436,10 @@ const List1_Selection: React.FC<Props> = ({
         // 补齐大行情候选池中的币种
         if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
             effectiveMajorCandidates.forEach(cand => {
-                const sym = cand.replace('_LONG', '').replace('_SHORT', '');
-                if (sym && !poolMap.has(sym)) {
-                    poolMap.set(sym, enrichItem(sym));
+                const sym = cand.replace(/_LONG$|_SHORT$/i, '').trim();
+                const norm = normalizeSym(sym);
+                if (norm && !poolMap.has(norm)) {
+                    poolMap.set(norm, enrichItem(sym));
                 }
             });
         }
@@ -522,25 +503,34 @@ const List1_Selection: React.FC<Props> = ({
                     const now = Date.now();
                     let data: any[] | null = null;
 
-                    const cached = KLINE_LIMIT_CACHE[symbol]?.[lookbackDays] || KLINE_LIMIT_CACHE[symbol]?.['1d'];
+                    const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
+                    const cached = KLINE_LIMIT_CACHE[symbol]?.[lookbackDays] || KLINE_LIMIT_CACHE[safeSymbol]?.[lookbackDays] || KLINE_LIMIT_CACHE[symbol]?.['1d'] || KLINE_LIMIT_CACHE[safeSymbol]?.['1d'];
                     if (cached && now - (cached.timestamp || 0) < 10 * 60 * 1000 && Array.isArray(cached.klines) && cached.klines.length >= lookbackDays) {
                         data = cached.klines;
-                    } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= lookbackDays) {
-                        data = KLINE_LIMIT_CACHE[`${symbol}_1d`];
+                    } else if ((KLINE_LIMIT_CACHE[`${symbol}_1d`] || KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`] || KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && (KLINE_LIMIT_CACHE[`${symbol}_1d`] || KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]).length >= lookbackDays) {
+                        data = KLINE_LIMIT_CACHE[`${symbol}_1d`] || KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
                     } else {
-                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=${limit}`;
+                        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}`;
                         const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d), directMode);
                         data = await res.json();
                         if (Array.isArray(data)) {
-                            if (!KLINE_LIMIT_CACHE[symbol]) {
-                                KLINE_LIMIT_CACHE[symbol] = {};
-                            }
+                            if (!KLINE_LIMIT_CACHE[symbol]) KLINE_LIMIT_CACHE[symbol] = {};
+                            if (!KLINE_LIMIT_CACHE[safeSymbol]) KLINE_LIMIT_CACHE[safeSymbol] = {};
                             KLINE_LIMIT_CACHE[symbol][lookbackDays] = {
                                 timestamp: now,
                                 klines: data
                             };
+                            KLINE_LIMIT_CACHE[safeSymbol][lookbackDays] = {
+                                timestamp: now,
+                                klines: data
+                            };
                             KLINE_LIMIT_CACHE[`${symbol}_1d`] = data;
+                            KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] = data;
                             KLINE_LIMIT_CACHE[symbol]['1d'] = {
+                                timestamp: now,
+                                klines: data
+                            };
+                            KLINE_LIMIT_CACHE[safeSymbol]['1d'] = {
                                 timestamp: now,
                                 klines: data
                             };
@@ -812,13 +802,15 @@ const List1_Selection: React.FC<Props> = ({
             scanConfig.majorTrend?.enableStartTrend &&
             (scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort)
         );
-        const startTrendSymbolSet = (isStartTrendActive && startTrendPool && startTrendPool.length > 0) ? new Set(startTrendPool.map(p => p.symbol)) : null;
+        const startTrendNormalizedSet = (isStartTrendActive && startTrendPool && startTrendPool.length > 0)
+            ? new Set(startTrendPool.map(p => normalizeSym(p.symbol)).filter(Boolean))
+            : null;
 
         // 🔒【行情启动趋势底池前置过滤】：
         // 1. 若行情启动趋势多/空开启且启动底池有数据，凡不在启动趋势底池中的币种过滤剔除；
         // 2. 若“行情启动趋势”关闭或底池为空，则不进行强制过滤拦截，保证市场初筛底池完整可用！
-        const startTrendFilteredList = startTrendSymbolSet
-            ? volumeFilteredList.filter(item => startTrendSymbolSet.has(item.symbol))
+        const startTrendFilteredList = startTrendNormalizedSet
+            ? volumeFilteredList.filter(item => startTrendNormalizedSet.has(normalizeSym(item.symbol)) || (startTrendPool && startTrendPool.some(p => p.symbol === item.symbol)))
             : volumeFilteredList;
 
         // =========================================================================
@@ -836,100 +828,91 @@ const List1_Selection: React.FC<Props> = ({
             // 1. ”成交额范围过滤“ 筛选出的符合规则币进入 ”交易额过滤底池“ (volumeFilteredList)
             // 2. ”行情启动趋势“ 读取 ”交易额过滤底池“ 的数据，筛选后的币进入 ”行情启动底池“ (startTrendFilteredList)
             // 3. ”大行情发现“ 的第一步，”横盘蓄势过滤“ 读取 ”行情启动底池“ 的数据，符合规则的币进入 ”横盘蓄势过滤底池“ (sidewaysFilteredList)
-            // 4. ”回溯周期过滤“ 读取 “横盘蓄势过滤底池” 数据，符合规则的数据进行 “市场初筛” 列表！
+            // 4. ”回溯周期过滤“ 读取 “横盘蓄势过滤底池” 数据，符合规则的数据进入 “市场初筛” 列表！
+            //
+            // 🔒【用户指定明确规则】：
+            // 情况 A（同时开启“横盘蓄势过滤”和“回溯周期过滤”）：最后一项为“回溯周期过滤”；
+            // 情况 B（开启“横盘蓄势过滤”，未开启“回溯周期过滤”）：最后一项为“横盘蓄势过滤”；
+            // 情况 C（两者均未开启）：直接读取“行情启动底池”数据；
+            // 市场初筛列表的币在扫描过程中绝不清零，必须等所选最后一项过滤规则运行完成后执行原子差量更新！
             // =========================================================================
             const cfg = (scanConfig.majorTrend || {}) as any;
             const enableLong = cfg.enableLong !== false;
             const enableShort = cfg.enableShort !== false;
-            const enableSideways = cfg.enableSideways !== false; // 横盘蓄势开关 (默认开启)
-            const enableLookbackFilter = cfg.enableLookbackFilter !== false; // 回溯周期开关 (默认开启)
+            const enableSideways = cfg.enableSideways !== false; // 横盘蓄势开关
+            const enableLookbackFilter = cfg.enableLookbackFilter !== false; // 回溯周期开关
 
-            // 🎯 第一步的输入源：若行情启动开启，读取【行情启动底池】；若行情启动关闭，自动向上一级读取【交易额过滤底池】
-            const baseMajorSource = startTrendFilteredList;
+            // 🎯 情况 C: “横盘蓄势过滤”和“回溯周期过滤”都未开启，直接平滑读取基础交易额底池！
+            if (!enableSideways && !enableLookbackFilter) {
+                finalResult = volumeFilteredList;
+            } else if (enableLookbackFilter) {
+                // 🎯 规则一：若开启了【回溯周期过滤】（最后一项过滤规则为“回溯周期过滤”）
+                // 市场初筛列表的币必须 100% 来自回溯周期过滤运行完毕后产出的候选结果集！
+                // 严禁读取/展示“行情启动底池”或全量“横盘蓄势底池”数据！
+                if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
+                    const matchedList = sortedList1.filter(item => {
+                        for (const cand of effectiveMajorCandidates) {
+                            if (isCandidateMatched(cand, item.symbol, enableLong, enableShort)) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    });
 
-            // 🎯 第一步：横盘蓄势过滤
-            // - 若开启【横盘蓄势过滤】，筛选出符合横盘规则的币进入 sidewaysFilteredList；
-            // - 若关闭【横盘蓄势过滤】，自动向上一级底池获取数据——直接继承 baseMajorSource！
-            let sidewaysFilteredList = baseMajorSource;
-            if (enableSideways) {
-                if (sidewaysPool && sidewaysPool.length > 0) {
-                    const sidewaysSymbolSet = new Set(sidewaysPool.map(p => p.symbol));
-                    sidewaysFilteredList = baseMajorSource.filter(item => sidewaysSymbolSet.has(item.symbol));
+                    // 🔒 兜底保障：补齐在候选集中但暂不在 sortedList1 的币
+                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+                    const remainingCandidates = Array.from(effectiveMajorCandidates).filter(cand => {
+                        const normCand = normalizeSym(cand);
+                        if (matchedNorms.has(normCand)) return false;
+                        const isLongCand = cand.endsWith('_LONG');
+                        const isShortCand = cand.endsWith('_SHORT');
+                        if (isLongCand && !enableLong) return false;
+                        if (isShortCand && !enableShort) return false;
+                        return true;
+                    });
+
+                    if (remainingCandidates.length > 0) {
+                        const additional: any[] = [];
+                        for (const cand of remainingCandidates) {
+                            const normCand = normalizeSym(cand);
+                            const foundInBase = baseList.find(item => normalizeSym(item.symbol) === normCand);
+                            if (foundInBase) {
+                                additional.push(foundInBase);
+                            }
+                        }
+                        finalResult = [...matchedList, ...additional];
+                    } else {
+                        finalResult = matchedList;
+                    }
                 } else {
-                    sidewaysFilteredList = baseMajorSource.filter(item => {
+                    // 若回溯周期尚未运行产出候选集或结果为 0，初筛列表为 0，绝不跨级抓取行情启动底池
+                    finalResult = [];
+                }
+            } else {
+                // 🎯 规则二：若开启了【横盘蓄势过滤】且未开启【回溯周期过滤】（最后一项过滤规则为“横盘蓄势过滤”）
+                // 市场初筛列表必须 100% 仅展示通过横盘蓄势过滤规则的币，绝不读取全量“行情启动底池”！
+                if (sidewaysPool && sidewaysPool.length > 0) {
+                    const sidewaysNormalizedSet = new Set(sidewaysPool.map(p => normalizeSym(p.symbol)).filter(Boolean));
+                    const matchedList = sortedList1.filter(item => 
+                        sidewaysNormalizedSet.has(normalizeSym(item.symbol)) || sidewaysPool.some(p => p.symbol === item.symbol)
+                    );
+                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+                    const additional: any[] = [];
+                    sidewaysPool.forEach(p => {
+                        const normP = normalizeSym(p.symbol);
+                        if (!matchedNorms.has(normP)) {
+                            const found = baseList.find(b => normalizeSym(b.symbol) === normP);
+                            if (found) additional.push(found);
+                        }
+                    });
+                    finalResult = [...matchedList, ...additional];
+                } else {
+                    // 若横盘蓄势底池暂无数据，严格仅保留已匹配横盘蓄势指标的币
+                    finalResult = sortedList1.filter(item => {
                         const metrics = metricsCache[item.symbol];
-                        if (!metrics || metrics.loading) return !isMajorScanning;
-                        return metrics.isSidewaysMatch !== false;
+                        return metrics && !metrics.loading && metrics.isSidewaysMatch === true;
                     });
                 }
-            }
-
-            // 🎯 第二步：回溯周期过滤
-            // - 🔒【用户指定明确规则】：
-            //   1. 只有当“回溯周期过滤”【未开启】时，市场初筛才直接读取“横盘蓄势过滤底池”数据！
-            //   2. 当“回溯周期过滤”【已开启】时，市场初筛必须严格按照回溯周期规则进行过滤，绝不能直接读取/展示整个横盘蓄势底池！
-            if (!enableLookbackFilter) {
-                finalResult = sidewaysFilteredList;
-            } else {
-                // 开启【回溯周期过滤】：从横盘蓄势底池中只筛选符合回溯周期极值规则的币种
-                const matchedList = sidewaysFilteredList.filter(item => {
-                    const sym = item.symbol;
-                    if (!sym) return false;
-
-                    // 1. 若大行情发现已有候选集产出，严格比对候选集（支持带方向和不带方向）
-                    if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
-                        const matchLong = effectiveMajorCandidates.has(`${sym}_LONG`) || effectiveMajorCandidates.has(sym);
-                        const matchShort = effectiveMajorCandidates.has(`${sym}_SHORT`) || effectiveMajorCandidates.has(sym);
-                        if (enableLong && enableShort) return matchLong || matchShort;
-                        if (enableLong) return matchLong;
-                        if (enableShort) return matchShort;
-                        return false;
-                    }
-
-                    // 2. 实时指标校验（当全量扫描未生成候选集或初次加载时，直接校验日K极值指标）
-                    const m = metricsCache[sym];
-                    if (!m || m.loading) return false;
-
-                    const dropFromMax = Math.abs(m.maxDeclinePct || 0);
-                    const pumpFromMin = m.maxIncreasePct || 0;
-                    const distLong = m.lowToCurrentIncreasePct || 0;
-                    const distShort = m.highToCurrentDeclinePct || 0;
-                    const lowDaysAgo = m.lowDaysAgo ?? 0;
-                    const highDaysAgo = m.highDaysAgo ?? 0;
-
-                    const maxDistL = cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : (cfg.maxExtremeDistance ?? 10);
-                    const minDistL = cfg.minExtremeDistanceLong ?? 0;
-                    const minDaysL = cfg.extremeDaysMinLong ?? 0;
-                    const maxDaysL = cfg.extremeDaysMaxLong ?? 300;
-
-                    const isLongMatch = enableLong && (
-                        dropFromMax >= (cfg.minHistoryDrop ?? 30) &&
-                        distLong >= minDistL &&
-                        distLong <= maxDistL &&
-                        lowDaysAgo >= minDaysL &&
-                        lowDaysAgo <= maxDaysL
-                    );
-
-                    const maxDistS = cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : (cfg.maxExtremeDistance ?? 10);
-                    const minDistS = cfg.minExtremeDistanceShort ?? 0;
-                    const minDaysS = cfg.extremeDaysMinShort ?? 0;
-                    const maxDaysS = cfg.extremeDaysMaxShort ?? 300;
-
-                    const isShortMatch = enableShort && (
-                        pumpFromMin >= (cfg.minHistoryPump ?? 30) &&
-                        distShort >= minDistS &&
-                        distShort <= maxDistS &&
-                        highDaysAgo >= minDaysS &&
-                        highDaysAgo <= maxDaysS
-                    );
-
-                    if (enableLong && enableShort) return isLongMatch || isShortMatch;
-                    if (enableLong) return isLongMatch;
-                    if (enableShort) return isShortMatch;
-                    return false;
-                });
-
-                finalResult = matchedList;
             }
         }
 

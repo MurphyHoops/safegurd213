@@ -303,28 +303,28 @@ export function analyzeList2Crossing(
             const rawDivergenceValidS = isAlignedS && crossedAllS;
 
             // =========================================================================
-            // 🔒 [USER MANDATORY RULE - 发散K线同向确认与存续期超时作废机制]
-            // 多头发散：必须为阳线(Close > Open)。若发散时为阴线，在“信号存续/访问过去”(scanLookbackLimit)内
-            //           向后寻找第一根收阳的K线作为确认点；若超出设定根数仍未收阳，则本次发散形态彻底作废。
-            // 空头发散：必须为阴线(Close < Open)。若发散时为阳线，在“信号存续/访问过去”(scanLookbackLimit)内
-            //           向后寻找第一根收阴的K线作为确认点；若超出设定根数仍未收阴，则本次发散形态彻底作废。
-            // 当前实时K线(lag === 0)：若方向不符，挂起为待定灰色状态，等待同向收盘或后续K线确认。
+            // 🔒 [USER MANDATORY RULE - 收盘确认机制 (Close-of-Candle Confirmation)]
+            // 核心铁律：所有信号K线必须在【K线正式收盘】后方可判定确立（即 targetLag > 0，不随未收盘实时价格漂移）。
+            // 多头发散：必须为已收盘阳线(Close > Open)。若发散时为阴线，在“信号存续/访问过去”(scanLookbackLimit)内
+            //           向后寻找第一根已收盘阳线作为确认点；若超出设定根数仍未收阳，则本次发散形态彻底作废。
+            // 空头发散：必须为已收盘阴线(Close < Open)。若发散时为阳线，在“信号存续/访问过去”(scanLookbackLimit)内
+            //           向后寻找第一根已收盘阴线作为确认点；若超出设定根数仍未收阴，则本次发散形态彻底作废。
             // =========================================================================
             let divergenceValidL = false;
             let divConfirmedLagL = lag;
             let divConfirmedIdxL = checkIdx;
             let divIsPendingGrayL = false;
 
-            if (rawDivergenceValidL) {
+            if (rawDivergenceValidL && lag > 0) {
                 if (kClose > kOpen) {
                     divergenceValidL = true;
                     divConfirmedLagL = lag;
                     divConfirmedIdxL = checkIdx;
                     divIsPendingGrayL = false;
                 } else {
-                    // 当前不符，向未来（右侧）在 scanLookbackLimit 根K线内寻找第一根阳线
+                    // 当前收盘不符，向右在 scanLookbackLimit 根K线内寻找第一根已收盘阳线 (fIdx < idx)
                     let foundBullish = false;
-                    const maxForwardIdx = Math.min(idx, checkIdx + scanLookbackLimit);
+                    const maxForwardIdx = Math.min(idx - 1, checkIdx + scanLookbackLimit);
                     for (let fIdx = checkIdx + 1; fIdx <= maxForwardIdx; fIdx++) {
                         const fE10 = getEmaVal(ema10, fIdx, 10);
                         const fE20 = getEmaVal(ema20, fIdx, 20);
@@ -351,16 +351,7 @@ export function analyzeList2Crossing(
                     }
 
                     if (!foundBullish) {
-                        if (lag === 0 && isAlignedLong) {
-                            // 实时第一根发散但暂时非阳线：挂起为待定灰色
-                            divergenceValidL = true;
-                            divConfirmedIdxL = checkIdx;
-                            divConfirmedLagL = 0;
-                            divIsPendingGrayL = true;
-                        } else {
-                            // 仍在等待窗口期但已被破坏或超时未收阳：彻底作废，绝不上榜
-                            divergenceValidL = false;
-                        }
+                        divergenceValidL = false;
                     }
                 }
             }
@@ -370,16 +361,16 @@ export function analyzeList2Crossing(
             let divConfirmedIdxS = checkIdx;
             let divIsPendingGrayS = false;
 
-            if (rawDivergenceValidS) {
+            if (rawDivergenceValidS && lag > 0) {
                 if (kClose < kOpen) {
                     divergenceValidS = true;
                     divConfirmedLagS = lag;
                     divConfirmedIdxS = checkIdx;
                     divIsPendingGrayS = false;
                 } else {
-                    // 当前不符，向未来（右侧）在 scanLookbackLimit 根K线内寻找第一根阴线
+                    // 当前收盘不符，向右在 scanLookbackLimit 根K线内寻找第一根已收盘阴线 (fIdx < idx)
                     let foundBearish = false;
-                    const maxForwardIdx = Math.min(idx, checkIdx + scanLookbackLimit);
+                    const maxForwardIdx = Math.min(idx - 1, checkIdx + scanLookbackLimit);
                     for (let fIdx = checkIdx + 1; fIdx <= maxForwardIdx; fIdx++) {
                         const fE10 = getEmaVal(ema10, fIdx, 10);
                         const fE20 = getEmaVal(ema20, fIdx, 20);
@@ -406,16 +397,7 @@ export function analyzeList2Crossing(
                     }
 
                     if (!foundBearish) {
-                        if (lag === 0 && isAlignedShort) {
-                            // 实时第一根发散但暂时非阴线：挂起为待定灰色
-                            divergenceValidS = true;
-                            divConfirmedIdxS = checkIdx;
-                            divConfirmedLagS = 0;
-                            divIsPendingGrayS = true;
-                        } else {
-                            // 仍在等待窗口期但已被破坏或超时未收阴：彻底作废，绝不上榜
-                            divergenceValidS = false;
-                        }
+                        divergenceValidS = false;
                     }
                 }
             }
@@ -423,10 +405,9 @@ export function analyzeList2Crossing(
             // The Grand Crossing Rule: High touches Max EMA, Low touches Min EMA (Physical Intersection)
             const isCrossing = kHigh >= maxEma && kLow <= minEma;
             
-            // 🔒 [USER MANDATORY RULE] 做多信号K线必须是阳线 (Close > Open)；做空信号K线必须是阴线 (Close < Open)
-            // 穿越分支亦必须满足方向一致性要求 (实时未收盘K线 lag === 0 可待定变灰)
-            const crossingIsBullish = (closes[checkIdx] > opens[checkIdx]) || (lag === 0);
-            const crossingIsBearish = (closes[checkIdx] < opens[checkIdx]) || (lag === 0);
+            // 🔒 [USER MANDATORY RULE - 收盘确认] 做多信号K线必须是已收盘阳线 (Close > Open 且 lag > 0)；做空信号K线必须是已收盘阴线 (Close < Open 且 lag > 0)
+            const crossingIsBullish = closes[checkIdx] > opens[checkIdx] && lag > 0;
+            const crossingIsBearish = closes[checkIdx] < opens[checkIdx] && lag > 0;
 
             // 锁定做多与做空的目标确认K线索引 (优先采用符合阳/阴线条件的精确K线)
             let targetIdxL = checkIdx;
@@ -499,11 +480,12 @@ export function analyzeList2Crossing(
             const strictOkL = !strictFiltering || (ampValidL && volValidL && bodyValidL);
             const strictOkS = !strictFiltering || (ampValidS && volValidS && bodyValidS);
 
+            // 🔒 [USER MANDATORY RULE] 做空时，必须严格呈 EMA10 < EMA20 < EMA30 < EMA40 形态才能入选列表2
             const crossingValidL = isCrossing && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
-            const crossingValidS = isCrossing && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
+            const crossingValidS = isCrossing && !conflictS && strictOkS && isAlignedShort && crossingIsBearish;
 
             const divergenceStrictValidL = divergenceValidL && strictOkL;
-            const divergenceStrictValidS = divergenceValidS && strictOkS;
+            const divergenceStrictValidS = divergenceValidS && strictOkS && isAlignedShort;
 
             let patternMatchedL = false;
             let patternMatchedS = false;
@@ -527,8 +509,11 @@ export function analyzeList2Crossing(
             } else {
                 // Squeeze fallback
                 patternMatchedL = strictOkL && !conflictL && crossingIsBullish;
-                patternMatchedS = strictOkS && !conflictS && crossingIsBearish;
+                patternMatchedS = strictOkS && !conflictS && isAlignedShort && crossingIsBearish;
             }
+
+            // 🔒 [USER MANDATORY RULE] 做空时，任何匹配模式均必须严格满足 EMA10 < EMA20 < EMA30 < EMA40
+            patternMatchedS = patternMatchedS && isAlignedShort;
 
             // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
             if (enableDivergenceCrossCheck && config.requireAlignment) {
@@ -536,7 +521,7 @@ export function analyzeList2Crossing(
                 patternMatchedS = patternMatchedS && crossedAllS;
             }
 
-            // 🔒 [USER MANDATORY RULE] 做多信号K线必须是阳线，做空信号K线必须是阴线
+            // 🔒 [USER MANDATORY RULE - 收盘确认] 做多信号K线必须是已收盘阳线，做空信号K线必须是已收盘阴线
             let isValidL = false;
             let isPendingGrayL = false;
             if (patternMatchedL) {
@@ -544,17 +529,13 @@ export function analyzeList2Crossing(
                 const targetOpenL = opens[targetIdxL];
                 const targetLagL = idx - targetIdxL;
 
-                if (targetLagL > 0) {
-                    if (targetCloseL > targetOpenL) {
-                        isValidL = true;
-                        isPendingGrayL = false;
-                    } else {
-                        isValidL = false;
-                    }
-                } else {
-                    // lag === 0 实时未收盘K线
+                // 只有已收盘的K线 (targetLagL > 0) 且收阳方可确立为正式信号K线
+                if (targetLagL > 0 && targetCloseL > targetOpenL) {
                     isValidL = true;
-                    isPendingGrayL = !(targetCloseL > targetOpenL);
+                    isPendingGrayL = false;
+                } else {
+                    isValidL = false;
+                    isPendingGrayL = false;
                 }
             }
 
@@ -565,17 +546,13 @@ export function analyzeList2Crossing(
                 const targetOpenS = opens[targetIdxS];
                 const targetLagS = idx - targetIdxS;
 
-                if (targetLagS > 0) {
-                    if (targetCloseS < targetOpenS) {
-                        isValidS = true;
-                        isPendingGrayS = false;
-                    } else {
-                        isValidS = false;
-                    }
-                } else {
-                    // lag === 0 实时未收盘K线
+                // 只有已收盘的K线 (targetLagS > 0) 且收阴方可确立为正式信号K线
+                if (targetLagS > 0 && targetCloseS < targetOpenS) {
                     isValidS = true;
-                    isPendingGrayS = !(targetCloseS < targetOpenS);
+                    isPendingGrayS = false;
+                } else {
+                    isValidS = false;
+                    isPendingGrayS = false;
                 }
             }
 
@@ -590,11 +567,15 @@ export function analyzeList2Crossing(
             }
 
             if (isValidS) {
-                // 🔒 铁律硬门禁：确认信号K线绝对禁止处于多头金叉向上发散排列 (EMA10 > EMA20 且 EMA10 > EMA30)
+                // 🔒 [USER MANDATORY RULE] 确认信号K线做空时，必须严格呈 EMA10 < EMA20 < EMA30 < EMA40 形态
                 const targetE10S = getEmaVal(ema10, targetIdxS, 10);
                 const targetE20S = getEmaVal(ema20, targetIdxS, 20);
                 const targetE30S = getEmaVal(ema30, targetIdxS, 30);
-                if (targetE10S !== null && targetE20S !== null && targetE10S > targetE20S && (targetE30S === null || targetE10S > targetE30S)) {
+                const targetE40S = getEmaVal(ema40, targetIdxS, 40);
+                if (
+                    targetE10S === null || targetE20S === null || targetE30S === null || targetE40S === null ||
+                    !(targetE10S < targetE20S && targetE20S < targetE30S && targetE30S < targetE40S)
+                ) {
                     isValidS = false;
                 }
             }
@@ -612,8 +593,8 @@ export function analyzeList2Crossing(
                     ampValid: ampValidL,
                     volValid: volValidL,
                     bodyValid: bodyValidL,
-                    isClosed: signalLagL > 0,
-                    isPendingGray: isPendingGrayL,
+                    isClosed: true,
+                    isPendingGray: false,
                     kHigh: highs[targetIdxL],
                     kLow: lows[targetIdxL],
                     kClose: closes[targetIdxL],
@@ -634,8 +615,8 @@ export function analyzeList2Crossing(
                     ampValid: ampValidS,
                     volValid: volValidS,
                     bodyValid: bodyValidS,
-                    isClosed: signalLagS > 0,
-                    isPendingGray: isPendingGrayS,
+                    isClosed: true,
+                    isPendingGray: false,
                     kHigh: highs[targetIdxS],
                     kLow: lows[targetIdxS],
                     kClose: closes[targetIdxS],

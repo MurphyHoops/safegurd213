@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { MajorTrendConfig, StartTrendGroup } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
-import { TrendingUp, ChevronDown, ChevronUp } from 'lucide-react';
+import { TrendingUp, ChevronDown, ChevronUp, Link2, Unlink } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 
 interface Props {
@@ -10,7 +10,7 @@ interface Props {
 }
 
 const DEFAULT_GROUPS: StartTrendGroup[] = [
-    { enabled: false, days: 1, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
+    { enabled: true, days: 1, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
     { enabled: false, days: 2, minLong: 1, maxLong: 9, maxPullbackLong: 5, minShort: 1, maxShort: 9, maxPullbackShort: 5 },
     { enabled: false, days: 3, minLong: 2, maxLong: 20, maxPullbackLong: 8, minShort: 2, maxShort: 20, maxPullbackShort: 8 },
     { enabled: false, days: 7, minLong: 4, maxLong: 30, maxPullbackLong: 10, minShort: 4, maxShort: 30, maxPullbackShort: 10 }
@@ -34,6 +34,9 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
         enableLong: true,
         enableShort: true,
         enableSideways: true,
+        enableSidewaysLong: true,
+        enableSidewaysShort: true,
+        syncDirectionLock: true,
         maxExtremeDistanceLong: 5,
         maxExtremeDistanceShort: 5,
         minExtremeDistanceLong: 0,
@@ -49,19 +52,132 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
         ...config
     };
 
+    const isSyncLocked = activeConfig.syncDirectionLock !== false;
+
     const updateField = (field: keyof MajorTrendConfig, value: any) => {
         setConfig({ ...activeConfig, [field]: value });
     };
 
-    const groups = activeConfig.startTrendGroups && activeConfig.startTrendGroups.length > 0 
+    const rawGroups = activeConfig.startTrendGroups && activeConfig.startTrendGroups.length > 0 
         ? activeConfig.startTrendGroups 
         : DEFAULT_GROUPS;
 
+    const groups = rawGroups;
+
+    const ensureActiveGroups = (groupsList: StartTrendGroup[]) => {
+        if (!groupsList || groupsList.length === 0) return DEFAULT_GROUPS;
+        if (!groupsList.some(g => g.enabled)) {
+            return groupsList.map((g, idx) => idx === 0 ? { ...g, enabled: true } : g);
+        }
+        return groupsList;
+    };
+
     const isAnyActive = activeConfig.enableStartTrendLong || activeConfig.enableStartTrendShort;
+
+    const toggleLongDirection = () => {
+        const newVal = !activeConfig.enableStartTrendLong;
+        const updatedGroups = newVal ? ensureActiveGroups(groups) : groups;
+        
+        if (isSyncLocked) {
+            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步多头方向
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: newVal,
+                enableStartTrend: newVal || !!activeConfig.enableStartTrendShort,
+                enableSidewaysLong: newVal,
+                enableSideways: newVal || (activeConfig.enableSidewaysShort !== false),
+                enableLong: newVal,
+                enableLookbackFilter: newVal || (activeConfig.enableShort !== false),
+                startTrendGroups: updatedGroups
+            });
+        } else {
+            // 独立模式
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: newVal,
+                enableStartTrend: newVal || !!activeConfig.enableStartTrendShort,
+                startTrendGroups: updatedGroups
+            });
+        }
+    };
+
+    const toggleShortDirection = () => {
+        const newVal = !activeConfig.enableStartTrendShort;
+        const updatedGroups = newVal ? ensureActiveGroups(groups) : groups;
+        
+        if (isSyncLocked) {
+            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步空头方向
+            setConfig({
+                ...activeConfig,
+                enableStartTrendShort: newVal,
+                enableStartTrend: !!activeConfig.enableStartTrendLong || newVal,
+                enableSidewaysShort: newVal,
+                enableSideways: (activeConfig.enableSidewaysLong !== false) || newVal,
+                enableShort: newVal,
+                enableLookbackFilter: (activeConfig.enableLong !== false) || newVal,
+                startTrendGroups: updatedGroups
+            });
+        } else {
+            // 独立模式
+            setConfig({
+                ...activeConfig,
+                enableStartTrendShort: newVal,
+                enableStartTrend: !!activeConfig.enableStartTrendLong || newVal,
+                startTrendGroups: updatedGroups
+            });
+        }
+    };
+
+    const handleQuickDirection = (mode: 'LONG_ONLY' | 'SHORT_ONLY' | 'BOTH') => {
+        const updatedGroups = ensureActiveGroups(groups);
+        if (mode === 'LONG_ONLY') {
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: true,
+                enableStartTrendShort: false,
+                enableStartTrend: true,
+                enableSidewaysLong: true,
+                enableSidewaysShort: false,
+                enableSideways: true,
+                enableLong: true,
+                enableShort: false,
+                enableLookbackFilter: true,
+                startTrendGroups: updatedGroups
+            });
+        } else if (mode === 'SHORT_ONLY') {
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: false,
+                enableStartTrendShort: true,
+                enableStartTrend: true,
+                enableSidewaysLong: false,
+                enableSidewaysShort: true,
+                enableSideways: true,
+                enableLong: false,
+                enableShort: true,
+                enableLookbackFilter: true,
+                startTrendGroups: updatedGroups
+            });
+        } else {
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: true,
+                enableStartTrendShort: true,
+                enableStartTrend: true,
+                enableSidewaysLong: true,
+                enableSidewaysShort: true,
+                enableSideways: true,
+                enableLong: true,
+                enableShort: true,
+                enableLookbackFilter: true,
+                startTrendGroups: updatedGroups
+            });
+        }
+    };
 
     return (
         <div className="border border-slate-700/80 rounded-lg bg-[#151922] overflow-hidden shadow-sm transition-all duration-200">
-            {/* Header with Title, Multi-direction Switches, and Collapse Toggle */}
+            {/* Header with Title, Multi-direction Switches, Sync Toggle and Collapse Toggle */}
             <div 
                 onClick={() => setIsCollapsed(!isCollapsed)}
                 className="p-2 bg-slate-800/60 hover:bg-slate-800/90 flex items-center justify-between cursor-pointer transition-colors select-none"
@@ -81,20 +197,30 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                    {/* Direction Sync Lock Button */}
+                    <button
+                        type="button"
+                        onClick={() => updateField('syncDirectionLock', !isSyncLocked)}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold border transition-colors ${
+                            isSyncLocked 
+                                ? 'bg-indigo-950/80 text-indigo-300 border-indigo-500/50 hover:bg-indigo-900/80' 
+                                : 'bg-slate-900/80 text-slate-400 border-slate-700 hover:text-slate-200'
+                        }`}
+                        title={isSyncLocked ? '已开启多空联动：在任一过滤点击选多/选空，三大过滤自动同步' : '已解除联动：各过滤多空方向独立设置'}
+                    >
+                        {isSyncLocked ? <Link2 size={10} className="text-indigo-400 shrink-0" /> : <Unlink size={10} className="text-slate-500 shrink-0" />}
+                        <span>{isSyncLocked ? '3组联动' : '独立'}</span>
+                    </button>
+
                     {/* Long Toggle Switch */}
                     <div className="flex items-center gap-1 bg-slate-950/60 px-1.5 py-0.5 rounded border border-slate-800/80">
                         <span className="text-[8px] font-bold text-emerald-400">做多</span>
                         <button 
-                            onClick={() => {
-                                const newVal = !activeConfig.enableStartTrendLong;
-                                setConfig({
-                                    ...activeConfig,
-                                    enableStartTrendLong: newVal,
-                                    enableStartTrend: newVal || !!activeConfig.enableStartTrendShort
-                                });
-                            }}
+                            type="button"
+                            onClick={toggleLongDirection}
                             className={`relative inline-flex h-3.5 w-7 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableStartTrendLong ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                            title={isSyncLocked ? '点击切换做多（三大过滤自动同步）' : '点击切换行情启动趋势做多'}
                         >
                             <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform duration-200 ${activeConfig.enableStartTrendLong ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
                         </button>
@@ -104,15 +230,10 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
                     <div className="flex items-center gap-1 bg-slate-950/60 px-1.5 py-0.5 rounded border border-slate-800/80">
                         <span className="text-[8px] font-bold text-rose-400">做空</span>
                         <button 
-                            onClick={() => {
-                                const newVal = !activeConfig.enableStartTrendShort;
-                                setConfig({
-                                    ...activeConfig,
-                                    enableStartTrendShort: newVal,
-                                    enableStartTrend: !!activeConfig.enableStartTrendLong || newVal
-                                });
-                            }}
+                            type="button"
+                            onClick={toggleShortDirection}
                             className={`relative inline-flex h-3.5 w-7 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableStartTrendShort ? 'bg-rose-600' : 'bg-slate-700'}`}
+                            title={isSyncLocked ? '点击切换做空（三大过滤自动同步）' : '点击切换行情启动趋势做空'}
                         >
                             <span className={`inline-block h-2 w-2 transform rounded-full bg-white transition-transform duration-200 ${activeConfig.enableStartTrendShort ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
                         </button>
@@ -120,6 +241,7 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
 
                     {/* Collapse Button */}
                     <button
+                        type="button"
                         onClick={() => setIsCollapsed(!isCollapsed)}
                         className="text-slate-400 hover:text-white p-0.5 transition-colors"
                     >
@@ -131,6 +253,49 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
             {/* Expandable Group Content */}
             {!isCollapsed && (
                 <div className="p-2 space-y-2 border-t border-slate-800 bg-[#0e1219]/90 animate-in slide-in-from-top-1 duration-200">
+                    {/* Quick Sync Direction Selector */}
+                    <div className="flex items-center justify-between pb-1 border-b border-slate-800/50 text-[8px]">
+                        <span className="text-slate-400 flex items-center gap-1">
+                            快捷多空预设:
+                            {isSyncLocked && <span className="text-indigo-400 font-mono">(全域同步中)</span>}
+                        </span>
+                        <div className="flex items-center gap-1">
+                            <button
+                                type="button"
+                                onClick={() => handleQuickDirection('LONG_ONLY')}
+                                className={`px-1.5 py-0.2 rounded font-bold transition-colors ${
+                                    activeConfig.enableStartTrendLong && !activeConfig.enableStartTrendShort 
+                                        ? 'bg-emerald-600 text-white' 
+                                        : 'bg-slate-900 text-slate-400 hover:text-emerald-400'
+                                }`}
+                            >
+                                仅做多
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleQuickDirection('SHORT_ONLY')}
+                                className={`px-1.5 py-0.2 rounded font-bold transition-colors ${
+                                    !activeConfig.enableStartTrendLong && activeConfig.enableStartTrendShort 
+                                        ? 'bg-rose-600 text-white' 
+                                        : 'bg-slate-900 text-slate-400 hover:text-rose-400'
+                                }`}
+                            >
+                                仅做空
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleQuickDirection('BOTH')}
+                                className={`px-1.5 py-0.2 rounded font-bold transition-colors ${
+                                    activeConfig.enableStartTrendLong && activeConfig.enableStartTrendShort 
+                                        ? 'bg-cyan-600 text-white' 
+                                        : 'bg-slate-900 text-slate-400 hover:text-cyan-400'
+                                }`}
+                            >
+                                多空双选
+                            </button>
+                        </div>
+                    </div>
+
                     {isAnyActive ? (
                         <div className="space-y-1.5">
                             {groups.map((group, idx) => (
@@ -162,6 +327,7 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
                                         </div>
 
                                         <button 
+                                            type="button"
                                             onClick={() => {
                                                 const updated = [...groups];
                                                 updated[idx] = { ...updated[idx], enabled: !updated[idx].enabled };
@@ -279,3 +445,4 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
         </div>
     );
 };
+

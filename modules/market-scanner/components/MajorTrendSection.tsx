@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Activity, Settings2, PlayCircle, Loader2, CheckCircle2, Clock } from 'lucide-react';
-import { MajorTrendConfig } from '../../../components/Scanner/scannerTypes';
+import { ChevronDown, ChevronUp, Activity, Settings2, PlayCircle, Loader2, CheckCircle2, Clock, Plus, Trash2, Layers, Link2, Unlink } from 'lucide-react';
+import { MajorTrendConfig, SidewaysRuleGroup } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 
@@ -38,11 +38,18 @@ const DEFAULT_CONFIG: MajorTrendConfig = {
     sidewaysDays: 7,
     sidewaysMaxPump: 10,
     sidewaysMaxDrop: 10,
+    sidewaysLogic: 'OR',
+    sidewaysGroups: [
+        { id: 'g1', enabled: true, days: 7, maxDrop: 10, maxPump: 10 }
+    ],
     autoTransfer: false,
     enableLong: true,
     enableShort: true,
     enableSideways: true,
+    enableSidewaysLong: true,
+    enableSidewaysShort: true,
     enableLookbackFilter: true,
+    syncDirectionLock: true,
     maxExtremeDistanceLong: 5,
     maxExtremeDistanceShort: 5,
     minExtremeDistanceLong: 0,
@@ -74,6 +81,8 @@ export const MajorTrendSection: React.FC<Props> = ({
         if (activeConfig.enableStartTrendShort === undefined) activeConfig.enableStartTrendShort = true;
     }
 
+    const isSyncLocked = activeConfig.syncDirectionLock !== false;
+
     const toggleEnabled = (e: React.MouseEvent) => {
         e.stopPropagation();
         setConfig({ ...activeConfig, enabled: !activeConfig.enabled });
@@ -81,6 +90,152 @@ export const MajorTrendSection: React.FC<Props> = ({
 
     const updateField = (field: keyof MajorTrendConfig, value: any) => {
         setConfig({ ...activeConfig, [field]: value });
+    };
+
+    const toggleLong = (source: 'SIDEWAYS' | 'LOOKBACK') => {
+        const currentVal = source === 'SIDEWAYS' 
+            ? (activeConfig.enableSidewaysLong !== false) 
+            : (activeConfig.enableLong !== false);
+        const newVal = !currentVal;
+
+        if (isSyncLocked) {
+            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步多头方向
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: newVal,
+                enableStartTrend: newVal || !!activeConfig.enableStartTrendShort,
+                enableSidewaysLong: newVal,
+                enableSideways: newVal || (activeConfig.enableSidewaysShort !== false),
+                enableLong: newVal,
+                enableLookbackFilter: newVal || (activeConfig.enableShort !== false)
+            });
+        } else {
+            // 独立模式
+            if (source === 'SIDEWAYS') {
+                updateField('enableSidewaysLong', newVal);
+            } else {
+                updateField('enableLong', newVal);
+            }
+        }
+    };
+
+    const toggleShort = (source: 'SIDEWAYS' | 'LOOKBACK') => {
+        const currentVal = source === 'SIDEWAYS' 
+            ? (activeConfig.enableSidewaysShort !== false) 
+            : (activeConfig.enableShort !== false);
+        const newVal = !currentVal;
+
+        if (isSyncLocked) {
+            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步空头方向
+            setConfig({
+                ...activeConfig,
+                enableStartTrendShort: newVal,
+                enableStartTrend: !!activeConfig.enableStartTrendLong || newVal,
+                enableSidewaysShort: newVal,
+                enableSideways: (activeConfig.enableSidewaysLong !== false) || newVal,
+                enableShort: newVal,
+                enableLookbackFilter: (activeConfig.enableLong !== false) || newVal
+            });
+        } else {
+            // 独立模式
+            if (source === 'SIDEWAYS') {
+                updateField('enableSidewaysShort', newVal);
+            } else {
+                updateField('enableShort', newVal);
+            }
+        }
+    };
+
+    const handleQuickDirection = (mode: 'LONG_ONLY' | 'SHORT_ONLY' | 'BOTH') => {
+        if (mode === 'LONG_ONLY') {
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: true,
+                enableStartTrendShort: false,
+                enableStartTrend: true,
+                enableSidewaysLong: true,
+                enableSidewaysShort: false,
+                enableSideways: true,
+                enableLong: true,
+                enableShort: false,
+                enableLookbackFilter: true
+            });
+        } else if (mode === 'SHORT_ONLY') {
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: false,
+                enableStartTrendShort: true,
+                enableStartTrend: true,
+                enableSidewaysLong: false,
+                enableSidewaysShort: true,
+                enableSideways: true,
+                enableLong: false,
+                enableShort: true,
+                enableLookbackFilter: true
+            });
+        } else {
+            setConfig({
+                ...activeConfig,
+                enableStartTrendLong: true,
+                enableStartTrendShort: true,
+                enableStartTrend: true,
+                enableSidewaysLong: true,
+                enableSidewaysShort: true,
+                enableSideways: true,
+                enableLong: true,
+                enableShort: true,
+                enableLookbackFilter: true
+            });
+        }
+    };
+
+    const rawSidewaysGroups: SidewaysRuleGroup[] = activeConfig.sidewaysGroups && activeConfig.sidewaysGroups.length > 0
+        ? activeConfig.sidewaysGroups
+        : [
+            { id: 'g1', enabled: true, days: activeConfig.sidewaysDays || 7, maxDrop: activeConfig.sidewaysMaxDrop || 10, maxPump: activeConfig.sidewaysMaxPump || 10 }
+        ];
+
+    const updateSidewaysGroup = (index: number, partial: Partial<SidewaysRuleGroup>) => {
+        const next = [...rawSidewaysGroups];
+        next[index] = { ...next[index], ...partial };
+        const firstActive = next.find(g => g.enabled !== false) || next[0];
+        setConfig({
+            ...activeConfig,
+            sidewaysGroups: next,
+            sidewaysDays: firstActive.days,
+            sidewaysMaxDrop: firstActive.maxDrop,
+            sidewaysMaxPump: firstActive.maxPump
+        });
+    };
+
+    const addSidewaysGroup = () => {
+        if (rawSidewaysGroups.length >= 6) return;
+        const newDays = rawSidewaysGroups.length === 1 ? 3 : (rawSidewaysGroups.length === 2 ? 14 : (rawSidewaysGroups.length === 3 ? 1 : 30));
+        const newGroup: SidewaysRuleGroup = {
+            id: 'g_' + Date.now(),
+            enabled: true,
+            days: newDays,
+            maxDrop: 10,
+            maxPump: 10
+        };
+        const next = [...rawSidewaysGroups, newGroup];
+        setConfig({
+            ...activeConfig,
+            sidewaysGroups: next
+        });
+    };
+
+    const removeSidewaysGroup = (index: number) => {
+        if (rawSidewaysGroups.length <= 1) return;
+        const next = rawSidewaysGroups.filter((_, idx) => idx !== index);
+        const firstActive = next.find(g => g.enabled !== false) || next[0];
+        setConfig({
+            ...activeConfig,
+            sidewaysGroups: next,
+            sidewaysDays: firstActive.days,
+            sidewaysMaxDrop: firstActive.maxDrop,
+            sidewaysMaxPump: firstActive.maxPump
+        });
     };
 
     return (
@@ -170,6 +325,24 @@ export const MajorTrendSection: React.FC<Props> = ({
                         )}
                     </div>
 
+                    {/* 3组多空联动开关 */}
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            updateField('syncDirectionLock', !isSyncLocked);
+                        }}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[8.5px] font-bold border transition-colors ${
+                            isSyncLocked
+                                ? 'bg-indigo-950/80 border-indigo-500/80 text-indigo-300 shadow-sm'
+                                : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="3组过滤多空自动联动：行情启动趋势、横盘蓄势过滤、回溯周期过滤任意一项点击多/空，三个过滤全自动同步！"
+                    >
+                        {isSyncLocked ? <Link2 size={10} className="text-indigo-400" /> : <Unlink size={10} className="text-slate-500" />}
+                        <span>{isSyncLocked ? '3组联动' : '独立多空'}</span>
+                    </button>
+
                     {/* Integrated Switch */}
                     <button 
                         onClick={toggleEnabled}
@@ -203,58 +376,248 @@ export const MajorTrendSection: React.FC<Props> = ({
                         <InputField label="速率(币/分)" value={activeConfig.requestPerMinute} onChange={v => updateField('requestPerMinute', v)} />
                     </div>
 
-                    {/* Stage 1: Sideways Filter (横盘蓄势过滤) */}
-                    <div className="bg-black/20 p-2 rounded border border-slate-800/50 space-y-2.5">
-                        <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/60">
-                            <div className="flex flex-col">
-                                <span className="text-[9px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                                    Stage 1: 横盘蓄势过滤 (读取行情启动底池)
+                    {/* Stage 1: Sideways Filter (横盘蓄势过滤 - 多组支持 + OR/AND 组合) */}
+                    <div className="bg-black/20 p-2 rounded border border-slate-800/50 space-y-2">
+                        {/* Header Row */}
+                        <div className="flex items-center justify-between pb-1 border-b border-slate-800/60">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[9.5px] font-bold text-slate-300 uppercase tracking-wider">
+                                    Stage 1: 横盘蓄势过滤
                                 </span>
                                 <span className="text-[7.5px] text-slate-500">
-                                    读取【行情启动底池】数据，限制过去 Z 天内最高/最低点到当前价格的幅差，符合的进入【横盘蓄势过滤底池】
+                                    (读取行情启动底池数据)
                                 </span>
+                                {activeConfig.enableSideways && (
+                                    <span className="text-[8px] font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/50 px-1.5 py-0.2 rounded whitespace-nowrap">
+                                        {rawSidewaysGroups.filter(g => g.enabled !== false).length} 组生效
+                                    </span>
+                                )}
                             </div>
                             <button 
+                                type="button"
                                 onClick={() => updateField('enableSideways', !activeConfig.enableSideways)}
-                                className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableSideways ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                                className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none shrink-0 ${activeConfig.enableSideways ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                                title={activeConfig.enableSideways ? "关闭横盘蓄势过滤" : "开启横盘蓄势过滤"}
                             >
                                 <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform duration-200 ${activeConfig.enableSideways ? 'translate-x-[19px]' : 'translate-x-[3px]'}`} />
                             </button>
                         </div>
+
                         {activeConfig.enableSideways ? (
-                            <div className="grid grid-cols-3 gap-2 text-[9px]">
-                                <div className="bg-black/30 border border-slate-800/50 rounded p-1.5 flex flex-col justify-between h-[42px]">
-                                    <div className="text-[7.5px] text-slate-500 mb-0.5 font-semibold">观察周期 (Z天)</div>
-                                    <div className="flex items-center justify-between">
-                                        <SmartNumberInput 
-                                            value={activeConfig.sidewaysDays} 
-                                            onChange={v => updateField('sidewaysDays', v)}
-                                            className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-indigo-400 font-bold"
-                                        />
-                                        <span className="text-[8px] text-slate-500 font-bold ml-1">天</span>
+                            <div className="space-y-2">
+                                {/* Direction & Logic Mode Control Bar */}
+                                <div className="flex items-center justify-between bg-slate-950/40 px-2 py-1.5 rounded border border-slate-800/40">
+                                    {/* Direction Switches */}
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-tight">方向开关</span>
+                                        <div className="flex items-center gap-3">
+                                            {/* Long Switch */}
+                                            <div 
+                                                className="flex items-center gap-1.5 cursor-pointer select-none"
+                                                onClick={() => toggleLong('SIDEWAYS')}
+                                                title="横盘蓄势过滤 - 做多筛选开关"
+                                            >
+                                                <button 
+                                                    type="button"
+                                                    className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableSidewaysLong !== false ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                                                >
+                                                    <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform duration-200 ${activeConfig.enableSidewaysLong !== false ? 'translate-x-[19px]' : 'translate-x-[3px]'}`} />
+                                                </button>
+                                                <span className={`text-[9px] font-bold ${activeConfig.enableSidewaysLong !== false ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                                    多 (Long)
+                                                </span>
+                                            </div>
+
+                                            {/* Short Switch */}
+                                            <div 
+                                                className="flex items-center gap-1.5 cursor-pointer select-none"
+                                                onClick={() => toggleShort('SIDEWAYS')}
+                                                title="横盘蓄势过滤 - 做空筛选开关"
+                                            >
+                                                <button 
+                                                    type="button"
+                                                    className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableSidewaysShort !== false ? 'bg-rose-600' : 'bg-slate-700'}`}
+                                                >
+                                                    <span className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform duration-200 ${activeConfig.enableSidewaysShort !== false ? 'translate-x-[19px]' : 'translate-x-[3px]'}`} />
+                                                </button>
+                                                <span className={`text-[9px] font-bold ${activeConfig.enableSidewaysShort !== false ? 'text-rose-400' : 'text-slate-500'}`}>
+                                                    空 (Short)
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Multi-group Combination Logic */}
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-[8px] text-slate-500 font-medium">多组逻辑:</span>
+                                        <div className="flex items-center bg-slate-950 rounded border border-slate-700/80 p-0.5" title="多组横盘规则组合方式：'或'满足任一组入选，'且'必须全部满足共振">
+                                            <button
+                                                type="button"
+                                                onClick={() => updateField('sidewaysLogic', 'OR')}
+                                                className={`px-1.5 py-0.5 rounded text-[8px] font-bold transition-colors ${activeConfig.sidewaysLogic !== 'AND' ? 'bg-cyan-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                                            >
+                                                或 (OR)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => updateField('sidewaysLogic', 'AND')}
+                                                className={`px-1.5 py-0.5 rounded text-[8px] font-bold transition-colors ${activeConfig.sidewaysLogic === 'AND' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                                            >
+                                                且 (AND)
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
-                                <div className="bg-black/30 border border-slate-800/50 rounded p-1.5 flex flex-col justify-between h-[42px]">
-                                    <div className="text-[7.5px] text-slate-500 mb-0.5 font-semibold">跌幅上限 (X%)</div>
-                                    <div className="flex items-center justify-between">
-                                        <SmartNumberInput 
-                                            value={activeConfig.sidewaysMaxDrop} 
-                                            onChange={v => updateField('sidewaysMaxDrop', v)}
-                                            className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-rose-400 font-bold"
-                                        />
-                                        <span className="text-[8px] text-slate-500 font-bold ml-1">%</span>
-                                    </div>
+
+                                {/* Rule Groups List */}
+                                <div className="space-y-1.5">
+                                    {rawSidewaysGroups.map((group, gIdx) => {
+                                        const isGroupActive = group.enabled !== false;
+                                        return (
+                                            <div 
+                                                key={group.id || `group_${gIdx}`} 
+                                                className={`p-1.5 rounded border transition-colors ${isGroupActive ? 'bg-slate-900/60 border-slate-800' : 'bg-slate-950/30 border-slate-900 opacity-60'}`}
+                                            >
+                                                {/* Group Header */}
+                                                <div className="flex items-center justify-between pb-1 mb-1 border-b border-slate-800/40">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <input 
+                                                            type="checkbox"
+                                                            checked={isGroupActive}
+                                                            onChange={e => updateSidewaysGroup(gIdx, { enabled: e.target.checked })}
+                                                            className="w-3 h-3 rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                                                        />
+                                                        <span className="text-[9px] font-bold text-slate-200">
+                                                            横盘规则组 {gIdx + 1}
+                                                        </span>
+                                                        <span className="text-[7.5px] text-slate-500 font-mono">
+                                                            (多/空独立横盘振幅监测)
+                                                        </span>
+                                                    </div>
+                                                    {rawSidewaysGroups.length > 1 && (
+                                                        <button 
+                                                            type="button"
+                                                            onClick={() => removeSidewaysGroup(gIdx)}
+                                                            className="text-slate-500 hover:text-rose-400 p-0.5 rounded transition-colors"
+                                                            title="删除该规则组"
+                                                        >
+                                                            <Trash2 size={10} />
+                                                        </button>
+                                                    )}
+                                                </div>
+
+                                                {/* Independent Long & Short Setting Blocks */}
+                                                {isGroupActive ? (
+                                                    <div className="space-y-1.5 pt-0.5">
+                                                        {/* 做多横盘设置 */}
+                                                        {activeConfig.enableSidewaysLong !== false && (
+                                                            <div className="flex items-center gap-2 text-[9px] bg-black/30 p-1.5 rounded border border-emerald-900/30">
+                                                                <span className="text-emerald-400 font-bold shrink-0 w-[54px] flex items-center gap-1">
+                                                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                                                    做多横盘:
+                                                                </span>
+                                                                <div className="flex items-center gap-1 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800">
+                                                                    <span className="text-slate-500 text-[8px]">观察周期</span>
+                                                                    <SmartNumberInput 
+                                                                        value={group.daysLong ?? group.days} 
+                                                                        onChange={v => updateSidewaysGroup(gIdx, { daysLong: v, days: v })}
+                                                                        className="w-7 bg-transparent text-center outline-none text-indigo-400 font-bold font-mono"
+                                                                    />
+                                                                    <span className="text-slate-500 text-[8px]">天</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800">
+                                                                    <span className="text-slate-500 text-[8px]">跌幅 ≤</span>
+                                                                    <SmartNumberInput 
+                                                                        value={group.maxDropLong ?? group.maxDrop} 
+                                                                        onChange={v => updateSidewaysGroup(gIdx, { maxDropLong: v, maxDrop: v })}
+                                                                        className="w-7 bg-transparent text-center outline-none text-rose-400 font-bold font-mono"
+                                                                    />
+                                                                    <span className="text-slate-500 text-[8px]">%</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800">
+                                                                    <span className="text-slate-500 text-[8px]">涨幅 ≤</span>
+                                                                    <SmartNumberInput 
+                                                                        value={group.maxPumpLong ?? group.maxPump} 
+                                                                        onChange={v => updateSidewaysGroup(gIdx, { maxPumpLong: v, maxPump: v })}
+                                                                        className="w-7 bg-transparent text-center outline-none text-emerald-400 font-bold font-mono"
+                                                                    />
+                                                                    <span className="text-slate-500 text-[8px]">%</span>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* 做空横盘设置 */}
+                                                        {activeConfig.enableSidewaysShort !== false && (
+                                                            <div className="flex items-center gap-2 text-[9px] bg-black/30 p-1.5 rounded border border-rose-900/30">
+                                                                <span className="text-rose-400 font-bold shrink-0 w-[54px] flex items-center gap-1">
+                                                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                                                    做空横盘:
+                                                                </span>
+                                                                <div className="flex items-center gap-1 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800">
+                                                                    <span className="text-slate-500 text-[8px]">观察周期</span>
+                                                                    <SmartNumberInput 
+                                                                        value={group.daysShort ?? group.days} 
+                                                                        onChange={v => updateSidewaysGroup(gIdx, { daysShort: v })}
+                                                                        className="w-7 bg-transparent text-center outline-none text-indigo-400 font-bold font-mono"
+                                                                    />
+                                                                    <span className="text-slate-500 text-[8px]">天</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800">
+                                                                    <span className="text-slate-500 text-[8px]">跌幅 ≤</span>
+                                                                    <SmartNumberInput 
+                                                                        value={group.maxDropShort ?? group.maxDrop} 
+                                                                        onChange={v => updateSidewaysGroup(gIdx, { maxDropShort: v })}
+                                                                        className="w-7 bg-transparent text-center outline-none text-rose-400 font-bold font-mono"
+                                                                    />
+                                                                    <span className="text-slate-500 text-[8px]">%</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1 bg-slate-950/80 px-1.5 py-0.5 rounded border border-slate-800">
+                                                                    <span className="text-slate-500 text-[8px]">涨幅 ≤</span>
+                                                                    <SmartNumberInput 
+                                                                        value={group.maxPumpShort ?? group.maxPump} 
+                                                                        onChange={v => updateSidewaysGroup(gIdx, { maxPumpShort: v })}
+                                                                        className="w-7 bg-transparent text-center outline-none text-emerald-400 font-bold font-mono"
+                                                                    />
+                                                                    <span className="text-slate-500 text-[8px]">%</span>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {activeConfig.enableSidewaysLong === false && activeConfig.enableSidewaysShort === false && (
+                                                            <div className="text-[8.5px] text-slate-500 italic py-1 text-center bg-black/20 rounded border border-dashed border-slate-800">
+                                                                横盘蓄势多/空方向未开启（请在上方开启做多或做空）
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-[8.5px] text-slate-600 italic py-0.5 text-center">
+                                                        横盘规则组 {gIdx + 1} 处于停用状态
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
-                                <div className="bg-black/30 border border-slate-800/50 rounded p-1.5 flex flex-col justify-between h-[42px]">
-                                    <div className="text-[7.5px] text-slate-500 mb-0.5 font-semibold">涨幅上限 (Y%)</div>
-                                    <div className="flex items-center justify-between">
-                                        <SmartNumberInput 
-                                            value={activeConfig.sidewaysMaxPump} 
-                                            onChange={v => updateField('sidewaysMaxPump', v)}
-                                            className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-emerald-400 font-bold"
-                                        />
-                                        <span className="text-[8px] text-slate-500 font-bold ml-1">%</span>
-                                    </div>
+
+                                {/* Actions & Help Tip */}
+                                <div className="flex items-center justify-between pt-1 border-t border-slate-800/40 text-[8px]">
+                                    {rawSidewaysGroups.length < 5 ? (
+                                        <button
+                                            type="button"
+                                            onClick={addSidewaysGroup}
+                                            className="flex items-center gap-1 text-cyan-400 hover:text-cyan-300 font-semibold transition-colors bg-cyan-950/40 hover:bg-cyan-900/40 px-2 py-0.5 rounded border border-cyan-800/40"
+                                        >
+                                            <Plus size={10} /> 添加横盘规则组 ({rawSidewaysGroups.length}/5)
+                                        </button>
+                                    ) : (
+                                        <span className="text-slate-500">已达规则组上限 (5组)</span>
+                                    )}
+
+                                    <span className="text-slate-500 italic">
+                                        {activeConfig.sidewaysLogic === 'AND' 
+                                            ? '🔗 且(AND)模式：必须全部满足开启的规则组（多周期共振）' 
+                                            : '🎯 或(OR)模式：满足任意一组开启的规则即可入选'}
+                                    </span>
                                 </div>
                             </div>
                         ) : (
@@ -295,7 +658,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                             <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-tight">方向开关</span>
                             <div className="flex items-center gap-4">
                                 {/* Long Switch */}
-                                <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => updateField('enableLong', activeConfig.enableLong !== false ? false : true)}>
+                                <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => toggleLong('LOOKBACK')}>
                                     <button 
                                         className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableLong !== false ? 'bg-emerald-600' : 'bg-slate-700'}`}
                                     >
@@ -307,7 +670,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                                 </div>
 
                                 {/* Short Switch */}
-                                <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => updateField('enableShort', activeConfig.enableShort !== false ? false : true)}>
+                                <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => toggleShort('LOOKBACK')}>
                                     <button 
                                         className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors duration-200 focus:outline-none ${activeConfig.enableShort !== false ? 'bg-rose-600' : 'bg-slate-700'}`}
                                     >

@@ -3590,9 +3590,9 @@ export class MarketSimulator {
         this.isUpdatingIndicators = true;
         
         try {
-            const symbols = Array.from(new Set(this.positions.map(p => p.symbol)));
+            const symbols = Array.from(new Set(this.positions.filter(p => p && p.amount > 0.0001).map(p => p.symbol)));
             
-            // 分小批 (每批最多3个币) 发起请求，彻底避免瞬间并发打满浏览器/服务端网络连接池
+            // 分小批 (每批最多3个币) 发起低优先级请求，彻底避免瞬间并发打满网络连接池
             const BATCH_SIZE = 3;
             for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
                 const batch = symbols.slice(i, i + BATCH_SIZE);
@@ -3601,7 +3601,7 @@ export class MarketSimulator {
                         const rawSafe = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
                         const spotSafe = rawSafe.startsWith('1000') ? rawSafe.slice(4) : rawSafe;
                         const url = `https://data-api.binance.vision/api/v3/klines?symbol=${spotSafe}&interval=1h&limit=100`;
-                        const res = await fetchWithFallback(url, {}, undefined, this.settings.system.directMode);
+                        const res = await fetchWithFallback(url, { priority: 'LOW', timeout: 5000 }, undefined, this.settings.system.directMode);
                         const data = await res.json();
                         
                         if (Array.isArray(data) && data.length >= 80) {
@@ -3665,41 +3665,47 @@ export class MarketSimulator {
         this.isUpdatingEma = true;
         try {
             const now = Date.now();
-            for (const pos of this.positions) {
-                if (!pos.symbol || pos.symbol === 'USDT' || pos.symbol.trim() === '') continue;
-                // Skip if it's a hedge position (optional, but usually trend exit is for main positions)
-                if (pos.isHedged || pos.mainPositionId) continue;
+            // Deduplicate active positions to avoid redundant fetches when holding >20 positions
+            const validPositions = this.positions.filter(pos => 
+                pos && pos.symbol && pos.symbol !== 'USDT' && pos.symbol.trim() !== '' && 
+                pos.amount > 0.0001 && !pos.isHedged && !pos.mainPositionId
+            );
+            
+            const BATCH_SIZE = 3;
+            for (let i = 0; i < validPositions.length; i += BATCH_SIZE) {
+                const batch = validPositions.slice(i, i + BATCH_SIZE);
+                await Promise.all(batch.map(async (pos) => {
+                    try {
+                        let tf = atrSettings.emaTimeframe;
+                        if (tf === 'AUTO') {
+                            tf = this.getAutoTimeframe(pos.signalTf || '15m');
+                        }
 
-                try {
-                    let tf = atrSettings.emaTimeframe;
-                    if (tf === 'AUTO') {
-                        tf = this.getAutoTimeframe(pos.signalTf || '15m');
-                    }
+                        const safeSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
+                        const spotSafe = safeSymbol.startsWith('1000') ? safeSymbol.slice(4) : safeSymbol;
+                        const cacheKey = `${safeSymbol}_${tf}_${atrSettings.emaPeriod}`;
+                        
+                        const cached = this.emaCacheMap.get(cacheKey);
+                        if (cached && (now - cached.time < 60000)) {
+                            pos.currentEmaValue = cached.value;
+                            return;
+                        }
 
-                    const safeSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
-                    const spotSafe = safeSymbol.startsWith('1000') ? safeSymbol.slice(4) : safeSymbol;
-                    const cacheKey = `${safeSymbol}_${tf}_${atrSettings.emaPeriod}`;
-                    
-                    const cached = this.emaCacheMap.get(cacheKey);
-                    if (cached && (now - cached.time < 60000)) {
-                        pos.currentEmaValue = cached.value;
-                        continue;
+                        const url = `https://data-api.binance.vision/api/v3/klines?symbol=${spotSafe}&interval=${tf}&limit=120`;
+                        const res = await fetchWithFallback(url, { priority: 'LOW', timeout: 5000 }, undefined, this.settings.system.directMode);
+                        const data = await res.json();
+                        
+                        if (Array.isArray(data)) {
+                            // Exclude the current live candle (last one) to avoid EMI drift
+                            const closes = data.slice(0, -1).map((d: any) => parseFloat(d[4]));
+                            const emaValue = getLatestEMA(closes, atrSettings.emaPeriod);
+                            pos.currentEmaValue = emaValue;
+                            this.emaCacheMap.set(cacheKey, { value: emaValue, time: now });
+                        }
+                    } catch (error) {
+                        // Silent fail to avoid spamming logs
                     }
-
-                    const url = `https://data-api.binance.vision/api/v3/klines?symbol=${spotSafe}&interval=${tf}&limit=120`;
-                    const res = await fetchWithFallback(url, {}, undefined, this.settings.system.directMode);
-                    const data = await res.json();
-                    
-                    if (Array.isArray(data)) {
-                        // Exclude the current live candle (last one) to avoid EMI drift
-                        const closes = data.slice(0, -1).map((d: any) => parseFloat(d[4]));
-                        const emaValue = getLatestEMA(closes, atrSettings.emaPeriod);
-                        pos.currentEmaValue = emaValue;
-                        this.emaCacheMap.set(cacheKey, { value: emaValue, time: now });
-                    }
-                } catch (error) {
-                    // Silent fail to avoid spamming logs
-                }
+                }));
             }
         } finally {
             this.isUpdatingEma = false;
@@ -3767,6 +3773,20 @@ export class MarketSimulator {
             if (triggered) return true; // Global close clears unhedged, return immediately
         }
 
+        // Pre-index positions by symbol for O(1) instant opposing lookup when holding 20+ positions
+        const posBySymbolMap = new Map<string, Position[]>();
+        for (let k = 0; k < this.positions.length; k++) {
+            const p = this.positions[k];
+            if (!p || !p.symbol) continue;
+            const sym = normalizeSymbol(p.symbol);
+            let arr = posBySymbolMap.get(sym);
+            if (!arr) {
+                arr = [];
+                posBySymbolMap.set(sym, arr);
+            }
+            arr.push(p);
+        }
+
         // 2. Check Individual Position Rules
         // We iterate backwards to safely remove items while iterating
         for (let i = this.positions.length - 1; i >= 0; i--) {
@@ -3785,8 +3805,8 @@ export class MarketSimulator {
             // 🔒【对冲与救世周期绝对单边平仓铁律】：
             // 凡是该币种存在反向活跃仓位 (双向持仓)、处于对冲状态 (isHedged)、处于被砍仓待回踩状态 (isAmputated / amputatedAmount > 0)、处于对冲周期集合中、或作为对冲从仓 (mainPositionId)，
             // 模块1常规止盈止损 / 单边安全清仓 一律 100% 物理失效！绝对严禁擅自单平一方（包括砍仓剩余的10%底仓）导致另一方沦为孤儿单！
-            const hasActiveOpposing = this.positions.some(p => 
-                normalizeSymbol(p.symbol) === symbolKey && 
+            const sameSymPositions = posBySymbolMap.get(symbolKey) || [];
+            const hasActiveOpposing = sameSymPositions.some(p => 
                 p.side !== position.side && 
                 p.amount > 0.0001
             );
@@ -3864,8 +3884,8 @@ export class MarketSimulator {
             }
 
             // Check if position is actually protected by an opposing hedge
-            const hasOpposingHedge = this.positions.some(p => 
-                normalizeSymbol(p.symbol) === symbolKey && 
+            const sameSymPositions = posBySymbolMap.get(symbolKey) || [];
+            const hasOpposingHedge = sameSymPositions.some(p => 
                 p.side !== position.side && 
                 p.amount > 0
             );
@@ -3934,8 +3954,8 @@ export class MarketSimulator {
             if (!hasPrice) continue;
 
             // Check if active opposing hedge exists
-            const hasOpposingHedge = this.positions.some(p => 
-                normalizeSymbol(p.symbol) === symbolKey && 
+            const sameSymPositions = posBySymbolMap.get(symbolKey) || [];
+            const hasOpposingHedge = sameSymPositions.some(p => 
                 p.side !== position.side && 
                 p.amount > 0
             );
