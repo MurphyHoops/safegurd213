@@ -23,7 +23,7 @@ function cleanSymbol(s) {
     let clean = s.toUpperCase().trim();
     clean = clean.replace(/_PREP$/, '');
     clean = clean.replace(/USDT$/, '');
-    clean = clean.replace(/[^A-Z0-9]/g, '');
+    clean = clean.replace(/[^A-Z0-9\u4e00-\u9fa5]/g, '');
     return clean;
 }
 

@@ -8,10 +8,11 @@ import { audioService } from '../../services/audioService';
 import { calculateEMA } from '../../services/indicators';
 import { pipelineCoordinator } from '../../services/pipelineQueue';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../services/volume8amService';
+import { klineDailyStore } from '../../services/klineDailyStore';
 
 
 // Helper for fast, isolated, non-blocking klines fetching through official proxy endpoints with hard abort timeout
-const safeFetchKlinesDirect = async (targetUrl: string, timeoutMs = 2500, externalSignal?: AbortSignal): Promise<any[] | null> => {
+const safeFetchKlinesDirect = async (targetUrl: string, timeoutMs = 10000, externalSignal?: AbortSignal): Promise<any[] | null> => {
     const controller = new AbortController();
     const timer = setTimeout(() => {
         try { controller.abort(); } catch (_) {}
@@ -60,10 +61,22 @@ export const useScannerLogic = (
     // --- ATOMIC STATE ---
     const [list1, setList1] = useState<ScannerItem[]>(() => {
         try {
+            // 🔒 固定选币模式：若尚未配置监控币种，初筛列表默认为 0 清空状态
+            if (initialConfig.useCustomOnly && fixedModeView === 'MONITOR') {
+                if (!customSymbolSet || customSymbolSet.size === 0) {
+                    return [];
+                }
+            }
             const saved = localStorage.getItem(list1CacheKey);
             const parsed = saved ? JSON.parse(saved) : [];
             const initialList = Array.isArray(parsed) ? parsed : [];
             
+            // 🔒 固定选币模式下仅加载自定义监控币种
+            if (initialConfig.useCustomOnly && fixedModeView === 'MONITOR') {
+                const customUpper = new Set(Array.from(customSymbolSet).map(s => s.toUpperCase()));
+                return initialList.filter(item => item && item.symbol && customUpper.has(item.symbol.replace('USDT', '').toUpperCase()));
+            }
+
             // Apply initial blacklist filtering
             const savedBlacklist = localStorage.getItem(blacklistKey);
             if (savedBlacklist) {
@@ -212,7 +225,8 @@ export const useScannerLogic = (
     // --- RATE LIMIT & BAN PROTECTION ---
     const bannedUntilRef = useRef<number>(0);
     const lastFetchFinishedTimeRef = useRef<number>(0);
-    const MIN_FETCH_GAP = 10000; // 10 seconds minimum between fetches
+    // 🔒 [零延迟毫秒级流式响应]: 取消10秒限制，设为极速500ms防抖保护
+    const MIN_FETCH_GAP = 500; // 500ms minimal debounce for ultra-low latency streaming
     const BAN_DURATION = 10 * 60 * 1000; // 10 minutes cool-off if hit 418
     
     // STRICT CONCURRENCY LOCK (The OOM Killer Fix)
@@ -381,19 +395,22 @@ export const useScannerLogic = (
                     }
                 });
 
-                // Apply volume rules (both 24H and 8AM) strictly
-                let finalCandidates = filtered.filter(item => checkVolumeRule(item, initialConfig));
-                if (initialConfig.enableVol8am) {
-                    const minChange = initialConfig.minChange || 0;
-                    const source = initialConfig.source || 'BOTH';
+                // Apply volume rules (both 24H and 8AM) strictly (ONLY for auto-screening mode)
+                let finalCandidates = filtered;
+                if (!initialConfig.useCustomOnly || fixedModeView === 'SEARCH') {
+                    finalCandidates = filtered.filter(item => checkVolumeRule(item, initialConfig));
+                    if (initialConfig.enableVol8am) {
+                        const minChange = initialConfig.minChange || 0;
+                        const source = initialConfig.source || 'BOTH';
 
-                    finalCandidates = finalCandidates.filter(item => {
-                        const effectiveChange = item.change8am !== undefined ? item.change8am : 0;
-                        if (source === 'GAINERS' && effectiveChange <= 0) return false;
-                        if (source === 'LOSERS' && effectiveChange >= 0) return false;
-                        if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
-                        return true;
-                    });
+                        finalCandidates = finalCandidates.filter(item => {
+                            const effectiveChange = item.change8am !== undefined ? item.change8am : 0;
+                            if (source === 'GAINERS' && effectiveChange <= 0) return false;
+                            if (source === 'LOSERS' && effectiveChange >= 0) return false;
+                            if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
+                            return true;
+                        });
+                    }
                 }
 
                 // APPLY SMART ANALYSIS IF IN SMART MODE
@@ -430,44 +447,58 @@ export const useScannerLogic = (
                         setList1(finalFiltered);
                         list1Ref.current = finalFiltered;
                     }
-                } else if (list1Ref.current.length === 0) {
-                    setList1([]);
+                } else {
+                    if (list1Ref.current.length > 0) {
+                        setList1([]);
+                        list1Ref.current = [];
+                    }
                 }
                 
                 // Update status text to reflect new count if not currently scanning
                 setScanStatusText(prev => {
-                    const newText = finalFiltered.length > 0 ? (mode === 'SMART' ? `智能分析完成 (${finalFiltered.length}个)` : `行情就绪 (${finalFiltered.length}个)`) : "无符合条件的币种";
+                    const newText = initialConfig.useCustomOnly && fixedModeView === 'MONITOR'
+                        ? (finalFiltered.length > 0 ? `固定选币就绪 (${finalFiltered.length}个)` : `固定选币：初筛为空 (0个)`)
+                        : (finalFiltered.length > 0 ? (mode === 'SMART' ? `智能分析完成 (${finalFiltered.length}个)` : `行情就绪 (${finalFiltered.length}个)`) : "无符合条件的币种");
                     if (prev === newText) return prev;
-                    if (prev.includes('行情就绪') || prev.includes('无符合条件') || prev.includes('分析完成')) {
+                    if (prev.includes('行情就绪') || prev.includes('无符合条件') || prev.includes('分析完成') || prev.includes('固定选币')) {
                         return newText;
                     }
                     return prev;
                 });
             } else if (list1 && Array.isArray(list1) && list1.length > 0) {
-                const filtered = list1.filter(item => {
-                    if (!item || !item.symbol) return false;
-                    if (blacklist.has(item.symbol)) return false;
-                    
-                    const vol = item.volume24h || 0;
-                    if (initialConfig.minVolume > 0 && vol < initialConfig.minVolume) return false;
-                    if (initialConfig.maxVolume > 0 && vol > initialConfig.maxVolume) return false;
-                    
-                    // In Major Trend Discovery Mode, we bypass standard daily change and direction filters
-                    // so we do not clear out the raw candidates if the discovery scan hasn't run or is empty.
-                    if (initialConfig.majorTrend?.enabled) {
-                        return true;
+                if (initialConfig.useCustomOnly && fixedModeView === 'MONITOR') {
+                    const customUpper = new Set(Array.from(customSymbolSet).map(s => s.toUpperCase()));
+                    const filtered = list1.filter(item => item && item.symbol && customUpper.has(item.symbol.replace('USDT', '').toUpperCase()) && !blacklist.has(item.symbol));
+                    if (JSON.stringify(filtered) !== JSON.stringify(list1Ref.current)) {
+                        setList1(filtered);
+                        list1Ref.current = filtered;
                     }
+                } else {
+                    const filtered = list1.filter(item => {
+                        if (!item || !item.symbol) return false;
+                        if (blacklist.has(item.symbol)) return false;
+                        
+                        const vol = item.volume24h || 0;
+                        if (initialConfig.minVolume > 0 && vol < initialConfig.minVolume) return false;
+                        if (initialConfig.maxVolume > 0 && vol > initialConfig.maxVolume) return false;
+                        
+                        // In Major Trend Discovery Mode, we bypass standard daily change and direction filters
+                        // so we do not clear out the raw candidates if the discovery scan hasn't run or is empty.
+                        if (initialConfig.majorTrend?.enabled) {
+                            return true;
+                        }
 
-                    const chg = item.change || 0;
-                    if (initialConfig.source === 'GAINERS' && chg <= 0) return false;
-                    if (initialConfig.source === 'LOSERS' && chg >= 0) return false;
-                    if (initialConfig.minChange > 0 && initialConfig.minVolume > 0 && Math.abs(chg) < initialConfig.minChange) return false;
-                    return true;
-                });
+                        const chg = item.change || 0;
+                        if (initialConfig.source === 'GAINERS' && chg <= 0) return false;
+                        if (initialConfig.source === 'LOSERS' && chg >= 0) return false;
+                        if (initialConfig.minChange > 0 && initialConfig.minVolume > 0 && Math.abs(chg) < initialConfig.minChange) return false;
+                        return true;
+                    });
 
-                if (JSON.stringify(filtered) !== JSON.stringify(list1Ref.current)) {
-                    setList1(filtered);
-                    list1Ref.current = filtered;
+                    if (JSON.stringify(filtered) !== JSON.stringify(list1Ref.current)) {
+                        setList1(filtered);
+                        list1Ref.current = filtered;
+                    }
                 }
             }
         } catch (err) {
@@ -618,59 +649,72 @@ export const useScannerLogic = (
                 fixedModeViewRef.current
             );
 
-            // Filter by 8AM volume if enabled
+            // Filter by 8AM volume if enabled (ONLY for auto-screening mode)
             let finalCandidates = filtered;
-            if (configRef.current.enableVol8am) {
-                // Fetch 1d klines concurrently to fill volume8am and compute change8am for candidates only when enabled
-                await Promise.all(filtered.map(async (item) => {
-                    const cached = volume8amCacheRef.current.get(item.symbol);
-                    let vol8am = 0;
-                    let openPrice8am = 0;
-                    if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
-                        vol8am = cached.volume;
-                        openPrice8am = cached.openPrice || 0;
-                    } else {
-                        try {
-                            const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
-                            const klines1d = await safeFetchKlinesDirect(url1d, 3000);
-                            if (Array.isArray(klines1d) && klines1d.length > 0) {
-                                // index 7 is quote asset volume (USDT volume), index 1 is open price
-                                vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
-                                openPrice8am = parseFloat(klines1d[0][1]) || 0;
-                                volume8amCacheRef.current.set(item.symbol, { volume: vol8am, openPrice: openPrice8am, timestamp: nowTime });
+            if (!configRef.current.useCustomOnly || fixedModeViewRef.current === 'SEARCH') {
+                if (configRef.current.enableVol8am) {
+                    // Fetch 1d klines concurrently to fill volume8am and compute change8am for candidates only when enabled
+                    await Promise.all(filtered.map(async (item) => {
+                        const cached = volume8amCacheRef.current.get(item.symbol);
+                        let vol8am = 0;
+                        let openPrice8am = 0;
+                        if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
+                            vol8am = cached.volume;
+                            openPrice8am = cached.openPrice || 0;
+                        } else {
+                            try {
+                                const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
+                                const klines1d = await safeFetchKlinesDirect(url1d, 3000);
+                                if (Array.isArray(klines1d) && klines1d.length > 0) {
+                                    // index 7 is quote asset volume (USDT volume), index 1 is open price
+                                    vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
+                                    openPrice8am = parseFloat(klines1d[0][1]) || 0;
+                                    volume8amCacheRef.current.set(item.symbol, { volume: vol8am, openPrice: openPrice8am, timestamp: nowTime });
+                                }
+                            } catch (err) {
+                                console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
+                                vol8am = cached ? cached.volume : (item.volume24h !== undefined ? item.volume24h : 0);
+                                openPrice8am = cached?.openPrice || 0;
                             }
-                        } catch (err) {
-                            console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
-                            vol8am = cached ? cached.volume : (item.volume24h !== undefined ? item.volume24h : 0);
-                            openPrice8am = cached?.openPrice || 0;
+                        }
+                        item.volume8am = vol8am;
+                        if (openPrice8am > 0 && item.price > 0) {
+                            item.change8am = ((item.price - openPrice8am) / openPrice8am) * 100;
+                        } else {
+                            item.change8am = undefined;
+                        }
+                    }));
+
+                    const minVol8am = configRef.current.minVolume8am ?? 0;
+                    const maxVol8am = configRef.current.maxVolume8am ?? 0;
+                    const minChange = configRef.current.minChange || 0;
+                    const source = configRef.current.source || 'BOTH';
+
+                    finalCandidates = filtered.filter(item => {
+                        const rawVol8am = item.volume8am;
+                        const cached = volume8amCacheRef.current.get(item.symbol);
+                        const vol8am = rawVol8am !== undefined ? rawVol8am : (cached ? cached.volume : getVolume8am(item.symbol)?.volume8am);
+                        if (minVol8am > 0 && (vol8am === undefined || vol8am < minVol8am)) return false;
+                        if (maxVol8am > 0 && vol8am !== undefined && vol8am > maxVol8am) return false;
+
+                        const effectiveChange = item.change8am !== undefined ? item.change8am : (item.change || 0);
+                        if (source === 'GAINERS' && effectiveChange <= 0) return false;
+                        if (source === 'LOSERS' && effectiveChange >= 0) return false;
+                        if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
+
+                        return true;
+                    });
+                }
+            } else {
+                // In Fixed Selection Mode (MONITOR), fill basic volume8am/change8am if cached but do not filter
+                filtered.forEach(item => {
+                    const cached = volume8amCacheRef.current.get(item.symbol);
+                    if (cached) {
+                        item.volume8am = cached.volume;
+                        if (cached.openPrice > 0 && item.price > 0) {
+                            item.change8am = ((item.price - cached.openPrice) / cached.openPrice) * 100;
                         }
                     }
-                    item.volume8am = vol8am;
-                    if (openPrice8am > 0 && item.price > 0) {
-                        item.change8am = ((item.price - openPrice8am) / openPrice8am) * 100;
-                    } else {
-                        item.change8am = undefined;
-                    }
-                }));
-
-                const minVol8am = configRef.current.minVolume8am ?? 0;
-                const maxVol8am = configRef.current.maxVolume8am ?? 0;
-                const minChange = configRef.current.minChange || 0;
-                const source = configRef.current.source || 'BOTH';
-
-                finalCandidates = filtered.filter(item => {
-                    const rawVol8am = item.volume8am;
-                    const cached = volume8amCacheRef.current.get(item.symbol);
-                    const vol8am = rawVol8am !== undefined ? rawVol8am : (cached ? cached.volume : getVolume8am(item.symbol)?.volume8am);
-                    if (minVol8am > 0 && (vol8am === undefined || vol8am < minVol8am)) return false;
-                    if (maxVol8am > 0 && vol8am !== undefined && vol8am > maxVol8am) return false;
-
-                    const effectiveChange = item.change8am !== undefined ? item.change8am : (item.change || 0);
-                    if (source === 'GAINERS' && effectiveChange <= 0) return false;
-                    if (source === 'LOSERS' && effectiveChange >= 0) return false;
-                    if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
-
-                    return true;
                 });
             }
 
@@ -699,11 +743,18 @@ export const useScannerLogic = (
                     setList1(finalFiltered);
                     list1Ref.current = finalFiltered;
                 }
-            } else if (list1Ref.current.length === 0) {
-                setList1([]);
+            } else {
+                if (list1Ref.current.length > 0) {
+                    setList1([]);
+                    list1Ref.current = [];
+                }
             }
             
-            setScanStatusText(finalFiltered.length > 0 ? (modeRef.current === 'SMART' ? `智能分析完成 (${finalFiltered.length}个)` : `行情就绪 (${finalFiltered.length}个)`) : "无符合条件的币种");
+            setScanStatusText(
+                configRef.current.useCustomOnly && fixedModeViewRef.current === 'MONITOR'
+                    ? (finalFiltered.length > 0 ? `固定选币就绪 (${finalFiltered.length}个)` : `固定选币：初筛为空 (0个)`)
+                    : (finalFiltered.length > 0 ? (modeRef.current === 'SMART' ? `智能分析完成 (${finalFiltered.length}个)` : `行情就绪 (${finalFiltered.length}个)`) : "无符合条件的币种")
+            );
             if (wasForceFullRef.current) {
                 setIsScanning(false);
                 wasForceFullRef.current = false;
@@ -999,15 +1050,14 @@ export const useScannerLogic = (
 
         // =========================================================================
         // 🔒【第一阶段: 横盘蓄势过滤 - 扫描行情启动底池 / 向上级底池获取数据】
-        // ⚡ [6协程高并发流水线]: 无论输入是 10 个币还是 250 个币，均在 1~2 秒内全量扫完
+        // 按照用户设定的（X）秒钟逐币过滤推进，平稳展示与过滤每个币种
         // =========================================================================
-        const CONCURRENCY = 6;
-        let targetIdx = 0;
         let processedGroup1Count = 0;
+        const successfullyEvaluatedSymbols = new Set<string>();
 
         const processStage1Coin = async (symbol: string) => {
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) return;
-            const maxWorkTime = 1800;
+            const maxWorkTime = 12000;
 
             const coinAbortController = new AbortController();
             let coinTimeoutId: any = null;
@@ -1015,32 +1065,47 @@ export const useScannerLogic = (
                 await Promise.race([
                     (async () => {
                         const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
-                        const limit = timeParam + 20;
+                        const limit = Math.min(timeParam + 20, 350);
                         let klines: any[] | null = null;
 
                         const nowTime = Date.now();
                         const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
-                        // ⚡ [日K极速扫描方案]: 10分钟长效缓存 + 跨模块日K复用，零冗余拉取
-                        if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < 600000)) {
-                            klines = KLINE_LIMIT_CACHE[symbol][timeParam].klines;
-                        } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[timeParam]?.klines && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][timeParam].timestamp || 0) < 600000)) {
-                            klines = KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines;
-                        } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= timeParam) {
-                            klines = KLINE_LIMIT_CACHE[`${symbol}_1d`];
-                        } else if (KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && KLINE_LIMIT_CACHE[`${safeSymbol}_1d`].length >= timeParam) {
-                            klines = KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
-                        } else if (KLINE_LIMIT_CACHE[symbol]?.['1d']?.klines && KLINE_LIMIT_CACHE[symbol]['1d'].klines.length >= timeParam && (nowTime - (KLINE_LIMIT_CACHE[symbol]['1d'].timestamp || 0) < 600000)) {
-                            klines = KLINE_LIMIT_CACHE[symbol]['1d'].klines;
-                        } else if (KLINE_LIMIT_CACHE[safeSymbol]?.['1d']?.klines && KLINE_LIMIT_CACHE[safeSymbol]['1d'].klines.length >= timeParam && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol]['1d'].timestamp || 0) < 600000)) {
-                            klines = KLINE_LIMIT_CACHE[safeSymbol]['1d'].klines;
+
+                        // ⚡ [日K全天常驻持久化缓存]: 优先从 24小时持久化存储中秒级命中 (0毫秒响应，解决冷启动丢币)
+                        const storedKlines = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
+                        if (storedKlines && Array.isArray(storedKlines) && storedKlines.length >= 2) {
+                            klines = storedKlines;
+                        } else {
+                            const CACHE_VALIDITY_1D = 86400000;
+                            if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][timeParam].klines) && KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                                klines = KLINE_LIMIT_CACHE[symbol][timeParam].klines;
+                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines) && KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                                klines = KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines;
+                            } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= 2) {
+                                klines = KLINE_LIMIT_CACHE[`${symbol}_1d`];
+                            } else if (KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && KLINE_LIMIT_CACHE[`${safeSymbol}_1d`].length >= 2) {
+                                klines = KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
+                            } else if (KLINE_LIMIT_CACHE[symbol]?.['1d']?.klines && KLINE_LIMIT_CACHE[symbol]['1d'].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[symbol]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                                klines = KLINE_LIMIT_CACHE[symbol]['1d'].klines;
+                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.['1d']?.klines && KLINE_LIMIT_CACHE[safeSymbol]['1d'].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                                klines = KLINE_LIMIT_CACHE[safeSymbol]['1d'].klines;
+                            }
                         }
 
-                        if (!klines || !Array.isArray(klines) || klines.length === 0) {
+                        if (!klines || !Array.isArray(klines) || klines.length < 2) {
                             const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}&isScanner=true`;
-                            klines = await safeFetchKlinesDirect(url, maxWorkTime, coinAbortController.signal);
+                            klines = await safeFetchKlinesDirect(url, 10000, coinAbortController.signal);
+                            if (!klines || klines.length < 2) {
+                                // 失败时自动重试一次，杜绝偶发网络抖动遗漏币种
+                                klines = await safeFetchKlinesDirect(url, 10000, coinAbortController.signal);
+                            }
                         }
                 
                         if (Array.isArray(klines) && klines.length >= 2) {
+                            // 同步写入持久化存储
+                            klineDailyStore.saveKlines(safeSymbol, klines);
+                            klineDailyStore.saveKlines(symbol, klines);
+
                             if (!KLINE_LIMIT_CACHE[symbol]) KLINE_LIMIT_CACHE[symbol] = {};
                             if (!KLINE_LIMIT_CACHE[safeSymbol]) KLINE_LIMIT_CACHE[safeSymbol] = {};
                             KLINE_LIMIT_CACHE[symbol][timeParam] = { timestamp: Date.now(), klines };
@@ -1049,6 +1114,14 @@ export const useScannerLogic = (
                             KLINE_LIMIT_CACHE[safeSymbol]['1d'] = { timestamp: Date.now(), klines };
                             KLINE_LIMIT_CACHE[`${symbol}_1d`] = klines;
                             KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] = klines;
+
+                            // 标记成功获取数据并完成第一阶段评估
+                            successfullyEvaluatedSymbols.add(symbol);
+                            successfullyEvaluatedSymbols.add(safeSymbol);
+                            successfullyEvaluatedSymbols.add(`${safeSymbol}_LONG`);
+                            successfullyEvaluatedSymbols.add(`${safeSymbol}_SHORT`);
+                            successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
+                            successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
 
                             const periodKlines = klines.slice(-timeParam);
                             const highs = periodKlines.map((k: any) => parseFloat(k[2]));
@@ -1196,17 +1269,33 @@ export const useScannerLogic = (
             }
         };
 
-        // 🔒 严格限制横盘蓄势扫描步进速度：严格按照大行情发现设置中的“时间(秒)”进行扫描
-        for (let targetIdx = 0; targetIdx < targetSymbols.length; targetIdx++) {
+        // 🔒 严格按照设定的时间(秒)逐币稳定推进：消除瞬态并发闪退，确保单币可感知、稳健过滤
+        for (let i = 0; i < targetSymbols.length; i++) {
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
-            const currentSym = targetSymbols[targetIdx];
+
+            // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
+            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
+
+            const currentSym = targetSymbols[i];
             const stepStart = Date.now();
             await processStage1Coin(currentSym);
-            
+
             const elapsed = Date.now() - stepStart;
             const remaining = Math.max(0, perCoinDelayMs - elapsed);
-            if (remaining > 0 && targetIdx < targetSymbols.length - 1 && isMountedRef.current && !majorScanAbortRef.current) {
-                await new Promise(resolve => setTimeout(resolve, remaining));
+            if (remaining > 0 && i < targetSymbols.length - 1 && isMountedRef.current && !majorScanAbortRef.current) {
+                const delayStart = Date.now();
+                while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
+                    if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
+                        while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                            await new Promise(resolve => setTimeout(resolve, 200));
+                        }
+                        break;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining)));
+                }
             }
         }
 
@@ -1282,6 +1371,14 @@ export const useScannerLogic = (
             for (let s2Idx = 0; s2Idx < totalStage2; s2Idx++) {
                 if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
                 if (majorScanAbortRef.current) break;
+
+                // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
+                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
+                if (majorScanAbortRef.current) break;
+
                 const item = stage1PassedItems[s2Idx];
                 const symbol = item.symbol;
                 const s2CycleStart = Date.now();
@@ -1410,6 +1507,10 @@ export const useScannerLogic = (
                     stage2LimitsMap[symbol] = { maxZ, minZ };
                 }
 
+                successfullyEvaluatedSymbols.add(symbol);
+                successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
+                successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
+
                 // 仅更新扫描进度显示，绝不在此处触发初筛列表的增减更新
                 if (isMountedRef.current) {
                     setMajorProgress({
@@ -1430,7 +1531,16 @@ export const useScannerLogic = (
                 const elapsed = Date.now() - s2CycleStart;
                 const remaining = Math.max(0, perCoinDelayMs - elapsed);
                 if (remaining > 0 && s2Idx < totalStage2 - 1 && isMountedRef.current && !majorScanAbortRef.current) {
-                    await new Promise(resolve => setTimeout(resolve, remaining));
+                    const delayStart = Date.now();
+                    while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
+                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
+                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                                await new Promise(resolve => setTimeout(resolve, 200));
+                            }
+                            break;
+                        }
+                        await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining)));
+                    }
                 }
             }
         }
@@ -1441,21 +1551,32 @@ export const useScannerLogic = (
         // 1. 如果新过滤结果减少了，初筛列表精准减去少的那一个/几个；
         // 2. 如果新过滤结果增加了，初筛列表精准加上多的那一个/几个；
         // 3. 既有依然符合的币种保持平稳，一次性完成原子差量对齐更新！
+        // 4. 🔒【防误杀保护盾】: 只有明确获取K线并计算判定不符合的币才被移除，因网络超时未评估的币保留！
         // =========================================================================
         if (isMountedRef.current && !majorScanAbortRef.current) {
             const previousCandidates = majorTrendCandidatesRef.current ? Array.from(majorTrendCandidatesRef.current) : [];
-            const newCandidates = Array.from(stage2PassedSymbols);
+            
+            // 🔒【差量更新防误杀保护盾】:
+            // 只有被系统成功拉取K线并明确计算判定不符合条件的币，才从初筛列表剔除；
+            // 若因偶发网络超时/抖动未能完成计算评估的币，100% 稳妥保留在初筛池中，绝不突然骤降或清零！
+            const unEvaluatedPrevious = previousCandidates.filter(prevCand => {
+                const baseSym = prevCand.replace(/_LONG$|_SHORT$/i, '');
+                return !successfullyEvaluatedSymbols.has(prevCand) && !successfullyEvaluatedSymbols.has(baseSym);
+            });
+
+            const combinedCandidates = Array.from(new Set([...Array.from(stage2PassedSymbols), ...unEvaluatedPrevious]));
+            const newCandidates = combinedCandidates;
 
             const prevSet = new Set(previousCandidates);
-            const newSet = new Set(newCandidates);
+            const newSet = new Set(combinedCandidates);
 
             const added = newCandidates.filter(x => !prevSet.has(x));
             const removed = previousCandidates.filter(x => !newSet.has(x));
             const retained = previousCandidates.filter(x => newSet.has(x));
 
-            console.log(`[MajorTrendDiscovery] 回溯周期过滤全量完成！初筛差量比对: 原有 ${previousCandidates.length} 个 -> 本轮 ${newCandidates.length} 个 (保留: ${retained.length} 个, 增加: +${added.length} 个 [${added.join(', ')}], 减去: -${removed.length} 个 [${removed.join(', ')}])`);
+            console.log(`[MajorTrendDiscovery] 回溯周期过滤全量完成！初筛差量比对: 原有 ${previousCandidates.length} 个 -> 本轮 ${newCandidates.length} 个 (保留: ${retained.length} 个, 增加: +${added.length} 个 [${added.join(', ')}], 减去: -${removed.length} 个 [${removed.join(', ')}], 保护未完成评估币: ${unEvaluatedPrevious.length} 个)`);
 
-            const finalSet = new Set(stage2PassedSymbols);
+            const finalSet = new Set(combinedCandidates);
             setMajorTrendCandidates(finalSet);
             majorTrendCandidatesRef.current = finalSet;
             setMajorTrendLimits(stage2LimitsMap);

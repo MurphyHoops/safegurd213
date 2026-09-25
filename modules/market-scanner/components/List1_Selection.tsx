@@ -413,8 +413,8 @@ const List1_Selection: React.FC<Props> = ({
             }
         });
 
-        // 补齐行情启动底池中的币种及属性
-        if (startTrendPool && startTrendPool.length > 0) {
+        // 补齐行情启动底池中的币种及属性 (仅在非固定选币模式下生效)
+        if (!scanConfig.useCustomOnly && startTrendPool && startTrendPool.length > 0) {
             startTrendPool.forEach(p => {
                 const norm = normalizeSym(p.symbol);
                 if (norm && !poolMap.has(norm)) {
@@ -423,8 +423,8 @@ const List1_Selection: React.FC<Props> = ({
             });
         }
 
-        // 补齐横盘底池中的币种及属性
-        if (sidewaysPool && sidewaysPool.length > 0) {
+        // 补齐横盘底池中的币种及属性 (仅在非固定选币模式下生效)
+        if (!scanConfig.useCustomOnly && sidewaysPool && sidewaysPool.length > 0) {
             sidewaysPool.forEach(p => {
                 const norm = normalizeSym(p.symbol);
                 if (norm && !poolMap.has(norm)) {
@@ -433,8 +433,8 @@ const List1_Selection: React.FC<Props> = ({
             });
         }
 
-        // 补齐大行情候选池中的币种
-        if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
+        // 补齐大行情候选池中的币种 (仅在非固定选币模式下生效)
+        if (!scanConfig.useCustomOnly && effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
             effectiveMajorCandidates.forEach(cand => {
                 const sym = cand.replace(/_LONG$|_SHORT$/i, '').trim();
                 const norm = normalizeSym(sym);
@@ -445,7 +445,7 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return Array.from(poolMap.values());
-    }, [startTrendPool, sidewaysPool, list1, effectiveMajorCandidates]);
+    }, [startTrendPool, sidewaysPool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
 
     const list1SymbolsStr = baseList.map(item => item.symbol).join(',');
 
@@ -789,6 +789,46 @@ const List1_Selection: React.FC<Props> = ({
     }, [sortedSymbolsKey, _8amUpdateTick, scanConfig.enableVol8am, scanConfig.timeBasis, scanConfig.list2PushConfig?.topNSortKey, scanConfig.list2PushConfig?.enableTopN]);
 
     const filteredList = useMemo(() => {
+        // 🔒 [固定选币直通放行核心规则 (用户明确授权修改)]:
+        // 在固定选币时 (useCustomOnly === true)：
+        // 1. 若当前监控列表未输入任何币 (customSymbols 为空)，市场初筛默认为 0，清空状态；
+        // 2. 不需要其它自动选币的筛选条件 (成交额、涨跌幅、行情启动趋势、横盘蓄势、回溯周期等全部跳过)；
+        // 3. 用户输入的币直接进入市场初筛列表，直通放行！
+        if (scanConfig.useCustomOnly && fixedModeView === 'MONITOR') {
+            const rawCustomStr = scanConfig.customSymbols || '';
+            const customSet = new Set(
+                rawCustomStr
+                    .split(/[,，\s]+/)
+                    .map(s => normalizeSym(s))
+                    .filter(Boolean)
+            );
+            if (customSet.size === 0) {
+                return [];
+            }
+            const matchedList = sortedList1.filter(item => customSet.has(normalizeSym(item.symbol)));
+            const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+            const missing = Array.from(customSet).filter(sym => !matchedNorms.has(sym));
+            if (missing.length > 0) {
+                const additional: ScannerItem[] = [];
+                missing.forEach(sym => {
+                    const found = baseList.find(b => normalizeSym(b.symbol) === sym);
+                    if (found) {
+                        additional.push(found);
+                    } else {
+                        additional.push({
+                            symbol: `${sym}/USDT`,
+                            price: 0,
+                            volume24h: 0,
+                            change: 0,
+                            isNew: false
+                        });
+                    }
+                });
+                return [...matchedList, ...additional];
+            }
+            return matchedList;
+        }
+
         // 🔒 [第一步严格 24H 交易额与早上8点起交易额刚性拦截与过滤]:
         // 无论何种模式（是否开启大行情发现、启动趋势池等），在列表1向外输出的最终集合中，
         // 凡开启了 24H 交易额过滤（如 5M - 0），必须严格通过 24H 交易额区间校验，低于 minVolume 或高于 maxVolume 者一票否决！
@@ -923,13 +963,18 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return finalResult;
-    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, isMajorScanning, _8amUpdateTick]);
+    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
 
     // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
     const pushConfig = scanConfig.list2PushConfig;
     const isPushEffectivelyEnabled = Boolean(pushConfig?.enabled || pushConfig?.enableTopN || pushConfig?.enableChg24h || pushConfig?.enableChg8am || pushConfig?.enableVol24h || pushConfig?.enableVol8am);
 
     const list2PushCandidates = useMemo(() => {
+        // 🔒 [固定选币直通放行]: 固定选币模式下，市场初筛中的币种全部直接进入列表2进行扫描，只要符合列表2的规则即可！
+        if (scanConfig.useCustomOnly && fixedModeView === 'MONITOR') {
+            return filteredList;
+        }
+
         if (!pushConfig || !isPushEffectivelyEnabled) {
             // 未启用定向推送时，默认初筛列表全量直接进入列表2
             return filteredList;
@@ -1078,7 +1123,7 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return candidates;
-    }, [filteredList, pushConfig, isPushEffectivelyEnabled, _8amUpdateTick]);
+    }, [filteredList, pushConfig, isPushEffectivelyEnabled, _8amUpdateTick, scanConfig.useCustomOnly, fixedModeView]);
 
     // 映射 Top N 排名 (用于在初筛卡片上醒目标注 #1, #2, ...)
     const pushRankMap = useMemo(() => {
@@ -1313,6 +1358,49 @@ const List1_Selection: React.FC<Props> = ({
                     >
                         <Maximize2 size={12} />
                     </button>
+
+                    {/* 选币模式默认主控开关 */}
+                    <div className="flex bg-slate-900 p-0.5 rounded border border-slate-800 items-center">
+                        <button
+                            type="button"
+                            onClick={() => setScanConfig(p => ({ ...p, useCustomOnly: false }))}
+                            className={`px-1.5 py-0.5 rounded text-[8px] font-bold transition-all flex items-center gap-1 ${
+                                !scanConfig.useCustomOnly 
+                                    ? 'bg-indigo-600 text-white shadow' 
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                            title="自动选币：运行中 | 固定选币：停止运行"
+                        >
+                            <span>自动选币</span>
+                            <span className={`text-[7px] px-0.5 rounded ${!scanConfig.useCustomOnly ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'}`}>
+                                {!scanConfig.useCustomOnly ? '运行中' : '停止'}
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setScanConfig(p => ({ ...p, useCustomOnly: true }));
+                                setFixedModeView('MONITOR');
+                            }}
+                            className={`px-1.5 py-0.5 rounded text-[8px] font-bold transition-all flex items-center gap-1 ${
+                                scanConfig.useCustomOnly 
+                                    ? 'bg-cyan-600 text-white shadow' 
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                            title="固定选币：运行中 | 自动选币：停止状态 (绝对禁止其它任何地方开仓)"
+                        >
+                            <span>固定选币</span>
+                            <span className={`text-[7px] px-0.5 rounded ${scanConfig.useCustomOnly ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'}`}>
+                                {scanConfig.useCustomOnly ? '运行中' : '停止'}
+                            </span>
+                        </button>
+                    </div>
+
+                    {scanConfig.useCustomOnly && (
+                        <span className="hidden md:inline-flex items-center gap-1 text-[8px] bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 px-1.5 py-0.5 rounded font-mono">
+                            🛡️ 独占开仓保护已生效 (禁止非监控币开仓)
+                        </span>
+                    )}
                     {scanConfig.useCustomOnly && fixedModeView === 'SEARCH' && (
                         <div className="flex gap-1 animate-in fade-in">
                             <button onClick={onSelectAll} className="text-[9px] bg-slate-800 border border-slate-700 px-1.5 py-0.5 rounded text-cyan-400 hover:bg-slate-700 transition-colors">全选</button>

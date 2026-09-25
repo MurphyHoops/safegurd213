@@ -4,6 +4,7 @@ import { Shield, ShieldAlert, ShieldCheck, Hourglass, Zap, Trash2 } from 'lucide
 import { ScannerItem, List2Config } from '../../../components/Scanner/scannerTypes';
 import { verifyAndFixSymbolPrice } from '../../../services/priceVerifier';
 import { getCoinChineseName } from '../../../services/coinNames';
+import { normalizeSymbol } from '../../../services/symbolUtils';
 
 const getTfMinutes = (tf: string) => {
     const unit = tf.slice(-1);
@@ -62,8 +63,8 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                     {idx !== undefined && (
                         <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
                     )}
-                    <span>{item.symbol.replace('USDT', '')}</span>
-                    {getCoinChineseName(item.symbol) && (
+                    <span>{normalizeSymbol(item.symbol)}</span>
+                    {getCoinChineseName(item.symbol) && getCoinChineseName(item.symbol) !== normalizeSymbol(item.symbol) && (
                         <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
                     )}
                 </span>

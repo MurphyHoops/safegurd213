@@ -881,13 +881,22 @@ const AppContent: React.FC = () => {
     const [chartSymbol, setChartSymbol] = useState<string | null>(null);
     const [chartEntryPrice, setChartEntryPrice] = useState<number | undefined>(undefined);
     const [chartEntryTime, setChartEntryTime] = useState<number | undefined>(undefined);
+    const [chartDirection, setChartDirection] = useState<'LONG' | 'SHORT' | undefined>(undefined);
     const [chartTimeframe, setChartTimeframe] = useState<string>('15m');
+    const [chartSource, setChartSource] = useState<string | undefined>('positions');
     const [recommendation, setRecommendation] = useState<any>(null);
 
-    const handleOpenChart = useCallback((symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string) => {
+    const handleOpenChart = useCallback((symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string, side?: any, source: string = 'positions') => {
         setChartSymbol(symbol);
         setChartEntryPrice(entryPrice);
         setChartEntryTime(entryTime);
+        setChartSource(source);
+        if (side) {
+            const isLong = side === PositionSide.LONG || (side as any) === 'LONG' || (side as any) === 'BUY';
+            setChartDirection(isLong ? 'LONG' : 'SHORT');
+        } else {
+            setChartDirection(undefined);
+        }
         if (timeframe) setChartTimeframe(timeframe);
     }, []);
 
@@ -1914,6 +1923,39 @@ const AppContent: React.FC = () => {
                 simulatorRef.current.addLog("WARNING", `⚠️ 黑名单拦截: 拒绝开仓 ${cleanSymbol}`);
             }
             return;
+        }
+
+        // 🔒 [固定选币独占安全护栏: 当处于固定选币模式时，绝对禁止其它任何地方开仓]
+        try {
+            const currentStratId = (() => {
+                try {
+                    const rawId = localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID");
+                    return rawId ? JSON.parse(rawId) : "strat-1";
+                } catch { return "strat-1"; }
+            })();
+            const rawConfig = localStorage.getItem(`SCANNER_CONFIG_24H_${currentStratId}`) || localStorage.getItem("SCANNER_CONFIG_24H");
+            if (rawConfig) {
+                const parsedConfig = JSON.parse(rawConfig);
+                if (parsedConfig && parsedConfig.useCustomOnly) {
+                    const rawCustom = parsedConfig.customSymbols || "";
+                    const allowedFixedSymbols = new Set(
+                        rawCustom
+                            .split(/[,，\s]+/)
+                            .map((s: string) => normalizeSymbol(s).replace("USDT", ""))
+                            .filter(Boolean)
+                    );
+                    const symbolBase = cleanSymbol.replace("USDT", "");
+                    if (!allowedFixedSymbols.has(symbolBase)) {
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("WARNING", `🛡️ [固定选币独占门禁拦截] 当前处于【固定选币】模式，【自动选币】已停止运行。${cleanSymbol} 不在固定监控池中，绝对禁止其它任何地方开仓！`);
+                        }
+                        console.warn(`[Trade Reject App] Fixed selection exclusive: blocked ${cleanSymbol}, not in customSymbols.`);
+                        return;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Error checking fixed selection guard in handleOpenPosition:", e);
         }
 
         // 🛡️ [Anti-Double Open & Hedging Protection]
@@ -4573,15 +4615,20 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     key={chartSymbol}
                     symbol={chartSymbol}
                     initialTimeframe={chartTimeframe}
+                    direction={chartDirection}
+                    side={chartDirection}
                     onTimeframeChange={setChartTimeframe}
                     directMode={settings.system.directMode}
                     entryPrice={chartEntryPrice}
                     entryTime={chartEntryTime}
                     tradeLogs={tradeLogs} // Added this
+                    source={chartSource || 'positions'}
                     onClose={() => {
                         setChartSymbol(null);
                         setChartEntryPrice(undefined);
                         setChartEntryTime(undefined);
+                        setChartDirection(undefined);
+                        setChartSource(undefined);
                     }}
                 />
             )}

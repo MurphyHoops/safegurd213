@@ -114,7 +114,7 @@ export const fetchWithFallback = async (
     
     if (symbolParam) {
         const upperSymbol = symbolParam.toUpperCase();
-        if (/[^\x00-\x7F]/.test(symbolParam) || upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
+        if (upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
             // It is a mock/simulation symbol!
             if (url.includes('ticker/price')) {
                 let hash = 0;
@@ -246,40 +246,22 @@ const _fetchWithFallbackInner = async (
         return new Response(JSON.stringify([]), { status: 200 }); // Return empty array to avoid unhandled rejections
     }
 
-    // 1. Enter Queue with priority (Charts and 24hr Ticker go higher priority than background scans)
-    const priority = options?.priority || (url.includes('ticker/24hr') ? 'HIGH' : 'NORMAL');
+    // 1. Enter Queue with priority (Charts, Klines and 24hr Ticker go higher priority than background scans)
+    const isKlinePayload = url.includes('/klines');
+    const isHeavyPayload = url.includes('ticker/24hr') || url.includes('ticker/price');
+    const priority = options?.priority || (url.includes('ticker/24hr') || isKlinePayload ? 'HIGH' : 'NORMAL');
     const isHighPriority = priority === 'HIGH';
     if (!isHighPriority) {
         await acquireSlot(priority);
     }
     
     try {
-        // Circuit Breaker: Prevent tight loops when network is fully disconnected
-        if (Date.now() < circuitBreakerUntil) {
-            // Wait gracefully in the background instead of abruptly causing UI unmounts or crashes
-            await new Promise(resolve => setTimeout(resolve, 3000));
-        }
+        // Increase timeout appropriately for payloads
+        const TIMEOUT_MS = options?.timeout || (isHeavyPayload || isKlinePayload ? 30000 : 15000); 
 
-        // DETECT HEAVY PAYLOAD
-        const isHeavyPayload = url.includes('ticker/24hr') || url.includes('ticker/price');
-        const isKlinePayload = url.includes('/klines');
-        
-        // Increase timeout significantly for heavy payloads.
-        const TIMEOUT_MS = options?.timeout || (isHeavyPayload || isKlinePayload ? 45000 : 15000); 
-
-        // Encode the URL for proxies that pass it as a query parameter
-        const encodedUrl = encodeURIComponent(url);
-
-        // Multi-Region Endpoint Strategy
-        const alternativeDomains = ['fapi.binance.me', 'fapi.binance.info', 'fapi.binance.com', 'fapi.binance.us'];
-        let currentUrl = url;
-        
-        // If we've failed a lot, try rotating the domain if it's binance
-        if (continuousFailures > 3 && url.includes('fapi.binance.com')) {
-            const rotationIdx = (continuousFailures) % alternativeDomains.length;
-            currentUrl = url.replace('fapi.binance.com', alternativeDomains[rotationIdx]);
-            console.log(`[API] Rotating domain to ${alternativeDomains[rotationIdx]} due to persistent failures`);
-        }
+        // Always keep valid canonical URL
+        const currentUrl = url;
+        const encodedUrl = encodeURIComponent(currentUrl);
 
         // 1. Direct Mode Bypass
         if (directMode) {
@@ -340,26 +322,9 @@ const _fetchWithFallbackInner = async (
             }
         }
 
-        // Proxy List Strategy
+        // Proxy List Strategy: Always prioritize the high-performance local server proxy (/api/proxy)
         const proxyLocalServer = `/api/proxy?url=${encodedUrl}${priority === 'HIGH' ? '&priority=high' : ''}`;
-        const proxyCorsProxyIO = `https://corsproxy.io/?${encodeURIComponent(currentUrl)}`;
-        const proxyCodeTabs = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(currentUrl)}`;
-        const proxyAllOriginsRaw = `https://api.allorigins.win/raw?url=${encodeURIComponent(currentUrl)}`;
-        
-        let proxies: string[] = [
-            proxyLocalServer, 
-            proxyCorsProxyIO,
-            proxyCodeTabs,
-            proxyAllOriginsRaw,
-            currentUrl
-        ];
-
-        if (lastSuccessfulProxy) {
-            const preferredProxy = proxies.find(p => p.includes(lastSuccessfulProxy!));
-            if (preferredProxy) {
-                proxies = [preferredProxy, ...proxies.filter(p => p !== preferredProxy)];
-            }
-        }
+        let proxies: string[] = [proxyLocalServer];
 
         const fetchProxy = async (proxyUrl: string): Promise<Response> => {
             let hostname = '';
@@ -379,11 +344,20 @@ const _fetchWithFallbackInner = async (
             let timeoutId: any;
             try {
                 const controller = new AbortController();
+                if (options?.signal) {
+                    if (options.signal.aborted) {
+                        controller.abort();
+                    } else {
+                        options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+                    }
+                }
                 const isLocalProxy = proxyUrl.startsWith('/api/proxy');
                 // Give local server proxy enough time (30s) while capping external public proxies appropriately
-                const proxyTimeout = isLocalProxy
-                    ? Math.min(TIMEOUT_MS, isHeavyPayload ? 30000 : 15000)
-                    : (isHeavyPayload ? 15000 : (priority === 'HIGH' ? 8000 : 10000));
+                const proxyTimeout = options?.timeout
+                    ? options.timeout
+                    : (isLocalProxy
+                        ? Math.min(TIMEOUT_MS, isHeavyPayload ? 30000 : 15000)
+                        : (isHeavyPayload ? 15000 : (priority === 'HIGH' ? 8000 : 10000)));
                 timeoutId = setTimeout(() => {
                     if (!controller.signal.aborted) {
                         try {
@@ -394,7 +368,7 @@ const _fetchWithFallbackInner = async (
                     }
                 }, proxyTimeout);
 
-                const { headers, timeout, priority: customPriority, ...restOptions } = options || {};
+                const { headers, timeout, priority: customPriority, signal: optSignal, ...restOptions } = options || {};
                 const res = await fetch(proxyUrl, {
                     ...restOptions,
                     signal: controller.signal,
@@ -455,34 +429,19 @@ const _fetchWithFallbackInner = async (
         };
 
         let lastError: any;
-        // For HIGH priority or heavy payload (such as 24hr ticker market scan), race local server with direct & first fallback
-        if (priority === 'HIGH' || isHeavyPayload) {
-            try {
-                const raceBatch = [proxyLocalServer, proxyCorsProxyIO, proxyCodeTabs];
-                const response = await Promise.any(raceBatch.map(p => fetchProxy(p)));
-                continuousFailures = 0;
-                return response;
-            } catch (e: any) {
-                console.warn(`[API] Race failed: ${e.message}`);
-            }
-        }
 
-        // Filter out already failed race batch items to prevent wasting time on sequential retries
-        const remainingProxies = (priority === 'HIGH' || isHeavyPayload)
-            ? proxies.filter(p => p !== proxyLocalServer && p !== proxyCorsProxyIO && p !== proxyCodeTabs)
-            : proxies;
-
-        for (let idx = 0; idx < remainingProxies.length; idx++) {
-            const proxy = remainingProxies[idx];
+        // Clean sequential execution: Local server proxy (/api/proxy) is always #1 and handles upstream routing reliably
+        for (let idx = 0; idx < proxies.length; idx++) {
+            const proxy = proxies[idx];
             try {
                 const response = await fetchProxy(proxy);
                 continuousFailures = 0;
                 return response;
             } catch (e: any) {
                 lastError = e;
-                if (url.includes('/klines')) {
-                    // For klines, don't waste time trying all slow proxies; fail fast to local helper
-                    break;
+                if (url.includes('/klines') && proxy === proxyLocalServer) {
+                    // If local server proxy failed for klines, try at most 1 external fallback
+                    continue;
                 }
                 if (e.message && (e.message.includes('HTTP 404') || e.message.includes('HTTP 400'))) {
                     console.warn(`[API] Early abort proxy loop due to ${e.message} for ${url}`);

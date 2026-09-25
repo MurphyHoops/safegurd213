@@ -149,7 +149,7 @@ export function processMarketData(
     });
 
     // 4. Limit
-    if (config.limit > 0 && filtered.length > config.limit) {
+    if (!config.useCustomOnly && config.limit > 0 && filtered.length > config.limit) {
         filtered = filtered.slice(0, config.limit);
     }
 

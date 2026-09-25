@@ -1,3 +1,5 @@
+// 🔒 LOCKED_MODULE: Detailed History Audit Logging & Reasons (List 2 / 3 / 4 Parameter Tracking)
+// @LOCKED
 import React, { useEffect, useState, useRef } from 'react';
 import { db, auth } from '../../../firebase';
 import { collection, query, where, orderBy, getDocs, limit, addDoc, doc, updateDoc } from 'firebase/firestore';
@@ -448,13 +450,25 @@ export const useAutoHistoryLogger = (
                     return r.symbol === sig.symbol && r.direction === sig.direction && rTf === sig.tf && !r.disappearedAt;
                 });
                 if (!alreadyHasRecord) {
-                    let reason = `列表初始加载记录 [周期: ${sig.tf}, 方向: ${sig.direction}]`;
+                    let reason = `列表初始加载记录 [周期: ${sig.tf}, 方向: ${sig.direction === 'LONG' ? '做多' : '做空'}]`;
                     if (listType === 'LIST2') {
-                        reason = `均线交叉对齐触发 [周期: ${sig.tf}, 进入列表2]`;
+                        const matchedGroup = sig.originalItem?.groupedResults?.find((g: any) => g.tf === sig.tf) || sig.originalItem?.groupedResults?.[0];
+                        const isAligned = matchedGroup?.isAligned || false;
+                        const crossingCount = matchedGroup?.crossingCount || sig.originalItem?.crossingCount || 0;
+                        const amp = matchedGroup?.amplitude ?? sig.originalItem?.amplitude;
+                        const ampStr = typeof amp === 'number' && isFinite(amp) ? `振幅: ${amp.toFixed(2)}%` : '';
+                        reason = `【列表2 均线准入】周期: ${sig.tf}, 方向: ${sig.direction === 'LONG' ? '做多' : '做空'}\n[规则与形态]: ${isAligned ? 'EMA10-40均线多空顺势排列发散' : `K线实体穿越EMA均线簇 (相交: ${crossingCount}次)`}${ampStr ? `, ${ampStr}` : ''}`;
                     } else if (listType === 'LIST3') {
-                        reason = `结构审计通过 [周期: ${sig.tf}, 方向: ${sig.direction}, 进入列表3]`;
+                        const matchedRes = sig.originalItem?.list3Results?.find((r: any) => r.tf === sig.tf && r.direction === sig.direction) || sig.originalItem?.list3Results?.[0];
+                        const struct = matchedRes?.structure || sig.originalItem?.structure || {};
+                        const isStrict = struct.isStrictTrend ? "EMA10-40严格顺势对齐" : "一般顺势结构";
+                        const rsiStr = typeof struct.rsi === 'number' && isFinite(struct.rsi) ? `RSI: ${struct.rsi.toFixed(1)}` : "";
+                        reason = `【列表3 结构审计准入】周期: ${sig.tf}, 方向: ${sig.direction === 'LONG' ? '做多' : '做空'}\n[结构详情]: ${[isStrict, rsiStr].filter(Boolean).join(', ')}`;
                     } else if (listType === 'LIST4') {
-                        reason = `动能审计确认 [周期: ${sig.tf}, 方向: ${sig.direction}, 进入列表4]`;
+                        const mom = sig.originalItem?.momentum || {};
+                        const midStr = typeof mom.midPoint === 'number' && isFinite(mom.midPoint) ? `中轴防守价: $${mom.midPoint.toFixed(4)}` : '';
+                        const triggerStr = typeof mom.entryTrigger === 'number' && isFinite(mom.entryTrigger) ? `突破目标价: $${mom.entryTrigger.toFixed(4)}` : '';
+                        reason = `【列表4 动能审计准入】周期: ${sig.tf}, 方向: ${sig.direction === 'LONG' ? '做多' : '做空'}\n[进攻防守参数]: ${[midStr, triggerStr, '动能纯度达标'].filter(Boolean).join(' | ')}`;
                     }
                     const pseudoItem = {
                         symbol: sig.symbol,
@@ -481,25 +495,38 @@ export const useAutoHistoryLogger = (
         newSignals.forEach(sig => {
             let reason = '';
             if (listType === 'LIST2') {
-                const matchedGroup = sig.originalItem.groupedResults?.find((g: any) => g.tf === sig.tf);
+                const matchedGroup = sig.originalItem.groupedResults?.find((g: any) => g.tf === sig.tf) || sig.originalItem.groupedResults?.[0];
                 const isSqueeze = matchedGroup?.isSqueeze || sig.originalItem.isSqueeze || false;
                 const crossingCount = matchedGroup?.crossingCount || sig.originalItem.crossingCount || 0;
                 const isAligned = matchedGroup?.isAligned || false;
-                reason = `均线交叉对齐触发 [周期: ${sig.tf}, 交叉数: ${crossingCount}, ${isAligned ? '均线多空排列对齐' : '处于交叉期'}${isSqueeze ? ', 伴随通道收窄(Squeeze)' : ''}]`;
+                const amp = matchedGroup?.amplitude ?? sig.originalItem.amplitude;
+                const volRatio = matchedGroup?.volumeMultiplier ?? matchedGroup?.volRatio ?? sig.originalItem.volMultiplier;
+                const bodyRatio = matchedGroup?.bodyRatio ?? sig.originalItem.bodyRatio;
+                const ampStr = typeof amp === 'number' && isFinite(amp) ? `振幅: ${amp.toFixed(2)}%` : '';
+                const volStr = typeof volRatio === 'number' && isFinite(volRatio) ? `放量: ${volRatio.toFixed(1)}x` : '';
+                const bodyStr = typeof bodyRatio === 'number' && isFinite(bodyRatio) ? `实体比: ${bodyRatio.toFixed(1)}%` : '';
+                reason = `【列表2 均线穿越/发散准入】周期: ${sig.tf}, 方向: ${sig.direction === 'LONG' ? '做多' : '做空'}\n[规则与形态]: ${isAligned ? 'EMA10-40均线顺势排列发散' : `K线实体穿越EMA均线簇 (相交: ${crossingCount}次)`}${isSqueeze ? ', 通道收窄(Squeeze)' : ''}${ampStr ? `, ${ampStr}` : ''}${volStr ? `, ${volStr}` : ''}${bodyStr ? `, ${bodyStr}` : ''}`;
             } else if (listType === 'LIST3') {
-                const matchedRes = sig.originalItem.list3Results?.find((r: any) => r.tf === sig.tf && r.direction === sig.direction);
+                const matchedRes = sig.originalItem.list3Results?.find((r: any) => r.tf === sig.tf && r.direction === sig.direction) || sig.originalItem.list3Results?.[0];
                 const struct = matchedRes?.structure || sig.originalItem.structure || {};
-                const isStrictTrend = struct.isStrictTrend ? "主趋势多空排列对齐" : "一般趋势";
-                const bbw = typeof struct.bbw === 'number' && isFinite(struct.bbw) ? `布林带带宽: ${(struct.bbw * 100).toFixed(2)}%` : "";
+                const isStrictTrend = struct.isStrictTrend ? "EMA10-40严格多空排列对齐" : "一般顺势结构";
+                const bbw = typeof struct.bbw === 'number' && isFinite(struct.bbw) ? `布林带宽: ${(struct.bbw * 100).toFixed(2)}%` : "";
                 const rsiStr = typeof struct.rsi === 'number' && isFinite(struct.rsi) ? `RSI: ${struct.rsi.toFixed(1)}` : "";
                 const locStr = typeof struct.locationPct === 'number' && isFinite(struct.locationPct) ? `通道位置: ${(struct.locationPct * 100).toFixed(1)}%` : "";
-                reason = `结构审计通过 [周期: ${sig.tf}, 方向: ${sig.direction}, ${isStrictTrend}, ${rsiStr}, ${bbw}, ${locStr}]`;
+                const colorStr = struct.isColorValid !== undefined ? (struct.isColorValid ? "同色K线确认" : "异色K线") : "";
+                const resCountStr = struct.resCount ? `多周期共振: ${struct.resCount}个` : "";
+                reason = `【列表3 结构深度审计通过】周期: ${sig.tf}, 方向: ${sig.direction === 'LONG' ? '做多' : '做空'}\n[结构详情]: ${[isStrictTrend, resCountStr, rsiStr, bbw, locStr, colorStr].filter(Boolean).join(', ')}`;
             } else if (listType === 'LIST4') {
                 const mom = sig.originalItem.momentum || {};
-                const purity = mom.purityValid ? "动能纯度达标" : "动能纯度不满足";
-                const breakout = mom.breakoutValid ? "实体产生突破" : "等待突破触发";
+                const midPoint = mom.midPoint;
+                const entryTrigger = mom.entryTrigger;
                 const status = mom.status || 'TRIGGERED';
-                reason = `动能审计确认 [周期: ${sig.tf}, 方向: ${sig.direction}, 状态: ${status}, ${purity}, ${breakout}]`;
+                const statusText = status === 'TRIGGERED' ? '已达突破线(TRIGGERED)' : status === 'REVIVED' ? '破中轴后满血复活' : status === 'DORMANT' ? '休眠蓄势中' : '等待突破中(PENDING)';
+                const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? `中轴防守价: $${midPoint.toFixed(4)}` : '';
+                const triggerStr = typeof entryTrigger === 'number' && isFinite(entryTrigger) ? `进攻突破目标价: $${entryTrigger.toFixed(4)}` : '';
+                const purity = mom.purityValid ? "动能纯度达标" : "动能待确认";
+                const breakout = mom.breakoutValid ? "实体突破达成" : "等待突破触发";
+                reason = `【列表4 动能审计准入】周期: ${sig.tf}, 方向: ${sig.direction === 'LONG' ? '做多' : '做空'}, 状态: ${statusText}\n[进攻防守参数]: ${[midStr, triggerStr, purity, breakout].filter(Boolean).join(' | ')}`;
             }
             
             console.log(`[Auto Logger] New signal entering ${listType}: ${sig.symbol} (${sig.tf} ${sig.direction}), triggering auto-log...`);
@@ -534,19 +561,29 @@ export const useAutoHistoryLogger = (
                         // Check if position is active for this symbol/direction
                         const hasPosition = activePositionsRef.current?.some(p => p.symbol === symbol && p.side === direction);
                         if (hasPosition) {
-                            disappearanceReason = `满足动能突破开仓成功，建立仓位后移出\n[规则详情]: 满足突破触发机制，系统自动开仓并建立实盘/模拟仓位 (进入价: ${prevItem.price || '实时价'})`;
+                            disappearanceReason = `【动能突破开仓成功】建立仓位后移出\n[规则详情]: 满足突破触发机制与开仓门禁，系统已自动开仓并建立实盘/模拟仓位 (进场价: ${prevItem.price || '实时市价'})`;
                         } else if (prevItem.removalReason) {
-                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 信号周期: ${tf}, 方向: ${direction}`;
+                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 信号周期: ${tf}, 方向: ${direction === 'LONG' ? '做多' : '做空'}`;
                         } else if (prevItem.fuseBlocked || prevItem.fuseReason) {
-                            disappearanceReason = `${prevItem.fuseReason || '由列表4防追高过滤规则删除'}\n[规则详情]: 触发熔断保护或过度交易拦截`;
+                            disappearanceReason = `${prevItem.fuseReason || '【规则 4 - 防追高/防过度交易熔断】由列表4防追高过滤规则删除'}\n[规则详情]: 触及短周期涨跌幅限制或动态方向锁熔断`;
                         } else if (prevItem.momentum?.status === 'INVALID') {
-                            disappearanceReason = `${prevItem.momentum?.invalidReason || '由列表4中轴防守线规则删除'}\n[规则详情]: 突破中轴防守线，结构破坏`;
+                            disappearanceReason = `${prevItem.momentum?.invalidReason || '【规则 1 - 中轴防守瓦解】由列表4中轴防守线规则删除'}\n[规则详情]: 突破中轴防守价且EMA均线形态破坏或超寿命根数均线反向`;
+                        } else if (prevItem.momentum?.status === 'DORMANT') {
+                            disappearanceReason = `【规则 2 - 破中轴休眠超期】由列表4休眠超期规则删除\n[规则详情]: 价格跌破中轴防守价进入休眠蓄势期，休眠K线根数超过设定上限，判定动能衰竭彻底移出`;
                         } else {
-                            disappearanceReason = `由列表4动能衰减规则删除\n[规则详情]: 周期: ${tf}, 方向: ${direction}, 动能衰减移出`;
+                            let list2Retention = 9;
+                            try {
+                                const rawL2 = localStorage.getItem('SCANNER_LIST2_CONFIG');
+                                if (rawL2) {
+                                    const parsed = JSON.parse(rawL2);
+                                    if (parsed.newModeRetention) list2Retention = parsed.newModeRetention;
+                                }
+                            } catch(e) {}
+                            disappearanceReason = `【规则 - 上游主信号动能衰减】由列表4动能衰减规则删除\n[规则详情]: 周期: ${tf}, 方向: ${direction === 'LONG' ? '做多' : '做空'}。上游列表2交叉信号已满足 ${list2Retention} 根K线寿命上限，或上游未收盘K线波动回抽导致交叉解离，动能管线同步下线此信号。`;
                         }
                     } else if (listType === 'LIST3') {
                         if (prevItem.removalReason) {
-                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 周期: ${tf}, 方向: ${direction}`;
+                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 周期: ${tf}, 方向: ${direction === 'LONG' ? '做多' : '做空'}`;
                         } else {
                             let activeL3Cfg: any = null;
                             try {
@@ -562,29 +599,44 @@ export const useAutoHistoryLogger = (
                             const matchedRes = prevItem.list3Results?.find((r: any) => r.tf === tf && r.direction === direction);
                             const struct = matchedRes?.structure || prevItem.structure || {};
                             if (isStrictTrendOn && struct.isStrictTrend === false) {
-                                disappearanceReason = `由列表3严格趋势过滤规则删除\n[规则详情]: 趋势审计 EMA10/20/30/40 未形成严格发散共振排列`;
+                                disappearanceReason = `【规则 - 严格趋势过滤】由列表3严格趋势过滤规则删除\n[规则详情]: 周期: ${tf}, 趋势审计 EMA10/20/30/40 未形成严格顺势发散排列`;
                             } else if (isCandleColorOn && struct.isColorValid === false) {
-                                disappearanceReason = `由列表3同色交叉规则删除\n[规则详情]: 信号K线实体颜色与预测方向相反 (如多头出阴线/空头出阳线)`;
+                                disappearanceReason = `【规则 - 同色交叉过滤】由列表3同色交叉规则删除\n[规则详情]: 周期: ${tf}, 信号K线实体颜色与预测方向相反 (多头出阴线/空头出阳线)`;
                             } else if (isRsiOn && typeof struct.rsi === 'number' && (struct.rsi < (activeL3Cfg?.rsiLongMin ?? 40) || struct.rsi > (activeL3Cfg?.rsiLongMax ?? 90))) {
-                                disappearanceReason = `由列表3RSI过滤规则删除\n[规则详情]: RSI指标 (${struct.rsi.toFixed(1)}) 超出设定区间`;
+                                disappearanceReason = `【规则 - RSI区间过滤】由列表3 RSI过滤规则删除\n[规则详情]: RSI指标 (${struct.rsi.toFixed(1)}) 超出设定安全区间 [${activeL3Cfg?.rsiLongMin ?? 40}, ${activeL3Cfg?.rsiLongMax ?? 90}]`;
                             } else if (isAmpOn) {
-                                disappearanceReason = `由列表3波幅审计规则删除\n[规则详情]: 周期: ${tf}, 限时到期或波幅通道指标未达标`;
+                                disappearanceReason = `【规则 - 波幅审计过滤】由列表3波幅审计规则删除\n[规则详情]: 周期: ${tf}, 波幅通道指标未达标或限时到期`;
                             } else {
-                                disappearanceReason = `由列表2前序信号变动移出\n[规则详情]: 周期: ${tf}, 方向: ${direction}, 上游列表2交叉状态结束、未收盘K线波动回抽或离开初筛池 (列表3限制规则未开启或已放行)`;
+                                let list2Retention = 9;
+                                try {
+                                    const rawL2 = localStorage.getItem('SCANNER_LIST2_CONFIG');
+                                    if (rawL2) {
+                                        const parsed = JSON.parse(rawL2);
+                                        if (parsed.newModeRetention) list2Retention = parsed.newModeRetention;
+                                    }
+                                } catch(e) {}
+                                disappearanceReason = `【规则 - 上游列表2信号变动】由列表2前序信号变动移出\n[规则详情]: 周期: ${tf}, 方向: ${direction === 'LONG' ? '做多' : '做空'}。上游列表2交叉状态结束、未收盘K线波动回抽或已达寿命上限(${list2Retention}根K线)，列表3同步移出。`;
                             }
                         }
                     } else if (listType === 'LIST2') {
                         if (prevItem.removalReason) {
-                            disappearanceReason = `${prevItem.removalReason}\n[规则详情]: 周期: ${tf}, 移出`;
+                            disappearanceReason = `【规则 - ${prevItem.removalReason}】\n[规则详情]: 周期: ${tf}, 移出列表2`;
                         } else {
                             const matchedGroup = prevItem.groupedResults?.find((g: any) => g.tf === tf && g.direction === direction) || prevItem.groupedResults?.[0];
                             const lag = matchedGroup?.lag ?? prevItem.lag ?? 0;
-                            const retention = 9; // Default retention bars
+                            let retention = 9; // Default retention bars
+                            try {
+                                const rawL2 = localStorage.getItem('SCANNER_LIST2_CONFIG');
+                                if (rawL2) {
+                                    const parsed = JSON.parse(rawL2);
+                                    if (parsed.newModeRetention) retention = parsed.newModeRetention;
+                                }
+                            } catch(e) {}
                             
                             if (lag >= retention) {
-                                disappearanceReason = `由列表2，寿命根数规则删除\n[规则详情]: 周期: ${tf}, 信号存续寿命到达上限 (${lag.toFixed(1)} / ${retention} 根K线)，自动移出`;
+                                disappearanceReason = `【规则 - 寿命根数到期】由列表2寿命根数规则删除\n[规则详情]: 周期: ${tf}, 信号存续寿命到达上限 (${lag.toFixed(1)} / ${retention} 根K线)，判定正常衰减自动移出`;
                             } else {
-                                disappearanceReason = `由列表2实时K线变动移出\n[规则详情]: 周期: ${tf}, 当前未收盘K线发生价格回抽或状态未维持 (当前仅存续 ${lag.toFixed(1)} 根，未达寿命上限 ${retention} 根)`;
+                                disappearanceReason = `【规则 - 实时K线回抽/形态破坏】由列表2实时K线变动移出\n[规则详情]: 周期: ${tf}, 当前未收盘K线发生反向回抽或均线交叉发散状态未维持 (当前存续 ${lag.toFixed(1)} 根，未达寿命上限 ${retention} 根)`;
                             }
                         }
                     }
@@ -593,10 +645,10 @@ export const useAutoHistoryLogger = (
                 // Fallback ONLY if no specific reason was determined above
                 if (!disappearanceReason) {
                     disappearanceReason = listType === 'LIST2'
-                        ? `由列表2实时K线变动移出\n[规则详情]: 币种 (${symbol}) 未收盘K线波动或离开初筛池移出`
+                        ? `【规则 - 实时K线变动】由列表2实时K线变动移出\n[规则详情]: 币种 (${symbol}) 未收盘K线波动或离开初筛池移出`
                         : listType === 'LIST3'
-                            ? `由列表3波幅审计规则删除\n[规则详情]: 币种 (${symbol}) 未通过列表3结构审计`
-                            : `由列表4中轴防守线规则删除\n[规则详情]: 币种 (${symbol}) 动能未达标自动移出`;
+                            ? `【规则 - 结构审计未通过】由列表3波幅审计规则删除\n[规则详情]: 币种 (${symbol}) 未通过列表3结构审计`
+                            : `【规则 - 动能衰减移出】由列表4动能衰减规则删除\n[规则详情]: 币种 (${symbol}) 动能未达标自动移出`;
                 }
                 
                 markSignalDisappeared(listType, symbol, tf, direction, userId, disappearanceReason);

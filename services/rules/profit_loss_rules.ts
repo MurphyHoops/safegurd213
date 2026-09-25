@@ -34,6 +34,7 @@ export function checkIndividualPositionRules(
         ? {
             ...settings.profit,
             ...position.customProfitSettings,
+            enabled: position.customProfitSettings.enabled ?? settings.profit.enabled ?? true,
             conventional: position.customProfitSettings.conventional && (position.customProfitSettings.profitMode === 'CONVENTIONAL' || position.customProfitSettings.oEnabledMap?.['CONVENTIONAL'])
                 ? { ...settings.profit.conventional, ...position.customProfitSettings.conventional }
                 : settings.profit.conventional,
@@ -53,20 +54,22 @@ export function checkIndividualPositionRules(
           }
         : settings.profit;
 
-    const pnlPercent = position.unrealizedPnLPercentage; // 例如 5.5 表示 5.5%
-    const positionValue = position.amount * position.entryPrice;
+    const pnlPercent = position.unrealizedPnLPercentage || 0; // 例如 5.5 表示 5.5%
+    const positionValue = (position.amount || 0) * (position.entryPrice || 0);
     
     // 0. 基础止损 (Stop Loss) - 优先级最高 (始终并联运行)
-    const slSettings = profitSettings.stopLoss || settings.profit.stopLoss || { enabled: false, minPosition: 100, lossPercent: 5, closePercent: 100 };
+    const slSettings = profitSettings.stopLoss || settings.profit.stopLoss || { enabled: false, minPosition: 0, lossPercent: 5, closePercent: 100 };
     if (slSettings.enabled && !(position as any)._slTriggered) {
-        // 门槛检查：持仓金额是否达到止损激活门槛
-        if (positionValue >= slSettings.minPosition) {
+        // 门槛检查：持仓金额是否达到止损激活门槛 (若为 0 或未设门槛则直接放行)
+        const minSlPos = Math.max(0, slSettings.minPosition || 0);
+        if (minSlPos === 0 || positionValue >= minSlPos) {
             // 止损通常是负数比较，例如 pnlPercent (-10) <= -lossPercent (-5)
-            if (pnlPercent <= -Math.abs(slSettings.lossPercent)) {
+            const lossLimit = -Math.abs(slSettings.lossPercent || 5);
+            if (pnlPercent <= lossLimit) {
                 closePosition(
                     position.symbol, 
                     position.side, 
-                    `基础止损触发: 当前 ${pnlPercent.toFixed(2)}% <= 阈值 -${slSettings.lossPercent}%`,
+                    `基础止损触发: 当前 ${pnlPercent.toFixed(2)}% <= 阈值 ${lossLimit}%`,
                     slSettings.closePercent || 100
                 );
                 return true;
@@ -74,8 +77,10 @@ export function checkIndividualPositionRules(
         }
     }
 
-    // 如果全局止盈平仓主目录已关闭，或单币止盈托管未开启，则跳过
-    if (!settings.profit.enabled || !profitSettings.enabled) return false;
+    // 如果全局止盈平仓主目录已显式关闭，或单币止盈托管显式未开启，则跳过
+    const isGlobalProfitEnabled = settings.profit?.enabled !== false;
+    const isProfitEnabled = profitSettings?.enabled !== false;
+    if (!isGlobalProfitEnabled || !isProfitEnabled) return false;
 
     // --- 核心优化：确保“常规，趋势，智能，全局，AI”这些功能只要选择了，完全并联运行，不进行任何排他性拦截 ---
     // 已经彻底删除以往 AI 启动后直接拦截其他所有模式的逻辑，使所有勾选或并联的平仓条件拥有平等的平仓触发权

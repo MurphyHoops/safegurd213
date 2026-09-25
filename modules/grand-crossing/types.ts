@@ -1,10 +1,19 @@
 
 import { ScannerItem, List2Config } from '../../components/Scanner/scannerTypes';
 
+export interface RuleCheckDetail {
+    name: string;
+    enabled: boolean;
+    status: 'PASSED' | 'FAILED' | 'SKIPPED' | 'DISABLED';
+    actualValueText: string;
+    targetLimitText: string;
+    details?: string;
+}
+
 export interface TimeframeDiagnosticRecord {
     symbol: string;
     tf: string;
-    fetchStatus: 'SUCCESS' | 'EMPTY' | 'FAILED';
+    fetchStatus: 'SUCCESS' | 'EMPTY' | 'FAILED' | 'WAITING';
     fetchLatencyMs: number;
     klineCount: number;
     latestPrice: number;
@@ -12,6 +21,9 @@ export interface TimeframeDiagnosticRecord {
     kHigh: number;
     kLow: number;
     kClose: number;
+    kVolume?: number;
+    kAmp?: number;
+    kBodyRatio?: number;
     ema10: number;
     ema20: number;
     ema30: number;
@@ -20,8 +32,11 @@ export interface TimeframeDiagnosticRecord {
     divergenceState: 'BULLISH' | 'BEARISH' | 'NONE';
     isCrossing: boolean;
     isPassed: boolean;
+    passedDirection?: 'LONG' | 'SHORT';
+    passedLag?: number;
     rejectionReason: string;
     timestamp: number;
+    ruleChecks?: RuleCheckDetail[];
 }
 
 export interface GrandCrossingState {

@@ -5,6 +5,7 @@ import { Play, ChevronDown, ChevronUp, Copy, Check, RefreshCw, Search, Flame, Ar
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { pipelineCoordinator } from '../../../services/pipelineQueue';
 import { fetchWithFallback } from '../../../services/apiService';
+import { klineDailyStore } from '../../../services/klineDailyStore';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -96,16 +97,22 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         return [];
     };
 
-    // High-speed daily (1d) kline fetch with multi-fallback proxy and 10-minute global cache
-    const fetch1dKlines = async (symbol: string, maxWaitMs = 2500): Promise<any[] | null> => {
+    // High-speed daily (1d) kline fetch with multi-fallback proxy and 24-hour global cache
+    const fetch1dKlines = async (symbol: string, maxWaitMs = 6000): Promise<any[] | null> => {
         const rawSym = symbol || '';
         const safeSym = rawSym.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
         if (!safeSym) return null;
 
         const nowTime = Date.now();
+        const storeCached = klineDailyStore.getCachedKlinesSync(symbol, 3) || klineDailyStore.getCachedKlinesSync(safeSym, 3);
+        if (storeCached && storeCached.length >= 3) {
+            return storeCached;
+        }
+
         const cached = klinesCacheRef.current.get(symbol) || klinesCacheRef.current.get(safeSym);
-        // Extend cache validity to 10 minutes (600,000 ms) for daily candles to eliminate redundant fetches
-        if (cached && (nowTime - cached.timestamp < 600000) && Array.isArray(cached.klines) && cached.klines.length > 0) {
+        // 🔒 [日K全天常驻缓存与零重复拉取]: 历史日K在当天（8:00 AM 至次日 8:00 AM）完全不可变，缓存有效期设为全天 (24小时/86400000ms)
+        const CACHE_VALIDITY_1D = 86400000;
+        if (cached && (nowTime - cached.timestamp < CACHE_VALIDITY_1D) && Array.isArray(cached.klines) && cached.klines.length > 0) {
             return cached.klines;
         }
         const globalCache = (window as any).KLINE_LIMIT_CACHE || ((window as any).KLINE_LIMIT_CACHE = {});
@@ -116,7 +123,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             return globalCache[`${symbol}_1d`];
         }
         if (globalCache[safeSym]) {
-            if (globalCache[safeSym]['1d'] && Array.isArray(globalCache[safeSym]['1d'].klines) && globalCache[safeSym]['1d'].klines.length >= 3 && (nowTime - (globalCache[safeSym]['1d'].timestamp || 0) < 600000)) {
+            if (globalCache[safeSym]['1d'] && Array.isArray(globalCache[safeSym]['1d'].klines) && globalCache[safeSym]['1d'].klines.length >= 3 && (nowTime - (globalCache[safeSym]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
                 return globalCache[safeSym]['1d'].klines;
             }
             const keys = Object.keys(globalCache[safeSym]);
@@ -127,7 +134,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             }
         }
         if (globalCache[symbol]) {
-            if (globalCache[symbol]['1d'] && Array.isArray(globalCache[symbol]['1d'].klines) && globalCache[symbol]['1d'].klines.length >= 3 && (nowTime - (globalCache[symbol]['1d'].timestamp || 0) < 600000)) {
+            if (globalCache[symbol]['1d'] && Array.isArray(globalCache[symbol]['1d'].klines) && globalCache[symbol]['1d'].klines.length >= 3 && (nowTime - (globalCache[symbol]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
                 return globalCache[symbol]['1d'].klines;
             }
             const keys = Object.keys(globalCache[symbol]);
@@ -138,13 +145,13 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             }
         }
 
-        // ⚡ 极速轻量拉取：仅拉取最新 10 根日K线 (limit=10)，完全覆盖今日、昨日、前天及多日组合，彻底告别 350 根超重冗余
+        // ⚡ 极速轻量拉取：仅拉取最新 10 根日K线 (limit=10)，完全覆盖今日、昨日、前天及多日组合
         const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=1d&limit=10`;
         try {
             const controller = new AbortController();
             const timeoutTimer = setTimeout(() => {
                 try { controller.abort(); } catch (_) {}
-            }, Math.min(2500, Math.max(800, maxWaitMs - 80)));
+            }, Math.min(6000, Math.max(1500, maxWaitMs)));
 
             const res = await fetch(`/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, {
                 signal: controller.signal
@@ -161,8 +168,11 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                     if (!globalCache[symbol]) globalCache[symbol] = {};
                     globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
                     globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
-                    globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
-                    globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                    // 🔒 只有在K线数据确实达到300根时才写入300缓存，杜绝10根小数组污染300天大回溯
+                    if (klinesData.length >= 300) {
+                        globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
+                        globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                    }
                     return klinesData;
                 }
             }
@@ -170,7 +180,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
 
         // ⚡ 2. 备用通道：通过 fetchWithFallback 高优先级兜底
         try {
-            const res = await fetchWithFallback(futuresUrl, { timeout: 2000, priority: 'HIGH' }, (d) => Array.isArray(d) && d.length > 0);
+            const res = await fetchWithFallback(futuresUrl, { timeout: 4000, priority: 'HIGH' }, (d) => Array.isArray(d) && d.length > 0);
             const klinesData = await res.json();
             if (klinesData && Array.isArray(klinesData) && klinesData.length > 0) {
                 klinesCacheRef.current.set(symbol, { klines: klinesData, timestamp: Date.now() });
@@ -181,8 +191,10 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 if (!globalCache[symbol]) globalCache[symbol] = {};
                 globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
                 globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
-                globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
-                globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                if (klinesData.length >= 300) {
+                    globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
+                    globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                }
                 return klinesData;
             }
         } catch (_) {}
@@ -381,6 +393,13 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             const perCoinDelayMs = Math.max(1, cfg?.intervalSeconds ?? (cfg?.intervalMinutes ? Math.min(cfg.intervalMinutes, 60) : 3)) * 1000;
             for (let i = 0; i < candidates.length; i++) {
                 if (!isMountedRef.current || !isScanningRef.current) break;
+
+                // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
+                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                if (!isMountedRef.current || !isScanningRef.current) break;
+
                 const currentSym = candidates[i];
                 const stepStart = Date.now();
                 await processCoin(currentSym);
@@ -388,7 +407,16 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 const elapsed = Date.now() - stepStart;
                 const remaining = Math.max(0, perCoinDelayMs - elapsed);
                 if (remaining > 0 && i < candidates.length - 1 && isMountedRef.current && isScanningRef.current) {
-                    await new Promise(resolve => setTimeout(resolve, remaining));
+                    const delayStart = Date.now();
+                    while (Date.now() - delayStart < remaining && isMountedRef.current && isScanningRef.current) {
+                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
+                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
+                                await new Promise(resolve => setTimeout(resolve, 200));
+                            }
+                            break;
+                        }
+                        await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining)));
+                    }
                 }
             }
 
@@ -441,6 +469,11 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             scanTimer = setTimeout(() => {
                 if (!isLoopActive || !isMountedRef.current) return;
                 if (isAutoScanRef.current && !isScanningRef.current) {
+                    // ⏸️ 暂停检查：若处于暂停状态，稍后重试调度，不启动新扫描
+                    if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
+                        scheduleNext(1000);
+                        return;
+                    }
                     // 🔒 [时间先后·互斥安全锁]: 若大行情（横盘蓄势/回溯周期）正在扫描，让行等待
                     if ((window as any).IS_MAJOR_TREND_SCANNING) {
                         scheduleNext(1500);
@@ -459,21 +492,15 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
 
         // 🔒 [时间先后·闭环接力赛]: 
         // 列表1里“回溯周期过滤”扫描完毕后，派发 scanner_major_trend_completed，
-        // 行情启动底池自动清零，并无缝接棒重新读取“交易额过滤底池”开始新一轮扫描，周而复始！
+        // 保持既有底池数据无缝平滑流转（绝不清零），冷却指定秒数后重新读取“交易额过滤底池”开始新一轮扫描！
         const handleMajorTrendCompleted = () => {
             if (!isLoopActive || !isMountedRef.current) return;
 
-            // 回溯周期过滤扫描完成时自动清零行情启动底池
-            try {
-                localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify([]));
-                setPool([]);
-                window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
-            } catch (_) {}
-
+            // 🔒【永不清零铁律】: 严禁在接力时清空行情启动底池，采用双缓冲无缝原子替换机制，避免下级回溯周期抓到空池或半成品数据
             if (!isAutoScanRef.current || isScanningRef.current) return;
 
             const roundIntervalMs = Math.max(1, syncIntervalSecRef.current ?? 3) * 1000;
-            console.log(`[StartTrendPool] 回溯周期过滤扫描完毕！行情启动底池已自动清零，冷却 ${syncIntervalSecRef.current ?? 3} 秒后读取“交易额过滤底池”开始新一轮闭环扫描...`);
+            console.log(`[StartTrendPool] 回溯周期过滤扫描完毕！底池保持平滑生效，冷却 ${syncIntervalSecRef.current ?? 3} 秒后读取“交易额过滤底池”开始新一轮闭环扫描...`);
             scheduleNext(roundIntervalMs);
         };
         window.addEventListener('scanner_major_trend_completed', handleMajorTrendCompleted);

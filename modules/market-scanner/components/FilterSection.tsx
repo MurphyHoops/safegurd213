@@ -26,6 +26,29 @@ export const FilterSection: React.FC<Props> = ({
 }) => {
     return (
         <div className="space-y-3 animate-in fade-in slide-in-from-top-1 duration-300">
+            {/* 自动选币 vs 固定选币 运行状态提示 */}
+            {scanConfig.useCustomOnly ? (
+                <div className="bg-cyan-950/40 border border-cyan-500/30 rounded p-2 flex items-center justify-between text-[10px] text-cyan-300">
+                    <div className="flex items-center gap-1.5 font-bold">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                        <span>固定选币运行中：【自动选币】已停止运行</span>
+                    </div>
+                    <span className="text-[9px] text-slate-400 font-mono">
+                        (自动筛选规则已暂停，监控池币种直通列表2)
+                    </span>
+                </div>
+            ) : (
+                <div className="bg-indigo-950/30 border border-indigo-500/20 rounded p-2 flex items-center justify-between text-[10px] text-indigo-300">
+                    <div className="flex items-center gap-1.5 font-bold">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span>自动选币运行中：【固定选币】已停止运行</span>
+                    </div>
+                    <span className="text-[9px] text-slate-400 font-mono">
+                        (按下方成交额与涨跌幅规则全自动过滤)
+                    </span>
+                </div>
+            )}
+
             {/* Mode Switcher - Updates activeMode in parent, triggering independent config load */}
             <div className="flex gap-2">
                 <button 

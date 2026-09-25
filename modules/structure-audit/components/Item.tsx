@@ -57,7 +57,7 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                         <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
                     )}
                     <span>{item.symbol.replace('USDT', '')}</span>
-                    {getCoinChineseName(item.symbol) && (
+                    {getCoinChineseName(item.symbol) && getCoinChineseName(item.symbol) !== item.symbol.replace('USDT', '') && (
                         <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
                     )}
                 </span>

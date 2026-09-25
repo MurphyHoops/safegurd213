@@ -4,6 +4,7 @@ import { useMomentumAudit } from './useMomentumAudit';
 import { ScannerItem, List4Config, List3Config, ActionConfig } from '../../components/Scanner/scannerTypes';
 import { PositionSide, Position } from '../../types';
 import { normalizeSymbol } from '../../services/symbolUtils';
+import { priceRegistry } from '../../services/priceRegistry';
 import List4_Momentum from './components/List4_Momentum';
 
 interface Props {
@@ -101,9 +102,25 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     return;
                 }
 
-                // 🔒 前 NK 突破规则终极保险丝：若开启，开仓价必须严格高于前 NK 最高收盘价(多)或低于前 NK 最低收盘价(空)
+                const rawLive = priceRegistry.getPrice(cleanSym) || realPrices[cleanSym] || item.price;
+                const livePrice = (typeof rawLive === 'number' && rawLive > 0) ? rawLive : item.price;
+
+                // 🔒 【双重核心锁 1：进攻突破线必须由当前实时价格达成】
+                const entryTrigger = item.momentum?.entryTrigger || 0;
+                const triggerEpsilon = (livePrice || 1) * 0.00001;
+                const isBreakoutReached = entryTrigger > 0 ? (
+                    item.direction === 'LONG'
+                        ? (livePrice >= (entryTrigger - triggerEpsilon))
+                        : (livePrice <= (entryTrigger + triggerEpsilon))
+                ) : true;
+
+                if (!isBreakoutReached) {
+                    return; // 实时价格未达到进攻突破线，绝对禁止开仓
+                }
+
+                // 🔒 【双重核心锁 2：前 NK 突破必须由当前实时价格达成】
+                const kCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
                 if (config.enableRev3K === true && item.structure) {
-                    const kCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
                     let maxClose = item.structure.maxClose3;
                     let minClose = item.structure.minClose3;
                     if (item.structure.recentCloses && item.structure.recentCloses.length > 0) {
@@ -113,11 +130,11 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                             minClose = Math.min(...slice);
                         }
                     }
-                    if (item.direction === 'LONG' && typeof maxClose === 'number' && item.price <= maxClose) {
-                        return;
+                    if (item.direction === 'LONG' && typeof maxClose === 'number' && livePrice <= maxClose) {
+                        return; // 实时价格未越过前 NK 最高收盘价，绝对禁止开仓
                     }
-                    if (item.direction === 'SHORT' && typeof minClose === 'number' && item.price >= minClose) {
-                        return;
+                    if (item.direction === 'SHORT' && typeof minClose === 'number' && livePrice >= minClose) {
+                        return; // 实时价格未跌破前 NK 最低收盘价，绝对禁止开仓
                     }
                 }
                 
@@ -140,7 +157,8 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                 }
 
                 if (!alreadyHasPosition) {
-                    console.log(`[List4 Auto] 🚀 突破确认！立即开仓 ${cleanSym} @ ${item.price} Reason: ${item.tf} Momentum Breakout`);
+                    const tradeReason = `[列表4突破] ${item.direction === 'LONG' ? '多' : '空'}进攻突破${config.enableRev3K ? `+前${kCount}K确认` : ''} (${item.tf})`;
+                    console.log(`[List4 Auto] 🚀 突破双重确认！立即开仓 ${cleanSym} @ ${livePrice} Reason: ${tradeReason}`);
                     // 立即对该币种加锁，阻断同一轮遍历中后续周期（如 15m/30m/1h）的并发穿透
                     symbolLastExecutedRef.current.set(cleanSym, now);
                     
@@ -155,8 +173,8 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     const success = executeTradeSafeRef.current(
                         cleanSym, 
                         item.direction as PositionSide, 
-                        item.price, 
-                        `Auto L4 Breakout (${item.tf})`, 
+                        livePrice, 
+                        tradeReason, 
                         item.tf,
                         signalCandle
                     );

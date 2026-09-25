@@ -55,18 +55,17 @@ export const GrandCrossingModule: React.FC<Props> = ({
     // If useCustomOnly (固定选币) is active, List 2 MUST strictly scan ONLY the user's custom symbols (监控池)
     // even if the user switches List 1 to "市场搜索" (SEARCH) tab.
     const effectiveCandidates = React.useMemo(() => {
-        if (scanConfig.useCustomOnly) {
+        if (scanConfig?.useCustomOnly) {
             const customSet = new Set(
                 (scanConfig.customSymbols || '')
-                    .split(',')
-                    .map(s => s.trim().toUpperCase())
+                    .split(/[,，\s]+/)
+                    .map(s => normalizeSymbol(s.trim()))
                     .filter(Boolean)
-                    .map(s => s.endsWith('USDT') ? s : `${s}USDT`)
             );
-            return candidates.filter(c => customSet.has(c.symbol.toUpperCase()));
+            return (candidates || []).filter(c => customSet.has(normalizeSymbol(c.symbol)));
         }
-        return candidates;
-    }, [candidates, scanConfig.useCustomOnly, scanConfig.customSymbols]);
+        return candidates || [];
+    }, [candidates, scanConfig?.useCustomOnly, scanConfig?.customSymbols]);
 
     // --- LOGIC HOOK ---
     const { 

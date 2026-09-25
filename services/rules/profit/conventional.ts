@@ -10,12 +10,13 @@ export function checkConventionalProfit(
     settings: ConventionalSettings, 
     close: (symbol: string, side: PositionSide, reason: string, ratio: number) => void
 ): boolean {
-    const maxPnl = position.maxPnLPercent || 0;
-    const currentPnl = position.unrealizedPnLPercentage;
-    const positionValue = position.amount * position.entryPrice;
+    const currentPnl = position.unrealizedPnLPercentage || 0;
+    const maxPnl = Math.max(position.maxPnLPercent || 0, currentPnl);
+    const positionValue = (position.amount || 0) * (position.entryPrice || 0);
 
-    // 0. 门槛检查：持仓金额
-    if (positionValue < settings.minPosition) return false;
+    // 0. 门槛检查：持仓金额 (若未配置或<=0则不设门槛，默认放行)
+    const minPos = Math.max(0, settings.minPosition || 0);
+    if (minPos > 0 && positionValue < minPos) return false;
 
     // 1. 托底平仓检查 (Trailing floor profit protection)
     if (settings.trailingEnabled) {

@@ -5,7 +5,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         enabled: true,
         profitMode: 'SMART',
         conventional: { 
-            minPosition: 100, 
+            minPosition: 0, 
             profitPercent: 5, 
             callbackPercent: 1, 
             closePercent: 100, 
@@ -28,9 +28,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
             emaTimeframe: 'AUTO'
         },
         smart: { 
-            minPosition: 100,
-            activationProfit: 60, 
-            conventionalEnabled: false, 
+            enabled: true,
+            minPosition: 0,
+            activationProfit: 5, 
+            conventionalEnabled: true, 
+            decayEnabled: true,
             tiers: [
                 { threshold: 2, callback: 0.5, expiry: 5 },
                 { threshold: 5, callback: 1, expiry: 10 },
@@ -39,7 +41,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
                 { threshold: 40, callback: 8, expiry: 60 }
             ]
         },
-        ai: { sensitivity: 5, aggressiveness: 5, minPosition: 100, activationProfit: 60 },
+        ai: { sensitivity: 5, aggressiveness: 5, minPosition: 0, activationProfit: 5 },
         global: { 
             profitPercent: 0, 
             lossPercent: 0, 
@@ -54,7 +56,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
                 { threshold: 40, callback: 8, expiry: 60 }
             ]
         },
-        stopLoss: { enabled: false, minPosition: 100, lossPercent: 5, closePercent: 100 }
+        stopLoss: { enabled: false, minPosition: 0, lossPercent: 5, closePercent: 100 }
     },
     hedging: {
         enabled: true,

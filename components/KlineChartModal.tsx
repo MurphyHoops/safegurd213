@@ -6,8 +6,9 @@ import { fetchWithFallback } from '../services/apiService';
 import { analyzeList2Crossing } from '../services/rules/list2_crossing'; // Import Rule Logic
 import { List2Config } from './Scanner/scannerTypes';
 import { useOptionalBacktest } from '../modules/backtester/BacktestContext';
-import { formatPrice, normalizeSymbol } from '../services/symbolUtils';
+import { formatPrice, normalizeSymbol, formatToBinanceSymbol } from '../services/symbolUtils';
 import { KLineSynthesizer } from '../services/klineSynthesizer';
+import { binanceKlineWs, WsKlineUpdate } from '../services/binanceKlineWs';
 
 interface Signal {
     time: number;
@@ -40,6 +41,8 @@ interface Props {
   symbol: string;
   initialTimeframe?: string;
   signals?: Signal[]; 
+  direction?: 'LONG' | 'SHORT' | string;
+  side?: 'LONG' | 'SHORT' | string;
   entryPrice?: number; 
   entryTime?: number; 
   currentPrice?: number; // New prop for accurate simulation target
@@ -56,6 +59,8 @@ interface Props {
   tradeLogs?: TradeLog[]; // Added tradeLogs prop
   appearedTime?: number; // Time the signal appeared
   disappearedTime?: number; // Time the signal disappeared
+  source?: 'list1' | 'list2' | 'list3' | 'list4' | 'list5' | 'positions' | 'tradelogs' | string;
+  viewMode?: 'SIGNAL' | 'TRADE';
   onClose: () => void;
   onTimeframeChange?: (timeframe: string) => void;
   lookbackDays?: number;
@@ -235,7 +240,7 @@ async function fetchFirstValid(channels: Array<Promise<{ data: any[][], source: 
 
 async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
     // 15s and 30s synthesized seconds klines
-    if (timeframe === '15s' || timeframe === '30s') {
+    if ((timeframe === '15s' || timeframe === '30s') && !/[\u4e00-\u9fa5]/.test(safeSymbol)) {
         const targetMin = timeframe === '15s' ? 0.25 : 0.5;
         const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000`;
         try {
@@ -294,16 +299,16 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
         throw new Error('Empty data');
     };
 
-    // Parallel multi-channel racing (Promise.any equivalent that ignores fast rejections)
+    // Parallel multi-channel racing (Prioritize zero-delay WebSocket APIs)
     const raceChannels: Array<Promise<{ data: any[][], source: string }>> = [
-        // 1. High-speed local backend proxy (Futures)
-        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, 'Local-Proxy-Futures', 3000),
-        // 2. High-speed local backend proxy (Spot)
-        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(spotUrl)}&priority=high`, 'Local-Proxy-Spot', 3000),
-        // 3. Direct Futures WebSocket API
+        // 1. Direct Futures WebSocket API (Fastest direct binary push)
         fetchKlinesViaWebSocket(safeSymbol, timeframe, limit, true),
-        // 4. Direct Spot WebSocket API
+        // 2. Direct Spot WebSocket API
         fetchKlinesViaWebSocket(safeSymbol, timeframe, limit, false),
+        // 3. High-speed local backend proxy (Futures)
+        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, 'Local-Proxy-Futures', 3000),
+        // 4. High-speed local backend proxy (Spot)
+        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(spotUrl)}&priority=high`, 'Local-Proxy-Spot', 3000),
         // 5. Fallback engine with multi-proxy rotation
         fetchViaFallbackService(futuresUrl, 'FallbackService-Futures'),
         // 6. Direct Spot endpoint (Fastest if client has non-blocked network)
@@ -339,10 +344,38 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
     throw new Error(`无法获取 ${safeSymbol} 的 K 线数据，请检查网络连接或稍后重试`);
 }
 
-const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, list4Config: propList4Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays, hasPrev, hasNext, currentIndexLabel, onPrev, onNext }) => {
+const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], direction: propDirection, side: propSide, entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, list4Config: propList4Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, source, viewMode, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays, hasPrev, hasNext, currentIndexLabel, onPrev, onNext }) => {
   const backtest = useOptionalBacktest();
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
   const serializedConfig = JSON.stringify(list2Config);
+
+  // 🎯 View Mode Determination:
+  // - 列表 1, 2, 3, 4 进入：信号分析模式（不标记开仓、补仓、砍仓、平仓、清仓等交易流水信息，只标记策略信号/突破/防守/等待开仓决策框）
+  // - 列表 5、当前持仓列表、交易日志进入：实盘/持仓交易模式（不标记策略信号/等待开仓框，只标记开仓、补仓、砍仓、平仓、清仓及持仓开仓线）
+  const isTradeViewMode = useMemo(() => {
+    if (viewMode === 'TRADE') return true;
+    if (viewMode === 'SIGNAL') return false;
+    const s = (source || '').toString().toLowerCase();
+    if (s === 'list1' || s === 'list2' || s === 'list3' || s === 'list4') {
+      return false;
+    }
+    if (s === 'list5' || s === 'positions' || s === 'tradelogs' || s === 'trade_logs' || s === 'trades' || s === 'history') {
+      return true;
+    }
+    // Infer if source not explicitly passed
+    if (signals && signals.length > 0 && (signals[0] as any).source) {
+      const sigSrc = String((signals[0] as any).source).toLowerCase();
+      if (sigSrc.includes('list5')) return true;
+      if (sigSrc.includes('list1') || sigSrc.includes('list2') || sigSrc.includes('list3') || sigSrc.includes('list4')) return false;
+    }
+    if (list2Config || propList4Config) {
+      return false;
+    }
+    if (entryPrice || entryTime || showAuditLines) {
+      return true;
+    }
+    return false;
+  }, [viewMode, source, signals, list2Config, propList4Config, entryPrice, entryTime, showAuditLines]);
 
   // 🔒 [SECURITY_LOCK: KLINE_KEYBOARD_NAV]
   useEffect(() => {
@@ -380,7 +413,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
   // List 2 EMA Alignment & Divergence Markers across full candlestick history (ONLY the 1st candle of each divergence run that passes crossing validation)
   const divergenceMarkers = useMemo(() => {
-      if (fullData.length === 0) return [];
+      if (isTradeViewMode || fullData.length === 0) return [];
       const markers: {
           index: number;
           time: number;
@@ -717,7 +750,12 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
 
           const d = fullData[signalIdx];
-          const isLong = sig.type === 'LONG';
+          let isLong = sig.type === 'LONG';
+          if (entryTime && Math.abs(sig.time - entryTime) < 60000 && (propDirection || propSide)) {
+              const explicit = (propDirection || propSide || '').toUpperCase();
+              if (explicit === 'LONG' || explicit === 'BUY' || explicit === '多') isLong = true;
+              else if (explicit === 'SHORT' || explicit === 'SELL' || explicit === '空') isLong = false;
+          }
           
           // Calculate amplitude with safe minimum threshold matching list4_momentum.ts
           const signalHigh = d.high;
@@ -728,8 +766,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           let list4Config: any = propList4Config || null;
           if (!list4Config) {
             try {
-              const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
-              const savedL4 = (selectedId ? localStorage.getItem(`SCANNER_LIST4_CONFIG_${selectedId}`) : null) || 
+              const rawId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+              const cleanId = rawId ? (rawId.startsWith('"') ? JSON.parse(rawId) : rawId) : '';
+              const savedL4 = (cleanId ? localStorage.getItem(`SCANNER_LIST4_CONFIG_${cleanId}`) : null) || 
                               localStorage.getItem('SCANNER_LIST4_CONFIG');
               if (savedL4) list4Config = JSON.parse(savedL4);
             } catch(e) {}
@@ -964,7 +1003,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
 
   // Viewport State
-  const [visibleCount, setVisibleCount] = useState(showAuditLines ? 48 : 200); 
+  const [visibleCount, setVisibleCount] = useState(showAuditLines ? 120 : 200); 
   const [startIndex, setStartIndex] = useState(0); 
   const [hoverIndex, setHoverIndex] = useState<number | null>(null); 
   const [mouseY, setMouseY] = useState<number | null>(null); 
@@ -1051,14 +1090,17 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           const e20Arr = calculateEMA(closes, 20);
           const e30Arr = calculateEMA(closes, 30);
           signals.forEach(s => {
+              const rawType = (s.type || (s as any).direction || '').toUpperCase();
+              const sType: 'LONG' | 'SHORT' = (rawType === 'LONG' || rawType === 'BUY' || rawType === '多') ? 'LONG' : 'SHORT';
+              const normSignal = { ...s, type: sType };
               const sIdx = getCandleIdxFast(s.time, fullData);
               if (sIdx !== -1) {
                   const d = fullData[sIdx];
                   // 🔒 [USER MANDATORY RULE] 做多信号K线必须是阳线 (Close >= Open)，做空信号K线必须是阴线 (Close <= Open)
-                  if (s.type === 'LONG' && d.close < d.open && sIdx < fullData.length - 1) {
+                  if (sType === 'LONG' && d.close < d.open && sIdx < fullData.length - 1) {
                       return;
                   }
-                  if (s.type === 'SHORT' && d.close > d.open && sIdx < fullData.length - 1) {
+                  if (sType === 'SHORT' && d.close > d.open && sIdx < fullData.length - 1) {
                       return;
                   }
 
@@ -1068,20 +1110,20 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                       const val30 = e30Arr[sIdx];
                       if (val10 !== undefined && val20 !== undefined) {
                           // 🔒 铁律门禁：做多信号所在K线绝不可处于空头死叉 (EMA10 < EMA20 且 EMA10 < EMA30)
-                          if (s.type === 'LONG' && val10 < val20 && (val30 === undefined || val10 < val30)) {
+                          if (sType === 'LONG' && val10 < val20 && (val30 === undefined || val10 < val30)) {
                               return;
                           }
                           // 做空信号所在K线绝不可处于多头金叉 (EMA10 > EMA20 且 EMA10 > EMA30)
-                          if (s.type === 'SHORT' && val10 > val20 && (val30 === undefined || val10 > val30)) {
+                          if (sType === 'SHORT' && val10 > val20 && (val30 === undefined || val10 > val30)) {
                               return;
                           }
                       }
                   }
               }
               // Avoid exact duplicates
-              const exists = allSignals.some(existing => existing.time === s.time && existing.type === s.type);
+              const exists = allSignals.some(existing => Math.abs(existing.time - s.time) < 1000 && existing.type === sType);
               if (!exists) {
-                  allSignals.push(s);
+                  allSignals.push(normSignal);
               }
           });
       }
@@ -1133,7 +1175,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setLastUpdated(Date.now());
 
                     if (isInitialLoad) {
-                        const defaultVisible = showAuditLines ? 48 : 200;
+                        const defaultVisible = showAuditLines ? 120 : 200;
                         setVisibleCount(defaultVisible);
                         
                         let targetIdx = -1;
@@ -1148,7 +1190,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                         }
 
                         if (targetIdx !== -1) {
-                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.35) : (defaultVisible - 1 - 18);
+                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.45) : (defaultVisible - 1 - 18);
                             const calculatedStart = targetIdx - offsetFromLeft;
                             setStartIndex(Math.max(0, Math.min(calculatedStart, mappedKlines.length - defaultVisible)));
                             setIsAutoScroll(false);
@@ -1210,7 +1252,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setLastUpdated(Date.now());
 
                     if (isInitialLoad) {
-                        const defaultVisible = showAuditLines ? 48 : 200;
+                        const defaultVisible = showAuditLines ? 120 : 200;
                         setVisibleCount(defaultVisible);
                         
                         let targetIdx = -1;
@@ -1225,7 +1267,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                         }
 
                         if (targetIdx !== -1) {
-                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.35) : (defaultVisible - 1 - 18);
+                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.45) : (defaultVisible - 1 - 18);
                             const calculatedStart = targetIdx - offsetFromLeft;
                             setStartIndex(Math.max(0, Math.min(calculatedStart, klines.length - defaultVisible)));
                             setIsAutoScroll(false);
@@ -1266,6 +1308,75 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         clearTimeout(timerId); 
     };
   }, [symbol, timeframe, retryCount]);
+
+  // ⚡ [REALTIME_WEBSOCKET] Continuous Live K-Line Push Stream
+  useEffect(() => {
+    if (backtest) return;
+    const safeSymbol = formatToBinanceSymbol(symbol);
+    if (!safeSymbol) return;
+
+    // Direct active subscribe on Binance Kline WebSocket
+    binanceKlineWs.subscribe(safeSymbol, timeframe);
+
+    const unsubscribe = binanceKlineWs.addListener((update: WsKlineUpdate) => {
+      const updateSym = formatToBinanceSymbol(update.symbol);
+      if (updateSym === safeSymbol && update.tf.toLowerCase() === timeframe.toLowerCase()) {
+        setFullData((prev) => {
+          if (!prev || prev.length === 0) return prev;
+          const lastIdx = prev.length - 1;
+          const last = prev[lastIdx];
+
+          let updatedList: KlineData[];
+          if (last.time === update.time) {
+            // Real-time update of current in-progress candle
+            const updatedCandle: KlineData = {
+              time: update.time,
+              open: update.open,
+              high: Math.max(last.high, update.high),
+              low: Math.min(last.low, update.low),
+              close: update.close,
+              volume: update.volume,
+            };
+            updatedList = [...prev.slice(0, lastIdx), updatedCandle];
+          } else if (update.time > last.time) {
+            // Brand new candle initialized via WS
+            const newCandle: KlineData = {
+              time: update.time,
+              open: update.open,
+              high: update.high,
+              low: update.low,
+              close: update.close,
+              volume: update.volume,
+            };
+            updatedList = [...prev, newCandle];
+            if (updatedList.length > 500) {
+              updatedList = updatedList.slice(updatedList.length - 500);
+            }
+          } else {
+            return prev;
+          }
+
+          // Recalculate EMA smoothly with real-time close prices
+          const closes = updatedList.map((k) => k.close);
+          const emas = {
+            10: calculateEMA(closes, 10),
+            20: calculateEMA(closes, 20),
+            30: calculateEMA(closes, 30),
+            40: calculateEMA(closes, 40),
+            80: calculateEMA(closes, 80),
+          };
+          setEmaData(emas);
+          setLastUpdated(Date.now());
+          return updatedList;
+        });
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      binanceKlineWs.unsubscribe(safeSymbol, timeframe);
+    };
+  }, [symbol, timeframe, backtest]);
 
   // Auto-scroll
   useEffect(() => {
@@ -1365,8 +1476,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       }
   };
 
-  // Trade Logs Marker Logic
+  // Trade Logs Marker Logic (仅在从列表5、持仓列表、交易日志等交易相关入口进入时标记)
   const tradeMarkers = useMemo(() => {
+      if (!isTradeViewMode) return [];
       const markers: { time: number; type: string; label: string; price?: number }[] = [];
       
       // Load trade logs from props or fallback to localStorage if props are empty
@@ -1520,7 +1632,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       });
       return Array.from(unique.values());
-  }, [tradeLogs, symbol]);
+  }, [tradeLogs, symbol, isTradeViewMode]);
   
   const getCandleIdx = (time: number) => {
       return getCandleIdxFast(time, fullData);
@@ -1654,11 +1766,24 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       if (focalIdx !== -1 && focalIdx < fullData.length) {
           const fd = fullData[focalIdx];
           const matchedSig = signalsToShow.find(s => s.signalIdx === focalIdx);
-          focalIsLong = matchedSig ? matchedSig.type === 'LONG' : true;
-          
-          if (extraLines) {
-              const hasShortExtra = extraLines.some(l => l.label && l.label.includes('空'));
-              if (hasShortExtra) focalIsLong = false;
+
+          // 🔒 精准决策多空方向（避免被历史死叉反向篡改）
+          const explicitDir = (propDirection || propSide || '').toUpperCase();
+          if (explicitDir === 'LONG' || explicitDir === 'BUY' || explicitDir === '多') {
+              focalIsLong = true;
+          } else if (explicitDir === 'SHORT' || explicitDir === 'SELL' || explicitDir === '空') {
+              focalIsLong = false;
+          } else if (extraLines && extraLines.length > 0) {
+              const hasLongExtra = extraLines.some(l => l.label && (l.label.includes('多') || l.label.includes('LONG') || l.label.includes('买')));
+              const hasShortExtra = extraLines.some(l => l.label && (l.label.includes('空') || l.label.includes('SHORT') || l.label.includes('卖')));
+              if (hasLongExtra && !hasShortExtra) focalIsLong = true;
+              else if (hasShortExtra && !hasLongExtra) focalIsLong = false;
+              else if (matchedSig) focalIsLong = matchedSig.type === 'LONG';
+              else focalIsLong = true;
+          } else if (matchedSig) {
+              focalIsLong = matchedSig.type === 'LONG';
+          } else {
+              focalIsLong = true;
           }
 
           const amp = fd.high - fd.low;
@@ -1759,7 +1884,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       };
 
       // Render all signal markers (无背景框，无边框，多在下方，空在上方，虚线指引端保留1~3cm距离)
-      signalsToShow.forEach((sig, idx) => {
+      // 🔒 铁律规则：从列表 5、当前持仓列表、交易日志进入的 K 线图，不要标记信号相关的信息
+      if (!isTradeViewMode) {
+          signalsToShow.forEach((sig, idx) => {
           const signalIdx = sig.signalIdx ?? -1;
           if (signalIdx === -1 || signalIdx < startIndex || signalIdx >= startIndex + visibleCount) return;
 
@@ -1768,8 +1895,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           if (!d) return;
 
           const x = getX(i) + candleWidth / 2;
-          const isLong = sig.type === 'LONG';
           const isFocal = signalIdx === focalIdx;
+          const isLong = isFocal ? focalIsLong : (sig.type === 'LONG');
           const guideColor = isLong ? '#0ECB81' : '#F6465D';
           const layout = getMarkerLayout(signalIdx, isLong ? 'LONG' : 'SHORT', d);
 
@@ -1861,6 +1988,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               );
           }
       });
+      }
 
       // Render the Stepped Orthogonal Lines for 进攻突破线 & 中轴防守线
       // Layout faithfully matches the user's diagram:
@@ -1869,7 +1997,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       // - Lower line extends horizontally, then turns DOWNWARDS with vertical dashed line and 2-row label below
       // - Labels stacked vertically directly without border/background: Line 1 Title, Line 2 Price & Ratio
       let focalLinesVisual: React.ReactNode = null;
-      if (focalBreakoutPrice !== null && focalDefensePrice !== null) {
+      if (!isTradeViewMode && focalBreakoutPrice !== null && focalDefensePrice !== null) {
           const yBreakout = getY(focalBreakoutPrice);
           const yDefense = getY(focalDefensePrice);
           const xStart = focalX !== null ? focalX : 0;
@@ -2041,7 +2169,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
       // List 2 Divergence (发散) Visual Markers - ONLY rendered on the 1st candle of each divergence onset
       const divergenceVisuals: React.ReactNode[] = [];
-      if (showDivergenceMarkers && divergenceMarkers.length > 0) {
+      if (!isTradeViewMode && showDivergenceMarkers && divergenceMarkers.length > 0) {
           divergenceMarkers.forEach((m, idx) => {
               if (m.index >= startIndex && m.index < startIndex + visibleCount) {
                   const i = m.index - startIndex;
@@ -2199,7 +2327,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
       // Highlight Time Line (L4 Entry)
       let highlightLine = null;
-      if (showAuditLines && highlightTime) {
+      if (!isTradeViewMode && showAuditLines && highlightTime) {
           const hlIdx = getCandleIdxFast(highlightTime, fullData);
 
           if (hlIdx !== -1 && hlIdx !== focalIdx && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
@@ -2216,7 +2344,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
       // Appeared Line (发生) - 无背景无边框
       let appearedLine = null;
-      if (appearedTime) {
+      if (!isTradeViewMode && appearedTime) {
           const hlIdx = getCandleIdxFast(appearedTime, fullData);
 
           if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
@@ -2233,7 +2361,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
       // Disappeared Line (消失) - 无背景无边框
       let disappearedLine = null;
-      if (disappearedTime) {
+      if (!isTradeViewMode && disappearedTime) {
           const hlIdx = getCandleIdxFast(disappearedTime, fullData);
 
           if (hlIdx !== -1 && hlIdx >= startIndex && hlIdx < startIndex + visibleCount) {
@@ -2248,39 +2376,145 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       }
 
-      // Waiting / Triggered Line (等待 / 已触发 - for active coins in list) - 无背景无边框
+      // Waiting / Triggered Line (等待 / 已触发 - for active coins in list) - 带智能决策悬浮卡片
       let waitingLine = null;
-      if (!disappearedTime && fullData.length > 0) {
+      if (!isTradeViewMode && !disappearedTime && fullData.length > 0) {
           const lastIdx = fullData.length - 1;
           if (lastIdx >= startIndex && lastIdx < startIndex + visibleCount) {
               const i = lastIdx - startIndex;
               const x = getX(i) + candleWidth / 2;
               
-              // Check if extraLines indicates a breakout trigger has been reached
-              const triggerLine = extraLines?.find(l => l.label.includes('突破') || l.label.includes('Trigger') || l.label.includes('TRIGGER') || l.label.includes('攻'));
-              let isTriggeredByChart = false;
-              if (triggerLine && triggerLine.price > 0) {
-                  const lastCandle = fullData[lastIdx];
-                  const isShort = triggerLine.label.includes('空') || signals.some(s => s.type === 'SHORT');
-                  // For LONG: high >= trigger; For SHORT: low <= trigger
-                  if (isShort) {
-                      if (lastCandle.low <= triggerLine.price || lastCandle.close <= triggerLine.price) {
-                          isTriggeredByChart = true;
-                      }
-                  } else {
-                      if (lastCandle.high >= triggerLine.price || lastCandle.close >= triggerLine.price) {
-                          isTriggeredByChart = true;
-                      }
-                  }
+              // 1. 动态加载列表4最新配置
+              let list4Cfg: any = propList4Config || null;
+              if (!list4Cfg) {
+                  try {
+                      const rawId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+                      const cleanId = rawId ? (rawId.startsWith('"') ? JSON.parse(rawId) : rawId) : '';
+                      const savedL4 = (cleanId ? localStorage.getItem(`SCANNER_LIST4_CONFIG_${cleanId}`) : null) || 
+                                      localStorage.getItem('SCANNER_LIST4_CONFIG');
+                      if (savedL4) list4Cfg = JSON.parse(savedL4);
+                  } catch(e) {}
               }
+              const kCount = Math.max(1, Math.min(50, list4Cfg?.rev3KCandles ?? 3));
+              const enableRev3K = list4Cfg?.enableRev3K === true;
+
+              // 2. 判定方向与计算实时价格
+              const isLong = focalIsLong;
+              const lastCandle = fullData[lastIdx];
+              const livePrice = (typeof currentPrice === 'number' && currentPrice > 0) ? currentPrice : lastCandle.close;
+
+              // 3. 计算进攻突破价格
+              const triggerLine = extraLines?.find(l => l.label && (l.label.includes('突破') || l.label.includes('Trigger') || l.label.includes('TRIGGER') || l.label.includes('攻')));
+              const triggerPrice = (triggerLine && triggerLine.price > 0) 
+                  ? triggerLine.price 
+                  : (focalBreakoutPrice !== null && focalBreakoutPrice > 0 ? focalBreakoutPrice : 0);
+
+              // 4. 计算前 N 根 K 线的收盘价极值 (严格回溯信号K线或最新K线前的 N 根)
+              const sigCandleIdx = (focalIdx !== -1 && focalIdx < lastIdx) ? focalIdx : lastIdx;
+              const sliceCandles = (sigCandleIdx > 0)
+                  ? fullData.slice(Math.max(0, sigCandleIdx - kCount), sigCandleIdx)
+                  : fullData.slice(Math.max(0, lastIdx - kCount), lastIdx);
+              const sliceCloses = sliceCandles.map(c => c.close).filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
+              const maxCloseN = sliceCloses.length > 0 ? Math.max(...sliceCloses) : (lastCandle?.close || 0);
+              const minCloseN = sliceCloses.length > 0 ? Math.min(...sliceCloses) : (lastCandle?.close || 0);
+              const targetKClose = isLong ? maxCloseN : minCloseN;
+              const targetKLabel = isLong ? `前${kCount}K最高收盘价` : `前${kCount}K最低收盘价`;
+
+              // 5. 判断是否达标
+              const triggerEpsilon = (livePrice || 1) * 0.00001;
+              const isBreakoutPass = triggerPrice > 0 
+                  ? (isLong ? livePrice >= (triggerPrice - triggerEpsilon) : livePrice <= (triggerPrice + triggerEpsilon)) 
+                  : true;
+              const isKClosePass = targetKClose > 0
+                  ? (isLong ? livePrice > targetKClose : livePrice < targetKClose)
+                  : true;
+              const isTriggeredByChart = isBreakoutPass && (enableRev3K ? isKClosePass : true);
 
               const tagText = isTriggeredByChart ? "已触发" : "等待";
               const tagColor = isTriggeredByChart ? "#0ECB81" : "#FACC15";
 
+              // 6. 悬浮气泡/卡片布局定位 (靠在最底下，彻底避开K线主体与EMA指标)
+              const bubbleWidth = 240;
+              const bubbleHeight = 84;
+              const anchorCandle = fullData[sigCandleIdx] || lastCandle;
+              const anchorX = (sigCandleIdx >= startIndex && sigCandleIdx < startIndex + visibleCount)
+                  ? getX(sigCandleIdx - startIndex) + candleWidth / 2
+                  : x;
+              const bubbleX = Math.max(padding.left + 5, Math.min(width - padding.right - bubbleWidth - 5, anchorX - bubbleWidth / 2));
+
+              // 靠在最底部展示 (位于成交量与图表最底沿上方，确保不遮挡主K线且清晰可见)
+              const maxBottom = (chartHeight + volumeHeight) - padding.bottom - 4;
+              const bubbleY = Math.max(padding.top + 30, maxBottom - bubbleHeight);
+              const tagY = Math.max(padding.top + 14, bubbleY - 8);
+
+              const candleAnchorY = isLong ? getY(anchorCandle.low) : getY(anchorCandle.high);
+              const guideLineY1 = isLong ? candleAnchorY + 4 : candleAnchorY + 6;
+              const guideLineY2 = Math.max(guideLineY1, tagY - 10);
+
               waitingLine = (
                   <g pointerEvents="none">
-                      <line x1={x} y1={padding.top + 5} x2={x} y2={padding.top + 42} stroke={tagColor} strokeWidth={1.2} strokeDasharray="2 2" opacity={0.8} />
-                      <text x={x} y={padding.top + 14} fill={tagColor} fontSize="9.5" fontWeight="bold" textAnchor="middle" fontFamily="monospace">{tagText}</text>
+                      {/* 信号指示导向虚线 */}
+                      {guideLineY2 > guideLineY1 && (
+                          <line 
+                              x1={anchorX} 
+                              y1={guideLineY1} 
+                              x2={anchorX} 
+                              y2={guideLineY2} 
+                              stroke={tagColor} 
+                              strokeWidth={1.2} 
+                              strokeDasharray="2 2" 
+                              opacity={0.8} 
+                          />
+                      )}
+
+                      {/* “等待” / “已触发” 状态标签 */}
+                      <text 
+                          x={anchorX} 
+                          y={tagY} 
+                          fill={tagColor} 
+                          fontSize="10" 
+                          fontWeight="bold" 
+                          textAnchor="middle" 
+                          fontFamily="monospace"
+                      >
+                          {tagText}
+                      </text>
+
+                      {/* 悬浮决策气泡卡片 */}
+                      <rect 
+                          x={bubbleX} 
+                          y={bubbleY} 
+                          width={bubbleWidth} 
+                          height={bubbleHeight} 
+                          rx={5} 
+                          fill="#0b0f19" 
+                          fillOpacity={0.95} 
+                          stroke={tagColor} 
+                          strokeWidth={1.2} 
+                          strokeOpacity={0.85} 
+                      />
+
+                      {/* 标题栏 */}
+                      <text x={bubbleX + 10} y={bubbleY + 15} fill={tagColor} fontSize="10.5" fontWeight="bold">
+                          ● {isLong ? '做多等待开仓' : '做空等待开仓'} {isTriggeredByChart ? '(已满足条件)' : '(等待突破)'}
+                      </text>
+
+                      {/* 当前实时价格 */}
+                      <text x={bubbleX + 10} y={bubbleY + 31} fill="#94a3b8" fontSize="9.5">
+                          当前实时价: <tspan fill="#38bdf8" fontWeight="bold">{formatPrice(livePrice)}</tspan>
+                      </text>
+
+                      {/* 进攻突破价 */}
+                      <text x={bubbleX + 10} y={bubbleY + 48} fill="#94a3b8" fontSize="9.5">
+                          进攻突破价: <tspan fill={isBreakoutPass ? '#10b981' : '#f87171'} fontWeight="bold">{formatPrice(triggerPrice)}</tspan>
+                          <tspan fill={isBreakoutPass ? '#10b981' : '#f87171'} fontSize="8.5"> {isBreakoutPass ? ' [已突破]' : ' [未突破]'}</tspan>
+                      </text>
+
+                      {/* 前NK收盘价 (常驻显示) */}
+                      <text x={bubbleX + 10} y={bubbleY + 65} fill="#94a3b8" fontSize="9.5">
+                          {targetKLabel}: <tspan fill={isKClosePass ? '#10b981' : '#f87171'} fontWeight="bold">{formatPrice(targetKClose)}</tspan>
+                          <tspan fill={isKClosePass ? '#10b981' : '#f87171'} fontSize="8.5"> {isLong ? (isKClosePass ? ' [已超越]' : ' [未超越]') : (isKClosePass ? ' [已跌破]' : ' [未跌破]')}</tspan>
+                      </text>
                   </g>
               );
           }
@@ -2302,9 +2536,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
       }
 
-      // ENTRY PRICE & TIME VISUALIZATION (开仓信号线与开仓位置标注)
+      // ENTRY PRICE & TIME VISUALIZATION (开仓信号线与开仓位置标注 - 仅在持仓/交易流水视角显示)
       let entryVisuals = null;
-      if (entryPrice && entryPrice > 0) {
+      if (isTradeViewMode && entryPrice && entryPrice > 0) {
           const yEntry = getY(entryPrice);
           if (!isNaN(yEntry)) {
               const entryColor = "#22d3ee"; // Cyan-400
@@ -2577,9 +2811,14 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
            <div className="flex items-center gap-4">
                <div className="flex items-center gap-2">
                    <h2 className="text-lg font-bold text-slate-100">{symbol}</h2>
-                    {signalPattern && (
+                    {!isTradeViewMode && signalPattern && (
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shadow-sm ${signalPattern === "发散" ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40" : signalPattern === "穿越" ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"}`}>
                             🎯 信号源: {signalPattern}
+                        </span>
+                    )}
+                    {isTradeViewMode && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-indigo-500/20 text-indigo-300 border-indigo-500/40 shadow-sm">
+                            💼 交易与持仓流水
                         </span>
                     )}
                    <button 
@@ -2613,9 +2852,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                        )}
                    </button>
                    <span className="text-[10px] text-slate-400 bg-slate-800 px-1 rounded">永续合约</span>
-                   <span className={`text-[9px] px-2 py-0.5 rounded border flex items-center gap-1 transition-colors ${lastUpdated > Date.now() - 5000 ? 'bg-emerald-900/30 border-emerald-500/30 text-emerald-400' : 'bg-slate-800 border-slate-600 text-slate-500'}`}>
-                       <Activity size={10} className={lastUpdated > Date.now() - 5000 ? 'animate-pulse' : ''}/>
-                       {lastUpdated > Date.now() - 5000 ? '实时数据' : '连接中...'}
+                   <span className={`text-[9px] px-2 py-0.5 rounded border flex items-center gap-1 transition-colors ${lastUpdated > Date.now() - 10000 ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.2)]' : 'bg-slate-800 border-slate-600 text-slate-500'}`}>
+                       <Zap size={10} className={lastUpdated > Date.now() - 10000 ? 'animate-pulse text-emerald-400 fill-emerald-400' : 'text-slate-500'}/>
+                       {lastUpdated > Date.now() - 10000 ? '⚡ WS实时推流' : '连接中...'}
                    </span>
                </div>
                <div className="h-4 w-px bg-slate-700"></div>

@@ -77,8 +77,10 @@ export function analyzeList4Momentum(
         const triggerEpsilon = currentPrice * 0.00001; // Float precision tolerance (0.001%)
 
         const ema10 = item.structure?.ema10;
+        const ema20 = item.structure?.ema20;
         const ema30 = item.structure?.ema30;
         const hasEmas = typeof ema10 === 'number' && typeof ema30 === 'number' && !isNaN(ema10) && !isNaN(ema30);
+        const hasEma20 = typeof ema20 === 'number' && !isNaN(ema20);
 
         // 🎯 动态严密判定「前 NK 突破」：做多实时价格必须 > 前 NK 最高收盘价；做空实时价格必须 < 前 NK 最低收盘价
         const kCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
@@ -113,6 +115,29 @@ export function analyzeList4Momentum(
             }
         })();
 
+        // 获取列表2设置的寿命根数 (默认9根)
+        let list2Retention = 9;
+        try {
+            const activeId = typeof window !== 'undefined' ? localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID") : null;
+            const cleanId = activeId ? (activeId.startsWith('"') ? JSON.parse(activeId) : activeId) : '';
+            const savedL2 = typeof window !== 'undefined' ? (
+                (cleanId ? localStorage.getItem(`SCANNER_LIST2_CONFIG_${cleanId}`) : null) || 
+                localStorage.getItem('SCANNER_LIST2_CONFIG')
+            ) : null;
+            if (savedL2) {
+                const parsed = JSON.parse(savedL2);
+                if (parsed.newModeRetention && parsed.newModeRetention > 0) {
+                    list2Retention = parsed.newModeRetention;
+                } else if (parsed.maxLag && parsed.maxLag > 0) {
+                    list2Retention = parsed.maxLag;
+                }
+            }
+        } catch(e) {}
+
+        const lag = item.structure?.lag ?? item.lag ?? 0;
+        const isLongEmaDead = hasEmas && hasEma20 && ema10 < ema20 && ema10 < ema30;
+        const isShortEmaDead = hasEmas && hasEma20 && ema10 > ema20 && ema10 > ema30;
+
         const formatN = (val?: number) => typeof val === 'number' && isFinite(val) ? val.toFixed(4) : '';
 
         if (config.enableThresholds === true) {
@@ -123,12 +148,17 @@ export function analyzeList4Momentum(
                 if (isDefenseBroken) {
                     if (isEmaTrendDead) {
                         momentumStatus = 'INVALID';
-                        invalidReason = `均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 下穿 EMA30(${ema30?.toFixed(4)})]`;
-                    } else if (currentPrice >= (entryTrigger - triggerEpsilon) || bestPrice >= (entryTrigger - triggerEpsilon)) {
-                        // 破中轴但均线未死，且价格再次强力打穿原始突破线 -> 满血复活！
+                        invalidReason = `【规则 1 - 中轴防守瓦解】均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 下穿 EMA30(${ema30?.toFixed(4)})]`;
+                    } else if (currentPrice >= (entryTrigger - triggerEpsilon)) {
+                        // 破中轴但均线未死，且当前实时价格再次强力打穿原始突破线 -> 满血复活！
                         if (!is3KPassed) {
-                            momentumStatus = 'REVIVED';
-                            invalidReason = `破中轴后满血复活：等待前${kCount}K突破 (已达突破线，未越过前${kCount}K最高收盘价: ${formatN(maxCloseN)})`;
+                            if (isLongEmaDead && lag > list2Retention) {
+                                momentumStatus = 'INVALID';
+                                invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
+                            } else {
+                                momentumStatus = 'REVIVED';
+                                invalidReason = `破中轴后满血复活：等待前${kCount}K突破 (已达突破线，未越过前${kCount}K最高收盘价: ${formatN(maxCloseN)})`;
+                            }
                         } else {
                             momentumStatus = 'TRIGGERED';
                             invalidReason = '破中轴后蓄势反攻：已达突破线 (TRIGGERED)';
@@ -138,17 +168,27 @@ export function analyzeList4Momentum(
                         momentumStatus = 'DORMANT';
                         const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
                         const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
-                        invalidReason = `破中轴休眠蓄势中 [${curStr} < ${midStr}]，均线多头保持完好 (EMA10 > EMA30)，等待突破前高复活`;
+                        invalidReason = `【规则 2 - 破中轴休眠蓄势中】[${curStr} < ${midStr}]，均线多头保持完好 (EMA10 > EMA30)，等待突破前高复活`;
                     }
-                } else if (currentPrice >= (entryTrigger - triggerEpsilon) || bestPrice >= (entryTrigger - triggerEpsilon)) {
+                } else if (currentPrice >= (entryTrigger - triggerEpsilon)) {
                     if (!is3KPassed) {
-                        momentumStatus = 'PENDING';
-                        invalidReason = `等待前${kCount}K突破 (已达突破线，未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`;
+                        if (isLongEmaDead && lag > list2Retention) {
+                            momentumStatus = 'INVALID';
+                            invalidReason = `【规则 1 - 中轴防守瓦解】等待前${kCount}K突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
+                        } else {
+                            momentumStatus = 'PENDING';
+                            invalidReason = `【规则 3 - 前${kCount}K突破门禁】等待前${kCount}K突破 (已达突破线，未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`;
+                        }
                     } else {
                         momentumStatus = 'TRIGGERED';
                     }
                 } else {
-                    momentumStatus = 'PENDING';
+                    if (isLongEmaDead && lag > list2Retention) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
+                    } else {
+                        momentumStatus = 'PENDING';
+                    }
                 }
             } else {
                 const isDefenseBroken = currentPrice > midPoint || extreme > midPoint;
@@ -157,12 +197,17 @@ export function analyzeList4Momentum(
                 if (isDefenseBroken) {
                     if (isEmaTrendDead) {
                         momentumStatus = 'INVALID';
-                        invalidReason = `均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 上穿 EMA30(${ema30?.toFixed(4)})]`;
-                    } else if (currentPrice <= (entryTrigger + triggerEpsilon) || bestPrice <= (entryTrigger + triggerEpsilon)) {
-                        // 破中轴但均线未死，且价格再次打穿原始突破线 -> 满血复活！
+                        invalidReason = `【规则 1 - 中轴防守瓦解】均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 上穿 EMA30(${ema30?.toFixed(4)})]`;
+                    } else if (currentPrice <= (entryTrigger + triggerEpsilon)) {
+                        // 破中轴但均线未死，且当前实时价格再次打穿原始突破线 -> 满血复活！
                         if (!is3KPassed) {
-                            momentumStatus = 'REVIVED';
-                            invalidReason = `破中轴后满血复活：等待前${kCount}K突破 (已达突破线，未越过前${kCount}K最低收盘价: ${formatN(minCloseN)})`;
+                            if (isShortEmaDead && lag > list2Retention) {
+                                momentumStatus = 'INVALID';
+                                invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
+                            } else {
+                                momentumStatus = 'REVIVED';
+                                invalidReason = `破中轴后满血复活：等待前${kCount}K突破 (已达突破线，未越过前${kCount}K最低收盘价: ${formatN(minCloseN)})`;
+                            }
                         } else {
                             momentumStatus = 'TRIGGERED';
                             invalidReason = '破中轴后蓄势反攻：已达突破线 (TRIGGERED)';
@@ -172,36 +217,62 @@ export function analyzeList4Momentum(
                         momentumStatus = 'DORMANT';
                         const curStr = typeof currentPrice === 'number' && isFinite(currentPrice) ? currentPrice.toFixed(4) : String(currentPrice);
                         const midStr = typeof midPoint === 'number' && isFinite(midPoint) ? midPoint.toFixed(4) : String(midPoint);
-                        invalidReason = `破中轴休眠蓄势中 [${curStr} > ${midStr}]，均线空头保持完好 (EMA10 < EMA30)，等待跌破前低复活`;
+                        invalidReason = `【规则 2 - 破中轴休眠蓄势中】[${curStr} > ${midStr}]，均线空头保持完好 (EMA10 < EMA30)，等待跌破前低复活`;
                     }
-                } else if (currentPrice <= (entryTrigger + triggerEpsilon) || bestPrice <= (entryTrigger + triggerEpsilon)) {
+                } else if (currentPrice <= (entryTrigger + triggerEpsilon)) {
                     if (!is3KPassed) {
-                        momentumStatus = 'PENDING';
-                        invalidReason = `等待前${kCount}K突破 (已达突破线，未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
+                        if (isShortEmaDead && lag > list2Retention) {
+                            momentumStatus = 'INVALID';
+                            invalidReason = `【规则 1 - 中轴防守瓦解】等待前${kCount}K突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
+                        } else {
+                            momentumStatus = 'PENDING';
+                            invalidReason = `【规则 3 - 前${kCount}K突破门禁】等待前${kCount}K突破 (已达突破线，未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
+                        }
                     } else {
                         momentumStatus = 'TRIGGERED';
                     }
                 } else {
-                    momentumStatus = 'PENDING';
+                    if (isShortEmaDead && lag > list2Retention) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
+                    } else {
+                        momentumStatus = 'PENDING';
+                    }
                 }
             }
         } else {
             // When enableThresholds is OFF (false), never invalidate on defense line
             const isBreakout = item.direction === 'LONG'
-                ? (currentPrice >= (entryTrigger - triggerEpsilon) || bestPrice >= (entryTrigger - triggerEpsilon))
-                : (currentPrice <= (entryTrigger + triggerEpsilon) || bestPrice <= (entryTrigger + triggerEpsilon));
+                ? (currentPrice >= (entryTrigger - triggerEpsilon))
+                : (currentPrice <= (entryTrigger + triggerEpsilon));
 
             if (isBreakout) {
                 if (!is3KPassed) {
-                    momentumStatus = 'PENDING';
-                    invalidReason = item.direction === 'LONG'
-                        ? `等待前${kCount}K突破 (未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`
-                        : `等待前${kCount}K突破 (未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
+                    if (item.direction === 'LONG' && isLongEmaDead && lag > list2Retention) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `等待前${kCount}K突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
+                    } else if (item.direction === 'SHORT' && isShortEmaDead && lag > list2Retention) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `等待前${kCount}K突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
+                    } else {
+                        momentumStatus = 'PENDING';
+                        invalidReason = item.direction === 'LONG'
+                            ? `等待前${kCount}K突破 (未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`
+                            : `等待前${kCount}K突破 (未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
+                    }
                 } else {
                     momentumStatus = 'TRIGGERED';
                 }
             } else {
-                momentumStatus = 'PENDING';
+                if (item.direction === 'LONG' && isLongEmaDead && lag > list2Retention) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = `等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
+                } else if (item.direction === 'SHORT' && isShortEmaDead && lag > list2Retention) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = `等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
+                } else {
+                    momentumStatus = 'PENDING';
+                }
             }
         }
 
@@ -226,7 +297,7 @@ export function analyzeList4Momentum(
                     
                     if (pump > threshold) {
                         fuseBlocked = true;
-                        fuseReason = `由列表4防追高过滤规则删除 [${hours}小时内涨幅 ${pump.toFixed(1)}% > ${threshold}%]`;
+                        fuseReason = `【规则 4 - 防追高熔断拦截】由列表4防追高过滤规则删除 [${hours}小时内涨幅 ${pump.toFixed(1)}% > 阈值 ${threshold}%]`;
                         fuseDetails = { period: `${hours}小时`, threshold: threshold, actual: parseFloat(pump.toFixed(1)) };
                         break;
                     }
@@ -241,7 +312,7 @@ export function analyzeList4Momentum(
                     
                     if (drop > threshold) {
                         fuseBlocked = true;
-                        fuseReason = `由列表4防追高过滤规则删除 [${hours}小时内跌幅 ${drop.toFixed(1)}% > ${threshold}%]`;
+                        fuseReason = `【规则 4 - 防追高熔断拦截】由列表4防追高过滤规则删除 [${hours}小时内跌幅 ${drop.toFixed(1)}% > 阈值 ${threshold}%]`;
                         fuseDetails = { period: `${hours}小时`, threshold: threshold, actual: parseFloat(drop.toFixed(1)) };
                         break;
                     }
@@ -251,7 +322,7 @@ export function analyzeList4Momentum(
 
         if (config.enableThrust === true && item.structure && !item.structure.thrustValid) {
             fuseBlocked = true;
-            fuseReason = `由列表4防过度交易过滤规则删除 [7K推进力不足 (<1%)]`;
+            fuseReason = `【规则 4 - 7K推进力熔断】由列表4推进力过滤规则删除 [7根K线推进力不足 (<1%)]`;
         }
 
         if (!item.fuseLatched && config.enableAutoDirGuard === true && item.historyExtremes && config.autoDirConfig) {
@@ -279,7 +350,7 @@ export function analyzeList4Momentum(
                     const pump = ((currentPrice - minPrice) / minPrice) * 100;
                     if (pump > p.limit) {
                         fuseBlocked = true;
-                        fuseReason = `由列表4防过度交易过滤规则删除 [动态方向锁: ${p.key} 涨幅过大 (${pump.toFixed(1)}% > ${p.limit}%)]`;
+                        fuseReason = `【规则 4 - 动态方向锁熔断】由列表4动态方向锁规则删除 [周期: ${p.key}, 涨幅 ${pump.toFixed(1)}% > 限制 ${p.limit}%]`;
                         fuseDetails = { period: `${p.key}`, threshold: p.limit, actual: parseFloat(pump.toFixed(1)) };
                         break;
                     }
@@ -287,7 +358,7 @@ export function analyzeList4Momentum(
                     const drop = ((maxPrice - currentPrice) / maxPrice) * 100;
                     if (drop > p.limit) {
                         fuseBlocked = true;
-                        fuseReason = `由列表4防过度交易过滤规则删除 [动态方向锁: ${p.key} 跌幅过大 (${drop.toFixed(1)}% > ${p.limit}%)]`;
+                        fuseReason = `【规则 4 - 动态方向锁熔断】由列表4动态方向锁规则删除 [周期: ${p.key}, 跌幅 ${drop.toFixed(1)}% > 限制 ${p.limit}%]`;
                         fuseDetails = { period: `${p.key}`, threshold: p.limit, actual: parseFloat(drop.toFixed(1)) };
                         break;
                     }
@@ -374,7 +445,7 @@ export function analyzeList4Momentum(
 
                     if (intersections > maxIntersections) {
                         fuseBlocked = true;
-                        fuseReason = `高级过滤限制[第${group.id}组]: 在最近 ${klineCount} 根 ${group.filterKLinePeriod} K线内，K线与EMA${emaPeriod}相交 ${intersections} 次，超过上限 ${maxIntersections} 次（震荡整理中）。`;
+                        fuseReason = `【规则 5 - 高级过滤相交限制】[第${group.id}组]: 在最近 ${klineCount} 根 ${group.filterKLinePeriod} K线内，K线与EMA${emaPeriod}相交 ${intersections} 次，超过上限 ${maxIntersections} 次（震荡整理中）`;
                         break;
                     } else if (lastIntersectionIdx !== -1) {
                         const priceAtIntersection = slicedPrices[lastIntersectionIdx];
@@ -382,14 +453,14 @@ export function analyzeList4Momentum(
                             const pumpFromIntersection = ((currentPrice - priceAtIntersection) / priceAtIntersection) * 100;
                             if (pumpFromIntersection > group.filterLongMaxPump) {
                                 fuseBlocked = true;
-                                fuseReason = `高级过滤限制[第${group.id}组]: 多头从最近一次EMA${emaPeriod}交叉点涨幅过大 (${pumpFromIntersection.toFixed(1)}% > ${group.filterLongMaxPump}%)，防止追高。`;
+                                fuseReason = `【规则 5 - 高级过滤涨幅限制】[第${group.id}组]: 多头从最近一次EMA${emaPeriod}交叉点涨幅过大 (${pumpFromIntersection.toFixed(1)}% > 限制 ${group.filterLongMaxPump}%)，防止追高`;
                                 break;
                             }
                         } else {
                             const dropFromIntersection = ((priceAtIntersection - currentPrice) / priceAtIntersection) * 100;
                             if (dropFromIntersection > Math.abs(group.filterShortMinDrop)) {
                                 fuseBlocked = true;
-                                fuseReason = `高级过滤限制[第${group.id}组]: 空头从最近一次EMA${emaPeriod}交叉点跌幅过大 (${dropFromIntersection.toFixed(1)}% > ${Math.abs(group.filterShortMinDrop)}%)，防止追空。`;
+                                fuseReason = `【规则 5 - 高级过滤跌幅限制】[第${group.id}组]: 空头从最近一次EMA${emaPeriod}交叉点跌幅过大 (${dropFromIntersection.toFixed(1)}% > 限制 ${Math.abs(group.filterShortMinDrop)}%)，防止追空`;
                                 break;
                             }
                         }

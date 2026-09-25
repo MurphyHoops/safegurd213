@@ -12,6 +12,8 @@ interface Props {
     setChartData: (data: { 
         symbol: string, 
         tf: string, 
+        direction?: 'LONG' | 'SHORT' | string,
+        side?: 'LONG' | 'SHORT' | string,
         signals?: any[], 
         entryPrice?: number, 
         entryTime?: number, 
@@ -87,6 +89,7 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
             e.preventDefault();
         }
         
+        const targetDirection: 'LONG' | 'SHORT' = isLong ? 'LONG' : 'SHORT';
         const extraLines: any[] = [];
         if (position.entryPrice && position.entryPrice > 0) {
             extraLines.push({
@@ -100,16 +103,18 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
         setChartData({ 
             symbol: position.symbol, 
             tf: rawTf, // CRITICAL: Use raw TF for Binance API compatibility
+            direction: targetDirection,
+            side: targetDirection,
             entryPrice: position.entryPrice, 
             entryTime: position.entryTime, 
-            signals: position.signalCandle ? [{
-                time: position.entryTime,
-                type: isLong ? 'BUY' : 'SELL',
+            signals: [{
+                time: position.entryTime || Date.now(),
+                type: targetDirection,
                 price: position.entryPrice,
-                direction: isLong ? 'LONG' : 'SHORT',
+                direction: targetDirection,
                 tf: rawTf,
                 source: 'LIST5'
-            }] : [], 
+            }], 
             currentPrice: currentPrice,
             showAuditLines: true,
             extraLines: extraLines.length > 0 ? extraLines : undefined

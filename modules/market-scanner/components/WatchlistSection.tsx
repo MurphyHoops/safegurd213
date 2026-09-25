@@ -119,61 +119,165 @@ export const WatchlistSection: React.FC<Props> = ({
 
     return (
         <div className="space-y-3">
-            {/* Mode Switch - Now 4-Way */}
-            <div className="flex bg-slate-800 p-1 rounded border border-slate-700 overflow-x-auto custom-scrollbar no-scrollbar items-center gap-1">
-                <button 
-                    onClick={() => {
-                        setScannerMode?.('LIVE');
-                        setScanConfig(p => ({...p, useCustomOnly: false}));
-                    }} 
-                    className={`flex-1 min-w-[60px] py-2 text-[10px] font-bold rounded transition-all flex items-center justify-center gap-1.5 ${scannerMode === 'LIVE' && !scanConfig.useCustomOnly ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
-                >
-                    <Globe size={11} /> 自动选币
-                </button>
-                <div className="flex-1 min-w-[120px] flex gap-1 items-center">
-                    <button 
-                        onClick={() => { 
+            {/* 🔒 选币模式互斥默认主控开关 (Auto vs Fixed Master Switch) */}
+            <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-700/80 shadow-inner space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-bold">
+                    <span className="text-slate-200 flex items-center gap-1.5">
+                        <Power size={13} className={scanConfig.useCustomOnly ? "text-cyan-400" : "text-indigo-400"} />
+                        选币模式主控开关
+                    </span>
+                    <div className="flex items-center gap-1">
+                        <button 
+                            type="button"
+                            onClick={() => {
+                                setScannerMode?.('LIVE');
+                                setScanConfig(p => ({ ...p, useCustomOnly: !p.useCustomOnly }));
+                                if (!scanConfig.useCustomOnly) {
+                                    setFixedModeView('MONITOR');
+                                }
+                            }}
+                            className={`relative inline-flex h-4 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none cursor-pointer ${
+                                scanConfig.useCustomOnly ? 'bg-cyan-600' : 'bg-indigo-600'
+                            }`}
+                            title="一键在【自动选币】与【固定选币】之间快速切换"
+                        >
+                            <span 
+                                className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform duration-200 ${
+                                    scanConfig.useCustomOnly ? 'translate-x-[22px]' : 'translate-x-[2px]'
+                                }`} 
+                            />
+                        </button>
+                    </div>
+                </div>
+
+                {/* 互斥开关双按钮 */}
+                <div className="grid grid-cols-2 gap-2">
+                    {/* 自动选币 (默认) */}
+                    <button
+                        type="button"
+                        onClick={() => {
                             setScannerMode?.('LIVE');
-                            setScanConfig(p => ({...p, useCustomOnly: true})); 
-                            setFixedModeView('MONITOR'); 
-                        }} 
-                        className={`flex-grow py-1.5 text-[10px] font-bold rounded transition-all flex items-center justify-center gap-1.5 ${scannerMode === 'LIVE' && scanConfig.useCustomOnly ? 'bg-cyan-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
+                            setScanConfig(p => ({ ...p, useCustomOnly: false }));
+                        }}
+                        className={`py-2 px-2.5 rounded-md text-[11px] font-bold transition-all flex flex-col gap-1 border cursor-pointer select-none text-left ${
+                            !scanConfig.useCustomOnly && scannerMode === 'LIVE'
+                                ? 'bg-indigo-950/80 border-indigo-500 text-white shadow-[0_0_12px_rgba(99,102,241,0.3)] ring-1 ring-indigo-400/50'
+                                : 'bg-slate-950/40 border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700'
+                        }`}
                     >
-                        <Lock size={11} /> 固定选币
+                        <div className="flex items-center justify-between w-full">
+                            <span className="flex items-center gap-1.5 font-bold">
+                                <Globe size={13} className={!scanConfig.useCustomOnly && scannerMode === 'LIVE' ? 'text-indigo-400' : 'text-slate-600'} />
+                                自动选币
+                            </span>
+                            <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-bold ${
+                                !scanConfig.useCustomOnly && scannerMode === 'LIVE'
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                                    : 'bg-slate-800 text-slate-500'
+                            }`}>
+                                {!scanConfig.useCustomOnly && scannerMode === 'LIVE' ? '🟢 运行中' : '⚪ 停止运行'}
+                            </span>
+                        </div>
+                        <div className="text-[8px] text-slate-400 leading-tight">
+                            {!scanConfig.useCustomOnly && scannerMode === 'LIVE' ? '全市场多级漏斗自动过滤' : '固定选币运行，此项已停用'}
+                        </div>
                     </button>
-                    {scannerMode === 'LIVE' && scanConfig.useCustomOnly && (
+
+                    {/* 固定选币 */}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setScannerMode?.('LIVE');
+                            setScanConfig(p => ({ ...p, useCustomOnly: true }));
+                            setFixedModeView('MONITOR');
+                        }}
+                        className={`py-2 px-2.5 rounded-md text-[11px] font-bold transition-all flex flex-col gap-1 border cursor-pointer select-none text-left ${
+                            scanConfig.useCustomOnly && scannerMode === 'LIVE'
+                                ? 'bg-cyan-950/80 border-cyan-500 text-white shadow-[0_0_12px_rgba(6,182,212,0.3)] ring-1 ring-cyan-400/50'
+                                : 'bg-slate-950/40 border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700'
+                        }`}
+                    >
+                        <div className="flex items-center justify-between w-full">
+                            <span className="flex items-center gap-1.5 font-bold">
+                                <Lock size={13} className={scanConfig.useCustomOnly && scannerMode === 'LIVE' ? 'text-cyan-400' : 'text-slate-600'} />
+                                固定选币
+                            </span>
+                            <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-bold ${
+                                scanConfig.useCustomOnly && scannerMode === 'LIVE'
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                                    : 'bg-slate-800 text-slate-500'
+                            }`}>
+                                {scanConfig.useCustomOnly && scannerMode === 'LIVE' ? '🟢 运行中' : '⚪ 停止运行'}
+                            </span>
+                        </div>
+                        <div className="text-[8px] text-slate-400 leading-tight">
+                            {scanConfig.useCustomOnly && scannerMode === 'LIVE' ? '监控池直通放行扫描' : '自动选币运行，此项已停用'}
+                        </div>
+                    </button>
+                </div>
+
+                {/* 状态总览指示条 */}
+                <div className={`p-1.5 rounded text-[9px] flex items-center justify-between border ${
+                    scanConfig.useCustomOnly && scannerMode === 'LIVE'
+                        ? 'bg-cyan-950/30 border-cyan-500/20 text-cyan-300'
+                        : 'bg-indigo-950/30 border-indigo-500/20 text-indigo-300'
+                }`}>
+                    <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                            scanConfig.useCustomOnly ? 'bg-cyan-400' : 'bg-indigo-400'
+                        } animate-pulse`} />
+                        <span>
+                            {scanConfig.useCustomOnly && scannerMode === 'LIVE'
+                                ? '【固定选币】运行中 ➔ 【自动选币】已停止运行'
+                                : '【自动选币】运行中 ➔ 【固定选币】已停止运行'}
+                        </span>
+                    </div>
+                    {/* 若在固定选币模式下，提供快速导入初筛币种下拉 */}
+                    {scannerMode === 'LIVE' && scanConfig.useCustomOnly && autoCandidates.length > 0 && (
                         <select 
                             onChange={handleSelectDropdown}
                             defaultValue=""
-                            className="bg-slate-900 border border-cyan-500/30 text-[9px] text-cyan-400 font-bold rounded px-1 py-0.5 outline-none focus:border-cyan-400 transition-all cursor-pointer h-6 max-w-[80px]"
-                            title="选择初筛币种"
+                            className="bg-slate-900 border border-cyan-500/40 text-[8px] text-cyan-400 font-bold rounded px-1 py-0.5 outline-none focus:border-cyan-400 transition-all cursor-pointer h-5"
+                            title="选择初筛币种导入监控池"
                         >
-                            <option value="" disabled>🔍 备选({autoCandidates.length})</option>
-                            <option value="__ADD_ALL__">➕ 一键导入全部</option>
+                            <option value="" disabled>备选池({autoCandidates.length})</option>
+                            <option value="__ADD_ALL__">➕ 导入全部</option>
                             {autoCandidates.map(item => {
                                 const rawSym = item.symbol.replace('USDT', '');
                                 const isAdded = scanConfig.customSymbols.split(',').map(s => s.trim()).filter(Boolean).includes(rawSym);
                                 return (
                                     <option key={item.symbol} value={rawSym}>
-                                        {isAdded ? '✅ ' : '➕ '}{rawSym} ({(item.change ?? 0) > 0 ? '+' : ''}{(item.change ?? 0).toFixed(1)}%)
+                                        {isAdded ? '✅ ' : '➕ '}{rawSym}
                                     </option>
                                 );
                             })}
                         </select>
                     )}
                 </div>
-                <button 
-                    onClick={() => setScannerMode?.('SMART')} 
-                    className={`flex-1 min-w-[60px] py-1.5 text-[10px] font-bold rounded transition-all flex items-center justify-center gap-1.5 ${scannerMode === 'SMART' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
-                >
-                    <Sparkles size={11} /> 智能选币
-                </button>
-                <button 
-                    onClick={() => setScannerMode?.('BACKTEST')} 
-                    className={`flex-1 min-w-[60px] py-1.5 text-[10px] font-bold rounded transition-all flex items-center justify-center gap-1.5 ${scannerMode === 'BACKTEST' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
-                >
-                    <History size={11} /> 回测模式
-                </button>
+
+                {/* 扩展功能模式 (智能大脑 / 历史回测) */}
+                <div className="flex gap-1.5 pt-1 border-t border-slate-800/80">
+                    <button 
+                        onClick={() => setScannerMode?.('SMART')} 
+                        className={`flex-1 py-1 text-[9px] font-bold rounded transition-all flex items-center justify-center gap-1 border ${
+                            scannerMode === 'SMART' 
+                                ? 'bg-purple-600 border-purple-400 text-white shadow-md' 
+                                : 'bg-slate-950/40 border-slate-800 text-slate-500 hover:text-slate-300'
+                        }`}
+                    >
+                        <Sparkles size={10} /> 智能选币扩展
+                    </button>
+                    <button 
+                        onClick={() => setScannerMode?.('BACKTEST')} 
+                        className={`flex-1 py-1 text-[9px] font-bold rounded transition-all flex items-center justify-center gap-1 border ${
+                            scannerMode === 'BACKTEST' 
+                                ? 'bg-amber-600 border-amber-400 text-white shadow-md' 
+                                : 'bg-slate-950/40 border-slate-800 text-slate-500 hover:text-slate-300'
+                        }`}
+                    >
+                        <History size={10} /> 历史回测沙盘
+                    </button>
+                </div>
             </div>
 
             {/* Smart Selection Settings - Shown when in SMART mode */}

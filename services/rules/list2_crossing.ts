@@ -99,14 +99,15 @@ export function analyzeList2Crossing(
     }
 
     // 2. Indicator Calculation
-    // Ensure we have enough data
-    if (closes.length < 80) return [];
+    // Ensure we have enough data (40 bars for EMA10/20/30/40, or 80 bars if EMA80 trend check is enabled)
+    const minHistoryNeeded = checkEma80Conflict ? 80 : 40;
+    if (closes.length < minHistoryNeeded) return [];
 
     const ema10 = calculateEMA(closes, 10);
     const ema20 = calculateEMA(closes, 20);
     const ema30 = calculateEMA(closes, 30);
     const ema40 = calculateEMA(closes, 40);
-    const ema80 = calculateEMA(closes, 80);
+    const ema80 = checkEma80Conflict ? calculateEMA(closes, 80) : [];
 
     const getEmaVal = (arr: number[], index: number, period: number) => {
         const offset = index - (period - 1);
@@ -151,14 +152,14 @@ export function analyzeList2Crossing(
     // 3. Loop through Lag Window (Scanning backwards from current candle)
     for (let lag = 0; lag <= effectiveScanRange; lag++) {
         const checkIdx = idx - lag;
-        // Safety check: Ensure enough history for EMA80 calculation at this point
-        if (checkIdx < 80) continue; 
+        // Safety check: Ensure enough history for EMA calculations at this point
+        if (checkIdx < minHistoryNeeded) continue; 
 
         const e10 = getEmaVal(ema10, checkIdx, 10);
         const e20 = getEmaVal(ema20, checkIdx, 20);
         const e30 = getEmaVal(ema30, checkIdx, 30);
         const e40 = getEmaVal(ema40, checkIdx, 40);
-        const e80 = getEmaVal(ema80, checkIdx, 80);
+        const e80 = checkEma80Conflict ? getEmaVal(ema80, checkIdx, 80) : null;
 
         if (e10 !== null && e20 !== null && e30 !== null && e40 !== null) {
             const maxEma = Math.max(e10, e20, e30, e40);
@@ -224,7 +225,7 @@ export function analyzeList2Crossing(
 
                 for (let b = 0; b < divergenceLookbackBars; b++) {
                     const bIdx = checkIdx - b;
-                    if (bIdx - 1 < 80) break;
+                    if (bIdx - 1 < minHistoryNeeded) break;
 
                     const cur10 = getEmaVal(ema10, bIdx, 10);
                     const cur20 = getEmaVal(ema20, bIdx, 20);

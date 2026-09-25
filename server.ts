@@ -487,8 +487,8 @@ async function startServer() {
   // Start the server-side active WebSocket pricing bridge
   startBinanceWSBridge();
 
-    // --- SERVER-SIDE PROXY (KERNEL BYPASS) ---
-    // This bypasses browser CORS and IP restrictions by fetching data from the server node.
+    // 🔒 @LOCKED_MODULE: SERVER-SIDE PROXY, K-LINE MEMORY CACHE & RATE-LIMIT GUARD
+    // This bypasses browser CORS, handles symbol sanitization, invalid symbol fast-fuse, and multi-tier caching.
     interface ServerCacheEntry {
         data: any;
         timestamp: number;
@@ -496,6 +496,8 @@ async function startServer() {
     }
 
     const serverCache = new Map<string, ServerCacheEntry>();
+    const invalidSymbolsCache = new Map<string, number>(); // Symbol -> Expiry Timestamp
+
 
     const getServerCacheTTL = (url: string): number => {
         if (url.includes("/klines")) {
@@ -2219,16 +2221,39 @@ async function startServer() {
       let targetUrl = req.query.url as string;
       if (!targetUrl) return res.status(400).json({ error: "Missing URL parameter" });
 
-      // INTERCEPT MOCK/CUSTOM/SIMULATION SYMBOLS
+      // Clean & parse URL
       let symbolParam = "";
       try {
           const parsedUrl = new URL(targetUrl);
-          symbolParam = parsedUrl.searchParams.get("symbol") || "";
+          const rawSym = parsedUrl.searchParams.get("symbol") || "";
+          if (rawSym) {
+              // Strip slashes, spaces, hyphens, colons from symbol parameter
+              const cleanedSym = rawSym.toUpperCase().trim().replace(/[\/\s_-]/g, '');
+              if (cleanedSym !== rawSym) {
+                  parsedUrl.searchParams.set("symbol", cleanedSym);
+                  targetUrl = parsedUrl.toString();
+              }
+              symbolParam = cleanedSym;
+          }
       } catch (e) {}
+
+      // Fast check for known invalid symbols (cached for 10 minutes to prevent spamming Binance)
+      const isFuturesReqCheck = targetUrl.includes("/fapi/") || targetUrl.includes("fapi.binance");
+      if (symbolParam) {
+          const isChineseSymbol = /[\u4e00-\u9fa5]/.test(symbolParam);
+          if (!isChineseSymbol) {
+              const marketPrefix = isFuturesReqCheck ? "fapi:" : "spot:";
+              const invalidUntil = invalidSymbolsCache.get(marketPrefix + symbolParam);
+              if (invalidUntil && invalidUntil > Date.now()) {
+                  return res.status(400).json({ code: -1121, msg: `Invalid symbol '${symbolParam}' (Cached).` });
+              }
+          }
+      }
+
 
       if (symbolParam) {
           const upperSymbol = symbolParam.toUpperCase();
-          if (/[^\x00-\x7F]/.test(symbolParam) || upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
+          if (upperSymbol.includes('MOCK') || upperSymbol.includes('TEST') || upperSymbol.includes('FAKE')) {
               // It is a mock/simulation symbol!
               if (targetUrl.includes("ticker/price")) {
                   let hash = 0;
@@ -2316,39 +2341,19 @@ async function startServer() {
           const spotQuery = queryParams.toString();
 
           if (isFuturesReq) {
-              // 🛡️ 币安USDT永续合约 (Futures) 官方节点集群与 Vision/现货超高速 K 线回退通道
-              // 原生支持 1000PEPEUSDT / BTCUSDT 等全部合约币种真实K线与深度行情
+              // 🛡️ 币安USDT永续合约 (Futures) 官方节点集群
               const fapiPath = parsedTarget.pathname;
               const fapiQueryStr = rawQuery ? `?${rawQuery}` : "";
 
-              // 1. 若当前未被封禁，优先尝试官方 fapi 永续节点
-              if (Date.now() >= binanceBannedUntilTimestamp) {
-                  fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
-              }
+              // 1. 优先尝试官方 fapi 永续节点 (原生合约币种与全部 1000 开头合约)
+              fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
 
-              // 2. ⚡ 毫秒级极速官方节点回退 (Vision + API 镜像): 日K线与价格数据现货/合约一致，零封禁且响应仅需 20-30ms
+              // 2. 备选尝试官方 Vision 现货节点及 Binance 官方现货集群
               if (isKlineReq) {
                   fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
                   fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
                   fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-              } else if (isTickerPriceReq) {
-                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-              } else if (isTicker24hrReq) {
-                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               }
-
-              // 3. 若处于退避期，将 fapi 节点排在最后作为兜底重试
-              if (Date.now() < binanceBannedUntilTimestamp) {
-                  fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
-              }
-
-              // 备用公共跨域代理（原样保留目标 fapi 永续合约地址）
-              fetchCandidates.push({ url: `https://corsproxy.io/?${encodeURIComponent(`https://fapi.binance.com${fapiPath}${fapiQueryStr}`)}`, isPublicProxy: true, isSpotScale1000: false });
-              fetchCandidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://fapi.binance.com${fapiPath}${fapiQueryStr}`)}`, isPublicProxy: true, isSpotScale1000: false });
           } else {
               if (is1000Symbol) {
                   queryParams.set("symbol", spotSymbol);
@@ -2395,7 +2400,7 @@ async function startServer() {
           const controller = new AbortController();
           const timeoutMs = isTicker24hrReq 
               ? 15000 
-              : (isKlineReq ? (candidate.isPublicProxy ? 1500 : 3000) : (candidate.isPublicProxy ? 1500 : 2500));
+              : (isKlineReq ? 8000 : 5000);
           
           const onMasterAbort = () => {
               if (!controller.signal.aborted) {
@@ -2506,7 +2511,12 @@ async function startServer() {
               } catch (candidateErr) {
                   if (isInvalidSymbolError) {
                       masterController.abort();
-                      return res.status(400).json({ code: -1121, msg: "Invalid symbol." });
+                      const isChineseSymbol = symbolParam ? /[\u4e00-\u9fa5]/.test(symbolParam) : false;
+                      if (symbolParam && !isChineseSymbol) {
+                          const marketPrefix = isFuturesReq ? "fapi:" : "spot:";
+                          invalidSymbolsCache.set(marketPrefix + symbolParam, Date.now() + 10 * 60 * 1000);
+                      }
+                      return res.status(400).json({ code: -1121, msg: `Invalid symbol '${symbolParam || 'unknown'}'.` });
                   }
                   // try next candidate
               }

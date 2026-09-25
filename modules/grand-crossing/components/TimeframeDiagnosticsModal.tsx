@@ -485,7 +485,7 @@ export const TimeframeDiagnosticsModal: React.FC<Props> = ({
                 <div className="px-4 py-2.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400 shrink-0">
                     <div className="flex items-center gap-2">
                         <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>单秒单币时间片调度器运行中 · 0 丢包 0 权重超限</span>
+                        <span>全局单秒时钟调度器运行中 · 1秒1币满载吞吐 · 小周期优先与防饿死公平轮转</span>
                     </div>
                     <button
                         onClick={onClose}

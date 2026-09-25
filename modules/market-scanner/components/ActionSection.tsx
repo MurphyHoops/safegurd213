@@ -126,11 +126,11 @@ export const ActionSection: React.FC<Props> = ({ scanConfig, setScanConfig, scan
                 <button 
                     onClick={() => setIsPaused(!isPaused)}
                     className={`w-10 h-10 shrink-0 flex items-center justify-center rounded border transition-colors ${
-                        isPaused ? 'bg-amber-900/50 text-amber-400 border-amber-500/50' : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-white'
+                        isPaused ? 'bg-amber-900/60 text-amber-300 border-amber-500/80 shadow-[0_0_10px_rgba(245,158,11,0.25)]' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
                     }`}
-                    title={isPaused ? "恢复自动更新" : "暂停自动更新"}
+                    title={isPaused ? "点击继续扫描 (从暂停处继续)" : "点击一键暂停扫描 (行情启动/横盘蓄势/回溯周期)"}
                 >
-                    {isPaused ? <Play size={14} /> : <Pause size={14} />}
+                    {isPaused ? <Play size={15} className="fill-current text-amber-300 ml-0.5" /> : <Pause size={15} className="fill-current text-slate-300" />}
                 </button>
                 <button 
                     onClick={onScan} 

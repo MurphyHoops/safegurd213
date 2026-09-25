@@ -95,76 +95,11 @@ const List3_Structure: React.FC<Props> = ({
   useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
   useEffect(() => { executeTradeSafeRef.current = executeTradeSafe; }, [executeTradeSafe]);
 
+  // 🔒 [CODE LOCK - UNIFIED PIPELINE DISCIPLINE]
+  // Automatic trade execution is strictly governed by List 4 (Momentum Audit) double-lock breakout engine.
+  // List 3 purely serves as the structural audit pipeline stage and does not prematurely fire market orders.
   useEffect(() => {
-    const isMasterAutoOn = actionConfig?.autoExecute;
-
-    if (!config.autoSimOpen) {
-      return;
-    }
-
-    if (!isMasterAutoOn) {
-      // If master auto is off but L3 auto is ON, warn via console to assist debugging
-      if (filteredList.length > 0) {
-        console.log(
-          `[List3 Auto] Master switch (List 6) is OFF. Auto execution skipped.`,
-        );
-      }
-      return;
-    }
-
-    if (filteredList.length > 0) {
-      console.log(
-        `[List3 Auto] Checking ${filteredList.length} items for potential execution...`,
-      );
-    }
-
-    filteredList.forEach((item) => {
-      if (!item.list3Results) return;
-
-      item.list3Results.forEach((res) => {
-        const side =
-          res.direction === "LONG" ? PositionSide.LONG : PositionSide.SHORT;
-        const uniqueId = `${item.symbol}-${side}-${res.tf}-${res.structure.signalTime || 0}`;
-
-        // Check 1: Have we already executed this specific signal in this session?
-        const alreadyExecutedSession = executedRef.current.has(uniqueId);
-
-        // Check 2: Do we ALREADY have an open position for this symbol + direction?
-        const alreadyHasPosition = activePositionsRef.current.some(
-          (p) => p.symbol === item.symbol && p.side === side,
-        );
-
-        // Check 3: 🔒 [单币多周期防并发锁] 该币种在 10 秒内是否已有周期触发过开仓
-        const cleanSym = item.symbol.replace(/USDT$/, '') + 'USDT';
-        const lastExecutedTime = symbolLastExecutedRef.current.get(cleanSym) || 0;
-        const isRecentlyExecuted = Date.now() - lastExecutedTime < 10000;
-
-        if (!alreadyExecutedSession && !alreadyHasPosition && !isRecentlyExecuted) {
-          symbolLastExecutedRef.current.set(cleanSym, Date.now());
-          console.log(
-            `[List3 Auto] Triggering executeTradeSafe for ${uniqueId} @ ${item.price}`,
-          );
-
-          const success = (executeTradeSafeRef.current as any)(
-            item.symbol,
-            side,
-            item.price,
-            `Auto L3 Structure (${res.tf})`,
-            res.tf,
-          );
-
-          if (success) {
-            executedRef.current.add(uniqueId);
-          } else {
-            console.log(
-              `[List3 Auto] Trade execution blocked by master risk controls for ${uniqueId}`,
-            );
-          }
-        } else if (alreadyHasPosition) {
-          // Position already open, skip silently in logs to avoid noise
-        }
-      });
-    });
+    // Pipeline passed; candidates flow cleanly into List 4 for Attack Breakout & N-Candle Breakout confirmation.
   }, [filteredList, config.autoSimOpen, actionConfig?.autoExecute]);
 
   // Active Rules for Display (IDLE State)

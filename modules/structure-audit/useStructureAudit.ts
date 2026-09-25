@@ -630,7 +630,7 @@ export const useStructureAudit = (
             const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5);
 
             // A0. Ultra-short Second Timeframes (15s, 30s) synthesized from 1s spot klines
-            if (secTFs.length > 0) {
+            if (secTFs.length > 0 && !/[\u4e00-\u9fa5]/.test(item.symbol)) {
               try {
                 const safeSymbol = item.symbol.endsWith("USDT")
                   ? item.symbol
@@ -987,7 +987,7 @@ export const useStructureAudit = (
               const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5);
 
               // A0. 处理 15s, 30s 秒级周期 (通过 1s 现货 K 线合成)
-              if (secTFs.length > 0) {
+              if (secTFs.length > 0 && !/[\u4e00-\u9fa5]/.test(item.symbol)) {
                 try {
                   const safeSymbol = item.symbol.endsWith("USDT")
                     ? item.symbol

@@ -18,9 +18,10 @@ import { KLine } from "../../types";
 import { saveState } from "../../utils/persistence";
 import { audioService } from "../../services/audioService";
 import { priceRegistry } from "../../services/priceRegistry";
-import { normalizeSymbol } from "../../services/symbolUtils";
+import { normalizeSymbol, formatToBinanceSymbol, isValidSymbolFormat } from "../../services/symbolUtils";
 import { TimeframeDiagnosticRecord } from "./types";
 import { getLatestEMA } from "../../services/indicators";
+import { binanceKlineWs, WsKlineUpdate } from "../../services/binanceKlineWs";
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
@@ -148,9 +149,33 @@ export const useGrandCrossing = (
   // 🔍 [DIAGNOSTICS TELEMETRY]: Real-time multi-period data and rejection audit records
   const [diagnostics, setDiagnostics] = useState<Record<string, TimeframeDiagnosticRecord>>({});
   const diagnosticsRef = useRef<Record<string, TimeframeDiagnosticRecord>>({});
+  // ⚡ Short-term in-memory K-line cache (3s TTL) to prevent duplicate network hits across concurrent timeframes
+  const klineMemCacheRef = useRef<Map<string, { data: KLine[]; time: number }>>(new Map());
 
-  const fetchKlinesForTf = async (safeSymbol: string, tf: string, limit: number = 200): Promise<KLine[]> => {
+  const fetchKlinesForTf = async (
+    rawSymbol: string,
+    tf: string,
+    limit: number = 200,
+    signal?: AbortSignal
+  ): Promise<{ klines: KLine[]; errorReason?: string; latency: number }> => {
+    const fetchStart = Date.now();
+    const safeSymbol = formatToBinanceSymbol(rawSymbol);
+
+    if (!safeSymbol || !isValidSymbolFormat(safeSymbol)) {
+      return {
+        klines: [],
+        errorReason: `【400/无效币种】非标准交易对名称或格式错误 (${rawSymbol})`,
+        latency: 0,
+      };
+    }
+
     const now = Date.now();
+    const cacheKey = `${safeSymbol}-${tf}-${limit}`;
+    const cached = klineMemCacheRef.current.get(cacheKey);
+    if (cached && now - cached.time < 3000 && cached.data.length > 0) {
+      return { klines: cached.data, latency: 0 };
+    }
+
     if (tf === '15s' || tf === '30s') {
       const targetMin = tf === '15s' ? 0.25 : 0.5;
       const subBarsPer1m = tf === '15s' ? 4 : 2;
@@ -160,7 +185,7 @@ export const useGrandCrossing = (
       let baseline1mKlines: KLine[] = [];
       try {
         const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=100&_t=${now}`;
-        const res1m = await fetchWithFallback(url1m, { cache: "no-store", timeout: 5000 }, (d) => Array.isArray(d), directMode);
+        const res1m = await fetchWithFallback(url1m, { cache: "no-store", timeout: 5000, signal }, (d) => Array.isArray(d), directMode);
         if (res1m.ok) {
           const raw1m = await res1m.json();
           if (Array.isArray(raw1m)) {
@@ -176,26 +201,28 @@ export const useGrandCrossing = (
         }
       } catch (e) {}
 
-      // 2. Fetch 1s spot data for recent high-resolution seconds
+      // 2. Fetch 1s spot data for recent high-resolution seconds (skip for Chinese / futures-only tokens)
       let synthRecent: KLine[] = [];
-      try {
-        const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${now}`;
-        const res1s = await fetchWithFallback(spot1sUrl, { cache: "no-store", timeout: 5000 }, (d) => Array.isArray(d), directMode);
-        if (res1s.ok) {
-          const raw1s = await res1s.json();
-          if (Array.isArray(raw1s) && raw1s.length > 0) {
-            const secKlines: KLine[] = raw1s.map((k: any) => ({
-              time: Number(k[0]),
-              open: parseFloat(k[1]),
-              high: parseFloat(k[2]),
-              low: parseFloat(k[3]),
-              close: parseFloat(k[4]),
-              volume: parseFloat(k[5]),
-            }));
-            synthRecent = KLineSynthesizer.synthesize(secKlines, targetMin);
+      if (!/[\u4e00-\u9fa5]/.test(safeSymbol)) {
+        try {
+          const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${now}`;
+          const res1s = await fetchWithFallback(spot1sUrl, { cache: "no-store", timeout: 5000, signal }, (d) => Array.isArray(d), directMode);
+          if (res1s.ok) {
+            const raw1s = await res1s.json();
+            if (Array.isArray(raw1s) && raw1s.length > 0) {
+              const secKlines: KLine[] = raw1s.map((k: any) => ({
+                time: Number(k[0]),
+                open: parseFloat(k[1]),
+                high: parseFloat(k[2]),
+                low: parseFloat(k[3]),
+                close: parseFloat(k[4]),
+                volume: parseFloat(k[5]),
+              }));
+              synthRecent = KLineSynthesizer.synthesize(secKlines, targetMin);
+            }
           }
-        }
-      } catch (e) {}
+        } catch (e) {}
+      }
 
       if (synthRecent.length > 0) {
         const earliestSecTime = synthRecent[0].time;
@@ -217,7 +244,8 @@ export const useGrandCrossing = (
         }
         const combined = [...expandedOlder, ...synthRecent];
         if (combined.length >= 80) {
-          return combined;
+          klineMemCacheRef.current.set(cacheKey, { data: combined, time: Date.now() });
+          return { klines: combined, latency: Date.now() - fetchStart };
         }
       }
 
@@ -237,44 +265,69 @@ export const useGrandCrossing = (
             });
           }
         }
-        return expandedAll;
+        klineMemCacheRef.current.set(cacheKey, { data: expandedAll, time: Date.now() });
+        return { klines: expandedAll, latency: Date.now() - fetchStart };
       }
-      return [];
+      return { klines: [], errorReason: '【秒级合成】无可用1m/1s基线数据', latency: Date.now() - fetchStart };
     }
 
-    const tryFetch = async (sym: string): Promise<KLine[]> => {
+    const tryFetch = async (sym: string): Promise<{ data: KLine[]; reason?: string }> => {
       try {
         const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=${limit}&_t=${Date.now()}`;
-        const res = await fetchWithFallback(url, { cache: "no-store", timeout: 5000 }, (d) => Array.isArray(d), directMode);
+        const res = await fetchWithFallback(url, { cache: "no-store", timeout: 5000, priority: 'HIGH', signal }, (d) => Array.isArray(d), directMode);
         if (res.ok) {
           const raw = await res.json();
           if (Array.isArray(raw) && raw.length > 0) {
-            return raw.map((k: any) => ({
-              time: Number(k[0]),
-              open: parseFloat(k[1]),
-              high: parseFloat(k[2]),
-              low: parseFloat(k[3]),
-              close: parseFloat(k[4]),
-              volume: parseFloat(k[5]),
-            }));
+            return {
+              data: raw.map((k: any) => ({
+                time: Number(k[0]),
+                open: parseFloat(k[1]),
+                high: parseFloat(k[2]),
+                low: parseFloat(k[3]),
+                close: parseFloat(k[4]),
+                volume: parseFloat(k[5]),
+              })),
+            };
+          }
+          return { data: [], reason: '【空数据】交易所暂无历史 K 线' };
+        } else {
+          if (res.status === 400) {
+            return { data: [], reason: `【400/无效币种】非币安永续/现货标准交易对 (${sym})` };
+          } else if (res.status === 429 || res.status === 418) {
+            return { data: [], reason: '【429/触发限流】交易所 IP 频率保护' };
+          } else {
+            return { data: [], reason: `【HTTP ${res.status}】上游服务响应异常` };
           }
         }
-      } catch (e) {}
-      return [];
+      } catch (e: any) {
+        if (e.name === 'AbortError' || (signal && signal.aborted)) {
+          return { data: [], reason: `【网络超时】请求超过阈值 (${Date.now() - fetchStart}ms)` };
+        }
+        return { data: [], reason: `【网络异常】${e.message || '请求失败'}` };
+      }
     };
 
-    let result = await tryFetch(safeSymbol);
-    // If not found and symbol is 1000-scaled meme or vice-versa, try fallback
-    if (result.length === 0) {
+    let fetchRes = await tryFetch(safeSymbol);
+    // If not found and symbol is 1000-scaled meme or vice-versa, try fallback (skip for Chinese tokens)
+    const isChinese = /[\u4e00-\u9fa5]/.test(safeSymbol);
+    if (!isChinese && fetchRes.data.length === 0 && (!signal || !signal.aborted)) {
       if (safeSymbol.startsWith('1000')) {
         const base = safeSymbol.replace(/^1000/, '');
-        result = await tryFetch(base);
+        const fallbackRes = await tryFetch(base);
+        if (fallbackRes.data.length > 0) fetchRes = fallbackRes;
       } else {
         const scaled = '1000' + safeSymbol;
-        result = await tryFetch(scaled);
+        const fallbackRes = await tryFetch(scaled);
+        if (fallbackRes.data.length > 0) fetchRes = fallbackRes;
       }
     }
-    return result;
+
+    const latency = Date.now() - fetchStart;
+    if (fetchRes.data.length > 0) {
+      klineMemCacheRef.current.set(cacheKey, { data: fetchRes.data, time: Date.now() });
+      return { klines: fetchRes.data, latency };
+    }
+    return { klines: [], errorReason: fetchRes.reason || '【获取失败】K线未返回数据', latency };
   };
 
   const startScanTf = useCallback((tf: string, symbol?: string) => {
@@ -826,9 +879,10 @@ export const useGrandCrossing = (
             continue;
           }
 
-          const safeSymbol = item.symbol.endsWith("USDT") ? item.symbol : `${item.symbol}USDT`;
+          const safeSymbol = formatToBinanceSymbol(item.symbol);
           try {
-            const klines: KLine[] = await fetchKlinesForTf(safeSymbol, tf, 200);
+            const fetchRes = await fetchKlinesForTf(safeSymbol, tf, 200);
+            const klines: KLine[] = fetchRes.klines;
 
             if (klines.length > 0) {
               const freshSignals = analyzeList2Crossing(
@@ -993,42 +1047,35 @@ export const useGrandCrossing = (
     scheduleUpdate();
   }, [candidates, scheduleUpdate]);
 
-  // --- CORE: Scan Logic (Direct Fetching for all periods, no Synthesis) ---
-  const processSymbol = async (
+  // ⚡ Persistent In-Memory Kline Ring-Buffer: key is `${symbol}-${tf}`
+  const klineStoreRef = useRef<Map<string, KLine[]>>(new Map());
+
+  // --- CORE: Pure Local Mathematical Evaluation Engine (0ms Latency) ---
+  const evaluateKlines = useCallback((
     symbol: string,
     tf: string,
+    klines: KLine[],
+    latency: number = 0,
+    errorReason?: string
   ) => {
     const normSym = normalizeSymbol(symbol);
     const candidateItem = candidatesRef.current.find(
       (c) => normalizeSymbol(c.symbol) === normSym,
     );
-    const safeSym = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
+    const safeSym = formatToBinanceSymbol(symbol);
     const cacheKey = `${safeSym}-FULL`;
     const existingItem = cacheRef.current.get(cacheKey) || cacheRef.current.get(`${symbol}-FULL`);
     const item = candidateItem || existingItem;
     if (!item) return;
-
-    // Throttle duplicate fetches to 2s to protect against race conditions under fast ticks
-    const now = Date.now();
-    const fetchKey = `${symbol}-${tf}`;
-    const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
-    if (now - lastFetch < 2000) {
-      return;
-    }
-    symbolTfLastFetchRef.current.set(fetchKey, now);
 
     const retention = configRef.current.newModeRetention ?? 9;
 
     try {
       let mergedResults = [...(existingItem?.groupedResults || [])];
 
-      const fetchStart = Date.now();
-      const safeSymbol = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
-      const klines: KLine[] = await fetchKlinesForTf(safeSymbol, tf, 200);
-      const latency = Date.now() - fetchStart;
-
       if (!klines || klines.length === 0) {
         const diagKey = `${symbol}-${tf}`;
+        const finalReason = errorReason || 'K线接口未返回数据 (请检查币种或网络)';
         const record: TimeframeDiagnosticRecord = {
           symbol,
           tf,
@@ -1048,7 +1095,7 @@ export const useGrandCrossing = (
           divergenceState: 'NONE',
           isCrossing: false,
           isPassed: false,
-          rejectionReason: 'K线接口未返回数据或返回为空 (400/网络超时/丢包)',
+          rejectionReason: finalReason,
           timestamp: Date.now(),
         };
         diagnosticsRef.current[diagKey] = record;
@@ -1145,7 +1192,6 @@ export const useGrandCrossing = (
 
       if (results.length > 0) {
         // 🔒 [USER MANDATORY RULE] 多空独立存续：反向新信号出现时，不覆盖抹除仍在存续寿命内的旧方向信号
-        // 仅替换当前 tf 且相同 direction 的信号，未过期的不同 direction 信号予以保留并独立计时
         const newDirections = new Set(results.map((r) => r.direction));
         mergedResults = mergedResults.filter(
           (r) => !(r.tf === tf && newDirections.has(r.direction))
@@ -1246,72 +1292,214 @@ export const useGrandCrossing = (
         scheduleUpdate();
       }
     } catch (e: any) {
+      console.warn(`[Local Eval] Error ${symbol} ${tf}:`, e.message);
+    }
+  }, [scheduleUpdate]);
+
+  // ⚡ WEBSOCKET LIVE STREAMING INGESTION & ZERO-LATENCY LOCAL CALCULATION
+  useEffect(() => {
+    const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
+    const pairs: { symbol: string; tf: string }[] = [];
+    for (const c of candidates) {
+      for (const tf of activeTfs) {
+        pairs.push({ symbol: c.symbol, tf });
+      }
+    }
+    binanceKlineWs.syncSubscriptions(pairs);
+
+    const unsubscribe = binanceKlineWs.addListener((update: WsKlineUpdate) => {
+      const { symbol, tf, time, open, high, low, close, volume } = update;
+      const key = `${normalizeSymbol(symbol)}-${tf}`;
+      const safeKey = `${symbol}-${tf}`;
+
+      let currentKlines = klineStoreRef.current.get(key) || klineStoreRef.current.get(safeKey);
+      if (!currentKlines || currentKlines.length === 0) {
+        return;
+      }
+
+      const updated = [...currentKlines];
+      const lastIdx = updated.length - 1;
+      const last = updated[lastIdx];
+
+      if (last && last.time === time) {
+        updated[lastIdx] = { time, open, high, low, close, volume };
+      } else if (last && time > last.time) {
+        updated.push({ time, open, high, low, close, volume });
+        if (updated.length > 200) {
+          updated.shift();
+        }
+      }
+
+      klineStoreRef.current.set(key, updated);
+      klineStoreRef.current.set(safeKey, updated);
+
+      // Instantaneous local mathematical evaluation
+      evaluateKlines(symbol, tf, updated, 0);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [candidates, config.timeframes, evaluateKlines]);
+
+  // --- CORE: Scan Logic (Direct Fetching for Cold-Start / Polling) ---
+  const processSymbol = async (
+    symbol: string,
+    tf: string,
+    signal?: AbortSignal,
+    isRetry: boolean = false,
+  ) => {
+    const normSym = normalizeSymbol(symbol);
+    const candidateItem = candidatesRef.current.find(
+      (c) => normalizeSymbol(c.symbol) === normSym,
+    );
+    const safeSym = symbol.endsWith("USDT") ? symbol : `${symbol}USDT`;
+    const cacheKey = `${safeSym}-FULL`;
+    const existingItem = cacheRef.current.get(cacheKey) || cacheRef.current.get(`${symbol}-FULL`);
+    const item = candidateItem || existingItem;
+    if (!item) return;
+
+    const now = Date.now();
+    const fetchKey = `${symbol}-${tf}`;
+    const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
+    if (!isRetry && now - lastFetch < 1500) {
+      return;
+    }
+    symbolTfLastFetchRef.current.set(fetchKey, now);
+
+    try {
+      const safeSymbol = formatToBinanceSymbol(symbol);
+      const fetchRes = await fetchKlinesForTf(safeSymbol, tf, 200, signal);
+      const klines = fetchRes.klines;
+      const latency = fetchRes.latency;
+
+      if (klines && klines.length > 0) {
+        klineStoreRef.current.set(`${normSym}-${tf}`, klines);
+        klineStoreRef.current.set(`${safeSymbol}-${tf}`, klines);
+      }
+
+      evaluateKlines(symbol, tf, klines, latency, fetchRes.errorReason);
+    } catch (e: any) {
       console.warn(`[Rolling] Skip ${symbol} ${tf}:`, e.message);
     }
   };
 
-  // --- 🔒 [LOCKED_MODULE - 列表2多周期并发·全周期独立轮询扫描引擎] ---
-  // 每个选中的K线周期（如 5m, 15m, 1h, 4h 等）均拥有独立生命周期的 Worker 协程并发运行。
-  // 各周期按照自身预设间隔独立对候选币进行逐一请求与指标计算，互不阻塞，真正实现所选多周期同时运行！
+  // --- 🔒 [GLOBAL SINGLE-SECOND PRIORITY TOKEN BUCKET SCHEDULER] ---
+  // 全局唯一单秒调度器：严格按照 1 秒 1 个币的物理节奏发包，彻底杜绝 IP 封控与带宽争抢。
+  // 多周期调度规则：
+  // 1. 小周期（15s, 30s, 1m, 3m, 5m）走得快，优先扫描。
+  // 2. 防饿死保护（Anti-Starvation）：每连续调度 2 次小周期任务，若有大周期（15m, 30m, 1h, 2h, 4h, 8h, 1d）排队，强制插入 1 次大周期扫描，确保大周期稳步前进。
+  // 3. 单币请求设 1.8s 极速超时保护，超时或失败最多重试 1 次即自动跳过，永不阻塞调度节拍！
+  const tfCoinPointersRef = useRef<Record<string, number>>({});
+  const smallTfRoundIndexRef = useRef<number>(0);
+  const bigTfRoundIndexRef = useRef<number>(0);
+  const smallTfStreakRef = useRef<number>(0);
+
   useEffect(() => {
     let isRunning = true;
-    const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
 
-    if (activeTfs.length === 0) {
-      return;
-    }
+    const runGlobalScheduler = async () => {
+      const SMALL_TFS = ['15s', '30s', '1m', '3m', '5m'];
+      const BIG_TFS = ['15m', '30m', '1h', '2h', '4h', '8h', '1d'];
 
-    activeTfs.forEach((tf, idx) => {
-      const runTfWorker = async () => {
-        let coinIndex = 0;
-        // 初始轻微错开启动时间（各周期错开200ms），避免同一毫秒全部发起初始网络请求
-        const staggerOffset = (idx % 6) * 200;
-        if (staggerOffset > 0) {
-          await delay(staggerOffset);
+      while (isRunning) {
+        const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
+        const candidates = sortedCandidatesRef.current || [];
+
+        if (activeTfs.length === 0 || candidates.length === 0) {
+          await delay(1000);
+          continue;
         }
 
-        while (isRunning) {
-          const selectedId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
-          const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
-          const candidates = sortedCandidatesRef.current || [];
+        const activeSmall = activeTfs.filter((tf) => SMALL_TFS.includes(tf));
+        const activeBig = activeTfs.filter((tf) => BIG_TFS.includes(tf));
 
-          if (candidates.length === 0) {
-            await delay(1000);
-            continue;
+        let selectedTf: string | null = null;
+
+        if (activeSmall.length > 0 && activeBig.length === 0) {
+          // 仅开启小周期
+          const sIdx = smallTfRoundIndexRef.current % activeSmall.length;
+          selectedTf = activeSmall[sIdx];
+          smallTfRoundIndexRef.current = (sIdx + 1) % activeSmall.length;
+        } else if (activeSmall.length === 0 && activeBig.length > 0) {
+          // 仅开启大周期
+          const bIdx = bigTfRoundIndexRef.current % activeBig.length;
+          selectedTf = activeBig[bIdx];
+          bigTfRoundIndexRef.current = (bIdx + 1) % activeBig.length;
+        } else if (activeSmall.length > 0 && activeBig.length > 0) {
+          // 均开启：小周期优先（2:1 比例防饿死轮转）
+          if (smallTfStreakRef.current < 2) {
+            const sIdx = smallTfRoundIndexRef.current % activeSmall.length;
+            selectedTf = activeSmall[sIdx];
+            smallTfRoundIndexRef.current = (sIdx + 1) % activeSmall.length;
+            smallTfStreakRef.current += 1;
+          } else {
+            // 防饿死：插入 1 次大周期排队的币
+            const bIdx = bigTfRoundIndexRef.current % activeBig.length;
+            selectedTf = activeBig[bIdx];
+            bigTfRoundIndexRef.current = (bIdx + 1) % activeBig.length;
+            smallTfStreakRef.current = 0;
           }
+        }
 
-          const target = candidates[coinIndex % candidates.length];
-          coinIndex = (coinIndex + 1) % candidates.length;
+        if (!selectedTf) {
+          await delay(1000);
+          continue;
+        }
 
-          // 校验该币种是否仍在列表1中
-          const normSym = normalizeSymbol(target.symbol);
-          const isStillCandidate = (candidatesRef.current || []).some(
-            (c) => normalizeSymbol(c.symbol) === normSym
-          );
+        // 每次调度并发处理 3 个币，兼顾极致时效与平稳网络节拍
+        const BATCH_SIZE = Math.min(3, candidates.length);
+        const batchTargets: { target: ScannerItem; tf: string }[] = [];
+        
+        for (let b = 0; b < BATCH_SIZE; b++) {
+          const curPtr = (tfCoinPointersRef.current[selectedTf] || 0) % candidates.length;
+          const target = candidates[curPtr];
+          tfCoinPointersRef.current[selectedTf] = (curPtr + 1) % candidates.length;
+          if (target) {
+            batchTargets.push({ target, tf: selectedTf });
+          }
+        }
 
-          if (isStillCandidate) {
+        const slotStartTime = Date.now();
+
+        await Promise.all(
+          batchTargets.map(async ({ target, tf }) => {
+            const normSym = normalizeSymbol(target.symbol);
+            const isStillCandidate = (candidatesRef.current || []).some(
+              (c) => normalizeSymbol(c.symbol) === normSym
+            );
+            if (!isStillCandidate) return;
+
             startScanTf(tf, target.symbol);
+            const ac = new AbortController();
+            const timerId = setTimeout(() => ac.abort(), 6000);
             try {
-              // 6.5s strict timeout race guard to guarantee the worker NEVER freezes on any single coin
-              await Promise.race([
-                processSymbol(target.symbol, tf),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Symbol scan timeout')), 6500))
-              ]);
+              await processSymbol(target.symbol, tf, ac.signal, false);
             } catch (err) {
-              console.warn(`[Tf Worker] Error processing ${target.symbol} (${tf}):`, err);
+              const retryAc = new AbortController();
+              const retryTimerId = setTimeout(() => retryAc.abort(), 4000);
+              try {
+                await processSymbol(target.symbol, tf, retryAc.signal, true);
+              } catch (retryErr) {
+                // 快速熔断跳过，永不阻塞全局节拍
+              } finally {
+                clearTimeout(retryTimerId);
+              }
             } finally {
+              clearTimeout(timerId);
               endScanTf(tf);
             }
-          }
+          })
+        );
 
-          const baseIntervalMs = getTfScanIntervalMs(tf);
-          const intervalMs = isBg ? baseIntervalMs * 2 : baseIntervalMs;
-          await delay(intervalMs);
-        }
-      };
+        const elapsed = Date.now() - slotStartTime;
+        // 保持每批次 250ms~300ms 快速平滑滚动节拍
+        const remainingDelay = Math.max(50, 300 - elapsed);
+        await delay(remainingDelay);
+      }
+    };
 
-      runTfWorker();
-    });
+    runGlobalScheduler();
 
     return () => {
       isRunning = false;

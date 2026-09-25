@@ -91,7 +91,12 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     // --- LOCAL UI STATE ---
     const [fixedModeView, setFixedModeView] = usePersistedState<'MONITOR' | 'SEARCH'>('SCANNER_FIXED_MODE_VIEW', 'MONITOR');
     const [scanInterval, setScanInterval] = usePersistedState('SCANNER_INTERVAL', 10);
-    const [isPaused, setIsPaused] = useState(false);
+    const [isPaused, setIsPaused] = usePersistedState<boolean>('SCANNER_PIPELINE_PAUSED', false);
+
+    useEffect(() => {
+        (window as any).IS_SCANNER_PIPELINE_PAUSED = isPaused;
+        window.dispatchEvent(new CustomEvent('scanner_pipeline_pause_changed', { detail: { isPaused } }));
+    }, [isPaused]);
     
     // Ref to track transferred symbols to prevent infinite loops
     const transferredSymbolsRef = React.useRef(new Set<string>());

@@ -223,7 +223,10 @@ export const SYMBOL_TO_CHINESE_MAP: Record<string, string> = {
     'MELANIA': '梅拉尼娅',
     'ANIME': '二次元',
     'BERA': '熊链',
-    'LOBSTER': '龙虾',
+    '龙虾': '龙虾',
+    '币安人生': '币安人生',
+    '我踏马来了': '我踏马来了',
+    '牛来': '牛来',
     'CHILLGUY': '无所谓男',
     'AI16Z': '小安德森',
     'FARTCOIN': '放屁币',
@@ -399,7 +402,10 @@ export const CHINESE_TO_SYMBOL_MAP: Record<string, string> = {
     '梅拉尼娅': 'MELANIA',
     '熊链': 'BERA',
     '二次元': 'ANIME',
-    '龙虾': 'LOBSTER', '大龙虾': 'LOBSTER', '龙虾币': 'LOBSTER',
+    '龙虾': '龙虾', '大龙虾': '龙虾', '龙虾币': '龙虾',
+    '币安人生': '币安人生',
+    '我踏马来了': '我踏马来了',
+    '牛来': '牛来',
     '无所谓男': 'CHILLGUY',
     '放屁币': 'FARTCOIN', '屁币': 'FARTCOIN',
     '小安德森': 'AI16Z',
@@ -422,7 +428,7 @@ Object.entries(SYMBOL_TO_CHINESE_MAP).forEach(([sym, zh]) => {
 
 /**
  * 获取指定代币代码的中文名称
- * @param symbol 如 "BTC", "BTCUSDT", "1000PEPE", "ONG"
+ * @param symbol 如 "BTC", "BTCUSDT", "1000PEPE", "ONG", "龙虾"
  * @returns 中文名如 "比特币", "本体燃气"，若无则返回 null
  */
 export function getCoinChineseName(symbol: string): string | null {
@@ -440,12 +446,13 @@ export function getCoinChineseName(symbol: string): string | null {
  * 格式化代币显示名称（含中文）
  * @example formatCoinWithChinese("BTC") => "BTC (比特币)"
  * @example formatCoinWithChinese("ONGUSDT") => "ONG (本体燃气)"
+ * @example formatCoinWithChinese("龙虾USDT") => "龙虾" (避免出现 "龙虾 (龙虾)")
  */
 export function formatCoinWithChinese(symbol: string): string {
     if (!symbol) return '';
     const clean = symbol.toUpperCase().trim().replace(/USDT$/, '');
     const zh = getCoinChineseName(symbol);
-    return zh ? `${clean} (${zh})` : clean;
+    return (zh && zh !== clean) ? `${clean} (${zh})` : clean;
 }
 
 /**

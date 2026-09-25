@@ -1,4 +1,8 @@
 
+/**
+ * // 🔒 @LOCKED_MODULE: Symbol Formatting, Validation & Price Resolution Engine
+ * // CRITICAL: Standardized symbol formatting, validation whitelist, and price scaling logic are STRICTLY LOCKED.
+ */
 import { resolveSymbolFromInput } from './coinNames';
 
 /**
@@ -10,18 +14,20 @@ export const normalizeSymbol = (s: string): string => {
     
     let target = s.trim();
 
-    // If string contains Chinese characters or parenthesized Chinese, resolve via Chinese dictionary first
-    if (/[\u4e00-\u9fa5]/.test(target) || target.includes('(') || target.includes('（')) {
+    // If string contains parenthesized Chinese like "BTC (比特币)" or "龙虾 (龙虾)", resolve via Chinese dictionary first
+    if (target.includes('(') || target.includes('（')) {
         const resolved = resolveSymbolFromInput(target);
         if (resolved && resolved.symbol) {
             target = resolved.symbol;
+        } else {
+            target = target.replace(/[\(（][^\)）]*[\)）]/g, '');
         }
     }
 
     const cleaned = target.toUpperCase()
         .replace(/_PREP$/, '')
         .replace(/USDT$/, '')
-        .replace(/[^A-Z0-9]/g, '');
+        .replace(/[^A-Z0-9\u4e00-\u9fa5]/g, '');
 
     return cleaned || target.toUpperCase().trim();
 };
@@ -36,6 +42,52 @@ export const isMemeScaledCoin = (symbol: string): boolean => {
 export const isMajorCoin = (symbol: string): boolean => {
     return !isMemeScaledCoin(symbol);
 };
+
+
+/**
+ * Formats any input symbol into standard Binance USDT pair format (e.g. "BTC" -> "BTCUSDT", "STG/" -> "STGUSDT", "龙虾" -> "龙虾USDT")
+ */
+export const formatToBinanceSymbol = (s: string): string => {
+    if (!s || typeof s !== 'string') return '';
+    let clean = s.toUpperCase().trim();
+    // Strip parenthesized annotations like "(比特币)" or "(龙虾)"
+    if (clean.includes('(') || clean.includes('（')) {
+        const resolved = resolveSymbolFromInput(clean);
+        if (resolved && resolved.symbol) {
+            clean = resolved.symbol.toUpperCase();
+        } else {
+            clean = clean.replace(/[\(（][^\)）]*[\)）]/g, '');
+        }
+    }
+    // Strip trailing slashes, dashes, colons, underscores
+    clean = clean.replace(/[\/\s_-]/g, '');
+    clean = clean.replace(/_PREP$/, '');
+    if (!clean) return '';
+    if (clean.endsWith('USDT')) {
+        return clean;
+    }
+    return clean + 'USDT';
+};
+
+/**
+ * Basic syntax validation for trading symbols (supports standard Binance pairs and Chinese symbols like 龙虾USDT)
+ */
+export const isValidSymbolFormat = (s: string): boolean => {
+    if (!s || typeof s !== 'string') return false;
+    let clean = s.toUpperCase().trim();
+    if (clean.includes('(') || clean.includes('（')) {
+        const resolved = resolveSymbolFromInput(clean);
+        if (resolved && resolved.symbol) {
+            clean = resolved.symbol.toUpperCase();
+        } else {
+            clean = clean.replace(/[\(（][^\)）]*[\)）]/g, '');
+        }
+    }
+    clean = clean.replace(/[\/\s_-]/g, '').replace(/USDT$/, '');
+    // Must be alphanumeric or Chinese characters, length 1-20
+    return /^[A-Z0-9\u4e00-\u9fa5]{1,20}$/.test(clean);
+};
+
 
 /**
  * Robust price resolver that handles various symbol formats (with/without USDT, with/without 1000).

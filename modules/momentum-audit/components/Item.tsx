@@ -95,7 +95,7 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                         )}
                         <span className="text-xs font-bold text-white flex items-baseline gap-1">
                             <span>{item.symbol ? item.symbol.replace('USDT','') : 'UNKNOWN'}</span>
-                            {item.symbol && getCoinChineseName(item.symbol) && (
+                            {item.symbol && getCoinChineseName(item.symbol) && getCoinChineseName(item.symbol) !== item.symbol.replace('USDT','') && (
                                 <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
                             )}
                         </span>

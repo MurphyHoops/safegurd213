@@ -23,7 +23,7 @@ export class MarketSimulator {
     public realPrices: Record<string, number> = {};
     private symbolsWithFreshPrice: Set<string> = new Set();
     private bootTime: number = Date.now();
-    private WARMUP_PERIOD = 15000; // 15s lock after boot to prevent stale data spikes
+    private WARMUP_PERIOD = 2000; // 2s lock after boot to prevent stale data spikes
     public clearedTradeLogsTimestamp: number = 0;
     
     // Real trading automated execution callbacks
@@ -571,6 +571,7 @@ export class MarketSimulator {
                     entryTime,
                     originalEntryPrice: newPos.entryPrice,
                     signalTf: newPos.signalTf || '5m', // Default TF if not provided
+                    maxPnLPercent: newPos.maxPnLPercent !== undefined ? newPos.maxPnLPercent : (newPos.unrealizedPnLPercentage > 0 ? newPos.unrealizedPnLPercentage : 0),
                     ...pendingProps
                 };
 
