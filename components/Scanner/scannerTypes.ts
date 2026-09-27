@@ -386,6 +386,38 @@ export interface MajorTrendConfig {
     enableStartTrendLong?: boolean; // “行情启动趋势”做多独立开关
     enableStartTrendShort?: boolean; // “行情启动趋势”做空独立开关
     startTrendGroups?: StartTrendGroup[]; // 3组“行情启动趋势”设置
+
+    // 🚀 趋势爆发综合过滤 (Breakout Filter Config)
+    breakoutFilter?: BreakoutFilterConfig;
+}
+
+export interface BreakoutFilterConfig {
+    enabled: boolean; // 趋势爆发综合过滤总开关
+    combinationMode?: 'OR' | 'AND'; // 组合判定模式: 'OR' (满足任一开启规则即放行) | 'AND' (必须全部满足)，默认 'OR'
+    scanDelayMs?: number; // 扫描步进节奏延时(毫秒)，例如 1000 代表 1秒1币 (防止超频并平稳展示)
+    
+    // 1. 空间极致蓄势 (Squeeze 波动率压缩)
+    enableSqueeze: boolean; // 空间蓄势子开关
+    maxBbwPercent: number; // 布林带带宽 (BBW %) 上限阈值，默认 3.0%
+    requireSqueezeInKc: boolean; // 是否要求 BB 收缩进 KC 通道内部 (Squeeze ON)，默认 true
+    squeezeBars: number; // 压缩K线根数 (默认 20)
+
+    // 2. 突破点火放量 (Volume & Breakout)
+    enableVolumeSpike: boolean; // 突破点火子开关
+    volMultiplier: number; // 爆量倍数 (Vol / MA_Vol_20)，默认 2.0x
+    breakoutMode: 'BB_BANDS' | 'EXTREME_K'; // 突破判定方式: 破布林带上下轨 / 破近N根极值
+    breakoutBars?: number; // 突破极值回溯K线根数 (默认 20)
+    breakoutDirection?: 'BOTH' | 'LONG' | 'SHORT'; // 突破方向过滤 (默认 'BOTH')
+
+    // 3. 动能爆发与多周期共振 (ADX & Multi-TF)
+    enableAdx: boolean; // ADX 动能子开关
+    minAdx: number; // ADX(14) 阈值，默认 22
+    requireAdxRising: boolean; // 是否要求 ADX 向上拐头拉升，默认 true
+
+    enableMultiTfResonance: boolean; // 多周期发散共振子开关
+    primaryTf: '1m' | '3m' | '5m' | '15m'; // 主触发周期，默认 5m
+    confirmTf: '15m' | '30m' | '1h'; // 高级确认周期，默认 15m
+    resonanceMode: 'TWO_TF' | 'THREE_TF'; // 双周期同向 / 三周期同向，默认 'TWO_TF'
 }
 
 export interface ScanConfig {
@@ -407,6 +439,7 @@ export interface ScanConfig {
     list2Config?: List2Config;
     smartMode?: SmartScanConfig;
     majorTrend?: MajorTrendConfig;
+    breakoutFilter?: BreakoutFilterConfig;
     enableAlphabeticalFilter?: boolean; // 币安排序 A~Z 分片开关
     alphabeticalRangeStart?: number;    // 起始币种序号 (如 1)
     alphabeticalRangeEnd?: number;      // 结束币种序号 (如 70)

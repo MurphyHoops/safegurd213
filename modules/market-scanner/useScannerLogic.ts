@@ -1066,6 +1066,7 @@ export const useScannerLogic = (
                     (async () => {
                         const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
                         const limit = Math.min(timeParam + 20, 350);
+                        const minRequired = Math.min(timeParam, 200);
                         let klines: any[] | null = null;
 
                         const nowTime = Date.now();
@@ -1073,26 +1074,26 @@ export const useScannerLogic = (
 
                         // ⚡ [日K全天常驻持久化缓存]: 优先从 24小时持久化存储中秒级命中 (0毫秒响应，解决冷启动丢币)
                         const storedKlines = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
-                        if (storedKlines && Array.isArray(storedKlines) && storedKlines.length >= 2) {
+                        if (storedKlines && Array.isArray(storedKlines) && (storedKlines.length >= minRequired || storedKlines.length >= 30)) {
                             klines = storedKlines;
                         } else {
                             const CACHE_VALIDITY_1D = 86400000;
-                            if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][timeParam].klines) && KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                            if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][timeParam].klines) && (KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
                                 klines = KLINE_LIMIT_CACHE[symbol][timeParam].klines;
-                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines) && KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines) && (KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
                                 klines = KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines;
-                            } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= 2) {
+                            } else if (KLINE_LIMIT_CACHE[symbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][300].klines) && (KLINE_LIMIT_CACHE[symbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                                klines = KLINE_LIMIT_CACHE[symbol][300].klines;
+                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][300].klines) && (KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                                klines = KLINE_LIMIT_CACHE[safeSymbol][300].klines;
+                            } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= minRequired) {
                                 klines = KLINE_LIMIT_CACHE[`${symbol}_1d`];
-                            } else if (KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && KLINE_LIMIT_CACHE[`${safeSymbol}_1d`].length >= 2) {
+                            } else if (KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && KLINE_LIMIT_CACHE[`${safeSymbol}_1d`].length >= minRequired) {
                                 klines = KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
-                            } else if (KLINE_LIMIT_CACHE[symbol]?.['1d']?.klines && KLINE_LIMIT_CACHE[symbol]['1d'].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[symbol]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                                klines = KLINE_LIMIT_CACHE[symbol]['1d'].klines;
-                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.['1d']?.klines && KLINE_LIMIT_CACHE[safeSymbol]['1d'].klines.length >= 2 && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                                klines = KLINE_LIMIT_CACHE[safeSymbol]['1d'].klines;
                             }
                         }
 
-                        if (!klines || !Array.isArray(klines) || klines.length < 2) {
+                        if (!klines || !Array.isArray(klines) || (klines.length < minRequired && klines.length < 30)) {
                             const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}&isScanner=true`;
                             klines = await safeFetchKlinesDirect(url, 10000, coinAbortController.signal);
                             if (!klines || klines.length < 2) {
@@ -1102,18 +1103,20 @@ export const useScannerLogic = (
                         }
                 
                         if (Array.isArray(klines) && klines.length >= 2) {
-                            // 同步写入持久化存储
-                            klineDailyStore.saveKlines(safeSymbol, klines);
-                            klineDailyStore.saveKlines(symbol, klines);
+                            // 同步写入持久化存储（携带请求的limit，精准判断是否次新币）
+                            klineDailyStore.saveKlines(safeSymbol, klines, limit);
+                            klineDailyStore.saveKlines(symbol, klines, limit);
 
                             if (!KLINE_LIMIT_CACHE[symbol]) KLINE_LIMIT_CACHE[symbol] = {};
                             if (!KLINE_LIMIT_CACHE[safeSymbol]) KLINE_LIMIT_CACHE[safeSymbol] = {};
-                            KLINE_LIMIT_CACHE[symbol][timeParam] = { timestamp: Date.now(), klines };
-                            KLINE_LIMIT_CACHE[safeSymbol][timeParam] = { timestamp: Date.now(), klines };
-                            KLINE_LIMIT_CACHE[symbol]['1d'] = { timestamp: Date.now(), klines };
-                            KLINE_LIMIT_CACHE[safeSymbol]['1d'] = { timestamp: Date.now(), klines };
-                            KLINE_LIMIT_CACHE[`${symbol}_1d`] = klines;
-                            KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] = klines;
+                            if (klines.length >= minRequired || klines.length >= 30) {
+                                KLINE_LIMIT_CACHE[symbol][timeParam] = { timestamp: Date.now(), klines };
+                                KLINE_LIMIT_CACHE[safeSymbol][timeParam] = { timestamp: Date.now(), klines };
+                                KLINE_LIMIT_CACHE[symbol][300] = { timestamp: Date.now(), klines };
+                                KLINE_LIMIT_CACHE[safeSymbol][300] = { timestamp: Date.now(), klines };
+                                KLINE_LIMIT_CACHE[`${symbol}_1d`] = klines;
+                                KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] = klines;
+                            }
 
                             // 标记成功获取数据并完成第一阶段评估
                             successfullyEvaluatedSymbols.add(symbol);
@@ -1384,9 +1387,16 @@ export const useScannerLogic = (
                 const s2CycleStart = Date.now();
 
                 const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
-                const klines = item.klines;
-                const prices = klines.map((k: any) => parseFloat(k[4]));
-                const periodKlines = klines.slice(-timeParam);
+                let klines = item.klines;
+                if (!klines || !Array.isArray(klines) || klines.length < 30) {
+                    const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
+                    const storeFallback = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
+                    if (storeFallback && Array.isArray(storeFallback) && storeFallback.length >= 30) {
+                        klines = storeFallback;
+                    }
+                }
+                const prices = (klines || []).map((k: any) => parseFloat(k[4]));
+                const periodKlines = (klines || []).slice(-timeParam);
                 const highs = periodKlines.map((k: any) => parseFloat(k[2]));
                 const lows = periodKlines.map((k: any) => parseFloat(k[3]));
                 const currentPrice = item.currentPrice;
@@ -1556,27 +1566,21 @@ export const useScannerLogic = (
         if (isMountedRef.current && !majorScanAbortRef.current) {
             const previousCandidates = majorTrendCandidatesRef.current ? Array.from(majorTrendCandidatesRef.current) : [];
             
-            // 🔒【差量更新防误杀保护盾】:
-            // 只有被系统成功拉取K线并明确计算判定不符合条件的币，才从初筛列表剔除；
-            // 若因偶发网络超时/抖动未能完成计算评估的币，100% 稳妥保留在初筛池中，绝不突然骤降或清零！
-            const unEvaluatedPrevious = previousCandidates.filter(prevCand => {
-                const baseSym = prevCand.replace(/_LONG$|_SHORT$/i, '');
-                return !successfullyEvaluatedSymbols.has(prevCand) && !successfullyEvaluatedSymbols.has(baseSym);
-            });
-
-            const combinedCandidates = Array.from(new Set([...Array.from(stage2PassedSymbols), ...unEvaluatedPrevious]));
-            const newCandidates = combinedCandidates;
-
+            // 🔒【回溯周期过滤整轮扫描完成 - 原子差量比对更新】:
+            // 1. 如果新过滤结果减少了，初筛列表精准减去不符合的那一个/几个；
+            // 2. 如果新过滤结果增加了，初筛列表精准加上新入选的那一个/几个；
+            // 3. 既有依然符合的币种平滑保留，实现 100% 精准差量对齐更新！
+            const newCandidates = Array.from(stage2PassedSymbols);
             const prevSet = new Set(previousCandidates);
-            const newSet = new Set(combinedCandidates);
+            const newSet = new Set(newCandidates);
 
             const added = newCandidates.filter(x => !prevSet.has(x));
             const removed = previousCandidates.filter(x => !newSet.has(x));
             const retained = previousCandidates.filter(x => newSet.has(x));
 
-            console.log(`[MajorTrendDiscovery] 回溯周期过滤全量完成！初筛差量比对: 原有 ${previousCandidates.length} 个 -> 本轮 ${newCandidates.length} 个 (保留: ${retained.length} 个, 增加: +${added.length} 个 [${added.join(', ')}], 减去: -${removed.length} 个 [${removed.join(', ')}], 保护未完成评估币: ${unEvaluatedPrevious.length} 个)`);
+            console.log(`[MajorTrendDiscovery] 回溯周期过滤全量完成！初筛差量比对: 原有 ${previousCandidates.length} 个 -> 本轮 ${newCandidates.length} 个 (保留: ${retained.length} 个, 增加: +${added.length} 个 [${added.join(', ')}], 减去: -${removed.length} 个 [${removed.join(', ')}])`);
 
-            const finalSet = new Set(combinedCandidates);
+            const finalSet = new Set(newCandidates);
             setMajorTrendCandidates(finalSet);
             majorTrendCandidatesRef.current = finalSet;
             setMajorTrendLimits(stage2LimitsMap);

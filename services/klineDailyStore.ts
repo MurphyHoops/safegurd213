@@ -83,7 +83,8 @@ class KlineDailyStore {
                     const now = Date.now();
                     let loaded = 0;
                     entries.forEach((item) => {
-                        if (item && item.symbol && Array.isArray(item.klines) && item.klines.length > 0) {
+                        // 过滤掉历史污染的小数组（少于30根日K），确保预热数据均为有效大回溯数据
+                        if (item && item.symbol && Array.isArray(item.klines) && item.klines.length >= 30) {
                             if (now - (item.timestamp || 0) < CACHE_VALIDITY_1D) {
                                 this.syncToWindowCache(item.symbol, item.klines, item.timestamp);
                                 this.memoryMap.set(item.symbol, item);
@@ -113,8 +114,11 @@ class KlineDailyStore {
         if (!winCache[norm]) winCache[norm] = {};
         if (!winCache[symbol]) winCache[symbol] = {};
 
-        winCache[norm][300] = { klines, timestamp };
-        winCache[symbol][300] = { klines, timestamp };
+        // 仅在K线数量达到200根或以上时才写入300大回溯缓存
+        if (klines.length >= 200) {
+            winCache[norm][300] = { klines, timestamp };
+            winCache[symbol][300] = { klines, timestamp };
+        }
         winCache[norm]['1d'] = { klines, timestamp };
         winCache[symbol]['1d'] = { klines, timestamp };
         winCache[`${norm}_1d`] = klines;
@@ -130,8 +134,12 @@ class KlineDailyStore {
 
         // 1. 检查类内部缓存
         const entry = this.memoryMap.get(norm) || this.memoryMap.get(symbol);
-        if (entry && (now - entry.timestamp < CACHE_VALIDITY_1D) && Array.isArray(entry.klines) && entry.klines.length >= 2) {
-            if (entry.klines.length >= minRequiredLength || entry.isListingEnd) {
+        if (entry && (now - entry.timestamp < CACHE_VALIDITY_1D) && Array.isArray(entry.klines)) {
+            // 如果请求的是大回溯（>=200根），必须保证K线长度充足或真实上市不足
+            if (entry.klines.length >= minRequiredLength || (entry.isListingEnd && entry.klines.length >= 30)) {
+                return entry.klines;
+            }
+            if (minRequiredLength < 30 && entry.klines.length >= minRequiredLength) {
                 return entry.klines;
             }
         }
@@ -152,8 +160,11 @@ class KlineDailyStore {
                 ];
 
                 for (const cand of candidates) {
-                    if (Array.isArray(cand) && cand.length >= 2) {
-                        if (cand.length >= minRequiredLength || (entry && entry.isListingEnd)) {
+                    if (Array.isArray(cand)) {
+                        if (cand.length >= minRequiredLength || (entry && entry.isListingEnd && cand.length >= 30)) {
+                            return cand;
+                        }
+                        if (minRequiredLength < 30 && cand.length >= minRequiredLength) {
                             return cand;
                         }
                     }
@@ -167,12 +178,12 @@ class KlineDailyStore {
     /**
      * 保存日K线到内存与持久化存储
      */
-    public async saveKlines(symbol: string, klines: any[]): Promise<void> {
+    public async saveKlines(symbol: string, klines: any[], requestedLimit: number = 300): Promise<void> {
         if (!Array.isArray(klines) || klines.length < 2) return;
         const norm = this.normalizeSym(symbol);
         const timestamp = Date.now();
-        // 若上市时间不足300天但币安已经返回其全部历史
-        const isListingEnd = klines.length < 300;
+        // 🔒 只有在主动请求>=200天历史时，币安返回少于requestedLimit的币种才算真实上市不足的次新币
+        const isListingEnd = requestedLimit >= 200 && klines.length < requestedLimit;
 
         const entry: CachedKlineEntry = {
             symbol: norm,
@@ -186,7 +197,8 @@ class KlineDailyStore {
         this.memoryMap.set(symbol, entry);
         this.syncToWindowCache(symbol, klines, timestamp);
 
-        if (this.db) {
+        // 只有达到30根及以上完整K线才持久化存储到IndexedDB，杜绝10根片段污染数据库
+        if (this.db && klines.length >= 30) {
             try {
                 const tx = this.db.transaction(STORE_NAME, 'readwrite');
                 const store = tx.objectStore(STORE_NAME);

@@ -179,6 +179,16 @@ const List1_Selection: React.FC<Props> = ({
         }
     });
 
+    // 🌊 趋势爆发综合过滤底池数据监听 (用于当开启趋势爆发综合过滤时，市场初筛列表展示爆发合格币)
+    const [breakoutPool, setBreakoutPool] = useState<string[]>(() => {
+        try {
+            const raw = localStorage.getItem('SCANNER_BREAKOUT_FILTERED_POOL');
+            return raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            return [];
+        }
+    });
+
     // 🌊 回溯周期大行情候选池数据本地监听 (确保实时极速毫秒级响应，与扫描线程绝对零延迟同步)
     const [localMajorTrendCandidates, setLocalMajorTrendCandidates] = useState<Set<string>>(() => {
         try {
@@ -222,6 +232,16 @@ const List1_Selection: React.FC<Props> = ({
                 setSidewaysPool(raw ? JSON.parse(raw) : []);
             } catch (_) {}
         };
+        const handleBreakoutUpdate = (e?: any) => {
+            try {
+                if (e?.detail && Array.isArray(e.detail)) {
+                    setBreakoutPool(e.detail);
+                    return;
+                }
+                const raw = localStorage.getItem('SCANNER_BREAKOUT_FILTERED_POOL');
+                setBreakoutPool(raw ? JSON.parse(raw) : []);
+            } catch (_) {}
+        };
         const handleMajorTrendUpdate = (e?: any) => {
             try {
                 if (e?.detail && Array.isArray(e.detail)) {
@@ -244,23 +264,28 @@ const List1_Selection: React.FC<Props> = ({
 
         window.addEventListener('storage', handleStartTrendUpdate);
         window.addEventListener('storage', handleSidewaysUpdate);
+        window.addEventListener('storage', handleBreakoutUpdate);
         window.addEventListener('storage', handleMajorTrendUpdate);
         window.addEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
         window.addEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
+        window.addEventListener('scanner_breakout_pool_updated', handleBreakoutUpdate);
         window.addEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
         window.addEventListener('scanner_major_trend_candidates_updated', handleSidewaysUpdate);
         window.addEventListener('scanner_major_trend_completed', handleMajorTrendUpdate);
         const timer = setInterval(() => {
             handleStartTrendUpdate();
             handleSidewaysUpdate();
+            handleBreakoutUpdate();
             handleMajorTrendUpdate();
         }, 1000);
         return () => {
             window.removeEventListener('storage', handleStartTrendUpdate);
             window.removeEventListener('storage', handleSidewaysUpdate);
+            window.removeEventListener('storage', handleBreakoutUpdate);
             window.removeEventListener('storage', handleMajorTrendUpdate);
             window.removeEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
             window.removeEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
+            window.removeEventListener('scanner_breakout_pool_updated', handleBreakoutUpdate);
             window.removeEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
             window.removeEventListener('scanner_major_trend_candidates_updated', handleSidewaysUpdate);
             window.removeEventListener('scanner_major_trend_completed', handleMajorTrendUpdate);
@@ -268,17 +293,19 @@ const List1_Selection: React.FC<Props> = ({
         };
     }, [selectedStrategyId]);
 
-    // 合并 Props 与 Local state 中的大行情候选集
+    // 🔒 权威大行情候选集（优先使用父级 Props 传递的最新差量结果，本地状态为初始化降级兜底）
     const effectiveMajorCandidates = useMemo(() => {
-        const merged = new Set<string>();
-        if (majorTrendCandidates && majorTrendCandidates.size > 0) {
-            majorTrendCandidates.forEach(c => merged.add(c));
+        if (majorTrendCandidates !== undefined && majorTrendCandidates !== null) {
+            return majorTrendCandidates;
         }
-        if (localMajorTrendCandidates && localMajorTrendCandidates.size > 0) {
-            localMajorTrendCandidates.forEach(c => merged.add(c));
-        }
-        return merged;
+        return localMajorTrendCandidates;
     }, [majorTrendCandidates, localMajorTrendCandidates]);
+
+    useEffect(() => {
+        if (majorTrendCandidates !== undefined && majorTrendCandidates !== null) {
+            setLocalMajorTrendCandidates(majorTrendCandidates);
+        }
+    }, [majorTrendCandidates]);
 
     const lookbackDays = scanConfig.majorTrend?.lookbackDays || 300;
     const enableLong = scanConfig.majorTrend?.enableLong !== false;
@@ -444,8 +471,18 @@ const List1_Selection: React.FC<Props> = ({
             });
         }
 
+        // 补齐趋势爆发底池中的币种 (仅在非固定选币模式下生效)
+        if (!scanConfig.useCustomOnly && breakoutPool && breakoutPool.length > 0) {
+            breakoutPool.forEach(sym => {
+                const norm = normalizeSym(sym);
+                if (norm && !poolMap.has(norm)) {
+                    poolMap.set(norm, enrichItem(sym));
+                }
+            });
+        }
+
         return Array.from(poolMap.values());
-    }, [startTrendPool, sidewaysPool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
+    }, [startTrendPool, sidewaysPool, breakoutPool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
 
     const list1SymbolsStr = baseList.map(item => item.symbol).join(',');
 
@@ -881,9 +918,35 @@ const List1_Selection: React.FC<Props> = ({
             const enableShort = cfg.enableShort !== false;
             const enableSideways = cfg.enableSideways !== false; // 横盘蓄势开关
             const enableLookbackFilter = cfg.enableLookbackFilter !== false; // 回溯周期开关
+            const isBreakoutActive = Boolean(
+                scanConfig.breakoutFilter?.enabled || 
+                scanConfig.majorTrend?.breakoutFilter?.enabled
+            );
 
-            // 🎯 情况 C: “横盘蓄势过滤”和“回溯周期过滤”都未开启，直接平滑读取基础交易额底池！
-            if (!enableSideways && !enableLookbackFilter) {
+            // 🎯 规则零：若开启了【趋势爆发综合过滤】（最后一项过滤规则为“趋势爆发综合过滤”）
+            // 市场初筛列表的币必须 100% 来自趋势爆发过滤运行完毕后产出的候选结果集！
+            if (isBreakoutActive) {
+                if (breakoutPool && breakoutPool.length > 0) {
+                    const breakoutNormSet = new Set(breakoutPool.map(s => normalizeSym(s)));
+                    const matchedList = sortedList1.filter(item => {
+                        const norm = normalizeSym(item.symbol);
+                        return breakoutNormSet.has(norm);
+                    });
+                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+                    const additional: any[] = [];
+                    breakoutPool.forEach(sym => {
+                        const norm = normalizeSym(sym);
+                        if (!matchedNorms.has(norm)) {
+                            const found = baseList.find(b => normalizeSym(b.symbol) === norm);
+                            if (found) additional.push(found);
+                        }
+                    });
+                    finalResult = [...matchedList, ...additional];
+                } else {
+                    finalResult = [];
+                }
+            } else if (!enableSideways && !enableLookbackFilter) {
+                // 🎯 情况 C: “横盘蓄势过滤”和“回溯周期过滤”都未开启，直接平滑读取基础交易额底池！
                 finalResult = volumeFilteredList;
             } else if (enableLookbackFilter) {
                 // 🎯 规则一：若开启了【回溯周期过滤】（最后一项过滤规则为“回溯周期过滤”）
@@ -963,7 +1026,7 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return finalResult;
-    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
+    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
 
     // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
     const pushConfig = scanConfig.list2PushConfig;

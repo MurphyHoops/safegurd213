@@ -8,6 +8,7 @@ import { VolumePoolBox } from './VolumePoolBox';
 import { StartTrendSection } from './StartTrendSection';
 import { StartTrendPoolBox } from './StartTrendPoolBox';
 import { SidewaysPoolBox } from './SidewaysPoolBox';
+import { BreakoutPoolBox } from './BreakoutPoolBox';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -403,6 +404,12 @@ export const FilterSection: React.FC<Props> = ({
                         onRunDiscovery={runMajorTrendDiscovery}
                         onCancelDiscovery={cancelMajorScan}
                         isPrimaryMode={true}
+                    />
+
+                    {/* 🚀 趋势爆发综合过滤大卡片 (Breakout Filter Pool Box) - 位于防恐慌熔断上方 */}
+                    <BreakoutPoolBox 
+                        scanConfig={scanConfig} 
+                        setScanConfig={setScanConfig} 
                     />
                 </div>
             )}

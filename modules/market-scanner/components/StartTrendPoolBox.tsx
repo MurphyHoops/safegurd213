@@ -162,16 +162,18 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 if (klinesData && Array.isArray(klinesData) && klinesData.length > 0) {
                     klinesCacheRef.current.set(symbol, { klines: klinesData, timestamp: Date.now() });
                     klinesCacheRef.current.set(safeSym, { klines: klinesData, timestamp: Date.now() });
-                    globalCache[`${safeSym}_1d`] = klinesData;
-                    globalCache[`${symbol}_1d`] = klinesData;
                     if (!globalCache[safeSym]) globalCache[safeSym] = {};
                     if (!globalCache[symbol]) globalCache[symbol] = {};
-                    globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
-                    globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
-                    // 🔒 只有在K线数据确实达到300根时才写入300缓存，杜绝10根小数组污染300天大回溯
-                    if (klinesData.length >= 300) {
+                    globalCache[safeSym]['10d'] = { klines: klinesData, timestamp: Date.now() };
+                    globalCache[symbol]['10d'] = { klines: klinesData, timestamp: Date.now() };
+                    // 🔒 只有在K线数据确实达到200根以上时才写入全量日K缓存，杜绝10根小数组污染300天大回溯
+                    if (klinesData.length >= 200) {
+                        globalCache[`${safeSym}_1d`] = klinesData;
+                        globalCache[`${symbol}_1d`] = klinesData;
                         globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
                         globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                        globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
+                        globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
                     }
                     return klinesData;
                 }
@@ -185,15 +187,17 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             if (klinesData && Array.isArray(klinesData) && klinesData.length > 0) {
                 klinesCacheRef.current.set(symbol, { klines: klinesData, timestamp: Date.now() });
                 klinesCacheRef.current.set(safeSym, { klines: klinesData, timestamp: Date.now() });
-                globalCache[`${safeSym}_1d`] = klinesData;
-                globalCache[`${symbol}_1d`] = klinesData;
                 if (!globalCache[safeSym]) globalCache[safeSym] = {};
                 if (!globalCache[symbol]) globalCache[symbol] = {};
-                globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
-                globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
-                if (klinesData.length >= 300) {
+                globalCache[safeSym]['10d'] = { klines: klinesData, timestamp: Date.now() };
+                globalCache[symbol]['10d'] = { klines: klinesData, timestamp: Date.now() };
+                if (klinesData.length >= 200) {
+                    globalCache[`${safeSym}_1d`] = klinesData;
+                    globalCache[`${symbol}_1d`] = klinesData;
                     globalCache[safeSym][300] = { klines: klinesData, timestamp: Date.now() };
                     globalCache[symbol][300] = { klines: klinesData, timestamp: Date.now() };
+                    globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
+                    globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
                 }
                 return klinesData;
             }

@@ -9,6 +9,9 @@ import { useOptionalBacktest } from '../modules/backtester/BacktestContext';
 import { formatPrice, normalizeSymbol, formatToBinanceSymbol } from '../services/symbolUtils';
 import { KLineSynthesizer } from '../services/klineSynthesizer';
 import { binanceKlineWs, WsKlineUpdate } from '../services/binanceKlineWs';
+import { klineDailyStore } from '../services/klineDailyStore';
+import { BinanceTradingViewChart } from './BinanceTradingViewChart';
+import { LightweightKlineChart } from './LightweightKlineChart';
 
 interface Signal {
     time: number;
@@ -239,6 +242,14 @@ async function fetchFirstValid(channels: Array<Promise<{ data: any[][], source: 
 }
 
 async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
+    // 0. 日K线极速常驻缓存优先（0毫秒直接返回，彻底消除网络与并发压力）
+    if (timeframe === '1d') {
+        const cached = klineDailyStore.getCachedKlinesSync(safeSymbol, Math.min(limit, 200));
+        if (cached && Array.isArray(cached) && cached.length >= Math.min(limit, 50)) {
+            return { data: cached, source: 'DailyStore-MemoryCache' };
+        }
+    }
+
     // 15s and 30s synthesized seconds klines
     if ((timeframe === '15s' || timeframe === '30s') && !/[\u4e00-\u9fa5]/.test(safeSymbol)) {
         const targetMin = timeframe === '15s' ? 0.25 : 0.5;
@@ -270,10 +281,16 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
         }
     }
 
-    const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
-    const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`;
+    const cleanBase = safeSymbol.toUpperCase().replace(/^1000/, '').replace(/USDT$/, '');
+    const scaleMemeSymbols = ['PEPE', 'SHIB', 'BONK', 'FLOKI', 'LUNC', 'SATS', 'RATS', 'XEC', 'BABYDOGE', 'CATI', 'CAT'];
+    const isMeme = scaleMemeSymbols.includes(cleanBase);
+    const futuresSymbol = isMeme && !safeSymbol.startsWith('1000') ? `1000${cleanBase}USDT` : safeSymbol;
+    const spotSymbol = safeSymbol.startsWith('1000') ? `${cleanBase}USDT` : safeSymbol;
 
-    const fetchWithTimeout = async (url: string, sourceName: string, timeout = 3500): Promise<{ data: any[][], source: string }> => {
+    const futuresUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${futuresSymbol}&interval=${timeframe}&limit=${limit}`;
+    const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${spotSymbol}&interval=${timeframe}&limit=${limit}`;
+
+    const fetchWithTimeout = async (url: string, sourceName: string, timeout = 5000): Promise<{ data: any[][], source: string }> => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
         try {
@@ -290,7 +307,7 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
     };
 
     const fetchViaFallbackService = async (url: string, sourceName: string): Promise<{ data: any[][], source: string }> => {
-        const res = await fetchWithFallback(url, { priority: 'HIGH', timeout: 4000 });
+        const res = await fetchWithFallback(url, { priority: 'HIGH', timeout: 6000 });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -299,23 +316,27 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
         throw new Error('Empty data');
     };
 
-    // Parallel multi-channel racing (Prioritize zero-delay WebSocket APIs)
+    // Parallel multi-channel racing (Prioritize ultra-fast local backend proxy & direct REST endpoints)
     const raceChannels: Array<Promise<{ data: any[][], source: string }>> = [
-        // 1. Direct Futures WebSocket API (Fastest direct binary push)
-        fetchKlinesViaWebSocket(safeSymbol, timeframe, limit, true),
-        // 2. Direct Spot WebSocket API
-        fetchKlinesViaWebSocket(safeSymbol, timeframe, limit, false),
-        // 3. High-speed local backend proxy (Futures)
-        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, 'Local-Proxy-Futures', 3000),
-        // 4. High-speed local backend proxy (Spot)
-        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(spotUrl)}&priority=high`, 'Local-Proxy-Spot', 3000),
-        // 5. Fallback engine with multi-proxy rotation
+        // 1. 本地高可用代理通道 (Futures) - 毫秒级直达后端
+        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(futuresUrl)}&priority=high`, 'Local-Proxy-Futures', 5000),
+        // 2. 本地高可用代理通道 (Spot)
+        fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(spotUrl)}&priority=high`, 'Local-Proxy-Spot', 5000),
+        // 3. Fallback 智能轮询服务 (Futures)
         fetchViaFallbackService(futuresUrl, 'FallbackService-Futures'),
-        // 6. Direct Spot endpoint (Fastest if client has non-blocked network)
-        fetchWithTimeout(spotUrl, 'Direct-Spot', 2000),
-        // 7. Direct Futures endpoint
-        fetchWithTimeout(futuresUrl, 'Direct-Futures', 2000)
+        // 4. Fallback 智能轮询服务 (Spot)
+        fetchViaFallbackService(spotUrl, 'FallbackService-Spot'),
+        // 5. Direct Futures WebSocket API
+        fetchKlinesViaWebSocket(futuresSymbol, timeframe, limit, true, 3000),
+        // 6. Direct Spot WebSocket API
+        fetchKlinesViaWebSocket(spotSymbol, timeframe, limit, false, 3000)
     ];
+
+    if (futuresSymbol !== safeSymbol) {
+        raceChannels.push(
+            fetchWithTimeout(`/api/proxy?url=${encodeURIComponent(`https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${timeframe}&limit=${limit}`)}&priority=high`, 'Local-Proxy-RawFutures', 5000)
+        );
+    }
 
     try {
         const winner = await fetchFirstValid(raceChannels);
@@ -326,7 +347,7 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
 
     // Final fallback sequence
     try {
-        const res = await fetchWithFallback(futuresUrl, { priority: 'HIGH', timeout: 6000 });
+        const res = await fetchWithFallback(futuresUrl, { priority: 'HIGH', timeout: 8000 });
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
             return { data, source: 'Final-Fallback-Futures' };
@@ -334,7 +355,7 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
     } catch (e) {}
 
     try {
-        const res = await fetchWithFallback(spotUrl, { priority: 'HIGH', timeout: 6000 });
+        const res = await fetchWithFallback(spotUrl, { priority: 'HIGH', timeout: 8000 });
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
             return { data, source: 'Final-Fallback-Spot' };
@@ -348,6 +369,18 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   const backtest = useOptionalBacktest();
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
   const serializedConfig = JSON.stringify(list2Config);
+
+  // ⚡ 币安主推 TradingView / Lightweight Canvas / 战术标绘 多引擎模式
+  type ChartEngine = 'TRADINGVIEW' | 'LIGHTWEIGHT' | 'TACTICAL';
+  const [chartEngine, setChartEngine] = useState<ChartEngine>(() => {
+    try {
+      const saved = localStorage.getItem('SAVIOR_CHART_ENGINE_PREF');
+      if (saved === 'TRADINGVIEW' || saved === 'LIGHTWEIGHT' || saved === 'TACTICAL') {
+        return saved;
+      }
+    } catch (e) {}
+    return 'TRADINGVIEW';
+  });
 
   // 🎯 View Mode Determination:
   // - 列表 1, 2, 3, 4 进入：信号分析模式（不标记开仓、补仓、砍仓、平仓、清仓等交易流水信息，只标记策略信号/突破/防守/等待开仓决策框）
@@ -897,10 +930,22 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           }
 
           const limit = lookbackDays + 25;
-          const safeSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
+          const cleanSym = formatToBinanceSymbol(symbol) || (symbol.endsWith('USDT') ? symbol : `${symbol}USDT`);
+          const safeSymbol = cleanSym.replace(/[\(（][^\)）]*[\)）]/g, '').trim();
           let dailyKlines: KlineData[] = [];
 
-          if (backtest && backtest.isPlaying) {
+          // 🔒 优先从常驻日K缓存获取，0毫秒返回，杜绝20+持仓时并发打满网络连接
+          const cachedDaily = klineDailyStore.getCachedKlinesSync(safeSymbol, Math.min(lookbackDays, 200));
+          if (cachedDaily && Array.isArray(cachedDaily) && cachedDaily.length >= Math.min(lookbackDays, 50)) {
+              dailyKlines = cachedDaily.map((k: any) => ({
+                  time: k[0],
+                  open: parseFloat(k[1]) || 0,
+                  high: parseFloat(k[2]) || 0,
+                  low: parseFloat(k[3]) || 0,
+                  close: parseFloat(k[4]) || 0,
+                  volume: parseFloat(k[5]) || 0
+              }));
+          } else if (backtest && backtest.isPlaying) {
               try {
                   const virtualDaily = await backtest.fetchVirtualKlines(symbol, '1d', limit);
                   dailyKlines = virtualDaily.map(k => ({
@@ -1219,8 +1264,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         }
 
         try {
-            // Fix missing USDT issue
-            const safeSymbol = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
+            // Fix missing USDT issue and strip Chinese parenthesis
+            const cleanSym = formatToBinanceSymbol(symbol) || (symbol.endsWith('USDT') ? symbol : `${symbol}USDT`);
+            const safeSymbol = cleanSym.replace(/[\(（][^\)）]*[\)）]/g, '').trim();
             
             console.log(`[KlineChart] Starting parallel race fetch for ${safeSymbol} (${timeframe})`);
             const { data: json, source } = await raceFetchKlines(safeSymbol, timeframe, limit);
@@ -1287,7 +1333,10 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     if (e.isInvalidSymbol || e.message?.includes("400")) {
                         setError(`交易对 ${symbol} 在币安暂未上市或不支持，暂无K线数据。`);
                     } else {
-                        setError("无法连接行情源，请检查网络或开启直连模式");
+                        // 自动无缝切换到币安官方主推 TradingView 专业图表，彻底消除阻断性报错弹窗
+                        setChartEngine('TRADINGVIEW');
+                        localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TRADINGVIEW');
+                        setError(null);
                     }
                     setFullData([]);
                 }
@@ -2808,9 +2857,50 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       <div className={`bg-[#161A25] border border-slate-700/50 rounded-lg shadow-2xl flex flex-col ${disablePortal ? 'w-full h-full' : 'w-[95vw] h-[85vh]'} overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.8)]`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#1E2329] shrink-0">
-           <div className="flex items-center gap-4">
+           <div className="flex items-center gap-3">
                <div className="flex items-center gap-2">
                    <h2 className="text-lg font-bold text-slate-100">{symbol}</h2>
+
+                    {/* ⚡ 币安主推技术与多引擎极速切换 */}
+                    <div className="flex items-center bg-slate-900/90 p-0.5 rounded-lg border border-slate-700/80 shadow-inner">
+                        <button
+                            onClick={() => { setChartEngine('TRADINGVIEW'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TRADINGVIEW'); }}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
+                                chartEngine === 'TRADINGVIEW'
+                                    ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md shadow-cyan-950/60 ring-1 ring-cyan-400'
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="币安官方主推 TradingView 专业图表：毫秒级直连，全套专业指标与画线工具，彻底脱离主线程渲染队列，0卡顿"
+                        >
+                            <BarChart2 size={11} className={chartEngine === 'TRADINGVIEW' ? 'text-cyan-200' : 'text-slate-400'} />
+                            <span>币安 TradingView (主推)</span>
+                        </button>
+                        <button
+                            onClick={() => { setChartEngine('LIGHTWEIGHT'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'LIGHTWEIGHT'); }}
+                            className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${
+                                chartEngine === 'LIGHTWEIGHT'
+                                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-950/60 ring-1 ring-emerald-400'
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="TradingView 官方 Lightweight Charts：HTML5 Canvas 硬件加速 60FPS 极速渲染"
+                        >
+                            <Zap size={11} className={chartEngine === 'LIGHTWEIGHT' ? 'text-emerald-200' : 'text-slate-400'} />
+                            <span>极速 Canvas (60帧)</span>
+                        </button>
+                        <button
+                            onClick={() => { setChartEngine('TACTICAL'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TACTICAL'); }}
+                            className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${
+                                chartEngine === 'TACTICAL'
+                                    ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-950/60 ring-1 ring-indigo-400'
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="系统战术标绘图：显示发散/穿越首根形态、进攻突破/中轴防守决策线与历史实盘交易审计"
+                        >
+                            <Activity size={11} className={chartEngine === 'TACTICAL' ? 'text-indigo-200' : 'text-slate-400'} />
+                            <span>战术标绘/审计</span>
+                        </button>
+                    </div>
+
                     {!isTradeViewMode && signalPattern && (
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shadow-sm ${signalPattern === "发散" ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40" : signalPattern === "穿越" ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"}`}>
                             🎯 信号源: {signalPattern}
@@ -2912,6 +3002,30 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         </div>
 
         {/* Chart Area */}
+        {chartEngine === 'TRADINGVIEW' ? (
+            <div className="flex-1 w-full h-full relative overflow-hidden bg-[#161A25]">
+                <BinanceTradingViewChart
+                    symbol={symbol}
+                    timeframe={timeframe}
+                    isFutures={true}
+                    entryPrice={entryPrice}
+                    entryTime={entryTime}
+                    side={propSide || propDirection}
+                />
+            </div>
+        ) : chartEngine === 'LIGHTWEIGHT' ? (
+            <div className="flex-1 w-full h-full relative overflow-hidden bg-[#161A25]">
+                <LightweightKlineChart
+                    symbol={symbol}
+                    timeframe={timeframe}
+                    klines={fullData}
+                    entryPrice={entryPrice}
+                    side={propSide || propDirection}
+                    extraLines={extraLines}
+                    onRefresh={() => setRetryCount(c => c + 1)}
+                />
+            </div>
+        ) : (
         <div 
             ref={containerRef} 
             className={`flex-1 relative w-full h-full select-none touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'} ${loading ? 'opacity-70 pointer-events-none' : ''}`} 
@@ -2991,39 +3105,34 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                 </div>
             )}
             
-            {error && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[#161A25]/95 p-6 overflow-y-auto">
-                    <AlertTriangle size={36} className="text-amber-500 mb-3 animate-bounce" />
-                    <span className="text-sm font-bold text-slate-100 mb-2">{error}</span>
+            {error && fullData.length === 0 && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[#161A25]/95 p-6">
+                    <AlertTriangle size={32} className="text-amber-400 mb-2 animate-bounce" />
+                    <span className="text-sm font-bold text-slate-200 mb-1">{error}</span>
+                    <span className="text-[11px] text-slate-400 mb-4">网络请求通道切换中，可立即切换至专业图表或重试</span>
                     
-                    <div className="max-w-md bg-slate-800/60 p-4 rounded-lg border border-slate-700/50 text-[11px] text-slate-300 space-y-2.5 mb-4 text-left leading-relaxed">
-                        <p className="font-bold text-amber-400 border-b border-slate-700 pb-1.5 flex items-center gap-1.5">
-                            🌐 为什么价格正常，而K线无法加载？
-                        </p>
-                        <p>
-                            • <b className="text-white">实时价格：</b>使用浏览器直接订阅 Binance WebSockets 长连接，不设跨域约束且直连，因此变动完美流畅。<br />
-                            • <b className="text-white">K线图：</b>使用 HTTP REST 接口拉取历史数据。因 Binance API 限制浏览器直接跨域（CORS），必须经由服务器中转。系统托管节点由于地理 IP（US / Japan 等云提供商网段）常被币安严厉封锁，导致中转失效。
-                        </p>
-                        <p className="font-bold text-yellow-400 mt-2">💡 救世方案 A（100% 成功且速度最快 - 推荐）：</p>
-                        <ol className="list-decimal list-inside space-y-1 pl-1 text-slate-200">
-                            <li>在系统模块设置中，开启 <span className="text-yellow-400 font-mono font-bold">直连模式 (Direct Mode)</span>。</li>
-                            <li>确保您的 VPN 节点畅通（推荐香港、新加坡等非美非日限制区）。</li>
-                            <li>
-                                浏览器安装任一免费跨域解除插件，例如：<br />
-                                <span className="text-indigo-400 font-semibold italic">Allow CORS: Access-Control-Allow-Origin</span> 或 <span className="text-indigo-400 font-semibold italic">CORS Unblock</span>。
-                            </li>
-                        </ol>
-                        <p className="text-slate-400 text-[10px] italic">
-                            配置好跨域插件后，K线请求将完全绕过云端，直接通过您的浏览器代理高速获取，彻底告别卡顿或加载失败！
-                        </p>
-                    </div>
-
-                    <div className="flex gap-3">
+                    <div className="flex flex-wrap items-center justify-center gap-3">
                         <button 
-                            onClick={() => { setError(null); setLoading(true); setRetryCount(c => c + 1); }} 
-                            className="px-5 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded text-[11px] font-bold transition-all shadow shadow-yellow-600/25"
+                            onClick={() => {
+                                setError(null);
+                                setChartEngine('TRADINGVIEW');
+                                localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TRADINGVIEW');
+                            }} 
+                            className="px-4 py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded text-xs font-bold transition-all shadow-md shadow-cyan-900/40 flex items-center gap-1.5"
                         >
-                            重试连接 (Retry)
+                            <BarChart2 size={13} />
+                            <span>切换至【币安 TradingView 专业图表】</span>
+                        </button>
+                        <button 
+                            onClick={() => { 
+                                setError(null); 
+                                setLoading(true); 
+                                setRetryCount(c => c + 1); 
+                            }} 
+                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-xs font-bold transition-all border border-slate-700 flex items-center gap-1.5"
+                        >
+                            <RefreshCw size={12} />
+                            <span>重试加载</span>
                         </button>
                     </div>
                 </div>
@@ -3064,6 +3173,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
             
             {!loading && !error && renderChart()}
         </div>
+        )}
       </div>
     </div>
   );
@@ -3072,4 +3182,4 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   return createPortal(modalContent, document.body);
 };
 
-export default KlineChartModal;
+export default React.memo(KlineChartModal);

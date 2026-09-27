@@ -51,26 +51,10 @@ export const GrandCrossingModule: React.FC<Props> = ({
     networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady, strategyId, isBackground = false
 }) => {
     
-    // --- FILTER CANDIDATES TO COMPLY WITH USER WATCHLIST INTENT ---
-    // If useCustomOnly (固定选币) is active, List 2 MUST strictly scan ONLY the user's custom symbols (监控池)
-    // even if the user switches List 1 to "市场搜索" (SEARCH) tab.
-    const effectiveCandidates = React.useMemo(() => {
-        if (scanConfig?.useCustomOnly) {
-            const customSet = new Set(
-                (scanConfig.customSymbols || '')
-                    .split(/[,，\s]+/)
-                    .map(s => normalizeSymbol(s.trim()))
-                    .filter(Boolean)
-            );
-            return (candidates || []).filter(c => customSet.has(normalizeSymbol(c.symbol)));
-        }
-        return candidates || [];
-    }, [candidates, scanConfig?.useCustomOnly, scanConfig?.customSymbols]);
-
-    // --- LOGIC HOOK ---
+    // 🔒 [DATA INTEGRITY]: 列表2直接无缝承接列表1（市场初筛）推送的全部候选币种进行全周期多维穿透扫描
     const { 
         config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, scanningSymbols, lastScanTime, diagnostics, removeItem, clearItems, removeSignal
-    } = useGrandCrossing(effectiveCandidates, initialConfig || DEFAULT_CONFIG, directMode, onLog, strategyId);
+    } = useGrandCrossing(candidates || [], initialConfig || DEFAULT_CONFIG, directMode, onLog, strategyId);
 
     const onRemoveSignalReadyRef = React.useRef(onRemoveSignalReady);
     onRemoveSignalReadyRef.current = onRemoveSignalReady;
@@ -85,11 +69,8 @@ export const GrandCrossingModule: React.FC<Props> = ({
         }
     }, [removeSignal]);
 
-    // 🔒 [STRICT DATA SOURCE ENFORCEMENT & 寿命根数门禁]: 列表2的数据源与渲染绝对只能来源于列表1当前候选币种且未超过设定寿命根数
-    const allowedSymbolSet = React.useMemo(() => {
-        return new Set((effectiveCandidates || []).map(c => normalizeSymbol(c.symbol)));
-    }, [effectiveCandidates]);
-
+    // 🔒 [USER MANDATORY RULE - 列表2独立生命周期与信号存续]:
+    // 只要进入列表2的币种与信号，其存续期完全由“信号存续/寿命根数”(newModeRetention)独立控制。
     const sanitizedList2 = React.useMemo(() => {
         const retention = config?.newModeRetention ?? 9;
         const now = Date.now();
@@ -104,7 +85,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
         };
 
         return (list2 || [])
-            .filter(item => item && item.symbol && allowedSymbolSet.has(normalizeSymbol(item.symbol)))
+            .filter(item => item && item.symbol)
             .map(item => {
                 if (!item.groupedResults || item.groupedResults.length === 0) return null;
                 const unexpiredGrouped = item.groupedResults.filter(r => {
@@ -121,7 +102,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
                 };
             })
             .filter(Boolean) as ScannerItem[];
-    }, [list2, allowedSymbolSet, config?.newModeRetention]);
+    }, [list2, config?.newModeRetention]);
 
     // --- SYNC OUTPUT (All non-pending signals pass to List 3) ---
     const lastListStrRef = React.useRef<string>('');

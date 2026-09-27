@@ -2225,15 +2225,21 @@ async function startServer() {
       let symbolParam = "";
       try {
           const parsedUrl = new URL(targetUrl);
-          const rawSym = parsedUrl.searchParams.get("symbol") || "";
+          let rawSym = parsedUrl.searchParams.get("symbol") || "";
           if (rawSym) {
-              // Strip slashes, spaces, hyphens, colons from symbol parameter
-              const cleanedSym = rawSym.toUpperCase().trim().replace(/[\/\s_-]/g, '');
-              if (cleanedSym !== rawSym) {
-                  parsedUrl.searchParams.set("symbol", cleanedSym);
+              let cleaned = rawSym.trim();
+              if (cleaned.includes('(') || cleaned.includes('（')) {
+                  cleaned = cleaned.replace(/[\(（][^\)）]*[\)）]/g, '');
+              }
+              cleaned = cleaned.toUpperCase().replace(/[\/\s_-]/g, '').replace(/_PREP$/, '');
+              if (cleaned && !cleaned.endsWith('USDT') && !/[\u4e00-\u9fa5]/.test(cleaned)) {
+                  cleaned += 'USDT';
+              }
+              if (cleaned !== rawSym) {
+                  parsedUrl.searchParams.set("symbol", cleaned);
                   targetUrl = parsedUrl.toString();
               }
-              symbolParam = cleanedSym;
+              symbolParam = cleaned;
           }
       } catch (e) {}
 
@@ -2335,8 +2341,14 @@ async function startServer() {
           const rawParams = new URLSearchParams(queryParams);
           const rawQuery = rawParams.toString();
 
+          const cleanBase = rawSymbol.toUpperCase().replace(/^1000/, '').replace(/USDT$/, '');
+          const scaleMemeSymbols = ['PEPE', 'SHIB', 'BONK', 'FLOKI', 'LUNC', 'SATS', 'RATS', 'XEC', 'BABYDOGE', 'CATI', 'CAT'];
+          const isMeme = scaleMemeSymbols.includes(cleanBase);
+
           if (is1000Symbol) {
               queryParams.set("symbol", spotSymbol);
+          } else if (isMeme) {
+              queryParams.set("symbol", `${cleanBase}USDT`);
           }
           const spotQuery = queryParams.toString();
 
@@ -2345,14 +2357,22 @@ async function startServer() {
               const fapiPath = parsedTarget.pathname;
               const fapiQueryStr = rawQuery ? `?${rawQuery}` : "";
 
-              // 1. 优先尝试官方 fapi 永续节点 (原生合约币种与全部 1000 开头合约)
+              // 1. 尝试官方 fapi 永续节点 (原生合约币种与全部 1000 开头合约)
               fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
 
-              // 2. 备选尝试官方 Vision 现货节点及 Binance 官方现货集群
+              // 2. 如果是 Meme 币且未加 1000，补充尝试 1000 前缀永续合约 (例如 1000PEPEUSDT)
+              if (isMeme && !rawSymbol.startsWith('1000')) {
+                  const meme1000Params = new URLSearchParams(queryParams);
+                  meme1000Params.set("symbol", `1000${cleanBase}USDT`);
+                  fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}?${meme1000Params.toString()}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+
+              // 3. 备选尝试官方 Vision 现货节点及 Binance 官方现货集群 (若为 1000 合约或 Meme 合约自动缩放 1000 倍)
+              const needScale1000 = is1000Symbol || isMeme;
               if (isKlineReq) {
-                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
+                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: needScale1000 });
+                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: needScale1000 });
+                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: needScale1000 });
               }
           } else {
               if (is1000Symbol) {
@@ -2509,18 +2529,20 @@ async function startServer() {
                   });
                   return res.json(data);
               } catch (candidateErr) {
-                  if (isInvalidSymbolError) {
-                      masterController.abort();
-                      const isChineseSymbol = symbolParam ? /[\u4e00-\u9fa5]/.test(symbolParam) : false;
-                      if (symbolParam && !isChineseSymbol) {
-                          const marketPrefix = isFuturesReq ? "fapi:" : "spot:";
-                          invalidSymbolsCache.set(marketPrefix + symbolParam, Date.now() + 10 * 60 * 1000);
-                      }
-                      return res.status(400).json({ code: -1121, msg: `Invalid symbol '${symbolParam || 'unknown'}'.` });
-                  }
-                  // try next candidate
+                  // try next candidate before concluding symbol is invalid
               }
           }
+      }
+
+      // If all official candidates failed and at least one confirmed invalid symbol
+      if (isInvalidSymbolError && publicCandidates.length === 0) {
+          masterController.abort();
+          const isChineseSymbol = symbolParam ? /[\u4e00-\u9fa5]/.test(symbolParam) : false;
+          if (symbolParam && !isChineseSymbol) {
+              const marketPrefix = isFuturesReq ? "fapi:" : "spot:";
+              invalidSymbolsCache.set(marketPrefix + symbolParam, Date.now() + 5 * 60 * 1000);
+          }
+          return res.status(400).json({ code: -1121, msg: `Invalid symbol '${symbolParam || 'unknown'}'.` });
       }
 
       // 2. Fallback to public proxies sequentially if official candidates failed
