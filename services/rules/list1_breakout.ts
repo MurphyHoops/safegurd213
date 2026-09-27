@@ -2,6 +2,7 @@
 import { BreakoutFilterConfig } from '../../components/Scanner/scannerTypes';
 import { calculateBollingerBands, calculateATR, calculateADX, calculateEMA, checkEmaDivergence } from '../indicators';
 import { fetchWithFallback } from '../apiService';
+import { binanceWsApi } from '../binanceWsApi';
 
 export interface BreakoutAuditItem {
     symbol: string;
@@ -58,7 +59,7 @@ export const DEFAULT_BREAKOUT_CONFIG: BreakoutFilterConfig = {
 };
 
 /**
- * 快速获取币安指定周期的 K 线数据
+ * 快速获取币安指定周期的 K 线数据 (30s 内存保鲜缓存 + HIGH 优先级极速直通)
  */
 export async function fetchTfKlines(symbol: string, tf: string, limit: number = 60, signal?: AbortSignal): Promise<any[] | null> {
     const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
@@ -66,13 +67,13 @@ export async function fetchTfKlines(symbol: string, tf: string, limit: number = 
     const now = Date.now();
 
     const cached = BREAKOUT_KLINE_CACHE[cacheKey];
-    if (cached && (now - cached.timestamp < 10000) && cached.klines.length >= limit) {
+    if (cached && (now - cached.timestamp < 30000) && cached.klines.length >= limit) {
         return cached.klines;
     }
 
     try {
         const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=${limit}`;
-        const res = await fetchWithFallback(url, { timeout: 10000, signal }, (d) => Array.isArray(d) && d.length > 0);
+        const res = await fetchWithFallback(url, { timeout: 3500, priority: 'HIGH', signal }, (d) => Array.isArray(d) && d.length > 0);
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
             BREAKOUT_KLINE_CACHE[cacheKey] = {
@@ -122,8 +123,13 @@ export async function auditSymbolBreakout(
     };
 
     try {
-        // 1. 获取主触发周期 K 线 (默认 5m, 60 根)
-        const primaryKlines = await fetchTfKlines(symbol, primaryTf, 60, signal);
+        // 1. 并发获取主周期 (5m) 与确认周期 (15m) K 线 (Promise.all 毫秒级并行拉取，免除串行等待)
+        const needConfirm = Boolean(config.enableMultiTfResonance);
+        const [primaryKlines, confirmKlines] = await Promise.all([
+            fetchTfKlines(symbol, primaryTf, 60, signal),
+            needConfirm ? fetchTfKlines(symbol, confirmTf, 50, signal) : Promise.resolve(null)
+        ]);
+
         if (!primaryKlines || primaryKlines.length < 30) {
             defaultFailResult.failReasons = ['主周期K线不足'];
             return defaultFailResult;
@@ -268,8 +274,7 @@ export async function auditSymbolBreakout(
             const primaryDiv = checkEmaDivergence(closes, [10, 20, 30, 40]);
             primaryTfDir = primaryDiv || 'NONE';
 
-            // 拉取高级确认周期 K 线 (如 15m)
-            const confirmKlines = await fetchTfKlines(symbol, confirmTf, 50, signal);
+            // 高级确认周期 K 线 (已在头部并发拉取，直接复用)
             if (confirmKlines && confirmKlines.length >= 30) {
                 const confirmCloses = confirmKlines.map(k => parseFloat(k[4]));
                 const confirmDiv = checkEmaDivergence(confirmCloses, [10, 20, 30, 40]);
@@ -345,7 +350,7 @@ export async function auditSymbolBreakout(
 export async function batchAuditBreakout(
     symbols: string[],
     config: BreakoutFilterConfig,
-    onProgress?: (current: number, total: number, curSym: string) => void,
+    onProgress?: (current: number, total: number, curSym: string, currentItem?: BreakoutAuditItem, currentPassed?: string[]) => void,
     signal?: AbortSignal
 ): Promise<{ passed: string[]; details: Record<string, BreakoutAuditItem> }> {
     const passed: string[] = [];
@@ -363,13 +368,13 @@ export async function batchAuditBreakout(
         for (let i = 0; i < symbols.length; i++) {
             if (signal?.aborted) break;
             const sym = symbols[i];
-            if (onProgress) {
-                onProgress(i + 1, total, sym);
-            }
             const res = await auditSymbolBreakout(sym, config, signal);
             details[sym] = res;
             if (res.isPassed) {
                 passed.push(sym);
+            }
+            if (onProgress) {
+                onProgress(i + 1, total, sym, res, [...passed]);
             }
             if (i < symbols.length - 1 && !signal?.aborted) {
                 await new Promise(r => setTimeout(r, delayMs));
@@ -389,7 +394,7 @@ export async function batchAuditBreakout(
                     passed.push(sym);
                 }
                 if (onProgress) {
-                    onProgress(Math.min(i + idx + 1, total), total, sym);
+                    onProgress(Math.min(i + idx + 1, total), total, sym, res, [...passed]);
                 }
             }));
         }

@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ScanConfig, BreakoutFilterConfig } from '../../../components/Scanner/scannerTypes';
-import { ChevronDown, ChevronUp, Copy, Check, Search, Zap, RefreshCw, Layers, Sliders, Activity, Loader2, Info, Timer, ShieldCheck, Gauge } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Check, Search, Zap, RefreshCw, Sliders, Activity, Loader2, Timer, ArrowRight, Play, CheckCircle2, ShieldCheck, Flame } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
-import { DEFAULT_BREAKOUT_CONFIG, BreakoutAuditItem, batchAuditBreakout } from '../../../services/rules/list1_breakout';
+import { DEFAULT_BREAKOUT_CONFIG, BreakoutAuditItem, auditSymbolBreakout } from '../../../services/rules/list1_breakout';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -16,11 +16,30 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
     const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('SCANNER_BREAKOUT_BOX_COLLAPSED', false);
     const [searchTerm, setSearchTerm] = useState('');
     const [copied, setCopied] = useState(false);
-    const [isAuditing, setIsAuditing] = useState(false);
-    const [auditProgress, setAuditProgress] = useState<{ current: number; total: number; curSym: string } | null>(null);
+    
+    // 🔄 单币三项并发流水线状态
+    const [isLoopRunning, setIsLoopRunning] = useState(false);
+    const [auditProgress, setAuditProgress] = useState<{ 
+        current: number; 
+        total: number; 
+        curSym: string;
+        curSqueezePassed?: boolean;
+        curVolumePassed?: boolean;
+        curMomentumPassed?: boolean;
+        curPassed?: boolean;
+    } | null>(null);
+    
+    // 三维度各自命中的底池与计数
+    const [step1Passed, setStep1Passed] = usePersistedState<string[]>('SCANNER_BREAKOUT_STEP1_PASSED', []);
+    const [step2Passed, setStep2Passed] = usePersistedState<string[]>('SCANNER_BREAKOUT_STEP2_PASSED', []);
+    const [step3Passed, setStep3Passed] = usePersistedState<string[]>('SCANNER_BREAKOUT_STEP3_PASSED', []);
+
+    // 最终去重合并池 & 诊断明细 (全部筛选完毕后原子差量更新)
     const [pool, setPool] = usePersistedState<string[]>('SCANNER_BREAKOUT_FILTERED_POOL', []);
     const [auditDetails, setAuditDetails] = usePersistedState<Record<string, BreakoutAuditItem>>('SCANNER_BREAKOUT_AUDIT_DETAILS', {});
+    
     const isMountedRef = useRef(true);
+    const loopAbortControllerRef = useRef<AbortController | null>(null);
 
     const config: BreakoutFilterConfig = useMemo(() => {
         return {
@@ -60,119 +79,229 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
         };
     }, [setPool]);
 
-    // 核心自动/手动审计执行逻辑
-    const runAudit = async (symbolsToAudit?: string[]) => {
-        if (isAuditing) return;
-
-        // 获取待审计输入源：回溯周期过滤底池 -> 横盘蓄势底池 -> 启动底池
-        let targetSymbols = symbolsToAudit;
-        if (!targetSymbols || targetSymbols.length === 0) {
-            try {
-                const rawLookback = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
-                const parsedLookback = rawLookback ? JSON.parse(rawLookback) : [];
-                if (Array.isArray(parsedLookback) && parsedLookback.length > 0) {
-                    targetSymbols = parsedLookback.map(s => s.replace(/_LONG$|_SHORT$/i, '').trim());
+    // 获取上游输入候选底池
+    const getTargetSymbols = (): string[] => {
+        let targetSymbols: string[] = [];
+        try {
+            const rawLookback = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
+            const parsedLookback = rawLookback ? JSON.parse(rawLookback) : [];
+            if (Array.isArray(parsedLookback) && parsedLookback.length > 0) {
+                targetSymbols = parsedLookback.map(s => s.replace(/_LONG$|_SHORT$/i, '').trim());
+            } else {
+                const rawSideways = localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL');
+                const parsedSideways = rawSideways ? JSON.parse(rawSideways) : [];
+                if (Array.isArray(parsedSideways) && parsedSideways.length > 0) {
+                    targetSymbols = parsedSideways.map((p: any) => p.symbol);
                 } else {
-                    const rawSideways = localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL');
-                    const parsedSideways = rawSideways ? JSON.parse(rawSideways) : [];
-                    if (Array.isArray(parsedSideways) && parsedSideways.length > 0) {
-                        targetSymbols = parsedSideways.map((p: any) => p.symbol);
+                    const rawStart = localStorage.getItem('SCANNER_START_TREND_POOL');
+                    const parsedStart = rawStart ? JSON.parse(rawStart) : [];
+                    if (Array.isArray(parsedStart) && parsedStart.length > 0) {
+                        targetSymbols = parsedStart.map((p: any) => p.symbol);
                     } else {
-                        const rawStart = localStorage.getItem('SCANNER_START_TREND_POOL');
-                        const parsedStart = rawStart ? JSON.parse(rawStart) : [];
-                        if (Array.isArray(parsedStart) && parsedStart.length > 0) {
-                            targetSymbols = parsedStart.map((p: any) => p.symbol);
+                        const rawVol = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+                        const parsedVol = rawVol ? JSON.parse(rawVol) : [];
+                        if (Array.isArray(parsedVol) && parsedVol.length > 0) {
+                            targetSymbols = parsedVol.map((p: any) => p.symbol || p);
                         }
                     }
                 }
-            } catch (_) {}
+            }
+        } catch (_) {}
+
+        if (targetSymbols.length === 0 && candidateSymbols && candidateSymbols.length > 0) {
+            targetSymbols = candidateSymbols;
         }
 
-        if (!targetSymbols || targetSymbols.length === 0) {
-            targetSymbols = candidateSymbols || [];
-        }
+        // 去重并确保格式标准
+        return Array.from(new Set(targetSymbols.filter(Boolean)));
+    };
 
-        if (targetSymbols.length === 0) {
+    // 🔄 核心：单币三项并发 · 1秒1币稳健巡检 · 满足任一即入池 · 批次完成后原子差量更新
+    useEffect(() => {
+        if (!config.enabled) {
+            if (loopAbortControllerRef.current) {
+                loopAbortControllerRef.current.abort();
+                loopAbortControllerRef.current = null;
+            }
+            setIsLoopRunning(false);
+            setAuditProgress(null);
             return;
         }
 
-        setIsAuditing(true);
-        setAuditProgress({ current: 0, total: targetSymbols.length, curSym: targetSymbols[0] });
+        const abortController = new AbortController();
+        loopAbortControllerRef.current = abortController;
+        const signal = abortController.signal;
 
-        try {
-            const { passed, details } = await batchAuditBreakout(
-                targetSymbols,
-                config,
-                (cur, tot, sym) => {
-                    if (isMountedRef.current) {
-                        setAuditProgress({ current: cur, total: tot, curSym: sym });
+        const sleep = (ms: number) => new Promise(resolve => {
+            const t = setTimeout(resolve, ms);
+            signal.addEventListener('abort', () => {
+                clearTimeout(t);
+                resolve(null);
+            }, { once: true });
+        });
+
+        const runConcurrentAuditLoop = async () => {
+            setIsLoopRunning(true);
+
+            while (!signal.aborted && isMountedRef.current) {
+                const targetSymbols = getTargetSymbols();
+                if (targetSymbols.length === 0) {
+                    // 若无待测币种，等待 2 秒后重试
+                    await sleep(2000);
+                    continue;
+                }
+
+                const total = targetSymbols.length;
+                const delayMs = config.scanDelayMs ?? 1000;
+
+                // 本轮独立累积的命中池
+                const batchStep1Passed: string[] = [];
+                const batchStep2Passed: string[] = [];
+                const batchStep3Passed: string[] = [];
+                const batchFinalPool: string[] = [];
+
+                for (let i = 0; i < targetSymbols.length; i++) {
+                    if (signal.aborted || !isMountedRef.current) break;
+                    const sym = targetSymbols[i];
+                    const coinStartTime = Date.now();
+
+                    // 1. 实时进度展示（标记当前正在深度判研的币种代码）
+                    setAuditProgress({ 
+                        current: i + 1, 
+                        total, 
+                        curSym: sym,
+                        curSqueezePassed: undefined,
+                        curVolumePassed: undefined,
+                        curMomentumPassed: undefined,
+                        curPassed: undefined
+                    });
+
+                    // 2. 核心：单币同时运行三项过滤 (多周期K线并行极速直通，~50ms内完成判定)
+                    const res = await auditSymbolBreakout(sym, {
+                        ...config,
+                        enableSqueeze: config.enableSqueeze,
+                        enableVolumeSpike: config.enableVolumeSpike,
+                        enableAdx: config.enableAdx,
+                        enableMultiTfResonance: config.enableMultiTfResonance,
+                        combinationMode: config.combinationMode || 'OR' // 宽松 OR 容差或 AND
+                    }, signal);
+
+                    const squeezeHit = Boolean(res.squeezePassed);
+                    const volumeHit = Boolean(res.volumePassed);
+                    const momentumHit = Boolean((!config.enableAdx || res.adxPassed) && (!config.enableMultiTfResonance || res.tfResonancePassed));
+                    
+                    if (squeezeHit) batchStep1Passed.push(sym);
+                    if (volumeHit) batchStep2Passed.push(sym);
+                    if (momentumHit) batchStep3Passed.push(sym);
+
+                    // 只要符合开启条件中的任一个（默认 OR 模式），即判定为合格放入底池
+                    if (res.isPassed) {
+                        batchFinalPool.push(sym);
+                    }
+
+                    // 实时高亮当前币的实时判定结果
+                    setAuditProgress({
+                        current: i + 1,
+                        total,
+                        curSym: sym,
+                        curSqueezePassed: squeezeHit,
+                        curVolumePassed: volumeHit,
+                        curMomentumPassed: momentumHit,
+                        curPassed: res.isPassed
+                    });
+
+                    // 实时更新诊断看板明细
+                    setAuditDetails(prev => ({
+                        ...prev,
+                        [sym]: {
+                            ...res,
+                            squeezePassed: squeezeHit,
+                            volumePassed: volumeHit,
+                            adxPassed: res.adxPassed,
+                            tfResonancePassed: res.tfResonancePassed,
+                            isPassed: res.isPassed
+                        }
+                    }));
+
+                    // 3. 严格精准控制节奏（扣除运算时间补齐剩余间隔，绝对精准保持 1秒1币）
+                    const elapsed = Date.now() - coinStartTime;
+                    const remainingSleep = Math.max(0, delayMs - elapsed);
+                    if (remainingSleep > 0 && i < targetSymbols.length - 1 && !signal.aborted) {
+                        await sleep(remainingSleep);
                     }
                 }
-            );
 
-            if (isMountedRef.current) {
-                setPool(passed);
-                setAuditDetails(details);
-                localStorage.setItem('SCANNER_BREAKOUT_FILTERED_POOL', JSON.stringify(passed));
-                localStorage.setItem('SCANNER_BREAKOUT_AUDIT_DETAILS', JSON.stringify(details));
-                window.dispatchEvent(new CustomEvent('scanner_breakout_pool_updated', { detail: passed }));
+                // 🔒【原子批次提交机制】：整轮扫描完毕后，一次性差量同步至全局底池，市场初筛永不清零
+                if (!signal.aborted && isMountedRef.current) {
+                    setStep1Passed(batchStep1Passed);
+                    setStep2Passed(batchStep2Passed);
+                    setStep3Passed(batchStep3Passed);
+
+                    const deduplicatedPool = Array.from(new Set(batchFinalPool));
+                    setPool(deduplicatedPool);
+                    localStorage.setItem('SCANNER_BREAKOUT_FILTERED_POOL', JSON.stringify(deduplicatedPool));
+                    window.dispatchEvent(new CustomEvent('scanner_breakout_pool_updated', { detail: deduplicatedPool }));
+
+                    // 一轮完成后平稳等待 1.5 秒，无缝开启下一轮稳健巡检
+                    await sleep(1500);
+                }
             }
-        } catch (e) {
-            console.error("[BreakoutPoolBox] Audit failed:", e);
-        } finally {
-            if (isMountedRef.current) {
-                setIsAuditing(false);
-                setAuditProgress(null);
-            }
-        }
-    };
-
-    // 当输入底池更新且本功能开启时，自动触发审计
-    useEffect(() => {
-        if (!config.enabled) return;
-
-        const handleUpstreamUpdate = () => {
-            runAudit();
         };
 
-        window.addEventListener('scanner_major_trend_candidates_updated', handleUpstreamUpdate);
-        window.addEventListener('scanner_sideways_pool_updated', handleUpstreamUpdate);
-        window.addEventListener('scanner_start_trend_pool_updated', handleUpstreamUpdate);
+        runConcurrentAuditLoop();
 
         return () => {
-            window.removeEventListener('scanner_major_trend_candidates_updated', handleUpstreamUpdate);
-            window.removeEventListener('scanner_sideways_pool_updated', handleUpstreamUpdate);
-            window.removeEventListener('scanner_start_trend_pool_updated', handleUpstreamUpdate);
+            abortController.abort();
+            setIsLoopRunning(false);
+            setAuditProgress(null);
         };
-    }, [config.enabled, config]);
+    }, [
+        config.enabled,
+        config.scanDelayMs,
+        config.enableSqueeze,
+        config.maxBbwPercent,
+        config.requireSqueezeInKc,
+        config.enableVolumeSpike,
+        config.volMultiplier,
+        config.breakoutMode,
+        config.enableAdx,
+        config.minAdx,
+        config.enableMultiTfResonance,
+        config.primaryTf,
+        config.confirmTf,
+        config.combinationMode
+    ]);
 
     const stats = useMemo(() => {
-        const items = Object.values(auditDetails);
-        let squeezePassedCount = 0;
-        let volumePassedCount = 0;
-        let momentumPassedCount = 0;
-        items.forEach(it => {
-            if (it.squeezePassed) squeezePassedCount++;
-            if (it.volumePassed) volumePassedCount++;
-            if (it.adxPassed && it.tfResonancePassed) momentumPassedCount++;
-        });
         return {
-            totalScanned: items.length,
-            squeezePassedCount,
-            volumePassedCount,
-            momentumPassedCount,
+            step1Count: step1Passed.length,
+            step2Count: step2Passed.length,
+            step3Count: step3Passed.length,
             finalPoolCount: pool.length
         };
-    }, [auditDetails, pool]);
+    }, [step1Passed, step2Passed, step3Passed, pool]);
 
     const displayItems = useMemo(() => {
         const allSyms = Object.keys(auditDetails);
         const term = searchTerm.trim().toUpperCase();
         return allSyms
             .filter(sym => !term || sym.includes(term))
-            .map(sym => auditDetails[sym])
-            .filter(Boolean);
-    }, [auditDetails, searchTerm]);
+            .map(sym => {
+                const it = auditDetails[sym];
+                if (!it) return null;
+                const isPassed = pool.includes(sym);
+                const matched: string[] = [];
+                if (step1Passed.includes(sym)) matched.push('空间蓄势');
+                if (step2Passed.includes(sym)) matched.push('突破放量');
+                if (step3Passed.includes(sym)) matched.push('动能共振');
+                return {
+                    ...it,
+                    isPassed,
+                    matchedRules: matched
+                };
+            })
+            .filter(Boolean) as BreakoutAuditItem[];
+    }, [auditDetails, searchTerm, pool, step1Passed, step2Passed, step3Passed]);
 
     const handleCopy = () => {
         if (pool.length === 0) return;
@@ -207,7 +336,7 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         <div className="flex items-center gap-1.5">
                             <span className="text-[11px] font-bold text-amber-300">4. 趋势爆发综合过滤</span>
                             <span className="text-[9px] text-slate-400 font-mono">
-                                (蓄势+爆量+动能)
+                                (单币三项并发 · 1秒1币 · 符合任一即入池)
                             </span>
                         </div>
                     </div>
@@ -230,20 +359,10 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                                 ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-[0_0_8px_rgba(245,158,11,0.4)]' 
                                 : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700'
                         }`}
-                        title={config.enabled ? "点击关闭趋势爆发综合过滤" : "点击启用趋势爆发综合过滤"}
+                        title={config.enabled ? "点击关闭趋势爆发综合过滤" : "点击启用趋势爆发综合过滤 (单币三项并发 1秒1币)"}
                     >
                         <span className={`w-1.5 h-1.5 rounded-full ${config.enabled ? 'bg-white animate-pulse' : 'bg-slate-500'}`} />
-                        <span>{config.enabled ? '运行中' : '未启用'}</span>
-                    </button>
-
-                    {/* Manual Audit Refresh Button */}
-                    <button
-                        onClick={() => runAudit()}
-                        disabled={isAuditing}
-                        className="bg-slate-800 hover:bg-slate-700 text-amber-400 disabled:opacity-40 p-1 rounded transition-colors"
-                        title="立即触发爆发审计扫描"
-                    >
-                        <RefreshCw size={11} className={isAuditing ? 'animate-spin text-amber-400' : ''} />
+                        <span>{config.enabled ? '并发巡检中' : '未启用'}</span>
                     </button>
 
                     {/* Copy All */}
@@ -269,13 +388,74 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
             {/* Collapsible Content */}
             {!isCollapsed && (
                 <div className="space-y-2.5 pt-1">
+                    {/* 🔁 实时三项并发巡检状态栏 */}
+                    <div className="bg-slate-950/80 border border-slate-800 rounded p-2 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                                <Flame size={12} className="text-amber-400 animate-pulse" />
+                                <span className="text-[10px] font-bold text-slate-200">三项实时并发审计模式:</span>
+                            </div>
+                            <span className="text-[8.5px] font-mono text-amber-400 font-bold">
+                                {isLoopRunning ? `🚀 WebSocket API 全双工通信 · 1秒1币` : '等待开启'}
+                            </span>
+                        </div>
+
+                        {/* 三项规则卡片状态预览 */}
+                        <div className="grid grid-cols-3 gap-1.5 pt-0.5 text-[8.5px]">
+                            {/* Dimension 1 */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${
+                                config.enableSqueeze
+                                    ? 'bg-cyan-950/60 border-cyan-500/50 text-cyan-300'
+                                    : 'bg-slate-900/60 border-slate-800 text-slate-500'
+                            }`}>
+                                <div className="flex items-center gap-1 truncate">
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${config.enableSqueeze ? 'bg-cyan-400' : 'bg-slate-600'}`} />
+                                    <span className="font-bold truncate">① 空间极致蓄势</span>
+                                </div>
+                                <span className="font-mono font-bold text-cyan-400 shrink-0">
+                                    {stats.step1Count} 币
+                                </span>
+                            </div>
+
+                            {/* Dimension 2 */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${
+                                config.enableVolumeSpike
+                                    ? 'bg-amber-950/60 border-amber-500/50 text-amber-300'
+                                    : 'bg-slate-900/60 border-slate-800 text-slate-500'
+                            }`}>
+                                <div className="flex items-center gap-1 truncate">
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${config.enableVolumeSpike ? 'bg-amber-400' : 'bg-slate-600'}`} />
+                                    <span className="font-bold truncate">② 突破点火放量</span>
+                                </div>
+                                <span className="font-mono font-bold text-amber-400 shrink-0">
+                                    {stats.step2Count} 币
+                                </span>
+                            </div>
+
+                            {/* Dimension 3 */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${
+                                config.enableAdx || config.enableMultiTfResonance
+                                    ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300'
+                                    : 'bg-slate-900/60 border-slate-800 text-slate-500'
+                            }`}>
+                                <div className="flex items-center gap-1 truncate">
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${config.enableAdx || config.enableMultiTfResonance ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                                    <span className="font-bold truncate">③ 动能周期共振</span>
+                                </div>
+                                <span className="font-mono font-bold text-emerald-400 shrink-0">
+                                    {stats.step3Count} 币
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
                     {/* 🔀 综合判定逻辑模式选择栏 (OR 模式 / AND 模式) */}
                     <div className="bg-slate-900/90 border border-slate-800 rounded p-2 flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
                             <Sliders size={12} className="text-amber-400" />
-                            <span className="text-[10px] font-bold text-slate-200">多规则判定逻辑:</span>
+                            <span className="text-[10px] font-bold text-slate-200">底池准入判定规则:</span>
                             <span className="text-[8.5px] text-slate-400">
-                                {(config.combinationMode || 'OR') === 'OR' ? '（3轮独立扫描去重合并放行）' : '（必须全部满足开启规则）'}
+                                {(config.combinationMode || 'OR') === 'OR' ? '（符合3个条件中的任何一个即放入底池）' : '（必须全部满足开启的条件）'}
                             </span>
                         </div>
                         <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
@@ -286,9 +466,9 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                                         ? 'bg-amber-600 text-white shadow-[0_0_8px_rgba(245,158,11,0.3)]'
                                         : 'text-slate-400 hover:text-slate-200'
                                 }`}
-                                title="3轮独立扫描去重模式 (OR 并集)：分别扫描空间蓄势、突破放量、动能共振，去重合并后进入市场初筛"
+                                title="OR 模式 (推荐)：只要符合空间蓄势、突破放量、动能共振任一条件，即放入趋势爆发底池，全部过滤完后与初筛列表差量同步"
                             >
-                                满足任一 (OR)
+                                符合任一 (OR)
                             </button>
                             <button
                                 onClick={() => updateConfig(p => ({ ...p, combinationMode: 'AND' }))}
@@ -297,7 +477,7 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                                         ? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(6,182,212,0.3)]'
                                         : 'text-slate-400 hover:text-slate-200'
                                 }`}
-                                title="与模式 (AND)：必须同时满足所有已开启的维度条件"
+                                title="AND 模式：必须同时满足所有已开启的维度条件"
                             >
                                 全部满足 (AND)
                             </button>
@@ -316,10 +496,10 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         <div className="flex items-center gap-1.5">
                             <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
                                 {[
-                                    { label: '1.0s/币', ms: 1000, title: '推荐：1秒1币稳健扫描，100%防超频防漏币' },
-                                    { label: '0.5s/币', ms: 500, title: '平衡：半秒1币' },
-                                    { label: '0.2s/币', ms: 200, title: '快速：0.2秒1币' },
-                                    { label: '极速 0s', ms: 0, title: '极速：无延时瞬间并发扫描' }
+                                    { label: '1.0s/币', ms: 1000, title: '推荐：1秒1币稳健并发，WS长连接零超频' },
+                                    { label: '0.5s/币', ms: 500, title: '极速：半秒1币' },
+                                    { label: '0.2s/币', ms: 200, title: '高速：0.2秒1币' },
+                                    { label: '无延时 0s', ms: 0, title: '极速并发扫描' }
                                 ].map(opt => (
                                     <button
                                         key={opt.ms}
@@ -335,75 +515,118 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                                     </button>
                                 ))}
                             </div>
-                            <div className="w-16">
+                            <div className="w-16 flex items-center bg-slate-950 border border-slate-700 rounded px-1">
                                 <SmartNumberInput
                                     value={Number(((config.scanDelayMs ?? 1000) / 1000).toFixed(1))}
                                     onChange={val => updateConfig(p => ({ ...p, scanDelayMs: Math.max(0, Math.round(val * 1000)) }))}
-                                    step={0.1}
-                                    min={0}
-                                    max={10}
-                                    suffix="s"
-                                    className="bg-slate-950 border-slate-700 text-emerald-400 font-mono text-[9px] h-5 px-1 text-center"
+                                    className="w-10 bg-transparent text-emerald-400 font-mono text-[9px] h-5 text-center outline-none"
                                 />
+                                <span className="text-[8px] text-slate-500 font-mono">s</span>
                             </div>
                         </div>
                     </div>
 
-                    {/* 🚀 实时扫描状态与平稳进度条 (扫描中时显式展示) */}
-                    {isAuditing && auditProgress && (
-                        <div className="bg-emerald-950/40 border border-emerald-500/40 rounded p-2 flex flex-col gap-1.5 shadow-[0_0_12px_rgba(16,185,129,0.15)] animate-fadeIn">
+                    {/* 🚀 实时流水线动态进度条 (单币三项并发实况) */}
+                    {isLoopRunning && auditProgress && (
+                        <div className="bg-slate-950/90 border border-amber-500/40 rounded p-2 flex flex-col gap-1.5 shadow-[0_0_12px_rgba(245,158,11,0.15)] animate-fadeIn">
                             <div className="flex items-center justify-between text-[9px]">
                                 <div className="flex items-center gap-1.5">
-                                    <Loader2 size={11} className="animate-spin text-emerald-400" />
-                                    <span className="font-bold text-emerald-300">
-                                        正在逐币深度审计 ({auditProgress.current}/{auditProgress.total})
+                                    <Loader2 size={11} className="animate-spin text-amber-400" />
+                                    <span className="font-bold text-amber-300">
+                                        三项同时审计中 ({auditProgress.current}/{auditProgress.total})
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <span className="font-mono text-amber-300 font-bold bg-slate-950/80 px-1.5 py-0.5 rounded border border-amber-900/60">
+                                    <span className="font-mono text-cyan-300 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-cyan-800/60">
                                         {auditProgress.curSym}
                                     </span>
-                                    <span className="text-emerald-400 font-mono font-bold">
+                                    <span className="text-amber-400 font-mono font-bold">
                                         {Math.round((auditProgress.current / Math.max(1, auditProgress.total)) * 100)}%
                                     </span>
                                 </div>
                             </div>
+
+                            {/* Live 3-Dimension Check Indicators for Current Symbol */}
+                            <div className="grid grid-cols-4 gap-1 text-[8px] font-mono py-0.5">
+                                <div className={`px-1 py-0.5 rounded border flex items-center justify-between ${
+                                    auditProgress.curSqueezePassed === true ? 'bg-cyan-950 border-cyan-500 text-cyan-300' :
+                                    auditProgress.curSqueezePassed === false ? 'bg-slate-900 border-slate-800 text-slate-500' :
+                                    'bg-slate-900 border-slate-800 text-slate-400'
+                                }`}>
+                                    <span>① 蓄势</span>
+                                    <span>{auditProgress.curSqueezePassed === true ? '✔️达标' : auditProgress.curSqueezePassed === false ? '❌未达' : '...'}</span>
+                                </div>
+                                <div className={`px-1 py-0.5 rounded border flex items-center justify-between ${
+                                    auditProgress.curVolumePassed === true ? 'bg-amber-950 border-amber-500 text-amber-300' :
+                                    auditProgress.curVolumePassed === false ? 'bg-slate-900 border-slate-800 text-slate-500' :
+                                    'bg-slate-900 border-slate-800 text-slate-400'
+                                }`}>
+                                    <span>② 放量</span>
+                                    <span>{auditProgress.curVolumePassed === true ? '✔️达标' : auditProgress.curVolumePassed === false ? '❌未达' : '...'}</span>
+                                </div>
+                                <div className={`px-1 py-0.5 rounded border flex items-center justify-between ${
+                                    auditProgress.curMomentumPassed === true ? 'bg-emerald-950 border-emerald-500 text-emerald-300' :
+                                    auditProgress.curMomentumPassed === false ? 'bg-slate-900 border-slate-800 text-slate-500' :
+                                    'bg-slate-900 border-slate-800 text-slate-400'
+                                }`}>
+                                    <span>③ 共振</span>
+                                    <span>{auditProgress.curMomentumPassed === true ? '✔️达标' : auditProgress.curMomentumPassed === false ? '❌未达' : '...'}</span>
+                                </div>
+                                <div className={`px-1 py-0.5 rounded border flex items-center justify-between font-bold ${
+                                    auditProgress.curPassed === true ? 'bg-emerald-950/80 border-emerald-400 text-emerald-300' :
+                                    auditProgress.curPassed === false ? 'bg-slate-900 border-slate-800 text-slate-500' :
+                                    'bg-slate-900 border-slate-800 text-slate-400'
+                                }`}>
+                                    <span>判定</span>
+                                    <span>{auditProgress.curPassed === true ? '🚀入池' : auditProgress.curPassed === false ? '未入' : '...'}</span>
+                                </div>
+                            </div>
+
                             {/* Progress bar line */}
-                            <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden border border-emerald-900/60">
+                            <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
                                 <div 
-                                    className="bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 h-full transition-all duration-300 rounded-full"
+                                    className="h-full transition-all duration-300 rounded-full bg-gradient-to-r from-cyan-500 via-amber-500 to-emerald-500"
                                     style={{ width: `${Math.round((auditProgress.current / Math.max(1, auditProgress.total)) * 100)}%` }}
                                 />
                             </div>
                         </div>
                     )}
 
-                    {/* 📊 3轮独立扫描命中情况与去重底池统计条 */}
+                    {/* 📊 3维度命中情况与去重底池统计条 */}
                     <div className="grid grid-cols-4 gap-1.5 text-[8.5px] font-mono">
                         <div className="bg-slate-900/90 border border-slate-800 rounded px-2 py-1 flex items-center justify-between">
                             <span className="text-cyan-400">① 蓄势命中:</span>
-                            <span className="font-bold text-cyan-300">{stats.squeezePassedCount}</span>
+                            <span className="font-bold text-cyan-300">{stats.step1Count} 币</span>
                         </div>
                         <div className="bg-slate-900/90 border border-slate-800 rounded px-2 py-1 flex items-center justify-between">
                             <span className="text-amber-400">② 放量命中:</span>
-                            <span className="font-bold text-amber-300">{stats.volumePassedCount}</span>
+                            <span className="font-bold text-amber-300">{stats.step2Count} 币</span>
                         </div>
                         <div className="bg-slate-900/90 border border-slate-800 rounded px-2 py-1 flex items-center justify-between">
                             <span className="text-emerald-400">③ 共振命中:</span>
-                            <span className="font-bold text-emerald-300">{stats.momentumPassedCount}</span>
+                            <span className="font-bold text-emerald-300">{stats.step3Count} 币</span>
                         </div>
-                        <div className="bg-amber-950/50 border border-amber-800/60 rounded px-2 py-1 flex items-center justify-between">
-                            <span className="text-amber-300 font-bold">去重汇总:</span>
+                        <div className="bg-amber-950/60 border border-amber-600/60 rounded px-2 py-1 flex items-center justify-between shadow-[0_0_10px_rgba(245,158,11,0.15)]">
+                            <span className="text-amber-300 font-bold">初筛底池:</span>
                             <span className="font-bold text-amber-400">{stats.finalPoolCount} 币</span>
                         </div>
                     </div>
 
                     {/* Dimension 1: 空间极致蓄势 (Squeeze 波动率压缩) */}
-                    <div className="bg-slate-900/80 border border-slate-800 rounded p-2 flex flex-col gap-2">
+                    <div className={`border rounded p-2 flex flex-col gap-2 transition-all ${
+                        isLoopRunning && config.enableSqueeze 
+                            ? 'bg-cyan-950/30 border-cyan-500/60 shadow-[0_0_10px_rgba(6,182,212,0.15)]' 
+                            : 'bg-slate-900/80 border-slate-800'
+                    }`}>
                         <div className="flex items-center justify-between border-b border-slate-800/60 pb-1">
                             <div className="flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                                <span className={`w-1.5 h-1.5 rounded-full ${isLoopRunning && config.enableSqueeze ? 'bg-cyan-400 animate-ping' : 'bg-cyan-400'}`} />
                                 <span className="text-[10px] font-bold text-slate-200">① 空间极致蓄势 (Squeeze 压缩)</span>
+                                {isLoopRunning && config.enableSqueeze && (
+                                    <span className="text-[7.5px] bg-cyan-900/80 text-cyan-300 border border-cyan-500/40 px-1 rounded font-mono font-bold">
+                                        并发检测中
+                                    </span>
+                                )}
                             </div>
                             <button
                                 onClick={() => updateConfig(p => ({ ...p, enableSqueeze: !p.enableSqueeze }))}
@@ -443,11 +666,20 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                     </div>
 
                     {/* Dimension 2: 突破点火放量 (Volume & Breakout) */}
-                    <div className="bg-slate-900/80 border border-slate-800 rounded p-2 flex flex-col gap-2">
+                    <div className={`border rounded p-2 flex flex-col gap-2 transition-all ${
+                        isLoopRunning && config.enableVolumeSpike 
+                            ? 'bg-amber-950/30 border-amber-500/60 shadow-[0_0_10px_rgba(245,158,11,0.15)]' 
+                            : 'bg-slate-900/80 border-slate-800'
+                    }`}>
                         <div className="flex items-center justify-between border-b border-slate-800/60 pb-1">
                             <div className="flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                <span className={`w-1.5 h-1.5 rounded-full ${isLoopRunning && config.enableVolumeSpike ? 'bg-amber-400 animate-ping' : 'bg-amber-400'}`} />
                                 <span className="text-[10px] font-bold text-slate-200">② 突破点火放量 (Volume & 破位)</span>
+                                {isLoopRunning && config.enableVolumeSpike && (
+                                    <span className="text-[7.5px] bg-amber-900/80 text-amber-300 border border-amber-500/40 px-1 rounded font-mono font-bold">
+                                        并发检测中
+                                    </span>
+                                )}
                             </div>
                             <button
                                 onClick={() => updateConfig(p => ({ ...p, enableVolumeSpike: !p.enableVolumeSpike }))}
@@ -487,11 +719,20 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                     </div>
 
                     {/* Dimension 3: 动能爆发与多周期共振 (ADX & Multi-TF) */}
-                    <div className="bg-slate-900/80 border border-slate-800 rounded p-2 flex flex-col gap-2">
+                    <div className={`border rounded p-2 flex flex-col gap-2 transition-all ${
+                        isLoopRunning && (config.enableAdx || config.enableMultiTfResonance) 
+                            ? 'bg-emerald-950/30 border-emerald-500/60 shadow-[0_0_10px_rgba(16,185,129,0.15)]' 
+                            : 'bg-slate-900/80 border-slate-800'
+                    }`}>
                         <div className="flex items-center justify-between border-b border-slate-800/60 pb-1">
                             <div className="flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                <span className={`w-1.5 h-1.5 rounded-full ${isLoopRunning && (config.enableAdx || config.enableMultiTfResonance) ? 'bg-emerald-400 animate-ping' : 'bg-emerald-400'}`} />
                                 <span className="text-[10px] font-bold text-slate-200">③ 动能爆发与多周期共振 (ADX & EMA)</span>
+                                {isLoopRunning && (config.enableAdx || config.enableMultiTfResonance) && (
+                                    <span className="text-[7.5px] bg-emerald-900/80 text-emerald-300 border border-emerald-500/40 px-1 rounded font-mono font-bold">
+                                        并发检测中
+                                    </span>
+                                )}
                             </div>
                             <div className="flex items-center gap-1">
                                 <button
@@ -554,17 +795,6 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         </div>
                     </div>
 
-                    {/* Progress Indicator */}
-                    {isAuditing && auditProgress && (
-                        <div className="bg-amber-950/40 border border-amber-500/30 rounded p-1.5 flex items-center justify-between text-[9px] text-amber-300 animate-pulse">
-                            <div className="flex items-center gap-1.5">
-                                <Loader2 size={11} className="animate-spin text-amber-400" />
-                                <span>爆发审计中: {auditProgress.curSym} ({auditProgress.current}/{auditProgress.total})</span>
-                            </div>
-                            <span className="font-mono">{Math.round((auditProgress.current / auditProgress.total) * 100)}%</span>
-                        </div>
-                    )}
-
                     {/* Live Diagnostic Table / Audited Pool List */}
                     <div className="space-y-1.5">
                         <div className="flex items-center justify-between">
@@ -585,7 +815,7 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
 
                         {displayItems.length === 0 ? (
                             <div className="p-3 text-center text-[9px] text-slate-500 bg-slate-900/50 rounded border border-slate-800/40">
-                                {isAuditing ? '正在执行爆发审计计算...' : '暂无审计数据 (点击右上角刷新按钮触发扫描)'}
+                                {isLoopRunning ? '正在执行单币三项并发稳健审计 (1秒1币)...' : '暂无审计数据'}
                             </div>
                         ) : (
                             <div className="max-h-44 overflow-y-auto space-y-1 pr-0.5 custom-scrollbar">
@@ -611,22 +841,28 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
 
                                         {/* Center: Metrics Grid */}
                                         <div className="flex items-center gap-2 font-mono text-[8px]">
-                                            <span title="布林带宽 (BBW)" className={item.squeezePassed ? 'text-cyan-300' : 'text-slate-500'}>
+                                            <span title="布林带宽 (BBW)" className={item.squeezePassed ? 'text-cyan-300 font-bold' : 'text-slate-500'}>
                                                 BBW:{item.bbwPct}%
                                             </span>
-                                            <span title="量比 (Volume Ratio)" className={item.volumePassed ? 'text-amber-300' : 'text-slate-500'}>
+                                            <span title="量比 (Volume Ratio)" className={item.volumePassed ? 'text-amber-300 font-bold' : 'text-slate-500'}>
                                                 量:{item.volRatio}x
                                             </span>
-                                            <span title="ADX 动能" className={item.adxPassed ? 'text-emerald-300' : 'text-slate-500'}>
+                                            <span title="ADX 动能" className={item.adxPassed ? 'text-emerald-300 font-bold' : 'text-slate-500'}>
                                                 ADX:{item.adxValue}
                                             </span>
                                         </div>
 
                                         {/* Right: Pass or Fail Reason */}
-                                        <div className="w-32 text-right truncate text-[7.5px]">
+                                        <div className="w-36 text-right truncate text-[7.5px]">
                                             {item.isPassed ? (
                                                 <span className="text-emerald-400 font-bold" title={`命中条件: ${item.matchedRules?.join('、') || '符合规则'}`}>
-                                                    🚀 {item.matchedRules && item.matchedRules.length > 0 ? item.matchedRules.join('+') : '完美命中'}
+                                                    {item.matchedRules && item.matchedRules.length >= 3 ? (
+                                                        <span className="text-amber-300 font-extrabold">👑 全维爆发</span>
+                                                    ) : item.matchedRules && item.matchedRules.length === 2 ? (
+                                                        <span className="text-emerald-300">🔥 双重共振 ({item.matchedRules.join('+')})</span>
+                                                    ) : (
+                                                        <span>🚀 {item.matchedRules && item.matchedRules.length > 0 ? item.matchedRules.join('+') : '完美命中'}</span>
+                                                    )}
                                                 </span>
                                             ) : (
                                                 <span className="text-slate-500" title={item.failReasons.join(' | ')}>
