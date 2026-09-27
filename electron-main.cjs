@@ -63,12 +63,16 @@ function startBackendServer() {
 
     const serverScript = path.join(__dirname, 'dist', 'server.cjs');
     serverProcess = spawn(process.execPath, [serverScript], {
-      env: { ...process.env, NODE_ENV: 'production', PORT: '3000' },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_ENV: 'production', PORT: '3000' },
       stdio: 'inherit'
     });
 
     serverProcess.on('error', (err) => {
       console.error('后台服务启动异常:', err);
+    });
+
+    serverProcess.on('exit', (code, signal) => {
+      console.log(`后台服务进程退出: code=${code}, signal=${signal}`);
     });
   } catch (err) {
     console.error('未能自动拉起后台服务:', err);

@@ -20,6 +20,35 @@ interface VolumePoolItem {
 }
 
 
+// Helper to parse raw tickers safely across various upstream shapes (Binance REST, WS, cached)
+const parseVolumePoolItem = (d: any): VolumePoolItem | null => {
+    if (!d || !d.symbol || typeof d.symbol !== 'string' || !d.symbol.endsWith('USDT')) return null;
+
+    let volM = 0;
+    if (d.quoteVolume !== undefined && d.quoteVolume !== null && d.quoteVolume !== '') {
+        const raw = parseFloat(String(d.quoteVolume));
+        volM = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? +raw.toFixed(2) : 0);
+    } else if (d.volume24h !== undefined && d.volume24h !== null) {
+        volM = parseFloat(String(d.volume24h)) || 0;
+    } else if (d.q !== undefined && d.q !== null) {
+        const raw = parseFloat(String(d.q));
+        volM = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? +raw.toFixed(2) : 0);
+    } else if (d.volume !== undefined && d.volume !== null) {
+        const raw = parseFloat(String(d.volume));
+        volM = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? +raw.toFixed(2) : 0);
+    }
+
+    const price = parseFloat(String(d.lastPrice || d.close || d.c || d.price || '0')) || 0;
+    const change24h = parseFloat(String(d.priceChangePercent || d.change || d.P || '0')) || 0;
+
+    return {
+        symbol: d.symbol,
+        volume24h: volM,
+        change24h: change24h,
+        price: price
+    };
+};
+
 export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('SCANNER_VOLUME_POOL_COLLAPSED', false);
     const [searchTerm, setSearchTerm] = useState('');
@@ -90,19 +119,12 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                 }
                 if (Array.isArray(parsed)) {
                     const items: VolumePoolItem[] = parsed
-                        .filter((d: any) => d && d.symbol && d.symbol.endsWith('USDT'))
-                        .map((d: any) => {
-                            const rawQuoteVol = parseFloat(d.quoteVolume || '0');
-                            const volM = +(rawQuoteVol / 1000000).toFixed(2);
-                            return {
-                                symbol: d.symbol,
-                                volume24h: volM,
-                                change24h: parseFloat(d.priceChangePercent || d.change || '0') || 0,
-                                price: parseFloat(d.lastPrice || d.close || '0') || 0
-                            };
-                        });
-                    setRawPool(items);
-                    return;
+                        .map(parseVolumePoolItem)
+                        .filter((item): item is VolumePoolItem => item !== null);
+                    if (items.length > 0) {
+                        setRawPool(items);
+                        return;
+                    }
                 }
             }
         } catch (e) {
@@ -114,14 +136,32 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     useEffect(() => {
         loadFromCache();
 
-        // Listen for storage or scan refresh events
+        // Listen for storage (cross-tab) and custom in-window update events
         const handleStorageUpdate = (e: StorageEvent) => {
             if (e.key === 'SCANNER_RAW_DATA_CACHE') {
                 loadFromCache();
             }
         };
+        const handleRawDataUpdate = (e: any) => {
+            const data = e.detail;
+            if (Array.isArray(data) && data.length > 0) {
+                const items: VolumePoolItem[] = data
+                    .map(parseVolumePoolItem)
+                    .filter((item): item is VolumePoolItem => item !== null);
+                if (items.length > 0) {
+                    setRawPool(items);
+                }
+            } else {
+                loadFromCache();
+            }
+        };
+
         window.addEventListener('storage', handleStorageUpdate);
-        return () => window.removeEventListener('storage', handleStorageUpdate);
+        window.addEventListener('scanner_raw_data_updated', handleRawDataUpdate);
+        return () => {
+            window.removeEventListener('storage', handleStorageUpdate);
+            window.removeEventListener('scanner_raw_data_updated', handleRawDataUpdate);
+        };
     }, []);
 
     // Fetch latest tickers from Binance
@@ -129,26 +169,21 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         if (!isMountedRef.current) return;
         setIsFetching(true);
         // 🔒 [永不清零·平滑差量更新铁律]: 严禁在拉取时清空既有数据，保留现有池直至新数据到达无缝替换
-        // setRawPool([]) 彻底移除，杜绝中途清空与闪烁
         try {
             const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/24hr?_t=${Date.now()}`);
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data) && isMountedRef.current) {
-                    localStorage.setItem('SCANNER_RAW_DATA_CACHE', JSON.stringify(data));
+                    try {
+                        localStorage.setItem('SCANNER_RAW_DATA_CACHE', JSON.stringify(data));
+                        window.dispatchEvent(new CustomEvent('scanner_raw_data_updated', { detail: data }));
+                    } catch (_) {}
                     const items: VolumePoolItem[] = data
-                        .filter((d: any) => d && d.symbol && d.symbol.endsWith('USDT'))
-                        .map((d: any) => {
-                            const quoteVol = parseFloat(d.quoteVolume || '0');
-                            const volM = +(quoteVol / 1000000).toFixed(2);
-                            return {
-                                symbol: d.symbol,
-                                volume24h: volM,
-                                change24h: parseFloat(d.priceChangePercent || '0') || 0,
-                                price: parseFloat(d.lastPrice || '0') || 0
-                            };
-                        });
-                    setRawPool(items);
+                        .map(parseVolumePoolItem)
+                        .filter((item): item is VolumePoolItem => item !== null);
+                    if (items.length > 0) {
+                        setRawPool(items);
+                    }
                 }
             }
         } catch (err) {
@@ -160,11 +195,9 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         }
     };
 
-    // Schedule through Pipeline Coordinator
+    // Schedule fetch
     const triggerScheduledFetch = () => {
-        pipelineCoordinator.enqueue('volume_pool', async () => {
-            await fetchLatestTickers();
-        });
+        fetchLatestTickers();
     };
 
     // Auto-sync Interval (Default: 5 minutes)
@@ -277,13 +310,11 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
 
     // Save current filtered symbols to localStorage and notify other pools
     useEffect(() => {
-        if (filteredPool.length > 0) {
-            try {
-                const symbolsOnly = filteredPool.map(i => i.symbol);
-                localStorage.setItem('SCANNER_VOLUME_FILTERED_POOL', JSON.stringify(symbolsOnly));
-                window.dispatchEvent(new CustomEvent('scanner_volume_pool_updated', { detail: { symbols: symbolsOnly } }));
-            } catch (_) {}
-        }
+        try {
+            const symbolsOnly = (filteredPool || []).map(i => i.symbol);
+            localStorage.setItem('SCANNER_VOLUME_FILTERED_POOL', JSON.stringify(symbolsOnly));
+            window.dispatchEvent(new CustomEvent('scanner_volume_pool_updated', { detail: { symbols: symbolsOnly } }));
+        } catch (_) {}
     }, [filteredPool]);
 
     // Filtered by search keyword

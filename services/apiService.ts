@@ -449,6 +449,32 @@ const _fetchWithFallbackInner = async (
                 }
             }
         }
+
+        // 🛡️ Direct fetch fallback: ensures uninterrupted connectivity in Electron or during local server boot
+        try {
+            const directController = new AbortController();
+            const dTimeout = setTimeout(() => {
+                try { directController.abort(); } catch (_) {}
+            }, isHeavyPayload ? 15000 : 8000);
+
+            const directRes = await fetch(url, {
+                signal: directController.signal,
+                headers: { 'Accept': 'application/json' }
+            });
+            clearTimeout(dTimeout);
+
+            if (directRes.ok) {
+                const text = await directRes.text();
+                const json = JSON.parse(text);
+                if (!validator || validator(json)) {
+                    continuousFailures = 0;
+                    return new Response(JSON.stringify(json), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+            }
+        } catch (_) {}
         
         continuousFailures++;
         if (continuousFailures > 25) {

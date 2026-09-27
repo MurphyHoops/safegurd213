@@ -619,6 +619,7 @@ export const useScannerLogic = (
             rawDataRef.current = data;
             try {
                 localStorage.setItem('SCANNER_RAW_DATA_CACHE', JSON.stringify(data));
+                window.dispatchEvent(new CustomEvent('scanner_raw_data_updated', { detail: data }));
             } catch (e) {
                 console.warn("Failed to persist raw data cache");
             }

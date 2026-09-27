@@ -240,16 +240,37 @@ export function checkVolumeRule(
     // 1. 24H 交易额校验
     const enable24h = config.enableVol24h !== false;
     if (enable24h) {
-        const min24h = Number(config.minVolume) || 0;
-        const max24h = Number(config.maxVolume) || 0;
-        const vol24h = Number(item.volume24h !== undefined ? item.volume24h : (item.volume !== undefined ? item.volume : 0)) || 0;
+        let min24h = Number(config.minVolume) || 0;
+        let max24h = Number(config.maxVolume) || 0;
+
+        // 防呆换算：若用户输入为原始 USDT (如输入 50000000 即 50M)，自动安全换算为 M
+        if (min24h >= 100000) min24h = +(min24h / 1000000).toFixed(2);
+        if (max24h >= 100000) max24h = +(max24h / 1000000).toFixed(2);
+
+        // 防呆容错：若最大值非零且小于最小值 (如 min=50, max=10)，属于无效倒挂区间，最大值自动视为无上限 (0)
+        const effectiveMax24h = (max24h > 0 && min24h > 0 && max24h <= min24h) ? 0 : max24h;
+
+        // 全面提取 24H 交易额 (支持 volume24h / quoteVolume / volume / q)
+        let vol24h = 0;
+        if (item.volume24h !== undefined && !isNaN(Number(item.volume24h))) {
+            vol24h = Number(item.volume24h);
+        } else if ((item as any).quoteVolume !== undefined && !isNaN(Number((item as any).quoteVolume))) {
+            const raw = Number((item as any).quoteVolume);
+            vol24h = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? raw : 0);
+        } else if (item.volume !== undefined && !isNaN(Number(item.volume))) {
+            const raw = Number(item.volume);
+            vol24h = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? raw : 0);
+        } else if ((item as any).q !== undefined && !isNaN(Number((item as any).q))) {
+            const raw = Number((item as any).q);
+            vol24h = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? raw : 0);
+        }
 
         // 最小交易额校验（大于或等于设定值）
         if (min24h > 0 && vol24h < min24h) {
             return false;
         }
         // 最大交易额校验（后面为0是无上限）
-        if (max24h > 0 && vol24h > max24h) {
+        if (effectiveMax24h > 0 && vol24h > effectiveMax24h) {
             return false;
         }
     }
@@ -257,8 +278,13 @@ export function checkVolumeRule(
     // 2. 早上8点起交易额校验 (北京时间 08:00:00 至今)
     const enable8am = Boolean(config.enableVol8am || config.timeBasis === '8AM');
     if (enable8am) {
-        const min8am = Number(config.minVolume8am !== undefined ? config.minVolume8am : (config.timeBasis === '8AM' ? 1 : 0)) || 0;
-        const max8am = Number(config.maxVolume8am !== undefined ? config.maxVolume8am : 0) || 0;
+        let min8am = Number(config.minVolume8am !== undefined ? config.minVolume8am : (config.timeBasis === '8AM' ? 1 : 0)) || 0;
+        let max8am = Number(config.maxVolume8am !== undefined ? config.maxVolume8am : 0) || 0;
+
+        if (min8am >= 100000) min8am = +(min8am / 1000000).toFixed(2);
+        if (max8am >= 100000) max8am = +(max8am / 1000000).toFixed(2);
+
+        const effectiveMax8am = (max8am > 0 && min8am > 0 && max8am <= min8am) ? 0 : max8am;
 
         // 获取真实的 8AM 数据（绝不回退至 24H 交易额）
         let vol8am: number | undefined = undefined;
@@ -278,7 +304,7 @@ export function checkVolumeRule(
                 return false;
             }
             // 最大交易额校验（后面为0是无上限）
-            if (max8am > 0 && vol8am > max8am) {
+            if (effectiveMax8am > 0 && vol8am > effectiveMax8am) {
                 return false;
             }
         }
