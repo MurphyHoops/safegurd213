@@ -952,8 +952,8 @@ export const useScannerLogic = (
                         const parsed = JSON.parse(rawStartPool);
                         if (Array.isArray(parsed)) {
                             startTrendSymbols = parsed
-                                .map((item: any) => typeof item === 'string' ? item : item?.symbol)
-                                .filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym));
+                                .map((item: any) => typeof item === 'string' ? item : (item?.direction ? `${item.symbol}_${item.direction}` : item?.symbol))
+                                .filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym.replace(/_LONG$|_SHORT$/i, '')));
                         }
                     }
                 } catch (_) {}
@@ -1152,7 +1152,7 @@ export const useScannerLogic = (
                                         ? cfg.sidewaysGroups
                                         : [{ days: cfg.sidewaysDays || 7, maxDrop: cfg.sidewaysMaxDrop || 10, maxPump: cfg.sidewaysMaxPump || 10, enabled: true }];
                                     
-                                    const activeGroups = rawGroups.filter(g => g.enabled !== false && ((g.days ?? 0) > 0 || (g.daysLong ?? 0) > 0 || (g.daysShort ?? 0) > 0));
+                                    const activeGroups = rawGroups.filter(g => g.enabled !== false && ((Number(g.days) || 0) > 0 || (Number(g.daysLong) || 0) > 0 || (Number(g.daysShort) || 0) > 0));
 
                                     if (activeGroups.length > 0) {
                                         const isAndMode = cfg.sidewaysLogic === 'AND';
@@ -1160,23 +1160,41 @@ export const useScannerLogic = (
                                         const isLongCand = symbol.endsWith('_LONG');
 
                                         const evalGroupForDirection = (g: any, forShort: boolean) => {
-                                            const gDays = (forShort ? (g.daysShort ?? g.days) : (g.daysLong ?? g.days)) || 7;
-                                            const gMaxDrop = (forShort ? (g.maxDropShort ?? g.maxDrop) : (g.maxDropLong ?? g.maxDrop)) ?? 10;
-                                            const gMaxPump = (forShort ? (g.maxPumpShort ?? g.maxPump) : (g.maxPumpLong ?? g.maxPump)) ?? 10;
+                                            const gDays = Math.max(1, Math.floor(Number(forShort ? (g.daysShort ?? g.days) : (g.daysLong ?? g.days)) || 7));
+                                            const rawDrop = Number(forShort ? (g.maxDropShort ?? g.maxDrop) : (g.maxDropLong ?? g.maxDrop));
+                                            const rawPump = Number(forShort ? (g.maxPumpShort ?? g.maxPump) : (g.maxPumpLong ?? g.maxPump));
+                                            const gMaxDrop = isNaN(rawDrop) ? 10 : rawDrop;
+                                            const gMaxPump = isNaN(rawPump) ? 10 : rawPump;
+
+                                            // 严格校验历史K线长度：如果历史K线少于观察周期，无法满足指定天数的充分横盘蓄势要求
+                                            if (highs.length < Math.min(gDays, 3)) {
+                                                return { passed: false, gMaxZ: currentPrice, gMinZ: currentPrice, gDrop: 999, gRise: 999, days: gDays };
+                                            }
+
                                             const sHighs = highs.slice(-gDays);
                                             const sLows = lows.slice(-gDays);
                                             const gMaxZ = sHighs.length > 0 ? Math.max(...sHighs) : currentPrice;
                                             const gMinZ = sLows.length > 0 ? Math.min(...sLows) : currentPrice;
-                                            const gDrop = ((gMaxZ - currentPrice) / gMaxZ) * 100;
-                                            const gRise = ((currentPrice - gMinZ) / gMinZ) * 100;
+                                            const gDrop = gMaxZ > 0 ? ((gMaxZ - currentPrice) / gMaxZ) * 100 : 0;
+                                            const gRise = gMinZ > 0 ? ((currentPrice - gMinZ) / gMinZ) * 100 : 0;
                                             const passed = gDrop <= gMaxDrop && gRise <= gMaxPump;
                                             return { passed, gMaxZ, gMinZ, gDrop, gRise, days: gDays };
                                         };
 
                                         const evalAllGroups = (forShort: boolean) => {
                                             const results = activeGroups.map(g => evalGroupForDirection(g, forShort));
+                                            // 🔒 严格按逻辑执行：“且”模式下每一个启用的规则组都必须 100% 满足(共振)；“或”模式下任意一组满足即可
                                             const passed = isAndMode ? results.every(r => r.passed) : results.some(r => r.passed);
-                                            const matched = results.find(r => r.passed) || results[0];
+                                            const matched = isAndMode
+                                                ? {
+                                                    passed,
+                                                    gMaxZ: Math.max(...results.map(r => r.gMaxZ)),
+                                                    gMinZ: Math.min(...results.map(r => r.gMinZ)),
+                                                    gDrop: Math.max(...results.map(r => r.gDrop)),
+                                                    gRise: Math.max(...results.map(r => r.gRise)),
+                                                    days: Math.max(...results.map(r => r.days))
+                                                }
+                                                : (results.find(r => r.passed) || results[0]);
                                             return { passed, matched };
                                         };
 
@@ -1233,7 +1251,7 @@ export const useScannerLogic = (
 
                             if (sidewaysMatch) {
                                 stage1PassedItems.push({
-                                    symbol,
+                                    symbol: safeSymbol,
                                     maxZ,
                                     minZ,
                                     dropFromMax,
@@ -1404,7 +1422,7 @@ export const useScannerLogic = (
                 const maxZ = item.maxZ;
                 const minZ = item.minZ;
 
-                const effectiveSidewaysDays = Math.max(...(cfg.sidewaysGroups?.filter(g => g.enabled !== false && (g.days ?? 0) > 0).map(g => g.days) || [cfg.sidewaysDays || 7]));
+                const effectiveSidewaysDays = Math.max(...(cfg.sidewaysGroups?.filter(g => g.enabled !== false).map(g => Number(g.daysLong || g.daysShort || g.days || 7)) || [cfg.sidewaysDays || 7]));
                 let histHighs = highs;
                 let histLows = lows;
                 if (enableSideways && highs.length > effectiveSidewaysDays) {
@@ -1656,7 +1674,19 @@ export const useScannerLogic = (
             sidewaysDays: cfg.sidewaysDays,
             sidewaysMaxDrop: cfg.sidewaysMaxDrop,
             sidewaysMaxPump: cfg.sidewaysMaxPump,
-            sidewaysGroups: cfg.sidewaysGroups?.map(g => ({ enabled: g.enabled, days: g.days, maxDrop: g.maxDrop, maxPump: g.maxPump })),
+            sidewaysGroups: cfg.sidewaysGroups?.map(g => ({
+                id: g.id,
+                enabled: g.enabled,
+                days: g.days,
+                maxDrop: g.maxDrop,
+                maxPump: g.maxPump,
+                daysLong: g.daysLong,
+                maxDropLong: g.maxDropLong,
+                maxPumpLong: g.maxPumpLong,
+                daysShort: g.daysShort,
+                maxDropShort: g.maxDropShort,
+                maxPumpShort: g.maxPumpShort
+            })),
             enableStartTrendLong: cfg.enableStartTrendLong,
             enableStartTrendShort: cfg.enableStartTrendShort,
             startTrendGroups: cfg.startTrendGroups?.map(g => ({ enabled: g.enabled, hours: g.hours, minLong: g.minLong, maxLong: g.maxLong, minShort: g.minShort, maxShort: g.maxShort, maxPullbackLong: g.maxPullbackLong, maxPullbackShort: g.maxPullbackShort }))

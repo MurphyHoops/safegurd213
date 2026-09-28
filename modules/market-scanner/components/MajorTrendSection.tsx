@@ -40,7 +40,7 @@ const DEFAULT_CONFIG: MajorTrendConfig = {
     sidewaysMaxDrop: 10,
     sidewaysLogic: 'OR',
     sidewaysGroups: [
-        { id: 'g1', enabled: true, days: 7, maxDrop: 10, maxPump: 10 }
+        { id: 'g1', enabled: true, days: 7, maxDrop: 10, maxPump: 10, daysLong: 7, maxDropLong: 10, maxPumpLong: 10, daysShort: 7, maxDropShort: 10, maxPumpShort: 10 }
     ],
     autoTransfer: false,
     enableLong: true,
@@ -216,7 +216,13 @@ export const MajorTrendSection: React.FC<Props> = ({
             enabled: true,
             days: newDays,
             maxDrop: 10,
-            maxPump: 10
+            maxPump: 10,
+            daysLong: newDays,
+            maxDropLong: 10,
+            maxPumpLong: 10,
+            daysShort: newDays,
+            maxDropShort: 10,
+            maxPumpShort: 10
         };
         const next = [...rawSidewaysGroups, newGroup];
         setConfig({
