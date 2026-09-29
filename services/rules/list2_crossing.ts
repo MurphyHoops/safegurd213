@@ -676,13 +676,12 @@ export function analyzeList2Crossing(
     if (longClusters.length > 0) {
         // Filter clusters that satisfy the 'new' requirement (backtest/real-time catchup)
         // AND satisfy the retention requirement:
-        // - In alignment mode, signal is born at oldestMember (first candle of divergence/crossing sequence).
-        // - A cluster is valid ONLY if that signal candle was within scanLookbackLimit and has NOT exceeded retentionThreshold.
+        // - A cluster of divergence/crossing signals is valid if its latest confirmed candle is within scanLookbackLimit and active within retentionThreshold.
         const isAlignmentModeL = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
         const validClusters = longClusters.filter(cluster => {
-            const signalMember = isAlignmentModeL ? cluster[cluster.length - 1] : cluster[0];
-            const isWithinLookback = signalMember.lag <= scanLookbackLimit;
-            const isWithinRetention = signalMember.lag <= retentionThreshold;
+            const latestMember = cluster[0];
+            const isWithinLookback = latestMember.lag <= scanLookbackLimit;
+            const isWithinRetention = latestMember.lag <= retentionThreshold;
             return isWithinLookback && isWithinRetention;
         });
 
@@ -691,10 +690,9 @@ export function analyzeList2Crossing(
             const cluster = validClusters[0];
             
             // CRITICAL: Determine Lag & Properties for results
-            // In alignment mode, the signal anchor is oldestMember; in pure crossing, it is targetMember.
+            // Use the latest confirmed signal candle in the active cluster
             const targetMember = cluster[0];
-            const oldestMember = cluster[cluster.length - 1];
-            const signalMember = isAlignmentModeL ? oldestMember : targetMember;
+            const signalMember = targetMember;
 
             // 方式 A (振幅偏离限制 - LONG): 当前价格高于信号K线最高价超过其振幅的 X% 时，不进入列表2
             let passDeviationFilterL = true;
@@ -744,9 +742,9 @@ export function analyzeList2Crossing(
     if (shortClusters.length > 0) {
         const isAlignmentModeS = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
         const validClusters = shortClusters.filter(cluster => {
-            const signalMember = isAlignmentModeS ? cluster[cluster.length - 1] : cluster[0];
-            const isWithinLookback = signalMember.lag <= scanLookbackLimit;
-            const isWithinRetention = signalMember.lag <= retentionThreshold;
+            const latestMember = cluster[0];
+            const isWithinLookback = latestMember.lag <= scanLookbackLimit;
+            const isWithinRetention = latestMember.lag <= retentionThreshold;
             return isWithinLookback && isWithinRetention;
         });
 
@@ -756,8 +754,7 @@ export function analyzeList2Crossing(
             
             // CRITICAL: Determine Lag & Properties for results
             const targetMember = cluster[0];
-            const oldestMember = cluster[cluster.length - 1];
-            const signalMember = isAlignmentModeS ? oldestMember : targetMember;
+            const signalMember = targetMember;
 
             // 方式 A (振幅偏离限制 - SHORT): 当前价格低于信号K线最低价超过其振幅的 X% 时，不进入列表2
             let passDeviationFilterS = true;

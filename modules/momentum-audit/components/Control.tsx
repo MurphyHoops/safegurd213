@@ -53,7 +53,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
     }));
   };
 
-  const setAutoDir = (field: string, val: number) => {
+  const setAutoDirLong = (period: string, val: number) => {
     setConfig((p) => {
       const current = p.autoDirConfig || {
         limit1Q: 0,
@@ -62,9 +62,30 @@ export const List4Control: React.FC<List4PanelProps> = ({
         limit1D: 0,
         limit1H: 0
       };
+      const longLimits = { ...(current.longLimits || {}) };
+      longLimits[period] = val;
+      const pField = `limit${period}`;
       return {
         ...p,
-        autoDirConfig: { ...current, [field]: val },
+        autoDirConfig: { ...current, [pField]: val, longLimits },
+      };
+    });
+  };
+
+  const setAutoDirShort = (period: string, val: number) => {
+    setConfig((p) => {
+      const current = p.autoDirConfig || {
+        limit1Q: 0,
+        limit1M: 0,
+        limit1W: 0,
+        limit1D: 0,
+        limit1H: 0
+      };
+      const shortLimits = { ...(current.shortLimits || {}) };
+      shortLimits[period] = val;
+      return {
+        ...p,
+        autoDirConfig: { ...current, shortLimits },
       };
     });
   };
@@ -535,7 +556,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
                 </div>
                 {['1Q', '1M', '1W', '1D', '1H'].map((period) => {
                   const pField = `limit${period}` as any;
-                  const currentDist = config.autoDirConfig?.[pField] ?? 0;
+                  const currentDist = config.autoDirConfig?.longLimits?.[period] ?? config.autoDirConfig?.[pField] ?? 0;
 
                   return (
                     <div
@@ -547,7 +568,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
                         <input
                             type="number"
                             value={currentDist}
-                            onChange={(e) => setAutoDir(pField, parseFloat(e.target.value) || 0)}
+                            onChange={(e) => setAutoDirLong(period, parseFloat(e.target.value) || 0)}
                             className="w-16 bg-slate-900 border border-slate-700 rounded text-center text-[9px] text-white font-bold outline-none py-0.5"
                             placeholder="限制 %"
                         />
@@ -562,8 +583,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
                   做空锁定限制 (禁止追跌)
                 </div>
                 {['1Q', '1M', '1W', '1D', '1H'].map((period) => {
-                  const pField = `limit${period}` as any;
-                  const currentDist = config.autoDirConfig?.[pField] ?? 0;
+                  const currentDist = config.autoDirConfig?.shortLimits?.[period] ?? 0;
 
                   return (
                     <div
@@ -575,7 +595,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
                         <input
                             type="number"
                             value={currentDist}
-                            onChange={(e) => setAutoDir(pField, parseFloat(e.target.value) || 0)}
+                            onChange={(e) => setAutoDirShort(period, parseFloat(e.target.value) || 0)}
                             className="w-16 bg-slate-900 border border-slate-700 rounded text-center text-[9px] text-white font-bold outline-none py-0.5"
                             placeholder="限制 %"
                         />

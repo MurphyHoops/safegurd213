@@ -12,7 +12,7 @@ interface Props {
     activeTimeframes: string[];
     countdowns: Record<string, string>;
     scanningSymbols?: Record<string, string>;
-    onSelectSymbol?: (symbol: string) => void;
+    onSelectSymbol?: (symbol: string, tf?: string) => void;
 }
 
 const ALL_TFS = ['15s', '30s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
@@ -322,22 +322,24 @@ export const TimeframeDiagnosticsModal: React.FC<Props> = ({
                                 return (
                                     <div
                                         key={`${record.symbol}-${record.tf}`}
-                                        className={`p-3 rounded-lg border transition-all ${
+                                        onClick={() => onSelectSymbol && onSelectSymbol(record.symbol, record.tf)}
+                                        className={`p-3 rounded-lg border transition-all cursor-pointer select-none hover:scale-[1.005] hover:shadow-lg group ${
                                             isPassed
-                                                ? 'bg-emerald-950/20 border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.15)]'
+                                                ? 'bg-emerald-950/20 border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.15)] hover:border-emerald-400'
                                                 : isError
-                                                    ? 'bg-red-950/20 border-red-500/40'
+                                                    ? 'bg-red-950/20 border-red-500/40 hover:border-red-400'
                                                     : isLong
-                                                        ? 'bg-indigo-950/20 border-indigo-500/30'
+                                                        ? 'bg-indigo-950/20 border-indigo-500/30 hover:border-indigo-400'
                                                         : isShort
-                                                            ? 'bg-rose-950/20 border-rose-500/30'
-                                                            : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                                                            ? 'bg-rose-950/20 border-rose-500/30 hover:border-rose-400'
+                                                            : 'bg-slate-900/60 border-slate-800 hover:border-indigo-500/50'
                                         }`}
+                                        title={`点击查看 ${cleanSym} (${record.tf}) 实时K线图`}
                                     >
                                         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
                                             {/* Symbol, TF, Price */}
                                             <div className="flex items-center gap-2">
-                                                <span className="px-2 py-0.5 bg-slate-800 text-slate-200 font-mono font-bold text-xs rounded border border-slate-700">
+                                                <span className="px-2 py-0.5 bg-slate-800 text-slate-200 group-hover:text-amber-300 font-mono font-bold text-xs rounded border border-slate-700 transition-colors">
                                                     {cleanSym}
                                                 </span>
                                                 <span className="px-1.5 py-0.5 bg-blue-900/40 border border-blue-500/40 text-blue-300 font-mono font-bold text-[10px] rounded uppercase">
@@ -375,10 +377,14 @@ export const TimeframeDiagnosticsModal: React.FC<Props> = ({
 
                                                 {onSelectSymbol && (
                                                     <button
-                                                        onClick={() => onSelectSymbol(record.symbol)}
-                                                        className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-0.5 p-1 hover:bg-slate-800 rounded transition-colors"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            onSelectSymbol(record.symbol, record.tf);
+                                                        }}
+                                                        className="text-xs text-indigo-400 hover:text-indigo-200 flex items-center gap-1 px-1.5 py-0.5 bg-indigo-950/60 border border-indigo-500/40 hover:bg-indigo-900/80 rounded transition-all font-bold"
                                                         title="在图表中查看"
                                                     >
+                                                        <span>K线</span>
                                                         <ExternalLink size={12} />
                                                     </button>
                                                 )}

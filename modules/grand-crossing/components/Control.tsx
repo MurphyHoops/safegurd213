@@ -38,11 +38,13 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
         });
     };
 
-    const handleSelectSymbol = (sym: string) => {
+    const handleSelectSymbol = (sym: string, tf?: string) => {
         if (setChartData) {
             setChartData({
                 symbol: sym,
-                interval: activeFilterTf || config.timeframes[0] || '5m'
+                tf: tf || activeFilterTf || config.timeframes[0] || '5m',
+                list2Config: config,
+                showAuditLines: false
             });
         }
     };

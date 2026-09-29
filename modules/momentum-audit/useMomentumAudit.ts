@@ -160,43 +160,21 @@ export const useMomentumAudit = (
                     
                     const uniqueId = `${item.symbol}-${res.tf}-${res.direction}`;
                     
-                    // LATCH LOGIC: Evaluation for Anti-Chase & Direction Lock only happens once
-                    let latchedAudit = fuseAuditLatchRef.current.get(uniqueId);
-                    
-                    if (!latchedAudit) {
-                        // First time seeing this signal in List 4? Run expensive historical audit.
-                        const singleItemCandidate = [{
-                            ...item,
-                            price: livePrice,
-                            direction: res.direction,
-                            tf: res.tf,
-                            structure: res.structure
-                        }];
-                        
-                        // Temporarily run analysis to extract fuse status
-                        const auditResult = analyzeList4Momentum(singleItemCandidate, currentConfig);
-                        if (auditResult.length > 0) {
-                            latchedAudit = { 
-                                blocked: auditResult[0].fuseBlocked || false, 
-                                reason: auditResult[0].fuseReason || '' 
-                            };
-                            fuseAuditLatchRef.current.set(uniqueId, latchedAudit);
-                            console.log(`[List4 Latch] Initial Audit for ${uniqueId}: ${latchedAudit.blocked ? 'BLOCKED - ' + latchedAudit.reason : 'PASSED'}`);
-                        }
-                    }
-
+                    // LATCH LOGIC: If previously determined as permanently BLOCKED by fuse, retain latch
+                    const latchedAudit = fuseAuditLatchRef.current.get(uniqueId);
                     const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
 
                     flatCandidates.push({
                         ...item,
-                        price: livePrice, // Inject fresh price
+                        price: livePrice, // Inject fresh live price for dynamic anti-chase evaluation
                         direction: res.direction,
                         tf: res.tf,
                         structure: res.structure,
-                        // Inject latched results to avoid re-calculating inside analyzeList4Momentum
+                        historyExtremes: item.historyExtremes,
+                        // If already latched as blocked, preserve it; otherwise allow real-time audit on fresh live price
                         fuseBlocked: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false,
                         fuseReason: isAnyFuseEnabled ? (latchedAudit?.reason || '') : '',
-                        fuseLatched: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false // Only latch if it was actually blocked and enabled
+                        fuseLatched: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false
                     });
                 });
             }

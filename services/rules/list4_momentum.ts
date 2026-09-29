@@ -288,12 +288,14 @@ export function analyzeList4Momentum(
             const { highs1h, lows1h } = item.historyExtremes;
 
             if (item.direction === 'LONG' && antiChase.longThresholds) {
-                for (const [hoursStr, threshold] of Object.entries(antiChase.longThresholds)) {
-                    if (threshold <= 0) continue;
+                for (const [hoursStr, thresholdVal] of Object.entries(antiChase.longThresholds)) {
+                    const threshold = Number(thresholdVal);
+                    if (!threshold || threshold <= 0) continue;
                     const hours = parseInt(hoursStr);
+                    if (isNaN(hours) || hours <= 0) continue;
                     const lows = lows1h ? lows1h.slice(-hours) : [];
                     const minPrice = lows.length > 0 ? Math.min(...lows) : currentPrice;
-                    const pump = ((currentPrice - minPrice) / minPrice) * 100;
+                    const pump = minPrice > 0 ? ((currentPrice - minPrice) / minPrice) * 100 : 0;
                     
                     if (pump > threshold) {
                         fuseBlocked = true;
@@ -303,12 +305,14 @@ export function analyzeList4Momentum(
                     }
                 }
             } else if (item.direction === 'SHORT' && antiChase.shortThresholds) {
-                for (const [hoursStr, threshold] of Object.entries(antiChase.shortThresholds)) {
-                    if (threshold <= 0) continue;
+                for (const [hoursStr, thresholdVal] of Object.entries(antiChase.shortThresholds)) {
+                    const threshold = Number(thresholdVal);
+                    if (!threshold || threshold <= 0) continue;
                     const hours = parseInt(hoursStr);
+                    if (isNaN(hours) || hours <= 0) continue;
                     const highs = highs1h ? highs1h.slice(-hours) : [];
                     const maxPrice = highs.length > 0 ? Math.max(...highs) : currentPrice;
-                    const drop = ((maxPrice - currentPrice) / maxPrice) * 100;
+                    const drop = maxPrice > 0 ? ((maxPrice - currentPrice) / maxPrice) * 100 : 0;
                     
                     if (drop > threshold) {
                         fuseBlocked = true;
@@ -330,15 +334,17 @@ export function analyzeList4Momentum(
             const autoDir = config.autoDirConfig;
             
             const periods = [
-                { key: '1Q', hours: 2160, limit: autoDir.limit1Q },
-                { key: '1M', hours: 720,  limit: autoDir.limit1M },
-                { key: '1W', hours: 168,  limit: autoDir.limit1W },
-                { key: '1D', hours: 24,   limit: autoDir.limit1D },
-                { key: '1H', hours: 1,    limit: autoDir.limit1H }
+                { key: '1Q', hours: 2160, limitLong: autoDir.longLimits?.['1Q'] ?? autoDir.limit1Q, limitShort: autoDir.shortLimits?.['1Q'] ?? autoDir.limit1Q },
+                { key: '1M', hours: 720,  limitLong: autoDir.longLimits?.['1M'] ?? autoDir.limit1M, limitShort: autoDir.shortLimits?.['1M'] ?? autoDir.limit1M },
+                { key: '1W', hours: 168,  limitLong: autoDir.longLimits?.['1W'] ?? autoDir.limit1W, limitShort: autoDir.shortLimits?.['1W'] ?? autoDir.limit1W },
+                { key: '1D', hours: 24,   limitLong: autoDir.longLimits?.['1D'] ?? autoDir.limit1D, limitShort: autoDir.shortLimits?.['1D'] ?? autoDir.limit1D },
+                { key: '1H', hours: 1,    limitLong: autoDir.longLimits?.['1H'] ?? autoDir.limit1H, limitShort: autoDir.shortLimits?.['1H'] ?? autoDir.limit1H }
             ];
 
             for (const p of periods) {
-                if (!p.limit || p.limit <= 0) continue;
+                const limitVal = item.direction === 'LONG' ? p.limitLong : p.limitShort;
+                const limit = Number(limitVal);
+                if (!limit || limit <= 0) continue;
                 
                 const candles = p.hours;
                 const arrH = highs1h ? highs1h.slice(-candles) : [];
@@ -347,19 +353,19 @@ export function analyzeList4Momentum(
                 const minPrice = arrL.length > 0 ? Math.min(...arrL) : currentPrice;
 
                 if (item.direction === 'LONG') {
-                    const pump = ((currentPrice - minPrice) / minPrice) * 100;
-                    if (pump > p.limit) {
+                    const pump = minPrice > 0 ? ((currentPrice - minPrice) / minPrice) * 100 : 0;
+                    if (pump > limit) {
                         fuseBlocked = true;
-                        fuseReason = `【规则 4 - 动态方向锁熔断】由列表4动态方向锁规则删除 [周期: ${p.key}, 涨幅 ${pump.toFixed(1)}% > 限制 ${p.limit}%]`;
-                        fuseDetails = { period: `${p.key}`, threshold: p.limit, actual: parseFloat(pump.toFixed(1)) };
+                        fuseReason = `【规则 4 - 动态方向锁熔断】由列表4动态方向锁规则删除 [周期: ${p.key}, 涨幅 ${pump.toFixed(1)}% > 限制 ${limit}%]`;
+                        fuseDetails = { period: `${p.key}`, threshold: limit, actual: parseFloat(pump.toFixed(1)) };
                         break;
                     }
                 } else if (item.direction === 'SHORT') {
-                    const drop = ((maxPrice - currentPrice) / maxPrice) * 100;
-                    if (drop > p.limit) {
+                    const drop = maxPrice > 0 ? ((maxPrice - currentPrice) / maxPrice) * 100 : 0;
+                    if (drop > limit) {
                         fuseBlocked = true;
-                        fuseReason = `【规则 4 - 动态方向锁熔断】由列表4动态方向锁规则删除 [周期: ${p.key}, 跌幅 ${drop.toFixed(1)}% > 限制 ${p.limit}%]`;
-                        fuseDetails = { period: `${p.key}`, threshold: p.limit, actual: parseFloat(drop.toFixed(1)) };
+                        fuseReason = `【规则 4 - 动态方向锁熔断】由列表4动态方向锁规则删除 [周期: ${p.key}, 跌幅 ${drop.toFixed(1)}% > 限制 ${limit}%]`;
+                        fuseDetails = { period: `${p.key}`, threshold: limit, actual: parseFloat(drop.toFixed(1)) };
                         break;
                     }
                 }

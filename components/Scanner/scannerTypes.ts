@@ -246,11 +246,13 @@ export interface List4Config {
     };
     enableAutoDirGuard?: boolean;
     autoDirConfig?: {
-        limit1Q: number; // %
-        limit1M: number; // %
-        limit1W: number; // %
-        limit1D: number; // %
-        limit1H: number; // %
+        limit1Q?: number; // %
+        limit1M?: number; // %
+        limit1W?: number; // %
+        limit1D?: number; // %
+        limit1H?: number; // %
+        longLimits?: { [key: string]: number };
+        shortLimits?: { [key: string]: number };
     };
     enableAdvancedFilter?: boolean;
     isAdvancedFilterCollapsed?: boolean;
