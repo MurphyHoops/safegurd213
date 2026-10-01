@@ -492,7 +492,77 @@ export function analyzeList2Crossing(
             let patternMatchedS = false;
             const logicMode = config.crossingDivergenceLogic || 'AND';
 
-            if (config.requireCrossing && config.requireAlignment) {
+            // 🔒 [USER MANDATORY RULE - 先穿越后等待发散模式 (WAIT MODE)]
+            if (logicMode === 'WAIT') {
+                const waitBars = Math.max(1, config.waitDivergenceBars ?? 5);
+                let waitDivergenceFoundL = false;
+                let waitDivergenceIdxL = checkIdx;
+                let waitDivergenceFoundS = false;
+                let waitDivergenceIdxS = checkIdx;
+
+                // 做多：当前发生大十字星穿越且已收盘收阳，向后等待发散
+                if (isCrossing && crossingIsBullish && !conflictL && strictOkL && directionGuardL) {
+                    const maxForwardIdx = Math.min(idx - 1, checkIdx + waitBars);
+                    for (let fIdx = checkIdx; fIdx <= maxForwardIdx; fIdx++) {
+                        const fE10 = getEmaVal(ema10, fIdx, 10);
+                        const fE20 = getEmaVal(ema20, fIdx, 20);
+                        const fE30 = getEmaVal(ema30, fIdx, 30);
+                        const fE40 = getEmaVal(ema40, fIdx, 40);
+
+                        // 门禁：中途均线若发生死叉崩溃，则终止等待
+                        if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
+                            if (fIdx > checkIdx) break;
+                        }
+
+                        const isBulldiv = fE10 !== null && fE20 !== null && fE10 > fE20 &&
+                            (fE30 === null || fE20 > fE30) &&
+                            (fE40 === null || (fE30 !== null && fE30 > fE40));
+
+                        // 必须为已收盘阳线，且确立多头发散
+                        if (isBulldiv && closes[fIdx] > opens[fIdx] && (idx - fIdx > 0)) {
+                            waitDivergenceFoundL = true;
+                            waitDivergenceIdxL = fIdx;
+                            break;
+                        }
+                    }
+                }
+
+                // 做空：当前发生大十字星穿越且已收盘收阴，向后等待发散
+                if (isCrossing && crossingIsBearish && !conflictS && strictOkS) {
+                    const maxForwardIdx = Math.min(idx - 1, checkIdx + waitBars);
+                    for (let fIdx = checkIdx; fIdx <= maxForwardIdx; fIdx++) {
+                        const fE10 = getEmaVal(ema10, fIdx, 10);
+                        const fE20 = getEmaVal(ema20, fIdx, 20);
+                        const fE30 = getEmaVal(ema30, fIdx, 30);
+                        const fE40 = getEmaVal(ema40, fIdx, 40);
+
+                        // 门禁：中途均线若发生金叉崩溃，则终止等待
+                        if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
+                            if (fIdx > checkIdx) break;
+                        }
+
+                        const isBearDiv = fE10 !== null && fE20 !== null && fE10 < fE20 &&
+                            (fE30 === null || fE20 < fE30) &&
+                            (fE40 === null || (fE30 !== null && fE30 < fE40));
+
+                        // 必须为已收盘阴线，且确立空头发散
+                        if (isBearDiv && closes[fIdx] < opens[fIdx] && (idx - fIdx > 0)) {
+                            waitDivergenceFoundS = true;
+                            waitDivergenceIdxS = fIdx;
+                            break;
+                        }
+                    }
+                }
+
+                if (waitDivergenceFoundL) {
+                    targetIdxL = waitDivergenceIdxL; // 🔒 严格将出现发散形态的这根K线标记为信号K线
+                    patternMatchedL = true;
+                }
+                if (waitDivergenceFoundS) {
+                    targetIdxS = waitDivergenceIdxS; // 🔒 严格将出现发散形态的这根K线标记为信号K线
+                    patternMatchedS = true;
+                }
+            } else if (config.requireCrossing && config.requireAlignment) {
                 if (logicMode === 'OR') {
                     patternMatchedL = crossingValidL || divergenceStrictValidL;
                     patternMatchedS = crossingValidS || divergenceStrictValidS;

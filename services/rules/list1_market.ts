@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 1 [全域底边扫描 & 过滤规则]
+// @LOCKED: 严格原子化锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何算法与流转逻辑。
+
 import { ScanConfig, ScannerItem } from '../../components/Scanner/scannerTypes';
 import { getVolume8am, checkVolumeRule } from '../volume8amService';
 

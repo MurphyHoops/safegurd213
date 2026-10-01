@@ -118,11 +118,12 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     return; // 实时价格未达到进攻突破线，绝对禁止开仓
                 }
 
-                // 🔒 【双重核心锁 2：前 NK 突破必须由当前实时价格达成】
+                // 🔒 【双重核心锁 2：前 NK 突破必须由当前实时价格达成且必须具备该周期真实K线切片】
                 const kCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
-                if (config.enableRev3K === true && item.structure) {
-                    let maxClose = item.structure.maxClose3;
-                    let minClose = item.structure.minClose3;
+                if (config.enableRev3K === true) {
+                    if (!item.structure) return;
+                    let maxClose: number | undefined = undefined;
+                    let minClose: number | undefined = undefined;
                     if (item.structure.recentCloses && item.structure.recentCloses.length > 0) {
                         const slice = item.structure.recentCloses.slice(-kCount);
                         if (slice.length > 0) {
@@ -130,11 +131,18 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                             minClose = Math.min(...slice);
                         }
                     }
-                    if (item.direction === 'LONG' && typeof maxClose === 'number' && livePrice <= maxClose) {
-                        return; // 实时价格未越过前 NK 最高收盘价，绝对禁止开仓
+                    if (typeof maxClose !== 'number') maxClose = item.structure.maxClose3;
+                    if (typeof minClose !== 'number') minClose = item.structure.minClose3;
+
+                    if (item.direction === 'LONG') {
+                        if (typeof maxClose !== 'number' || livePrice <= maxClose) {
+                            return; // 缺少该周期真实K线极值或实时价格未越过前 NK 最高收盘价，绝对禁止开仓
+                        }
                     }
-                    if (item.direction === 'SHORT' && typeof minClose === 'number' && livePrice >= minClose) {
-                        return; // 实时价格未跌破前 NK 最低收盘价，绝对禁止开仓
+                    if (item.direction === 'SHORT') {
+                        if (typeof minClose !== 'number' || livePrice >= minClose) {
+                            return; // 缺少该周期真实K线极值或实时价格未跌破前 NK 最低收盘价，绝对禁止开仓
+                        }
                     }
                 }
                 

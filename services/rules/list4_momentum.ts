@@ -1,6 +1,5 @@
-// LOCKED
-// Rule Lock: The core logic for Advanced Filter in List 4 (Momentum Audit) is now locked.
-// Any modifications to this filtering logic or the intersection calculation MUST be authorized by a special directive.
+// 🔒 LOCKED_MODULE: LIST 4 [动能趋势审计 & 突破开仓规则]
+// @LOCKED: 严格原子化单独锁定。包含进攻突破线、前NK动态滚动突破、阈值门禁等全部规则。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何算法与流转逻辑。
 
 import { List4Config, ScannerItem } from '../../components/Scanner/scannerTypes';
 
@@ -101,17 +100,17 @@ export function analyzeList4Momentum(
 
         const is3KPassed = (() => {
             if (config.enableRev3K !== true) return true;
-            if (!item.structure) return true;
+            if (!item.structure) return false;
             if (item.direction === 'LONG') {
                 if (typeof maxCloseN === 'number') {
                     return currentPrice > maxCloseN;
                 }
-                return item.structure.isBreakout3K !== false;
+                return false; // 严禁未完成该周期K线切片审计时回退放行
             } else {
                 if (typeof minCloseN === 'number') {
                     return currentPrice < minCloseN;
                 }
-                return item.structure.isBreakout3K !== false;
+                return false; // 严禁未完成该周期K线切片审计时回退放行
             }
         })();
 

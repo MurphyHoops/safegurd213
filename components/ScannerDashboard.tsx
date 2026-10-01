@@ -1232,46 +1232,6 @@ const ScannerDashboardInner: React.FC<
         return false;
       }
 
-      // 🔒 [最高安全门禁: 选币模式独占与绝对开仓防护]
-      // 1. 若当前运行【固定选币】模式 (useCustomOnly === true)：
-      //    【自动选币】为停止状态，系统绝对禁止其它任何地方开仓！仅允许在固定监控池 (customSymbols) 内的币种开仓。
-      if (scanConfigRef.current?.useCustomOnly) {
-        const rawCustom = scanConfigRef.current?.customSymbols || "";
-        const allowedFixedSymbols = new Set(
-          rawCustom
-            .split(/[,，\s]+/)
-            .map((s) => normalizeSymbol(s).replace("USDT", ""))
-            .filter(Boolean)
-        );
-        const symbolBase = cleanSymbol.replace("USDT", "");
-        if (!allowedFixedSymbols.has(symbolBase)) {
-          if (onLog) {
-            onLog(
-              "WARNING",
-              `🛡️ [固定选币独占拦截] 当前处于【固定选币】运行状态，【自动选币】已停止运行。${cleanSymbol} 不在固定监控池中，系统绝对禁止其它任何地方开仓！`
-            );
-          }
-          console.warn(`[Trade Reject] Fixed selection exclusive: blocked ${cleanSymbol}, not in customSymbols.`);
-          return false;
-        }
-      }
-
-      // 2. 若当前运行【自动选币】模式 (useCustomOnly === false)：
-      //    【固定选币】为停止运行状态，自动策略开仓仅允许在当前通过初筛审核的候选池中的币种开仓
-      if (!scanConfigRef.current?.useCustomOnly && isAuto && !isManual) {
-        const isCand = list1CandidatesRef.current.some(c => normalizeSymbol(c.symbol) === cleanSymbol);
-        if (!isCand) {
-          if (onLog) {
-            onLog(
-              "WARNING",
-              `🛡️ [自动选币安全拦截] ${cleanSymbol} 当前未在自动初筛候选池中，【固定选币】已停止运行，拒绝执行开仓。`
-            );
-          }
-          console.warn(`[Trade Reject] Auto selection: blocked ${cleanSymbol}, not in list1Candidates.`);
-          return false;
-        }
-      }
-
       if (isAuto && !config.autoExecute) {
         if (onLog)
           onLog(

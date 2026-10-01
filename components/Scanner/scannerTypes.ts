@@ -192,7 +192,8 @@ export interface List2Config {
     sortMode: 'LATEST' | 'MOST';
     requireCrossing: boolean;
     requireAlignment: boolean;
-    crossingDivergenceLogic?: 'AND' | 'OR';
+    crossingDivergenceLogic?: 'AND' | 'OR' | 'WAIT';
+    waitDivergenceBars?: number;          // 新增：先穿越等待发散K线根数（可自由配置，默认5根）
     enableDivergenceCrossCheck?: boolean; // 新增：发散前置穿越回溯开关
     divergenceLookbackBars?: number;     // 新增：发散前置穿越回溯K线根数（可自由配置）
     enableSignalDeviationFilter?: boolean; // 新增：信号K线振幅偏离限制开关

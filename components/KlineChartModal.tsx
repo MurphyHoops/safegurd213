@@ -2447,10 +2447,12 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
               const kCount = Math.max(1, Math.min(50, list4Cfg?.rev3KCandles ?? 3));
               const enableRev3K = list4Cfg?.enableRev3K === true;
 
-              // 2. 判定方向与计算实时价格
+              // 2. 判定方向与计算实时价格 (优先采用当前 WebSocket 秒级实时 K 线的最新收盘价)
               const isLong = focalIsLong;
               const lastCandle = fullData[lastIdx];
-              const livePrice = (typeof currentPrice === 'number' && currentPrice > 0) ? currentPrice : lastCandle.close;
+              const livePrice = (lastCandle && typeof lastCandle.close === 'number' && lastCandle.close > 0) 
+                  ? lastCandle.close 
+                  : ((typeof currentPrice === 'number' && currentPrice > 0) ? currentPrice : 0);
 
               // 3. 计算进攻突破价格
               const triggerLine = extraLines?.find(l => l.label && (l.label.includes('突破') || l.label.includes('Trigger') || l.label.includes('TRIGGER') || l.label.includes('攻')));
@@ -2458,11 +2460,11 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                   ? triggerLine.price 
                   : (focalBreakoutPrice !== null && focalBreakoutPrice > 0 ? focalBreakoutPrice : 0);
 
-              // 4. 计算前 N 根 K 线的收盘价极值 (严格回溯信号K线或最新K线前的 N 根)
-              const sigCandleIdx = (focalIdx !== -1 && focalIdx < lastIdx) ? focalIdx : lastIdx;
-              const sliceCandles = (sigCandleIdx > 0)
-                  ? fullData.slice(Math.max(0, sigCandleIdx - kCount), sigCandleIdx)
-                  : fullData.slice(Math.max(0, lastIdx - kCount), lastIdx);
+              // 4. 计算前 N 根 K 线的收盘价极值 (严格以当前最新K线为锚点向左看，回溯其前 N 根已收盘K线极值)
+              const sigCandleIdx = (focalIdx !== -1 && focalIdx <= lastIdx) ? focalIdx : lastIdx;
+              const sliceCandles = (lastIdx > 0)
+                  ? fullData.slice(Math.max(0, lastIdx - kCount), lastIdx)
+                  : [];
               const sliceCloses = sliceCandles.map(c => c.close).filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
               const maxCloseN = sliceCloses.length > 0 ? Math.max(...sliceCloses) : (lastCandle?.close || 0);
               const minCloseN = sliceCloses.length > 0 ? Math.min(...sliceCloses) : (lastCandle?.close || 0);

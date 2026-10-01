@@ -23,12 +23,27 @@ export function checkConventionalProfit(
         // Build active tiers to evaluate
         const activeTiers: { threshold: number; floor: number }[] = [];
         
+        // 1.1 多组阶梯式托底
         if (settings.trailingTiers && settings.trailingTiers.length > 0) {
-            activeTiers.push(...settings.trailingTiers);
-        } else if (settings.trailingTriggerProfit !== undefined && settings.trailingRemainingProfit !== undefined) {
+            for (const t of settings.trailingTiers) {
+                if (typeof t.threshold === 'number' && typeof t.floor === 'number') {
+                    activeTiers.push({ threshold: t.threshold, floor: t.floor });
+                }
+            }
+        }
+        
+        // 1.2 单组默认托底 (备用)
+        const defaultTrigger = typeof settings.trailingTriggerProfit === 'number' 
+            ? settings.trailingTriggerProfit 
+            : 5;
+        const defaultFloor = typeof settings.trailingRemainingProfit === 'number' 
+            ? settings.trailingRemainingProfit 
+            : 2;
+        
+        if (defaultTrigger > 0) {
             activeTiers.push({
-                threshold: settings.trailingTriggerProfit,
-                floor: settings.trailingRemainingProfit
+                threshold: defaultTrigger,
+                floor: defaultFloor
             });
         }
 
@@ -47,7 +62,7 @@ export function checkConventionalProfit(
                 close(
                     position.symbol, 
                     position.side, 
-                    `常规阶梯托底平仓触发: 最高盈利达到 ${maxPnl.toFixed(2)}% >= 阶梯阈值 ${activeTier.threshold.toFixed(2)}%，回调后当前盈利仅剩 ${currentPnl.toFixed(2)}% <= 托底底线 ${activeTier.floor.toFixed(2)}%`,
+                    `常规托底平仓触发: 最高盈利达到 ${maxPnl.toFixed(2)}% >= 托底阈值 ${activeTier.threshold.toFixed(2)}%，回调后当前盈利仅剩 ${currentPnl.toFixed(2)}% <= 托底底线 ${activeTier.floor.toFixed(2)}%`,
                     settings.closePercent || 100
                 );
                 return true;

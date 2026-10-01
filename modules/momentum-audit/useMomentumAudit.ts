@@ -12,6 +12,7 @@ import { ScannerItem, List4Config, List3Config } from '../../components/Scanner/
 import { analyzeList4Momentum } from '../../services/rules/list4_momentum';
 import { Position } from '../../types';
 import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
+import { fetchWithFallback } from '../../services/apiService';
 import { saveState } from '../../utils/persistence';
 import { db, auth } from '../../firebase';
 import { collection, addDoc } from 'firebase/firestore';
@@ -109,6 +110,46 @@ export const useMomentumAudit = (
         })()
     ));
 
+    // 🔒 [独立 K 线高保真收盘价缓存通道] 列表 4 独立直连币安抓取对应周期真实已收盘 K 线
+    const list4KlinesCacheRef = useRef<Map<string, { closes: number[], timestamp: number }>>(new Map());
+    const activeFetchingKeysRef = useRef<Set<string>>(new Set());
+
+    const fetchList4Klines = useCallback(async (symbol: string, tf: string) => {
+        const cleanSym = normalizeSymbol(symbol);
+        const key = `${cleanSym}-${tf}`;
+        const now = Date.now();
+        const cached = list4KlinesCacheRef.current.get(key);
+        if (cached && now - cached.timestamp < 10000) {
+            return cached.closes;
+        }
+        if (activeFetchingKeysRef.current.has(key)) {
+            return cached?.closes || [];
+        }
+        activeFetchingKeysRef.current.add(key);
+        try {
+            const safeSym = cleanSym.endsWith('USDT') ? cleanSym : `${cleanSym}USDT`;
+            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=${tf}&limit=60&_t=${now}`;
+            const res = await fetchWithFallback(url, { cache: 'no-store' }, (d) => Array.isArray(d));
+            if (res.ok) {
+                const raw = await res.json();
+                if (Array.isArray(raw) && raw.length > 0) {
+                    const allCloses = raw.map((k: any) => parseFloat(k[4]) || 0).filter((v: number) => !isNaN(v) && v > 0);
+                    // 仅提取已收盘的前序K线收盘价切片（剔除正在形成的最后一根）
+                    const priorCloses = allCloses.length > 1 ? allCloses.slice(0, -1) : allCloses;
+                    list4KlinesCacheRef.current.set(key, { closes: priorCloses, timestamp: Date.now() });
+                    // 异步拿到最新K线后立即重新计算列表4动能，秒级解锁
+                    runMomentumAnalysis.current();
+                    return priorCloses;
+                }
+            }
+        } catch (e) {
+            // silent fallback
+        } finally {
+            activeFetchingKeysRef.current.delete(key);
+        }
+        return cached?.closes || [];
+    }, []);
+
     // Keep refs synced
     useEffect(() => { realPricesRef.current = realPrices; }, [realPrices]);
     useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
@@ -159,6 +200,26 @@ export const useMomentumAudit = (
                     if (!res.latched) return;
                     
                     const uniqueId = `${item.symbol}-${res.tf}-${res.direction}`;
+                    const cleanSym = normalizeSymbol(item.symbol);
+                    const klineKey = `${cleanSym}-${res.tf}`;
+
+                    // 🎯 列表4独立K线补全：确保 recentCloses 100% 存在且为该周期真实已收盘K线
+                    let resolvedCloses = res.structure?.recentCloses;
+                    if (!resolvedCloses || resolvedCloses.length === 0) {
+                        const cachedObj = list4KlinesCacheRef.current.get(klineKey);
+                        if (cachedObj && cachedObj.closes.length > 0) {
+                            resolvedCloses = cachedObj.closes;
+                        } else {
+                            fetchList4Klines(item.symbol, res.tf);
+                        }
+                    } else {
+                        list4KlinesCacheRef.current.set(klineKey, { closes: resolvedCloses, timestamp: Date.now() });
+                    }
+
+                    const structureEnriched = res.structure ? {
+                        ...res.structure,
+                        recentCloses: resolvedCloses || []
+                    } : res.structure;
                     
                     // LATCH LOGIC: If previously determined as permanently BLOCKED by fuse, retain latch
                     const latchedAudit = fuseAuditLatchRef.current.get(uniqueId);
@@ -169,7 +230,7 @@ export const useMomentumAudit = (
                         price: livePrice, // Inject fresh live price for dynamic anti-chase evaluation
                         direction: res.direction,
                         tf: res.tf,
-                        structure: res.structure,
+                        structure: structureEnriched,
                         historyExtremes: item.historyExtremes,
                         // If already latched as blocked, preserve it; otherwise allow real-time audit on fresh live price
                         fuseBlocked: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false,
@@ -429,18 +490,26 @@ export const useMomentumAudit = (
         });
     }, [list4]);
 
-    // --- HEARTBEAT TIMER ---
-    // REFACTORED: From setInterval (300ms) to Event-Driven Subscription
+    // --- HEARTBEAT & DUAL-INSURANCE PULSE TIMER ---
+    // 🔒 [双保险触发体系] WebSocket 极速事件直通 + 500ms 兜底心跳脉冲，彻底免疫网络重连或瞬时静默
     useEffect(() => {
-        // Subscribe to price updates
+        // 1. WebSocket 毫秒级极速事件监听
         const unsubscribe = priceRegistry.registerListener(() => {
             runAnalysisSync();
         });
 
-        // Run analysis once after mount to initialize state
+        // 2. 500ms 兜底安全心跳脉冲（即使 WS 短暂断连或重连中，也保证秒级轮询判定开仓）
+        const intervalTimer = setInterval(() => {
+            runAnalysisSync();
+        }, 500);
+
+        // 3. 初始挂载立即执行一次
         runAnalysisSync();
 
-        return () => unsubscribe();
+        return () => {
+            unsubscribe();
+            clearInterval(intervalTimer);
+        };
     }, [runAnalysisSync]);
     // ^ Removed candidates, config, list3Config because runMomentumAnalysis relies on refs, 
     // and runMomentumAnalysis itself is memoized.

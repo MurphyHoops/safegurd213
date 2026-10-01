@@ -1249,6 +1249,7 @@ export const useStructureAudit = (
             thrustValid: true,
             isStrictTrend: true,
             isColorValid: true,
+            isBreakout3K: false,
             lag: r.lag || 0,
             signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
             signalPrice: c.price,

@@ -40,19 +40,22 @@ const Logs: React.FC<Props> = ({ logs }) => {
         </h3>
         <div className="flex-1 overflow-y-auto space-y-1 font-mono text-xs">
             {logs.length === 0 && <p className="text-slate-600 italic">系统待机中...</p>}
-            {logs.map((log) => (
-                <div key={log.id} className="flex gap-2">
-                    <span className="text-slate-500">[{log.timestamp.toLocaleTimeString()}]</span>
-                    <span className={`
-                        ${log.type === 'INFO' ? 'text-slate-300' : ''}
-                        ${log.type === 'SUCCESS' ? 'text-emerald-400' : ''}
-                        ${log.type === 'WARNING' ? 'text-amber-400' : ''}
-                        ${log.type === 'DANGER' ? 'text-red-500 font-bold' : ''}
-                    `}>
-                        {renderLogMessage(log.message)}
-                    </span>
-                </div>
-            ))}
+            {logs.map((log) => {
+                const timeStr = log.timestamp instanceof Date ? log.timestamp.toLocaleTimeString() : new Date(log.timestamp || Date.now()).toLocaleTimeString();
+                return (
+                    <div key={log.id} className="flex gap-2">
+                        <span className="text-slate-500 whitespace-nowrap">[{timeStr}]</span>
+                        <span className={`
+                            ${log.type === 'INFO' ? 'text-slate-300' : ''}
+                            ${log.type === 'SUCCESS' ? 'text-emerald-400' : ''}
+                            ${log.type === 'WARNING' ? 'text-amber-400' : ''}
+                            ${log.type === 'DANGER' ? 'text-red-500 font-bold' : ''}
+                        `}>
+                            {renderLogMessage(log.message)}
+                        </span>
+                    </div>
+                );
+            })}
         </div>
     </div>
   );

@@ -127,23 +127,48 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                     </div>
                 </div>
 
-                {/* AND / OR Logic Selector */}
-                <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
-                    <span className="text-[10px] text-slate-300 font-bold">条件组合关系 (Logic)</span>
-                    <div className="flex bg-slate-900 rounded p-0.5 border border-slate-700 items-center">
-                        <button 
-                            onClick={() => setConfig(p => ({...p, crossingDivergenceLogic: 'AND'}))}
-                            className={`px-3 py-1 text-[9px] font-bold rounded transition-all ${(config.crossingDivergenceLogic || 'AND') === 'AND' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
-                        >
-                            且 (AND)
-                        </button>
-                        <button 
-                            onClick={() => setConfig(p => ({...p, crossingDivergenceLogic: 'OR'}))}
-                            className={`px-3 py-1 text-[9px] font-bold rounded transition-all ${(config.crossingDivergenceLogic || 'AND') === 'OR' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
-                        >
-                            或 (OR)
-                        </button>
+                {/* AND / OR / WAIT Logic Selector */}
+                <div className="flex flex-col gap-1.5 bg-slate-800/50 p-2 rounded border border-slate-700/50">
+                    <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-300 font-bold">条件组合关系 (Logic)</span>
+                        <div className="flex bg-slate-900 rounded p-0.5 border border-slate-700 items-center">
+                            <button 
+                                onClick={() => setConfig(p => ({...p, crossingDivergenceLogic: 'AND'}))}
+                                className={`px-2.5 py-1 text-[9px] font-bold rounded transition-all ${(config.crossingDivergenceLogic || 'AND') === 'AND' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                            >
+                                且 (AND)
+                            </button>
+                            <button 
+                                onClick={() => setConfig(p => ({...p, crossingDivergenceLogic: 'OR'}))}
+                                className={`px-2.5 py-1 text-[9px] font-bold rounded transition-all ${(config.crossingDivergenceLogic || 'AND') === 'OR' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                            >
+                                或 (OR)
+                            </button>
+                            <button 
+                                onClick={() => setConfig(p => ({...p, crossingDivergenceLogic: 'WAIT'}))}
+                                className={`px-2.5 py-1 text-[9px] font-bold rounded transition-all ${(config.crossingDivergenceLogic || 'AND') === 'WAIT' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                            >
+                                等待 (WAIT)
+                            </button>
+                        </div>
                     </div>
+                    {/* 等待模式下展开：等待发散根数配置 */}
+                    {config.crossingDivergenceLogic === 'WAIT' && (
+                        <div className="flex items-center justify-between bg-slate-900/80 px-2 py-1 rounded border border-indigo-500/30 animate-in fade-in slide-in-from-top-1">
+                            <span className="text-[9px] text-indigo-300 font-bold whitespace-nowrap">⏳ 穿越后等待发散K线</span>
+                            <div className="flex items-center gap-1">
+                                <input 
+                                    type="number" 
+                                    min={1}
+                                    max={100}
+                                    value={Number.isNaN(config.waitDivergenceBars) ? '' : (config.waitDivergenceBars ?? 5)} 
+                                    onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, waitDivergenceBars: parseInt(e.target.value) || 1})); }} 
+                                    className="w-8 bg-transparent text-right text-[10px] font-bold text-indigo-300 outline-none p-0 border-b border-indigo-500/50 focus:border-indigo-400 font-mono" 
+                                />
+                                <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">根</span>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Sub-config for EMA Divergence: Cross Backtrack toggle and Bars input */}

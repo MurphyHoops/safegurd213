@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 3 [结构深度审计 & 过滤规则]
+// @LOCKED: 严格原子化单独锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何算法与流转逻辑。
+
 import { calculateEMA, calculateRSI, calculateBollingerBands } from '../indicators';
 import { List3Config, ScannerItem } from '../../components/Scanner/scannerTypes';
 
@@ -320,7 +323,7 @@ export function analyzeList3Structure(
     const curMid = (curUp + curLow) / 2;
     const bbw = curMid !== 0 ? (curUp - curLow) / curMid : 0;
 
-    // --- METRIC 7: 3K Breakout Check (前三K突破: 做多 > Max(Close[1..3]), 做空 < Min(Close[1..3])) ---
+    // --- METRIC 7: 3K Breakout Check (前三K突破: 严格以当前K线为锚点向左看前3根收盘价极值) ---
     let isBreakout3K = false;
     let maxClose3: number | undefined = undefined;
     let minClose3: number | undefined = undefined;

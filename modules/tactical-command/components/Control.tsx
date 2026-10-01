@@ -46,13 +46,10 @@ export const List6Control: React.FC<{
     currentStats: { symbolCount: number, totalValue: number, totalPnl: number };
 }> = ({ config, setConfig, currentStats }) => (
     <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-3 shrink-0">
-        {/* Header Switch */}
+        {/* Header Title */}
         <div className="flex items-center justify-between">
             <div className="font-bold text-orange-400 text-sm flex items-center gap-2">
                 <Zap size={14} className="fill-orange-400/20"/> 6. 战术终端 (COMMAND)
-            </div>
-            <div onClick={() => setConfig(p => ({...p, enabled: !p.enabled}))} className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${config.enabled ? 'bg-orange-600' : 'bg-slate-700'}`}>
-                <div className={`w-3 h-3 bg-white rounded-full transition-transform shadow-sm ${config.enabled ? 'translate-x-4' : ''}`} />
             </div>
         </div>
         

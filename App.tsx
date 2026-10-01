@@ -201,7 +201,7 @@ const AppContent: React.FC = () => {
         logsPendingRef.current = [];
         lastLogUpdateRef.current = Date.now();
 
-        setLogs(prev => [...batch, ...prev].slice(0, 300));
+        setLogs(prev => [...batch, ...prev].slice(0, 2000));
     }, []);
 
     const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string, immediate = false, extraMeta?: Partial<LogEntry>) => {
@@ -240,9 +240,23 @@ const AppContent: React.FC = () => {
             ...extraMeta
         };
 
-        if (immediate) {
+        // 🔒 [开仓/平仓/对冲/砍仓/清仓/币安反馈 核心流水必达穿透]
+        const isCriticalTradeEvent = immediate || 
+            message.includes('开仓') || 
+            message.includes('平仓') || 
+            message.includes('对冲') || 
+            message.includes('补仓') || 
+            message.includes('砍仓') || 
+            message.includes('清仓') || 
+            message.includes('断臂') || 
+            message.includes('救赎') || 
+            message.includes('币安') || 
+            message.includes('成交') || 
+            message.includes('订单');
+
+        if (isCriticalTradeEvent) {
             // 🔒 [毫秒级即时日志穿透] 对开平仓、向币安发送交易等高优先级关键事件立即直推 UI，零缓冲延迟
-            setLogs(prev => [newEntry, ...prev].slice(0, 500));
+            setLogs(prev => [newEntry, ...prev].slice(0, 2000));
             lastLogUpdateRef.current = Date.now();
             return;
         }

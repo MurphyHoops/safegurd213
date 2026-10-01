@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 5 [实况战场监控 & 盘面持仓雷达]
+// @LOCKED: 严格原子化单独锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何算法与流转逻辑。
+
 import React, { useRef } from 'react';
 import { useLiveBattlefield } from './useLiveBattlefield';
 import { Position, PositionSide } from '../../types';
