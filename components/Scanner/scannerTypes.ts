@@ -18,6 +18,9 @@ export interface List2GroupedResult {
     failedVerifyCount?: number;
     isClosed?: boolean; // 是否为已收盘K线
     isPendingGray?: boolean; // 正在走动的实时K线是否因价格不符变为灰色待定态
+    isWaitDivergencePending?: boolean; // 先穿越后等待发散模式下：当前处于等待发散蓄势状态
+    waitElapsedBars?: number; // 已等待K线根数
+    waitTotalBars?: number; // 最大等待K线根数
     kOpen?: number; // 信号K线开盘价
     kClose?: number; // 信号K线收盘价/当前价
     kHigh?: number; // 信号K线最高价

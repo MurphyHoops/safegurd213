@@ -20,6 +20,7 @@ export interface PositionsListProps {
     onManualAmputate?: (position: Position) => void;
     onManualRefill?: (position: Position) => void;
     onManualClosePair?: (position: Position) => void;
+    onAddPosition?: (symbol: string, side: PositionSide, amountUsdt: number, customPrice: number) => void;
     onUpdateSettings?: (section: keyof AppSettings, key: string, value: any) => void;
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;

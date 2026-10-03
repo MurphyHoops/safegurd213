@@ -492,75 +492,122 @@ export function analyzeList2Crossing(
             let patternMatchedS = false;
             const logicMode = config.crossingDivergenceLogic || 'AND';
 
-            // 🔒 [USER MANDATORY RULE - 先穿越后等待发散模式 (WAIT MODE)]
+            // 🔒 [USER MANDATORY RULE - 先穿越后等待发散模式 (WAIT MODE - 方案 B 实时可视进榜)]
+            let isWaitPendingL = false;
+            let waitElapsedL = 0;
+            let waitTotalL = 0;
+
+            let isWaitPendingS = false;
+            let waitElapsedS = 0;
+            let waitTotalS = 0;
+
             if (logicMode === 'WAIT') {
                 const waitBars = Math.max(1, config.waitDivergenceBars ?? 5);
-                let waitDivergenceFoundL = false;
-                let waitDivergenceIdxL = checkIdx;
-                let waitDivergenceFoundS = false;
-                let waitDivergenceIdxS = checkIdx;
 
                 // 做多：当前发生大十字星穿越且已收盘收阳，向后等待发散
                 if (isCrossing && crossingIsBullish && !conflictL && strictOkL && directionGuardL) {
-                    const maxForwardIdx = Math.min(idx - 1, checkIdx + waitBars);
-                    for (let fIdx = checkIdx; fIdx <= maxForwardIdx; fIdx++) {
-                        const fE10 = getEmaVal(ema10, fIdx, 10);
-                        const fE20 = getEmaVal(ema20, fIdx, 20);
-                        const fE30 = getEmaVal(ema30, fIdx, 30);
-                        const fE40 = getEmaVal(ema40, fIdx, 40);
+                    const elapsedBars = idx - checkIdx;
+                    if (elapsedBars <= waitBars) {
+                        let waitDivergenceFoundL = false;
+                        let waitDivergenceIdxL = checkIdx;
 
-                        // 门禁：中途均线若发生死叉崩溃，则终止等待
-                        if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
-                            if (fIdx > checkIdx) break;
+                        const maxForwardIdx = Math.min(idx - 1, checkIdx + waitBars);
+                        for (let fIdx = checkIdx; fIdx <= maxForwardIdx; fIdx++) {
+                            const fE10 = getEmaVal(ema10, fIdx, 10);
+                            const fE20 = getEmaVal(ema20, fIdx, 20);
+                            const fE30 = getEmaVal(ema30, fIdx, 30);
+                            const fE40 = getEmaVal(ema40, fIdx, 40);
+
+                            // 门禁：中途均线若发生死叉崩溃，则终止等待
+                            if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
+                                if (fIdx > checkIdx) break;
+                            }
+
+                            const isBulldiv = fE10 !== null && fE20 !== null && fE10 > fE20 &&
+                                (fE30 === null || fE20 > fE30) &&
+                                (fE40 === null || (fE30 !== null && fE30 > fE40));
+
+                            // 必须为已收盘阳线，且确立多头发散
+                            if (isBulldiv && closes[fIdx] > opens[fIdx] && (idx - fIdx > 0)) {
+                                waitDivergenceFoundL = true;
+                                waitDivergenceIdxL = fIdx;
+                                break;
+                            }
                         }
 
-                        const isBulldiv = fE10 !== null && fE20 !== null && fE10 > fE20 &&
-                            (fE30 === null || fE20 > fE30) &&
-                            (fE40 === null || (fE30 !== null && fE30 > fE40));
+                        if (waitDivergenceFoundL) {
+                            targetIdxL = waitDivergenceIdxL; // 🔒 严格将出现发散形态的这根K线标记为信号K线（已转正）
+                            patternMatchedL = true;
+                            isWaitPendingL = false;
+                        } else {
+                            // 尚未发散，但仍在等待期内：以穿越K线即时进榜，显示等待发散蓄势中
+                            const curE10 = getEmaVal(ema10, idx - 1, 10);
+                            const curE20 = getEmaVal(ema20, idx - 1, 20);
+                            const curE30 = getEmaVal(ema30, idx - 1, 30);
+                            const isNotDeadCrossed = !(curE10 !== null && curE20 !== null && curE10 <= curE20 && (curE30 === null || curE10 <= curE30));
 
-                        // 必须为已收盘阳线，且确立多头发散
-                        if (isBulldiv && closes[fIdx] > opens[fIdx] && (idx - fIdx > 0)) {
-                            waitDivergenceFoundL = true;
-                            waitDivergenceIdxL = fIdx;
-                            break;
+                            if (isNotDeadCrossed) {
+                                targetIdxL = checkIdx;
+                                patternMatchedL = true;
+                                isWaitPendingL = true;
+                                waitElapsedL = elapsedBars;
+                                waitTotalL = waitBars;
+                            }
                         }
                     }
                 }
 
                 // 做空：当前发生大十字星穿越且已收盘收阴，向后等待发散
                 if (isCrossing && crossingIsBearish && !conflictS && strictOkS) {
-                    const maxForwardIdx = Math.min(idx - 1, checkIdx + waitBars);
-                    for (let fIdx = checkIdx; fIdx <= maxForwardIdx; fIdx++) {
-                        const fE10 = getEmaVal(ema10, fIdx, 10);
-                        const fE20 = getEmaVal(ema20, fIdx, 20);
-                        const fE30 = getEmaVal(ema30, fIdx, 30);
-                        const fE40 = getEmaVal(ema40, fIdx, 40);
+                    const elapsedBars = idx - checkIdx;
+                    if (elapsedBars <= waitBars) {
+                        let waitDivergenceFoundS = false;
+                        let waitDivergenceIdxS = checkIdx;
 
-                        // 门禁：中途均线若发生金叉崩溃，则终止等待
-                        if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
-                            if (fIdx > checkIdx) break;
+                        const maxForwardIdx = Math.min(idx - 1, checkIdx + waitBars);
+                        for (let fIdx = checkIdx; fIdx <= maxForwardIdx; fIdx++) {
+                            const fE10 = getEmaVal(ema10, fIdx, 10);
+                            const fE20 = getEmaVal(ema20, fIdx, 20);
+                            const fE30 = getEmaVal(ema30, fIdx, 30);
+                            const fE40 = getEmaVal(ema40, fIdx, 40);
+
+                            // 门禁：中途均线若发生金叉崩溃，则终止等待
+                            if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
+                                if (fIdx > checkIdx) break;
+                            }
+
+                            const isBearDiv = fE10 !== null && fE20 !== null && fE10 < fE20 &&
+                                (fE30 === null || fE20 < fE30) &&
+                                (fE40 === null || (fE30 !== null && fE30 < fE40));
+
+                            // 必须为已收盘阴线，且确立空头发散
+                            if (isBearDiv && closes[fIdx] < opens[fIdx] && (idx - fIdx > 0)) {
+                                waitDivergenceFoundS = true;
+                                waitDivergenceIdxS = fIdx;
+                                break;
+                            }
                         }
 
-                        const isBearDiv = fE10 !== null && fE20 !== null && fE10 < fE20 &&
-                            (fE30 === null || fE20 < fE30) &&
-                            (fE40 === null || (fE30 !== null && fE30 < fE40));
+                        if (waitDivergenceFoundS) {
+                            targetIdxS = waitDivergenceIdxS; // 🔒 严格将出现发散形态的这根K线标记为信号K线（已转正）
+                            patternMatchedS = true;
+                            isWaitPendingS = false;
+                        } else {
+                            // 尚未发散，但仍在等待期内：以穿越K线即时进榜，显示等待发散蓄势中
+                            const curE10 = getEmaVal(ema10, idx - 1, 10);
+                            const curE20 = getEmaVal(ema20, idx - 1, 20);
+                            const curE30 = getEmaVal(ema30, idx - 1, 30);
+                            const isNotGoldenCrossed = !(curE10 !== null && curE20 !== null && curE10 >= curE20 && (curE30 === null || curE10 >= curE30));
 
-                        // 必须为已收盘阴线，且确立空头发散
-                        if (isBearDiv && closes[fIdx] < opens[fIdx] && (idx - fIdx > 0)) {
-                            waitDivergenceFoundS = true;
-                            waitDivergenceIdxS = fIdx;
-                            break;
+                            if (isNotGoldenCrossed) {
+                                targetIdxS = checkIdx;
+                                patternMatchedS = true;
+                                isWaitPendingS = true;
+                                waitElapsedS = elapsedBars;
+                                waitTotalS = waitBars;
+                            }
                         }
                     }
-                }
-
-                if (waitDivergenceFoundL) {
-                    targetIdxL = waitDivergenceIdxL; // 🔒 严格将出现发散形态的这根K线标记为信号K线
-                    patternMatchedL = true;
-                }
-                if (waitDivergenceFoundS) {
-                    targetIdxS = waitDivergenceIdxS; // 🔒 严格将出现发散形态的这根K线标记为信号K线
-                    patternMatchedS = true;
                 }
             } else if (config.requireCrossing && config.requireAlignment) {
                 if (logicMode === 'OR') {
@@ -666,6 +713,9 @@ export function analyzeList2Crossing(
                     bodyValid: bodyValidL,
                     isClosed: true,
                     isPendingGray: false,
+                    isWaitDivergencePending: isWaitPendingL,
+                    waitElapsedBars: waitElapsedL,
+                    waitTotalBars: waitTotalL,
                     kHigh: highs[targetIdxL],
                     kLow: lows[targetIdxL],
                     kClose: closes[targetIdxL],
@@ -688,6 +738,9 @@ export function analyzeList2Crossing(
                     bodyValid: bodyValidS,
                     isClosed: true,
                     isPendingGray: false,
+                    isWaitDivergencePending: isWaitPendingS,
+                    waitElapsedBars: waitElapsedS,
+                    waitTotalBars: waitTotalS,
                     kHigh: highs[targetIdxS],
                     kLow: lows[targetIdxS],
                     kClose: closes[targetIdxS],
@@ -716,6 +769,9 @@ export function analyzeList2Crossing(
         ampValid: boolean;
         volValid: boolean;
         bodyValid: boolean;
+        isWaitDivergencePending?: boolean;
+        waitElapsedBars?: number;
+        waitTotalBars?: number;
         kHigh: number;
         kLow: number;
         kClose: number;
@@ -799,6 +855,9 @@ export function analyzeList2Crossing(
                     isAligned: signalMember.isAligned,
                     isClosed: signalMember.isClosed,
                     isPendingGray: signalMember.isPendingGray,
+                    isWaitDivergencePending: signalMember.isWaitDivergencePending,
+                    waitElapsedBars: signalMember.waitElapsedBars,
+                    waitTotalBars: signalMember.waitTotalBars,
                     kOpen: signalMember.kOpen,
                     kClose: signalMember.kClose,
                     kHigh: signalMember.kHigh,
@@ -861,6 +920,9 @@ export function analyzeList2Crossing(
                     isAligned: signalMember.isAligned,
                     isClosed: signalMember.isClosed,
                     isPendingGray: signalMember.isPendingGray,
+                    isWaitDivergencePending: signalMember.isWaitDivergencePending,
+                    waitElapsedBars: signalMember.waitElapsedBars,
+                    waitTotalBars: signalMember.waitTotalBars,
                     kOpen: signalMember.kOpen,
                     kClose: signalMember.kClose,
                     kHigh: signalMember.kHigh,

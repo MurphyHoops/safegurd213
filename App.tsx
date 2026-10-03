@@ -2614,7 +2614,7 @@ const AppContent: React.FC = () => {
         }
     }, []);
 
-    const handleAutoClose = useCallback(async (position: Position, reason: string, customQty?: number, ratio?: number) => {
+    const handleAutoClose = useCallback(async (position: Position, reason: string, customQty?: number, ratio?: number, isManual = false) => {
         const cleanSymbol = normalizeSymbol(position.symbol);
         const apiKey = settingsRef.current.system.binanceApiKey;
         const apiSecret = settingsRef.current.system.binanceApiSecret;
@@ -2631,8 +2631,10 @@ const AppContent: React.FC = () => {
             return;
         }
 
-        // 🔒 [断臂求生在途与防重复砍仓安全锁] 若为砍仓请求，检查该仓位是否触发震荡熔断
-        if (customQty !== undefined && ratio !== undefined) {
+        const isManualOp = isManual || reason.includes('手动');
+
+        // 🔒 [断臂求生在途与防重复砍仓安全锁] 若为砍仓请求且非交易员手动操作，检查该仓位是否触发震荡熔断（手动特权放行）
+        if (!isManualOp && customQty !== undefined && ratio !== undefined) {
             const currentPositions = simulatorRef.current ? simulatorRef.current.getPositions() : positions;
             
             // 🔒 [震荡磨损保护熔断检查]
@@ -2647,7 +2649,7 @@ const AppContent: React.FC = () => {
 
         // Debounce: prevent triggering within 5 seconds if a close was triggered recently
         const lastCloseTime = recentlyClosedPositionsRef.current.get(lockKey);
-        if (lastCloseTime && Date.now() - lastCloseTime < 5000) {
+        if (!isManualOp && lastCloseTime && Date.now() - lastCloseTime < 5000) {
             if (simulatorRef.current) {
                 simulatorRef.current.addLog("INFO", `⚡ [自动平仓拦截] ${cleanSymbol} 5秒内已平仓/砍仓过，锁定冷却中。`);
             }
@@ -2661,13 +2663,13 @@ const AppContent: React.FC = () => {
         const isHedge = !!position.isHedge || !!position.mainPositionId;
         const posTag = isHedge ? '【防爆对冲仓位】' : '【原主仓位】';
         const isAmputation = ratio !== undefined;
-        const actLabel = isAmputation ? '【断臂求生减仓】' : (isHedge ? '【防爆对冲减仓/平仓】' : '【市价平仓】');
+        const actLabel = isAmputation ? (isManualOp ? '【手动断臂求生减仓】' : '【断臂求生减仓】') : (isHedge ? '【防爆对冲减仓/平仓】' : (isManualOp ? '【手动市价平仓】' : '【市价平仓】'));
 
         // 🔒【绝对零虚假铁律】指令发送阶段仅记录正在向币安发送请求，严禁提前修改/扣减持仓！
         if (simulatorRef.current) {
             const closePrice = position.markPrice || position.entryPrice || 0;
             const closeUsdtVal = (closeQty * closePrice).toFixed(2);
-            simulatorRef.current.addLog("INFO", `⚡ [自动平仓触发] 【自动策略信号】|${actLabel}|${posTag}| 币种: ${formatCoin(cleanSymbol)} | 方向: ${position.side === 'LONG' ? '卖出平多 (平多)' : '买入平空 (平空)'} | 委托数量: ${closeQty.toFixed(4)} | 委托金额: ${closeUsdtVal} USDT | 触发原因: ${reason}`);
+            simulatorRef.current.addLog("INFO", `⚡ [${isManualOp ? '手动' : '自动'}平仓触发] ${isManualOp ? '【手动操作】' : '【自动策略信号】'}|${actLabel}|${posTag}| 币种: ${formatCoin(cleanSymbol)} | 方向: ${position.side === 'LONG' ? '卖出平多 (平多)' : '买入平空 (平空)'} | 委托数量: ${closeQty.toFixed(4)} | 委托金额: ${closeUsdtVal} USDT | 触发原因: ${reason}`);
             simulatorRef.current.emitUpdate(true);
         }
 
@@ -2692,8 +2694,8 @@ const AppContent: React.FC = () => {
                     isHedge,
                     isAmputation: ratio !== undefined,
                     amputationRatio: ratio,
-                    isManual: false,
-                    reason: ratio !== undefined ? `自动断臂求生减仓 ${ratio}%` : (isHedge ? '自动对冲平仓/止盈止损' : '自动止盈止损策略平仓'),
+                    isManual: isManualOp,
+                    reason: ratio !== undefined ? (isManualOp ? `手动断臂求生减仓 ${ratio}%` : `自动断臂求生减仓 ${ratio}%`) : (isHedge ? '自动对冲平仓/止盈止损' : (isManualOp ? '手动市价平仓' : '自动止盈止损策略平仓')),
                     clientOrderId
                 })
             }).then(async res => {
@@ -3080,14 +3082,15 @@ const AppContent: React.FC = () => {
         }
     }, []);
 
-    const handleAutoOpenRefill = useCallback(async (position: Position, qty: number, reason: string) => {
+    const handleAutoOpenRefill = useCallback(async (position: Position, qty: number, reason: string, isManual = false) => {
         const cleanSymbol = normalizeSymbol(position.symbol);
         const refillLockKey = `${cleanSymbol}_${position.side}`;
-        const isRescueRefill = reason.includes('断臂') || reason.includes('求生');
+        const isManualOp = isManual || reason.includes('手动');
+        const isRescueRefill = isManualOp || reason.includes('断臂') || reason.includes('求生');
         const now = Date.now();
         const lastRefillTime = inFlightRefillRef.current.get(refillLockKey) || 0;
         const cooldownThreshold = isRescueRefill ? 1500 : 8000;
-        if (now - lastRefillTime < cooldownThreshold) {
+        if (!isManualOp && now - lastRefillTime < cooldownThreshold) {
             console.warn(`[Auto Refill Intercepted] 🛡️ 补仓防抖拦截: ${cleanSymbol} ${position.side} (${now - lastRefillTime}ms)`);
             return;
         }
@@ -3124,7 +3127,7 @@ const AppContent: React.FC = () => {
         if (simulatorRef.current) {
             const refillPrice = position.markPrice || position.entryPrice || 0;
             const refillUsdt = (qty * refillPrice).toFixed(2);
-            simulatorRef.current.addLog("INFO", `⚡ [自动补仓触发] 【自动策略信号】|【策略加仓补位】|【原主仓位】| 币种: ${formatCoin(cleanSymbol)} | 方向: ${position.side === 'LONG' ? '买入做多 (LONG)' : '卖出做空 (SHORT)'} | 委托数量: ${qty.toFixed(4)} | 委托金额: ${refillUsdt} USDT | 触发原因: ${reason}`);
+            simulatorRef.current.addLog("INFO", `⚡ [${isManualOp ? '手动' : '自动'}补仓触发] ${isManualOp ? '【手动操作】' : '【自动策略信号】'}|【策略加仓补位】|【原主仓位】| 币种: ${formatCoin(cleanSymbol)} | 方向: ${position.side === 'LONG' ? '买入做多 (LONG)' : '卖出做空 (SHORT)'} | 委托数量: ${qty.toFixed(4)} | 委托金额: ${refillUsdt} USDT | 触发原因: ${reason}`);
         }
 
         const clientOrderId = `REF_${cleanSymbol}_${position.side}_${Date.now()}`.slice(0, 36);
@@ -3144,8 +3147,8 @@ const AppContent: React.FC = () => {
                     amountUsdt: qty * (position.markPrice || position.entryPrice || 0),
                     isRefill: true,
                     allowExisting: true,
-                    isManual: false,
-                    reason: '策略自动加仓补位',
+                    isManual: isManualOp,
+                    reason: isManualOp ? '交易员手动回踩补仓' : '策略自动加仓补位',
                     clientOrderId
                 })
             }).then(async res => {
@@ -4167,10 +4170,10 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         if (settingsRef.current.system.realTrading) {
             simulatorRef.current?.addLog("INFO", `⚡ [手动断臂求生] 正在向币安发送市价砍仓请求: ${cleanSymbol} ${position.side} | 削减比例: ${cutRatio}% | 数量: ${cutAmount.toFixed(4)}...`);
             audioService.speak(`${cleanSymbol}手动断臂砍仓`);
-            await handleAutoClose(position, `3. 手动断臂求生: 交易员手动砍仓 ${cutRatio}%`, cutAmount, cutRatio);
+            await handleAutoClose(position, `3. 手动断臂求生: 交易员手动砍仓 ${cutRatio}%`, cutAmount, cutRatio, true);
         } else {
             if (simulatorRef.current) {
-                simulatorRef.current.amputate(position, cutRatio, `3. 手动断臂求生: 交易员手动砍仓 ${cutRatio}%`);
+                simulatorRef.current.amputate(position, cutRatio, `3. 手动断臂求生: 交易员手动砍仓 ${cutRatio}%`, true);
                 const updated = simulatorRef.current.getPositions();
                 setPositions(updated);
                 setTradeLogs([...simulatorRef.current.tradeLogs]);
@@ -4202,13 +4205,13 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         if (settingsRef.current.system.realTrading) {
             simulatorRef.current?.addLog("INFO", `⚡ [手动断臂求生] 正在向币安发送市价补仓请求: ${cleanSymbol} ${position.side} | 补回数量: ${refillAmount.toFixed(4)}...`);
             audioService.speak(`${cleanSymbol}手动回踩补仓`);
-            await handleAutoOpenRefill(position, refillAmount, `3. 手动断臂求生: 交易员手动回踩补仓`);
+            await handleAutoOpenRefill(position, refillAmount, `3. 手动断臂求生: 交易员手动回踩补仓`, true);
         } else {
             if (simulatorRef.current) {
                 if (!position.amputatedAmount) {
                     position.amputatedAmount = refillAmount;
                 }
-                simulatorRef.current.refill(position, `3. 手动断臂求生: 交易员手动回踩补仓`);
+                simulatorRef.current.refill(position, `3. 手动断臂求生: 交易员手动回踩补仓`, refillAmount, true);
                 const updated = simulatorRef.current.getPositions();
                 setPositions(updated);
                 setTradeLogs([...simulatorRef.current.tradeLogs]);
@@ -4462,6 +4465,11 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                             onManualAmputate={handleManualAmputate}
                             onManualRefill={handleManualRefill}
                             onManualClosePair={handleManualClosePair}
+                            onAddPosition={(symbol, side, amountUsdt, customPrice) => {
+                                if (simulatorRef.current) {
+                                    simulatorRef.current.increasePosition(symbol, side, amountUsdt, customPrice);
+                                }
+                            }}
                             onShowHistory={(symbol) => {
                                 setTradeLogSearchSymbol(symbol);
                                 setShowTradeLogModal(true);

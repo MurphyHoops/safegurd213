@@ -25,6 +25,7 @@ interface Props {
     onManualAmputate?: (position: Position) => void;
     onManualRefill?: (position: Position) => void;
     onManualClosePair?: (position: Position) => void;
+    onAddPosition?: (symbol: string, side: PositionSide, amountUsdt: number, customPrice: number) => void;
     onUpdateSettings?: (section: keyof AppSettings, key: string, value: any) => void;
     onOpenLogs: () => void;
     onOpenTradeModal: () => void;
@@ -58,6 +59,7 @@ const Dashboard: React.FC<Props> = ({
     onManualAmputate,
     onManualRefill,
     onManualClosePair,
+    onAddPosition,
     settings,
     onOpenScanner,
     onRowLongPress,
@@ -100,6 +102,7 @@ const Dashboard: React.FC<Props> = ({
                 onManualAmputate={onManualAmputate}
                 onManualRefill={onManualRefill}
                 onManualClosePair={onManualClosePair}
+                onAddPosition={onAddPosition}
                 onOpenScanner={onOpenScanner}
                 onOpenTradeModal={onOpenTradeModal}
                 onBatchClose={onBatchClose}

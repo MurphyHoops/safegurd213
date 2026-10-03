@@ -120,7 +120,13 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                     let Icon = Shield;
                     let containerClass = "border-slate-700 bg-slate-900/60";
 
-                    if (res.isPendingGray) {
+                    if (res.isWaitDivergencePending) {
+                        statusText = `⏳等待发散(${res.waitElapsedBars ?? 1}/${res.waitTotalBars ?? 5})`;
+                        textColor = 'text-amber-300 font-bold';
+                        barColor = 'bg-indigo-500 animate-pulse';
+                        Icon = Hourglass;
+                        containerClass = "border-indigo-500/50 bg-indigo-950/60 shadow-[0_0_8px_rgba(99,102,241,0.15)]";
+                    } else if (res.isPendingGray) {
                         statusText = '待定(变灰)';
                         textColor = 'text-slate-400 font-bold';
                         barColor = 'bg-slate-500';

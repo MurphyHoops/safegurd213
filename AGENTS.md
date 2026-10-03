@@ -22,7 +22,7 @@
 | **List 6 [终极战术终端]** | `modules/tactical-command/` | 🔴 LOCKED | 战术执行与手动策略指令控制 |
 | **模块 1 [多维止盈止损]** | `modules/profit-manager/`<br>`services/rules/profit_loss_rules.ts` | 🔴 LOCKED | 智能止盈、ATR追踪止盈、常规止损 |
 | **模块 2 [强力防爆对冲]** | `modules/hedge-guardian/`<br>`services/rules/hedging_rules.ts` | 🔴 LOCKED | 双向防爆对冲触发、开平对冲单核心算法 |
-| **模块 3 [盈亏平衡救赎]** | `modules/rescue-tactics/`<br>`services/rules/rescue_rules.ts` | 🔴 LOCKED | 浮亏救赎、断臂求生、对冲盈利清仓算法 |
+| **模块 3 [盈亏平衡救赎]** | `modules/rescue-tactics/`<br>`services/rules/rescue_rules.ts`<br>`services/rules/rescue/strategy2_hedgeProfit.ts`<br>`services/rules/rescue/strategy4_amputation.ts` | 🔴 LOCKED | 浮亏救赎、断臂求生、对冲盈利清仓算法、主仓盈利续航与对冲盈利双向全平完全复开流转铁律（严禁擅自修改） |
 | **模块 4 [智能挂机总控]** | `modules/auto-pilot/` | 🔴 LOCKED | 全自动策略调度与启停总开关 |
 | **模块 5 [系统核心控制]** | `modules/system-core/` | 🔴 LOCKED | API Key、网络代理、全局语音与黑名单配置 |
 | **模块 6 [新手入门引导]** | `modules/user-guide/` | 🔴 LOCKED | 操作指南、指标术语说明与新手帮助 |

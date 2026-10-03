@@ -242,14 +242,6 @@ async function fetchFirstValid(channels: Array<Promise<{ data: any[][], source: 
 }
 
 async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
-    // 0. 日K线极速常驻缓存优先（0毫秒直接返回，彻底消除网络与并发压力）
-    if (timeframe === '1d') {
-        const cached = klineDailyStore.getCachedKlinesSync(safeSymbol, Math.min(limit, 200));
-        if (cached && Array.isArray(cached) && cached.length >= Math.min(limit, 50)) {
-            return { data: cached, source: 'DailyStore-MemoryCache' };
-        }
-    }
-
     // 15s and 30s synthesized seconds klines
     if ((timeframe === '15s' || timeframe === '30s') && !/[\u4e00-\u9fa5]/.test(safeSymbol)) {
         const targetMin = timeframe === '15s' ? 0.25 : 0.5;

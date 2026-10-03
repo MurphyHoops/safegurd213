@@ -329,9 +329,13 @@ export function checkStrategy4_Amputation(
         if (hasPulledBack) {
             const exitReason = `3. 断臂呼吸解套: 盈利率自最高点(${peakPnLPercent.toFixed(2)}%)回调达到设定的回撤空间${breathingSpace}% (当前: ${winningPnLPercent.toFixed(2)}% | 盈利 ${winningPnL.toFixed(2)}U >= 设定安全垫 ${targetProfit.toFixed(2)}U)`;
             
-            if (slSettings.amputationHedgeOnlyExit && hedgePosition && closeHedgeOnly) {
-                // 只清对冲，主仓保留续航
-                const onlyHedgeReason = exitReason + " [只清对冲、主仓续航]";
+            // 🔒【严格原主仓盈利续航铁律】：必须且仅当【原主仓自身盈利 (mainPnL > 0 且 mainPnL >= hedgePnL)】且对冲单亏损时，才允许执行“只清对冲、主仓续航”！
+            // 若为对冲单盈利解套（hedgePnL > 0），即便开启了续航开关，也必须强制执行双向全清（closePair），绝不留下亏损原仓逆势续航，并允许原仓复开！
+            const isMainPositionWinning = mainPnL > 0 && (!hedgePosition || mainPnL >= hedgePnL);
+
+            if (slSettings.amputationHedgeOnlyExit && isMainPositionWinning && hedgePosition && closeHedgeOnly) {
+                // 只清对冲，主仓保留续航（原仓自身盈利解套）
+                const onlyHedgeReason = exitReason + " [原仓盈利·只清对冲·主仓续航]";
                 closeHedgeOnly(hedgePosition.entryId, hedgePosition.unrealizedPnL, onlyHedgeReason);
                 
                 // 重置主仓的断臂求生和对冲跟踪状态，让其作为普通仓位运行，并且可以重新对冲
@@ -344,10 +348,10 @@ export function checkStrategy4_Amputation(
                 mainPosition.isUnshackled = true; // 标记为主仓已解套，让其恢复到标准止盈止损的平仓方式
                 
                 if (addLog) {
-                    addLog('SUCCESS', `🛡️ [主仓续航启动] 已单独平掉对冲仓位并重置断臂状态。原主仓 ${mainPosition.symbol} ${mainPosition.side} 保持运行，解除对冲，并恢复正常止盈止损！`);
+                    addLog('SUCCESS', `🛡️ [主仓续航启动] 原主仓盈利已覆盖对冲亏损，已单独平掉对冲仓位。原主仓 ${mainPosition.symbol} ${mainPosition.side} 保持运行，解除对冲，并恢复正常止盈止损！`);
                 }
             } else {
-                // 双向清仓
+                // 双向清仓（对冲单盈利解套，或未开启续航开关）
                 if (hedgePosition) {
                     closePair(mainPosition.entryId, hedgePosition.entryId, exitReason);
                 } else {

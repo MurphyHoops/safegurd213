@@ -7,7 +7,11 @@
 > DO NOT touch, refactor, reorganize, or alter any module, service, rule, or UI unless explicitly instructed by the user in the prompt.
 > Unrequested modifications are strictly prohibited.
 > 
-> 🔒 **Special Permanent Lock - List 1 & Market Selection List**:
+> 🔒 **Special Permanent Lock - List 1 & Market Selection List & Rescue Tactics**:
 > 1. **List 1 过滤规则**（包含：行情启动趋势底池扫描、横盘蓄势过滤、回溯周期过滤的计算逻辑与流转链条）已完全固化锁定。
 > 2. **市场初筛列表删减/差量更新规则**（包含：根据最后一项开启规则执行对比、永不清零、纯差量对比增删 Diff 机制）已完全固化锁定。
-> 3. **执行铁律**：后续任何对话或任务中，若没有用户针对这两个部分下达明确的专属修改指令，绝对严禁擅自修改、重构或变动其任何代码与逻辑！
+> 3. **断臂求生与对冲解套清仓/续航/复开规则 (Strategy 2 & Strategy 4)**：
+>    - 必须且仅当【原主仓自身盈利解套 (mainPnL > 0 且 mainPnL >= hedgePnL)】时，才执行“只清对冲、主仓续航”；
+>    - 若为【对冲单盈利解套 (hedgePnL > 0)】，必须强制执行双向同时全平清仓（closePair），并在开启原仓复开时执行原仓位初始方向完全复开；
+>    - 该多空双向对冲解套核心流转逻辑已完全固化锁定。
+> 4. **执行铁律**：后续任何对话或任务中，若没有用户针对这些部分下达明确的专属修改指令，绝对严禁擅自修改、重构或变动其任何代码与逻辑！

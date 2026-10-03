@@ -7,6 +7,7 @@ import { ArrowUp, ArrowDown, List, Trash2, AlertCircle, AlertTriangle, Zap, Refr
 import { EmptyPositions } from './components/EmptyPositions';
 import { PositionItem } from './components/PositionItem';
 import { PositionSettingsModal } from './components/PositionSettingsModal';
+import { AddPositionModal } from './components/AddPositionModal';
 import { SyncControlDropdown } from './components/SyncControlDropdown';
 import { usePositionsListLogic } from './usePositionsListLogic';
 import { binanceWs } from '../../services/binanceWs';
@@ -33,6 +34,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     onManualAmputate,
     onManualRefill,
     onManualClosePair,
+    onAddPosition,
     onUpdateSettings,
     networkStatus,
     isOnline,
@@ -44,6 +46,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const [confirmClear, setConfirmClear] = useState(false);
     const [confirmClearRecords, setConfirmClearRecords] = useState(false);
     const [settingsTargetPosition, setSettingsTargetPosition] = useState<Position | null>(null);
+    const [addPositionTarget, setAddPositionTarget] = useState<Position | null>(null);
     const [isHoveredOnList, setIsHoveredOnList] = useState(false);
     const [isPinLocked, setIsPinLocked] = useState(false);
     const [isManualSyncing, setIsManualSyncing] = useState(false);
@@ -635,6 +638,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                 onShowHistory={onShowHistory}
                                 onClosePosition={onClosePosition}
                                 onOpenSettings={(pos) => setSettingsTargetPosition(pos)}
+                                onAddPosition={(pos) => setAddPositionTarget(pos)}
                                 onVerifyPosition={onVerifyPosition}
                                 onManualHedge={onManualHedge}
                                 onManualAmputate={onManualAmputate}
@@ -662,6 +666,23 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                     onSave={(symbol, customSettings) => {
                         if (onUpdateCustomSettings) {
                             onUpdateCustomSettings(symbol, customSettings);
+                        }
+                    }}
+                />
+            )}
+
+            {addPositionTarget && (
+                <AddPositionModal 
+                    isOpen={!!addPositionTarget}
+                    position={addPositionTarget}
+                    livePrice={addPositionTarget ? (realPrices[normalizeSymbol(addPositionTarget.symbol)] || addPositionTarget.markPrice) : 0}
+                    walletBalance={walletBalance}
+                    onClose={() => setAddPositionTarget(null)}
+                    onConfirmAddPosition={(symbol, side, amountUsdt, customPrice) => {
+                        if (onAddPosition) {
+                            onAddPosition(symbol, side, amountUsdt, customPrice);
+                        } else if ((window as any).simulator) {
+                            (window as any).simulator.increasePosition(symbol, side, amountUsdt, customPrice);
                         }
                     }}
                 />

@@ -1,3 +1,6 @@
+// 🔒 LOCKED_MODULE: 模块 1 [多维止盈止损 / 常规·趋势·智能·全局·AI·阶梯托底]
+// @LOCKED: 严格原子化锁定。未经用户明确下达的专属书面指令，严禁擅自触碰、修改、重构或变动任何算法与流转逻辑。
+
 import { Position, AppSettings, PositionSide } from '../../types';
 import { checkConventionalProfit } from './profit/conventional';
 import { checkSmartProfit } from './profit/smart';
@@ -35,21 +38,26 @@ export function checkIndividualPositionRules(
             ...settings.profit,
             ...position.customProfitSettings,
             enabled: position.customProfitSettings.enabled ?? settings.profit.enabled ?? true,
-            conventional: position.customProfitSettings.conventional && (position.customProfitSettings.profitMode === 'CONVENTIONAL' || position.customProfitSettings.oEnabledMap?.['CONVENTIONAL'])
-                ? { ...settings.profit.conventional, ...position.customProfitSettings.conventional }
-                : settings.profit.conventional,
-            atr: position.customProfitSettings.atr && (position.customProfitSettings.profitMode === 'ATR' || position.customProfitSettings.oEnabledMap?.['ATR'])
-                ? { ...settings.profit.atr, ...position.customProfitSettings.atr }
-                : settings.profit.atr,
-            smart: position.customProfitSettings.smart && (position.customProfitSettings.profitMode === 'SMART' || position.customProfitSettings.oEnabledMap?.['SMART'])
-                ? { ...settings.profit.smart, ...position.customProfitSettings.smart }
-                : settings.profit.smart,
-            ai: position.customProfitSettings.ai && (position.customProfitSettings.profitMode === 'AI' || position.customProfitSettings.oEnabledMap?.['AI'])
-                ? { ...settings.profit.ai, ...position.customProfitSettings.ai }
-                : settings.profit.ai,
-            stopLoss: position.customProfitSettings.stopLoss
-                ? { ...settings.profit.stopLoss, ...position.customProfitSettings.stopLoss }
-                : settings.profit.stopLoss,
+            conventional: {
+                ...settings.profit.conventional,
+                ...(position.customProfitSettings.conventional || {})
+            },
+            atr: {
+                ...settings.profit.atr,
+                ...(position.customProfitSettings.atr || {})
+            },
+            smart: {
+                ...settings.profit.smart,
+                ...(position.customProfitSettings.smart || {})
+            },
+            ai: {
+                ...settings.profit.ai,
+                ...(position.customProfitSettings.ai || {})
+            },
+            stopLoss: {
+                ...settings.profit.stopLoss,
+                ...(position.customProfitSettings.stopLoss || {})
+            },
             oEnabledMap: position.customProfitSettings.oEnabledMap || settings.profit.oEnabledMap || {}
           }
         : settings.profit;
@@ -82,53 +90,48 @@ export function checkIndividualPositionRules(
     const isProfitEnabled = profitSettings?.enabled !== false;
     if (!isGlobalProfitEnabled || !isProfitEnabled) return false;
 
-    // --- 核心优化：确保“常规，趋势，智能，全局，AI”这些功能只要选择了，完全并联运行，不进行任何排他性拦截 ---
-    // 已经彻底删除以往 AI 启动后直接拦截其他所有模式的逻辑，使所有勾选或并联的平仓条件拥有平等的平仓触发权
-    const isAiMasterEnabled = settings?.profit?.aiSmartMasterEnabled ?? true;
-    const isAiActive = profitSettings.profitMode === 'AI' || (profitSettings.oEnabledMap && profitSettings.oEnabledMap['AI'] === true);
-    const aiSettings = profitSettings.ai || settings.profit.ai || { activationProfitPercent: 3.5, fallbackProfitPercent: 1.0, aiSmartModeEnabled: true };
-    const actThreshold = getAiActivationThreshold(aiSettings);
-    const maxPnl = position.maxPnLPercent || 0;
-
-    // --- 核心逻辑：支持多模式并联运行 ---
-    // 1. 检查主模式 (Tab 选中的模式)
-    let triggered = false;
-    switch (profitSettings.profitMode) {
-        case 'CONVENTIONAL':
-            triggered = checkConventionalProfit(position, profitSettings.conventional || settings.profit.conventional, closePosition);
-            break;
-        case 'SMART':
-            triggered = checkSmartProfit(position, profitSettings.smart || settings.profit.smart, closePosition);
-            break;
-        case 'ATR':
-             triggered = checkAtrProfit(position, profitSettings.atr || settings.profit.atr || { multiplier: 3, volatilityPercent: 1, chandelierEnabled: false, emaEnabled: false, emaPeriod: 80, emaTimeframe: 'AUTO' }, closePosition);
-             break;
-        case 'AI':
-             triggered = checkAiProfit(position, profitSettings, closePosition, settings?.profit?.aiSmartMasterEnabled ?? true);
-             break;
-    }
-    if (triggered) return true;
-
-    // 2. 检查所有开启了“橙色圆点”(O开关)的并联模式
+    // --- 核心优化：确保“常规、趋势、智能、AI”完全并联运行，只要处于开启状态，达到任意一个条件立即平仓 ---
     const oEnabledMap = profitSettings.oEnabledMap || {};
-    
-    // 检查常规并联
-    if (profitSettings.profitMode !== 'CONVENTIONAL' && oEnabledMap['CONVENTIONAL']) {
-        if (checkConventionalProfit(position, profitSettings.conventional || settings.profit.conventional, closePosition)) return true;
-    }
-    
-    // 检查趋势(ATR)并联
-    if (profitSettings.profitMode !== 'ATR' && oEnabledMap['ATR']) {
-        if (checkAtrProfit(position, profitSettings.atr || settings.profit.atr || { multiplier: 3, volatilityPercent: 1, chandelierEnabled: false, emaEnabled: false, emaPeriod: 80, emaTimeframe: 'AUTO' }, closePosition)) return true;
+
+    // 1. 常规止盈检测 (常规止盈/托底平仓：开启托底、设置收益率、主选常规或并联开启)
+    const conventionalCfg = profitSettings.conventional || settings.profit.conventional;
+    const isConventionalActive = profitSettings.profitMode === 'CONVENTIONAL' || 
+        !!oEnabledMap['CONVENTIONAL'] || 
+        conventionalCfg?.trailingEnabled === true ||
+        (conventionalCfg?.profitPercent !== undefined && conventionalCfg.profitPercent > 0);
+
+    if (isConventionalActive && conventionalCfg) {
+        if (checkConventionalProfit(position, conventionalCfg, closePosition)) return true;
     }
 
-    // 检查智能并联
-    if (profitSettings.profitMode !== 'SMART' && oEnabledMap['SMART']) {
-        if (checkSmartProfit(position, profitSettings.smart || settings.profit.smart, closePosition)) return true;
+    // 2. 趋势 (ATR/均线) 止盈检测 (开启吊灯止盈、开启EMA平仓、主选趋势或并联开启)
+    const atrCfg = profitSettings.atr || settings.profit.atr;
+    const isAtrActive = profitSettings.profitMode === 'ATR' || 
+        !!oEnabledMap['ATR'] || 
+        atrCfg?.chandelierEnabled === true || 
+        atrCfg?.emaEnabled === true;
+
+    if (isAtrActive && atrCfg) {
+        if (checkAtrProfit(position, atrCfg, closePosition)) return true;
     }
 
-    // 检查AI并联
-    if (profitSettings.profitMode !== 'AI' && oEnabledMap['AI']) {
+    // 3. 智能止盈检测 (智能止盈总开关开启、主选智能或并联开启)
+    const smartCfg = profitSettings.smart || settings.profit.smart;
+    const isSmartActive = profitSettings.profitMode === 'SMART' || 
+        !!oEnabledMap['SMART'] || 
+        smartCfg?.enabled === true;
+
+    if (isSmartActive && smartCfg) {
+        if (checkSmartProfit(position, smartCfg, closePosition)) return true;
+    }
+
+    // 4. AI 智能逃顶检测 (AI总开关开启、主选AI或并联开启)
+    const aiCfg = profitSettings.ai || settings.profit.ai;
+    const isAiActive = profitSettings.profitMode === 'AI' || 
+        !!oEnabledMap['AI'] || 
+        (aiCfg?.aiSmartModeEnabled === true);
+
+    if (isAiActive && aiCfg) {
         if (checkAiProfit(position, profitSettings, closePosition, settings?.profit?.aiSmartMasterEnabled ?? true)) return true;
     }
 

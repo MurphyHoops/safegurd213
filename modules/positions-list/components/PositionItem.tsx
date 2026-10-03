@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Position, PositionSide } from '../../../types';
-import { Shield, Target, Zap, History, Clock, BarChart2, Settings, Brain, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Shield, Target, Zap, History, Clock, BarChart2, Settings, Brain, RefreshCw, AlertTriangle, PlusCircle } from 'lucide-react';
 import { formatPrice } from '../../../services/symbolUtils';
 import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
 import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
@@ -165,6 +165,7 @@ interface Props {
     onManualAmputate?: (position: Position) => void;
     onManualRefill?: (position: Position) => void;
     onManualClosePair?: (position: Position) => void;
+    onAddPosition?: (position: Position) => void;
     aiSmartMasterEnabled?: boolean;
     globalProfitSettings?: any;
     globalHedgingSettings?: any;
@@ -177,7 +178,7 @@ interface Props {
 // @LOCKED: PositionItem logic
 export const PositionItem: React.FC<Props> = React.memo(({
     p, idx, livePrice, currentPnl, currentPnlPct, showHedgeStats, totalDebt, isHedgedMode, isModule1Active, hasAmmo,
-    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, onManualAmputate, onManualRefill, onManualClosePair, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings, hedgeTriggerReason, hasActiveOpposingHedge
+    onOpenChart, onShowHistory, onClosePosition, onVerifyPosition, onOpenSettings, onManualHedge, onManualAmputate, onManualRefill, onManualClosePair, onAddPosition, aiSmartMasterEnabled = true, globalProfitSettings, globalHedgingSettings, isManuallyClosed, hasCustomSettings, hedgeTriggerReason, hasActiveOpposingHedge
 }) => {
     const [isRefreshing, setIsRefreshing] = useState(false);
     const isHedgedActive = p.isHedged || !!p.mainPositionId;
@@ -619,6 +620,15 @@ export const PositionItem: React.FC<Props> = React.memo(({
                     })()}
                     <button onClick={(e) => { e.stopPropagation(); onShowHistory(p.symbol); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="交易记录"><Clock size={12}/></button>
                     <button onClick={(e) => { e.stopPropagation(); onOpenChart(p.symbol, p.entryPrice, p.entryTime, p.signalTf || '15m', p.side); }} className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors" title="K线图"><BarChart2 size={12}/></button>
+                    {onAddPosition && (
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onAddPosition(p); }} 
+                            className="px-1.5 py-0.5 bg-emerald-950/60 hover:bg-emerald-600 text-emerald-300 hover:text-white rounded text-[10px] font-bold border border-emerald-700/60 hover:border-emerald-400 transition-all relative whitespace-nowrap shadow-sm flex items-center gap-0.5"
+                            title="一键加仓：选择加仓方向与金额，快速加仓或对冲"
+                        >
+                            <PlusCircle size={10} /> 加仓
+                        </button>
+                    )}
                     {onManualAmputate && (
                         <button 
                             onClick={(e) => { e.stopPropagation(); onManualAmputate(p); }} 

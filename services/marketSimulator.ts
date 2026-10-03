@@ -1260,6 +1260,63 @@ export class MarketSimulator {
         this.emitUpdate(true);
     }
 
+    public increasePosition(symbol: string, side: PositionSide, addAmountUsdt: number, customPrice?: number) {
+        const upperSymbol = normalizeSymbol(symbol);
+        let livePrice = customPrice || this.realPrices[upperSymbol] || this.positions.find(p => p.symbol === upperSymbol && p.side === side)?.markPrice || 0;
+        
+        if (!livePrice || isNaN(livePrice) || livePrice <= 0) {
+            this.addLog('DANGER', `加仓失败 ${upperSymbol}: 无效的实时价格`);
+            return false;
+        }
+
+        const targetPos = this.positions.find(p => p.symbol === upperSymbol && p.side === side);
+        if (!targetPos) {
+            // 如果不存在同向持仓，直接以手动模式开立新仓位
+            this.openPosition(upperSymbol, side, addAmountUsdt, livePrice, undefined, undefined, undefined, { isManual: true });
+            return true;
+        }
+
+        const deltaTokenAmount = addAmountUsdt / livePrice;
+        const oldTokenAmount = targetPos.amount || 0;
+        const oldEntryPrice = targetPos.entryPrice || livePrice;
+        const newTokenAmount = oldTokenAmount + deltaTokenAmount;
+        
+        if (newTokenAmount <= 0) return false;
+
+        // 加权重新计算开仓均价 (Weighted Average Entry Price)
+        const newWeightedEntryPrice = ((oldTokenAmount * oldEntryPrice) + (deltaTokenAmount * livePrice)) / newTokenAmount;
+
+        targetPos.amount = newTokenAmount;
+        targetPos.initialAmount = (targetPos.initialAmount || oldTokenAmount) + deltaTokenAmount;
+        targetPos.entryPrice = newWeightedEntryPrice;
+        targetPos.markPrice = livePrice;
+        
+        // 重新计算即时未实现盈亏与收益率
+        const diff = side === PositionSide.LONG ? (livePrice - newWeightedEntryPrice) : (newWeightedEntryPrice - livePrice);
+        targetPos.unrealizedPnL = diff * newTokenAmount;
+        targetPos.unrealizedPnLPercentage = newWeightedEntryPrice > 0 ? (diff / newWeightedEntryPrice) * 100 : 0;
+        targetPos.maxPnLPercent = targetPos.unrealizedPnLPercentage;
+
+        // 记录在交易流水事件中
+        const log = this.tradeLogs.find(l => l.symbol === upperSymbol && l.side === side && l.status === 'OPEN');
+        if (log) {
+            log.amount = newTokenAmount;
+            log.entryPrice = newWeightedEntryPrice;
+            log.events.push({
+                timestamp: Date.now(),
+                action: '加仓',
+                price: livePrice,
+                amount: deltaTokenAmount,
+                reason: `手动加仓 ${addAmountUsdt.toFixed(2)} USDT`
+            });
+        }
+
+        this.addLog('SUCCESS', `⚡ [手动加仓成功] ${upperSymbol} (${side}) 成功加仓 ${addAmountUsdt.toFixed(2)} USDT (增加数量: ${deltaTokenAmount.toFixed(4)}), 加权新均价: ${newWeightedEntryPrice.toFixed(6)}`);
+        audioService.speak(`${upperSymbol} 已成功加仓`);
+        this.emitUpdate(true);
+        return true;
+    }
+
     public openHedgePosition(mainPosition: Position, side: PositionSide, amount: number, price: number, reason?: string) {
         if (!this.isNetworkHealthy) {
             this.addLog('WARNING', `网络异常拦截: 拒绝开对冲仓 ${mainPosition.symbol} ${side}`);
@@ -1812,8 +1869,9 @@ export class MarketSimulator {
     }
 
     // 🔒 @LOCKED: [断臂求生 - 砍仓执行内核] 严禁在未获用户直接指令前修改本方法
-    public amputate(position: Position, ratio: number, reason: string) {
+    public amputate(position: Position, ratio: number, reason: string, isManual: boolean = false) {
         const cleanSym = normalizeSymbol(position.symbol);
+        const isManualOp = isManual || reason.includes('手动');
 
         // 🔒 [断臂求生双边完整对冲硬锁] 
         // 铁律 1：如果任一方处于被砍待补仓状态 (isAmputated 为 true 或待补仓数量 > 0)，绝对严禁发起连续二次砍仓！
@@ -1829,7 +1887,7 @@ export class MarketSimulator {
             this.amputatedSymbolsInCycle.has(cleanSym) ||
             !!position.isAmputated || (position.amputatedAmount || 0) > 0 ||
             !!opposingPos.isAmputated || (opposingPos.amputatedAmount || 0) > 0;
-        if (isAnyAmputated) {
+        if (!isManualOp && isAnyAmputated) {
             console.warn(`[Amputation Lock] 🛡️ 拦截二次砍仓: ${position.symbol} 前次砍仓尚未完成回踩补仓 (砍仓:${totalAmpCount}次 vs 补仓:${totalRefillCount}次)，必须等回踩补仓恢复后方可再次砍仓！`);
             return;
         }
@@ -1837,16 +1895,16 @@ export class MarketSimulator {
         // 铁律 2：数量比例防御 (双保险，防止大幅失衡仍未补仓时误砍)
         const maxAmt = Math.max(position.amount, opposingPos.amount);
         const minAmt = Math.min(position.amount, opposingPos.amount);
-        if (maxAmt > 0 && ((maxAmt - minAmt) / maxAmt) > 0.45) {
+        if (!isManualOp && maxAmt > 0 && ((maxAmt - minAmt) / maxAmt) > 0.45) {
             console.warn(`[Amputation Lock] 🛡️ 拦截二次砍仓: ${position.symbol} 两边数量相差悬殊(当前:${position.amount.toFixed(4)} vs 对手:${opposingPos.amount.toFixed(4)})，说明有减仓未补齐，严禁连续砍仓！`);
             return;
         }
 
-        // 🔒 [震荡磨损保护熔断机制] 检查当前币种熔断状态与循环次数
+        // 🔒 [震荡磨损保护熔断机制] 检查当前币种熔断状态与循环次数（交易员手动砍仓特权放行）
         const currentAmpCount = position.amputationCount || 0;
         const currentRefillCount = position.refillCount || 0;
         const maxRetries = this.settings?.stopLoss?.maxHedgeRetries || 3;
-        if (position.isOscillationLocked || (this.settings?.stopLoss?.fuseEnabled && (currentAmpCount >= maxRetries || currentRefillCount >= maxRetries))) {
+        if (!isManualOp && (position.isOscillationLocked || (this.settings?.stopLoss?.fuseEnabled && (currentAmpCount >= maxRetries || currentRefillCount >= maxRetries)))) {
             console.warn(`[Amputation Fuse] 🛡️ 震荡磨损保护熔断拦截: ${position.symbol} 已触发熔断(补仓${currentRefillCount}次/砍仓${currentAmpCount}次)，停止继续砍仓！`);
             return;
         }
@@ -2083,11 +2141,14 @@ export class MarketSimulator {
     }
 
     // 🔒 @LOCKED: [断臂求生/回踩补仓 - 执行内核] 严禁在未获用户直接指令前修改本方法
-    public refill(position: Position, reason: string, customRefillQty?: number) {
+    public refill(position: Position, reason: string, customRefillQty?: number | boolean, isManualParam?: boolean) {
         if (!this.isNetworkHealthy) {
             this.addLog('WARNING', `网络异常拦截: 拒绝补仓 ${position.symbol} ${position.side}`);
             return;
         }
+
+        const isManual = typeof customRefillQty === 'boolean' ? customRefillQty : (isManualParam ?? reason.includes('手动'));
+        const explicitQty = typeof customRefillQty === 'number' ? customRefillQty : undefined;
 
         // 🛡️ [Hedge State Lock for Refill]
         const upperSymbol = position.symbol.toUpperCase();
@@ -2097,7 +2158,7 @@ export class MarketSimulator {
             p.amount > 0
         );
 
-        const isRescueRefill = reason.includes('断臂') || reason.includes('求生');
+        const isRescueRefill = isManual || reason.includes('断臂') || reason.includes('求生');
 
         // 🔒 [有效对冲绝对禁补铁律]：当原仓位与对冲仓位数量一样多时（处于有效等额对冲），非断臂救世补仓绝对严禁补仓！
         if (oppositePos && !isRescueRefill && Math.abs(position.amount - oppositePos.amount) <= Math.max(position.amount, oppositePos.amount) * 0.05) {
@@ -2111,8 +2172,8 @@ export class MarketSimulator {
         }
 
         // 🔒 [精确补仓铁律] 严格优先读取透传的 customRefillQty，其次读取该仓位被砍掉的实际数量，最后以对冲差额兜底
-        let refillAmount = (typeof customRefillQty === 'number' && customRefillQty > 0)
-            ? customRefillQty
+        let refillAmount = (typeof explicitQty === 'number' && explicitQty > 0)
+            ? explicitQty
             : (position.amputatedAmount || 0);
 
         if (refillAmount <= 0 && oppositePos && oppositePos.amount > position.amount) {
@@ -2120,18 +2181,18 @@ export class MarketSimulator {
         }
 
         if (refillAmount <= 0) {
-            console.warn(`[Refill Skipped] 🛡️ 补仓数量计算为0: ${position.symbol} ${position.side} (customRefillQty=${customRefillQty}, amputatedAmount=${position.amputatedAmount})`);
+            console.warn(`[Refill Skipped] 🛡️ 补仓数量计算为0: ${position.symbol} ${position.side} (customRefillQty=${explicitQty}, amputatedAmount=${position.amputatedAmount})`);
             return;
         }
 
         const cleanSym = normalizeSymbol(position.symbol);
         const lockKey = `${cleanSym}_${position.side}`;
 
-        // 🔒 [震荡磨损保护熔断机制 Strategy 5] 熔断锁检测
+        // 🔒 [震荡磨损保护熔断机制 Strategy 5] 熔断锁检测（交易员手动补仓特权放行）
         const fuseEnabled = this.settings?.stopLoss?.fuseEnabled;
         const maxRetries = this.settings?.stopLoss?.maxHedgeRetries || 3;
         const currentRefillCount = position.refillCount || 0;
-        if (position.isOscillationLocked || (fuseEnabled && currentRefillCount >= maxRetries)) {
+        if (!isManual && (position.isOscillationLocked || (fuseEnabled && currentRefillCount >= maxRetries))) {
             console.warn(`[Refill Locked] 🛡️ 拦截补仓: ${position.symbol} ${position.side} 已处于震荡磨损熔断锁定状态(补仓次数: ${currentRefillCount}/${maxRetries})`);
             return;
         }
