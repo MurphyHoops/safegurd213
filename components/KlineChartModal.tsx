@@ -242,6 +242,17 @@ async function fetchFirstValid(channels: Array<Promise<{ data: any[][], source: 
 }
 
 async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
+    // ⚡ [0-DELAY DAILY KLINE STORE HIT]: 如果是 1d (日K)，优先直接从本地常驻持久化缓存中 0ms 返回 300 根全量日 K 线
+    if (timeframe === '1d') {
+        const cached1d = klineDailyStore.getCachedKlinesSync(safeSymbol, Math.min(limit, 300));
+        if (cached1d && Array.isArray(cached1d) && cached1d.length >= 30) {
+            return {
+                data: cached1d,
+                source: 'KlineDailyStore-Local-0ms'
+            };
+        }
+    }
+
     // 15s and 30s synthesized seconds klines
     if ((timeframe === '15s' || timeframe === '30s') && !/[\u4e00-\u9fa5]/.test(safeSymbol)) {
         const targetMin = timeframe === '15s' ? 0.25 : 0.5;
@@ -1250,16 +1261,43 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
             return;
         }
 
-        if (isInitialLoad) {
+        // Fix missing USDT issue and strip Chinese parenthesis
+        const cleanSym = formatToBinanceSymbol(symbol) || (symbol.endsWith('USDT') ? symbol : `${symbol}USDT`);
+        const safeSymbol = cleanSym.replace(/[\(（][^\)）]*[\)）]/g, '').trim();
+
+        // ⚡ [0-DELAY SYNC PRE-RENDER]: 日线直接利用本地持久化缓存瞬间绘制，0毫秒无白屏菊花
+        if (timeframe === '1d') {
+            const cached1d = klineDailyStore.getCachedKlinesSync(safeSymbol, Math.min(limit, 300));
+            if (cached1d && Array.isArray(cached1d) && cached1d.length >= 30) {
+                const klines: KlineData[] = cached1d.map((k: any) => ({
+                    time: k[0],
+                    open: parseFloat(k[1]) || 0,
+                    high: parseFloat(k[2]) || 0,
+                    low: parseFloat(k[3]) || 0,
+                    close: parseFloat(k[4]) || 0, 
+                    volume: parseFloat(k[5]) || 0
+                }));
+                const closes = klines.map(k => k.close);
+                setFullData(klines);
+                setEmaData({
+                    10: calculateEMA(closes, 10),
+                    20: calculateEMA(closes, 20),
+                    30: calculateEMA(closes, 30),
+                    40: calculateEMA(closes, 40),
+                    80: calculateEMA(closes, 80)
+                });
+                setError(null);
+                setLoading(false);
+            } else if (isInitialLoad) {
+                setLoading(true);
+                setError(null);
+            }
+        } else if (isInitialLoad) {
             setLoading(true);
             setError(null);
         }
 
         try {
-            // Fix missing USDT issue and strip Chinese parenthesis
-            const cleanSym = formatToBinanceSymbol(symbol) || (symbol.endsWith('USDT') ? symbol : `${symbol}USDT`);
-            const safeSymbol = cleanSym.replace(/[\(（][^\)）]*[\)）]/g, '').trim();
-            
             console.log(`[KlineChart] Starting parallel race fetch for ${safeSymbol} (${timeframe})`);
             const { data: json, source } = await raceFetchKlines(safeSymbol, timeframe, limit);
             console.log(`[KlineChart] Winner of race: ${source}, loaded ${json.length} records`);

@@ -22,6 +22,7 @@ import { normalizeSymbol, formatToBinanceSymbol, isValidSymbolFormat } from "../
 import { TimeframeDiagnosticRecord } from "./types";
 import { getLatestEMA } from "../../services/indicators";
 import { binanceKlineWs, WsKlineUpdate } from "../../services/binanceKlineWs";
+import { klineMultiTfStore } from "../../services/klineMultiTfStore";
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
@@ -149,6 +150,22 @@ export const useGrandCrossing = (
   // 🔍 [DIAGNOSTICS TELEMETRY]: Real-time multi-period data and rejection audit records
   const [diagnostics, setDiagnostics] = useState<Record<string, TimeframeDiagnosticRecord>>({});
   const diagnosticsRef = useRef<Record<string, TimeframeDiagnosticRecord>>({});
+  const diagThrottleTimerRef = useRef<any>(null);
+
+  const scheduleDiagFlush = useCallback(() => {
+    if (diagThrottleTimerRef.current) return;
+    diagThrottleTimerRef.current = setTimeout(() => {
+      diagThrottleTimerRef.current = null;
+      setDiagnostics({ ...diagnosticsRef.current });
+    }, 1500); // 1.5s healthy UI flush interval
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (diagThrottleTimerRef.current) clearTimeout(diagThrottleTimerRef.current);
+    };
+  }, []);
+
   // ⚡ Short-term in-memory K-line cache (3s TTL) to prevent duplicate network hits across concurrent timeframes
   const klineMemCacheRef = useRef<Map<string, { data: KLine[]; time: number }>>(new Map());
 
@@ -170,6 +187,13 @@ export const useGrandCrossing = (
     }
 
     const now = Date.now();
+    // ⚡ [0-MS RING BUFFER QUERY]: First check in-memory multi-TF persistent ring buffer
+    const persistentCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 40);
+    if (persistentCached && persistentCached.length >= 40) {
+      binanceKlineWs.subscribe(safeSymbol, tf);
+      return { klines: persistentCached, latency: 0 };
+    }
+
     const cacheKey = `${safeSymbol}-${tf}-${limit}`;
     const cached = klineMemCacheRef.current.get(cacheKey);
     if (cached && now - cached.time < 3000 && cached.data.length > 0) {
@@ -325,6 +349,8 @@ export const useGrandCrossing = (
     const latency = Date.now() - fetchStart;
     if (fetchRes.data.length > 0) {
       klineMemCacheRef.current.set(cacheKey, { data: fetchRes.data, time: Date.now() });
+      klineMultiTfStore.setKlines(safeSymbol, tf, fetchRes.data);
+      binanceKlineWs.subscribe(safeSymbol, tf);
       return { klines: fetchRes.data, latency };
     }
     return { klines: [], errorReason: fetchRes.reason || '【获取失败】K线未返回数据', latency };
@@ -1099,7 +1125,7 @@ export const useGrandCrossing = (
           timestamp: Date.now(),
         };
         diagnosticsRef.current[diagKey] = record;
-        setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
+        scheduleDiagFlush();
         return;
       }
 
@@ -1188,7 +1214,7 @@ export const useGrandCrossing = (
         timestamp: Date.now(),
       };
       diagnosticsRef.current[diagKey] = record;
-      setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
+      scheduleDiagFlush();
 
       if (results.length > 0) {
         // 🔒 [USER MANDATORY RULE] 多空独立存续：反向新信号出现时，不覆盖抹除仍在存续寿命内的旧方向信号

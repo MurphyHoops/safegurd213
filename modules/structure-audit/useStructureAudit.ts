@@ -13,6 +13,7 @@ import { KLine } from "../../types";
 import { saveState } from "../../utils/persistence";
 import { normalizeSymbol } from "../../services/symbolUtils";
 import { priceRegistry } from "../../services/priceRegistry";
+import { klineMultiTfStore } from "../../services/klineMultiTfStore";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -735,6 +736,20 @@ export const useStructureAudit = (
                     `${item.symbol}-${tf}`,
                     Date.now(),
                   );
+                  // ⚡ [0-MS RING BUFFER QUERY]: First check local persistent ring buffer
+                  const cachedKlines = klineMultiTfStore.getKlinesSync(item.symbol, tf, 40);
+                  if (cachedKlines && cachedKlines.length >= 40) {
+                    processStructureForTf(
+                      item,
+                      tf,
+                      cachedKlines,
+                      livePrice,
+                      historyExtremes,
+                    );
+                    hasChanges = true;
+                    return;
+                  }
+
                   try {
                     const safeSymbol = item.symbol.endsWith("USDT")
                       ? item.symbol
@@ -756,6 +771,7 @@ export const useStructureAudit = (
                         close: parseFloat(k[4]),
                         volume: parseFloat(k[5]),
                       }));
+                      klineMultiTfStore.setKlines(safeSymbol, tf, klines);
                       processStructureForTf(
                         item,
                         tf,

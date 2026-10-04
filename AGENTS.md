@@ -29,7 +29,7 @@
 | **模块 7 [高保真模拟回测]** | `modules/backtester/`<br>`services/backtestService.ts` | 🔴 LOCKED | 历史K线下载与多策略历史回测引擎 |
 | **模块 8 [系统性能监视]** | `modules/system-monitor/` | 🔴 LOCKED | 实时内存、吞吐率、WS连接延迟与健康监控 |
 | **持仓管理中心** | `modules/positions-list/` | 🔴 LOCKED | 实时持仓列表、对冲状态展示、快捷平仓操作 |
-| **行情分发与注册中心** | `services/binanceWs.ts`<br>`services/priceRegistry.ts` | 🔴 LOCKED | WebSocket行情长连接、DOM Bypass价格高速订阅 |
+| **行情分发与注册中心** | `services/binanceWs.ts`<br>`services/priceRegistry.ts`<br>`services/binanceKlineWs.ts`<br>`services/klineMultiTfStore.ts` | 🔴 LOCKED | WebSocket行情长连接、全域K线环形缓冲区与DOM Bypass高速注册中心 |
 | **模拟器与实盘内核** | `services/marketSimulator.ts`<br>`server.ts` | 🔴 LOCKED | 交易撮合、对冲补仓配对、币安实盘API桥接 |
 
 ---
@@ -38,4 +38,5 @@
 
 1. **精准定位 (Surgical Scope)**: 每次仅针对用户在 Prompt 中明确指出的功能或文件进行针对性变更，绝对禁止对未提及的代码进行“顺带重构”或“清理优化”。
 2. **锁标记识别 (@LOCKED)**: 遇到带有 `// @LOCKED` 或 `// 🔒 LOCKED_MODULE` 标记的类、函数或文件时，在未获用户直接指令前，原样保留其既有业务逻辑与数据流。
-3. **回归验证 (Compile Check)**: 任何编辑必须通过 `compile_applet` 静态编译检查，确保系统整体一致性与稳定性。
+3. **网络资源泄露自检 (Resource Leak Defense)**: 凡涉及网络连接、WebSocket、K线预热、Web Worker 消息通道或轮询定时器的变更，必须自检生命周期管理，必须包含去重锁、节流限频与注销清理，杜绝内存泄漏。
+4. **回归验证 (Compile Check)**: 任何编辑必须通过 `compile_applet` 静态编译检查，确保系统整体一致性与稳定性。

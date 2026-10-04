@@ -271,22 +271,25 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         setProgress({ current: 1, total: candidates.length, passed: 0, currentSymbol: '' });
 
         try {
-            // ⚡ [极速并发通道]: 6 协程高并发流水线 + 实时单币进阶跳动，200 多个币仅需 1~2 秒全量极速扫完
-            const CONCURRENCY = 6;
-            let candidateIdx = 0;
             let processedCount = 0;
+            let lastProgressTime = 0;
 
-            const processCoin = async (symbol: string) => {
-                if (!isMountedRef.current || !isScanningRef.current) return;
-
-                if (isMountedRef.current) {
+            const updateProgressThrottled = (symbol: string, force = false) => {
+                if (!isMountedRef.current) return;
+                const now = Date.now();
+                if (force || now - lastProgressTime > 80 || processedCount >= candidates.length) {
+                    lastProgressTime = now;
                     setProgress({
-                        current: processedCount + 1,
+                        current: Math.min(processedCount, candidates.length),
                         total: candidates.length,
                         passed: poolMap.size,
                         currentSymbol: symbol
                     });
                 }
+            };
+
+            const processCoin = async (symbol: string) => {
+                if (!isMountedRef.current || !isScanningRef.current) return;
 
                 try {
                     const klines = await fetch1dKlines(symbol, 2000);
@@ -382,47 +385,31 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                     console.warn(`[StartTrendPool] Error scanning ${symbol}:`, err);
                 } finally {
                     processedCount++;
-                    if (isMountedRef.current) {
-                        setProgress({
-                            current: processedCount,
-                            total: candidates.length,
-                            passed: poolMap.size,
-                            currentSymbol: symbol
-                        });
+                    updateProgressThrottled(symbol);
+                }
+            };
+
+            // ⚡ [BALANCED HIGH-SPEED WORKER POOL]: 4协程平稳并发，契合浏览器Socket池限制，秒算完成且杜绝闪退
+            const CONCURRENCY = 4;
+            let cursor = 0;
+            
+            const worker = async () => {
+                while (cursor < candidates.length && isMountedRef.current && isScanningRef.current) {
+                    while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                    }
+                    if (!isMountedRef.current || !isScanningRef.current) break;
+
+                    const idx = cursor++;
+                    if (idx < candidates.length) {
+                        const currentSym = candidates[idx];
+                        await processCoin(currentSym);
                     }
                 }
             };
 
-            // 🔒 严格限制扫描步进速度：严格按设置中的“时间(秒)”稳健逐个推进
-            const perCoinDelayMs = Math.max(1, cfg?.intervalSeconds ?? (cfg?.intervalMinutes ? Math.min(cfg.intervalMinutes, 60) : 3)) * 1000;
-            for (let i = 0; i < candidates.length; i++) {
-                if (!isMountedRef.current || !isScanningRef.current) break;
-
-                // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
-                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
-                if (!isMountedRef.current || !isScanningRef.current) break;
-
-                const currentSym = candidates[i];
-                const stepStart = Date.now();
-                await processCoin(currentSym);
-                
-                const elapsed = Date.now() - stepStart;
-                const remaining = Math.max(0, perCoinDelayMs - elapsed);
-                if (remaining > 0 && i < candidates.length - 1 && isMountedRef.current && isScanningRef.current) {
-                    const delayStart = Date.now();
-                    while (Date.now() - delayStart < remaining && isMountedRef.current && isScanningRef.current) {
-                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
-                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
-                                await new Promise(resolve => setTimeout(resolve, 200));
-                            }
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining)));
-                    }
-                }
-            }
+            const workers = Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, () => worker());
+            await Promise.all(workers);
 
             if (isMountedRef.current) {
                 const finalList = Array.from(poolMap.values());

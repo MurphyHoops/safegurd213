@@ -825,16 +825,19 @@ export const MajorTrendSection: React.FC<Props> = ({
                         </div>
                     </div>
                     
-                    {/* Multi-Stage Pipeline Progress */}
-                    {isMajorScanning && majorProgress && (
-                        <div className="bg-slate-950/85 border border-slate-800/80 rounded p-2 space-y-1.5 text-[10px] text-slate-300 my-2">
+                    {/* Multi-Stage Pipeline Progress - 常驻显示运行过程与结果 */}
+                    {majorProgress && (
+                        <div className="bg-slate-950/85 border border-slate-800/80 rounded p-2 space-y-1.5 text-[10px] text-slate-300 my-2 shadow-inner">
                             <div className="flex items-center justify-between border-b border-slate-800/60 pb-1 mb-1">
-                                <span className="font-bold text-slate-100 flex items-center gap-1">
-                                    <Activity size={10} className="text-indigo-400 animate-pulse shrink-0" />
+                                <span className="font-bold text-slate-100 flex items-center gap-1.5">
+                                    <Activity size={11} className={`text-indigo-400 ${isMajorScanning ? 'animate-pulse' : ''} shrink-0`} />
                                     <span>顺序过滤管道</span>
+                                    <span className={`text-[8px] px-1 py-0.2 rounded font-sans font-normal ${isMajorScanning ? 'bg-indigo-950 text-indigo-300 border border-indigo-700/50 animate-pulse' : 'bg-emerald-950 text-emerald-400 border border-emerald-800/40'}`}>
+                                        {isMajorScanning ? '16路并发运行中' : '常驻就绪生效'}
+                                    </span>
                                 </span>
-                                <span className="text-[9px] font-mono text-indigo-400 font-bold bg-indigo-950/40 px-1 py-0.2 rounded border border-indigo-900/30 max-w-[100px] truncate">
-                                    {majorProgress.currentSymbol ? `${majorProgress.currentSymbol}` : '正在准备...'}
+                                <span className="text-[9px] font-mono text-indigo-300 font-bold bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800/40 max-w-[120px] truncate">
+                                    {isMajorScanning ? (majorProgress.currentSymbol ? `${majorProgress.currentSymbol}` : '正在计算...') : '全流程已完成'}
                                 </span>
                             </div>
 
@@ -844,25 +847,25 @@ export const MajorTrendSection: React.FC<Props> = ({
                                     <CheckCircle2 size={10} className="shrink-0" />
                                     <span>交易额初筛 (Step 0)</span>
                                 </div>
-                                <span className="text-slate-400 font-mono">✅ 已完成</span>
+                                <span className="text-emerald-400 font-mono text-[8.5px]">✅ 已完成</span>
                             </div>
 
                             {/* Step 1: Sideways Filter (横盘蓄势过滤) */}
                             <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
                                 <div className="flex items-center gap-1">
-                                    {majorProgress.stage === 'group1' ? (
+                                    {isMajorScanning && majorProgress.stage === 'group1' ? (
                                         <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
-                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
+                                    ) : (majorProgress.group1Total || majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
                                         <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
                                     ) : (
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
-                                    <span className={majorProgress.stage === 'group1' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? 'text-slate-400' : 'text-slate-500'}>
+                                    <span className={isMajorScanning && majorProgress.stage === 'group1' ? 'text-indigo-300 font-bold' : (majorProgress.group1Total || majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? 'text-slate-300 font-medium' : 'text-slate-500'}>
                                         第一组: 横盘蓄势过滤
                                     </span>
                                 </div>
                                 <div className="font-mono text-right shrink-0">
-                                    {majorProgress.stage === 'group1' ? (
+                                    {isMajorScanning && majorProgress.stage === 'group1' ? (
                                         <span className="text-indigo-300 font-bold">
                                             <span className="text-slate-400" title="扫描待测总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
@@ -870,7 +873,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             <span className="text-slate-600 mx-1">/</span>
                                             <span className="text-emerald-400 font-bold" title="已符合横盘蓄势规则个数">{majorProgress.group1Passed || 0}</span>
                                         </span>
-                                    ) : (majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
+                                    ) : (majorProgress.group1Total || majorProgress.stage === 'group2' || majorProgress.stage === 'completed') ? (
                                         <span className="text-emerald-400 font-bold">
                                             <span className="text-slate-400" title="扫描待测总数">{majorProgress.group1Total ?? majorProgress.total ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
@@ -887,19 +890,19 @@ export const MajorTrendSection: React.FC<Props> = ({
                             {/* Step 2: Lookback Space Filter (回溯周期过滤 - 扫描横盘蓄势底池) */}
                             <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
                                 <div className="flex items-center gap-1">
-                                    {majorProgress.stage === 'group2' ? (
+                                    {isMajorScanning && majorProgress.stage === 'group2' ? (
                                         <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
-                                    ) : majorProgress.stage === 'completed' ? (
+                                    ) : (majorProgress.stage === 'completed' || majorProgress.group2Total !== undefined) ? (
                                         <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
                                     ) : (
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
-                                    <span className={majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : majorProgress.stage === 'completed' ? 'text-slate-400' : 'text-slate-500'}>
+                                    <span className={isMajorScanning && majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'completed' || majorProgress.group2Total !== undefined) ? 'text-slate-300 font-medium' : 'text-slate-500'}>
                                         第二组: 回溯周期过滤 (横盘蓄势底池)
                                     </span>
                                 </div>
                                 <div className="font-mono text-right shrink-0">
-                                    {majorProgress.stage === 'group2' ? (
+                                    {isMajorScanning && majorProgress.stage === 'group2' ? (
                                         <span className="text-indigo-300 font-bold">
                                             <span className="text-slate-400" title="横盘蓄势底池总数">{majorProgress.group2Total ?? majorProgress.group1Passed ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
@@ -907,7 +910,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             <span className="text-slate-600 mx-1">/</span>
                                             <span className="text-emerald-400 font-bold" title="已符合回溯周期规则个数">{majorProgress.group2Passed || 0}</span>
                                         </span>
-                                    ) : majorProgress.stage === 'completed' ? (
+                                    ) : (majorProgress.stage === 'completed' || majorProgress.group2Total !== undefined) ? (
                                         <span className="text-emerald-400 font-bold">
                                             <span className="text-slate-400" title="横盘蓄势底池总数">{majorProgress.group2Total ?? majorProgress.group1Passed ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>

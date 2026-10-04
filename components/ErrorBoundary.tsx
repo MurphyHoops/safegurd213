@@ -60,14 +60,8 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
             try { localStorage.removeItem(k); } catch (e) {}
         });
 
-        // 仅在首次偶发异常时尝试一次安全自愈重载；若连续异常(count > 1)，立即停止重载并展现恢复界面，杜绝连续蓝屏闪烁
-        if (count === 1) {
-            console.warn('[ErrorBoundary] Auto-healing: clearing volatile scanner cache & reloading once...');
-            setTimeout(() => {
-                window.location.reload();
-            }, 500);
-            return;
-        }
+        // 🔒 [杜绝网页自动退出/刷新]: 异常捕获后保持会话与数据持久稳定，严禁未经用户授权擅自调用 window.location.reload()
+        console.warn('[ErrorBoundary] Graceful catch: isolated error without forceful page reload.');
     } catch (e) {
         console.error('[ErrorBoundary] Auto-heal cache cleanup failed:', e);
     }

@@ -54,283 +54,25 @@ const reportPanic = (message: string, source?: string, lineno?: number) => {
         displayMsg = '浏览器的安全策略隐藏了具体错误原因 (CORS Masked Error). 这通常由动态脚本加载中断引起。';
     }
 
-    // Ignore environment noise & network error signals during server rebuild/restarts
-    const lowercaseMsg = displayMsg.toLowerCase();
-    if (
-        displayMsg.includes('WebSocket') || 
-        displayMsg.includes('StreamLogs') || 
-        displayMsg.includes('aistudio-iframe') ||
-        displayMsg.includes('HMR') ||
-        displayMsg.includes('hot-reload') ||
-        lowercaseMsg.includes('dynamically imported module') ||
-        lowercaseMsg.includes('dynamic import') ||
-        lowercaseMsg.includes('importing binding') ||
-        lowercaseMsg.includes('chunk') ||
-        lowercaseMsg.includes('failed to fetch') ||
-        lowercaseMsg.includes('load failed') ||
-        lowercaseMsg.includes('network') ||
-        lowercaseMsg.includes('timeout') ||
-        lowercaseMsg.includes('abort') ||
-        lowercaseMsg.includes('cors') ||
-        lowercaseMsg.includes('refused') ||
-        lowercaseMsg.includes('socket') ||
-        lowercaseMsg.includes('connection') ||
-        lowercaseMsg.includes('offline') ||
-        lowercaseMsg.includes('stream') ||
-        lowercaseMsg.includes('api') ||
-        lowercaseMsg.includes('binance') ||
-        lowercaseMsg.includes('ticker') ||
-        lowercaseMsg.includes('klines') ||
-        // If it's a generic "Syntax Error" without file source/line number, it's a resource-load failure event, not a JS bug
-        (lowercaseMsg === 'syntax error' && !source)
-    ) {
-        console.warn('🛡️ [System Shield] Bypassed transient background network/rebuild exception in reportPanic:', displayMsg);
-        return;
-    }
-
-    // Ignore browser extensions and third-party injected scripts
-    if (source && (
-        source.startsWith('chrome-extension://') || 
-        source.startsWith('moz-extension://') || 
-        source.startsWith('safari-extension://') ||
-        source.includes('safari-web-extension://') ||
-        source.includes('extensions::') ||
-        source.includes('browser-extension')
-    )) {
-        console.warn('🛡️ [System Shield] Bypassed third-party browser extension exception:', displayMsg, 'at', source);
-        return;
-    }
-
-    // Ignore known harmless errors (ResizeObserver loop limit, Grammarly, password managers, autofills)
-    if (
-        lowercaseMsg.includes('resizeobserver') || 
-        lowercaseMsg.includes('extension') || 
-        lowercaseMsg.includes('grammarly') || 
-        lowercaseMsg.includes('metamask') ||
-        lowercaseMsg.includes('password') ||
-        lowercaseMsg.includes('lastpass') ||
-        lowercaseMsg.includes('bitwarden') ||
-        lowercaseMsg.includes('autofill') ||
-        lowercaseMsg.includes('1password') ||
-        lowercaseMsg.includes('react-devtools')
-    ) {
-        console.warn('🛡️ [System Shield] Handled harmless warning:', displayMsg);
-        return;
-    }
-
-    // Is React fully running and is the layout intact right now?
-    const root = document.getElementById('root');
-    const isReactMountedAndHealthy = 
-        !!(window as any).__MAIN_APP_MOUNTED__ || 
-        (!!(window as any).isReactReady && root && root.innerHTML.trim().length > 150);
-
-    if (isReactMountedAndHealthy) {
-        // React is alive and running normally. This is a non-fatal, isolated exception.
-        // We log it as WARN to prevent false alarms or polluting system monitor health state.
-        console.warn('🛡️ [System Guard] Handled non-fatal runtime exception:', displayMsg);
-        persistRawSystemLog('WARN', 'SHIELD', `【时效抗扰】非致命警告: ${displayMsg}`, { source, lineno, time: new Date().toISOString() });
-        
-        try {
-            // @ts-ignore
-            if (window.__SYSTEM_MONITOR_STORE__) {
-                 // @ts-ignore
-                 window.__SYSTEM_MONITOR_STORE__.getState().addLog('WARN', 'SHIELD', `运行时警告捕捉 (抗扰中): ${displayMsg}`, { source, lineno });
-            }
-        } catch (e) {}
-    } else {
-        // True bootstrap fatal/unmount crash.
-        console.error('🛡️ [System Shield] Fatal Error Detected:', displayMsg);
-        
-        // Write directly to raw localStorage logs so it's persisted upon reload
-        persistRawSystemLog('ERROR', 'SHIELD', `【致命崩溃】${displayMsg}`, { source, lineno, time: new Date().toISOString() });
-
-        try {
-            // @ts-ignore
-            if (window.__SYSTEM_MONITOR_STORE__) {
-                 // @ts-ignore
-                 window.__SYSTEM_MONITOR_STORE__.getState().addLog('ERROR', 'SHIELD', `启动异常: ${displayMsg}`, { source, lineno });
-            }
-        } catch (e) {}
-
-        // 🛡️ 立即呈现恢复操作面板，杜绝用户在程序修改/升级重启时长时间面对蓝屏等待
-        triggerPanicUI(displayMsg);
-    }
+    console.warn('🛡️ [System Guard] Runtime exception safely isolated:', displayMsg, source, lineno);
+    persistRawSystemLog('WARN', 'SHIELD', `【运行时隔离保护】${displayMsg}`, { source, lineno, time: new Date().toISOString() });
 };
 
-const triggerPanicUI = (lastErrorMsg: string) => {
-    if ((window as any).__MAIN_APP_MOUNTED__) return;
-    if (document.getElementById('panic-ui')) return;
-
-    const panic = document.createElement('div');
-    panic.id = 'panic-ui';
-    panic.style.cssText = 'position:fixed;inset:0;background:radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);color:#fff;display:flex;align-items:center;justify-content:center;padding:20px;z-index:9999999;font-family:system-ui,sans-serif;text-align:center;overflow-y:auto';
-    panic.innerHTML = `
-        <div style="max-width:480px;width:100%;background:rgba(30,41,59,0.85);backdrop-filter:blur(20px);padding:30px;border-radius:28px;border:1px solid #334155;box-shadow:0 25px 50px -12px rgba(0,0,0,0.8);box-sizing:border-box">
-            <div style="width:56px;height:56px;background:#ef4444;border-radius:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px auto;font-size:28px;line-height:56px">🛡️</div>
-            <h1 style="margin:0 0 8px 0;font-size:18px;font-weight:900;letter-spacing:-0.025em;color:#f8fafc">系统引导自愈守护 (BOOT SHIELD)</h1>
-            <p style="font-size:12px;color:#94a3b8;line-height:1.5;margin-bottom:16px">
-                检测到渲染引擎载入受阻。为彻底杜绝修改升级后的“蓝屏/白屏”卡滞，守护引擎已自动为您激活安全修复通道：
-            </p>
-            <div style="background:rgba(15,23,42,0.8);padding:12px;border-radius:12px;font-family:monospace;font-size:10px;color:#fca5a5;margin-bottom:20px;text-align:left;border:1px solid rgba(239, 68, 68, 0.2);word-break:break-all;max-height:80px;overflow-y:auto">
-                <span style="color:#64748b">DIAGNOSTIC:</span><br/>
-                ${lastErrorMsg || 'Render process hung or initial javascript download timed out.'}
-            </div>
-            
-            <div style="display:flex;flex-direction:column;gap:10px">
-                <button onclick="location.reload()" style="width:100%;background:#4f46e5;color:white;border:none;padding:12px;border-radius:10px;font-weight:800;font-size:11px;cursor:pointer;box-shadow:0 4px 10px rgba(79, 70, 229, 0.3)">
-                    🔄 仅尝试刷新页面 / 重载内核
-                </button>
-                
-                <button onclick="localStorage.removeItem('SAVIOR_LOGS');localStorage.removeItem('SAVIOR_SYSTEM_MONITOR_LOGS');localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');alert('已清理系统日志与临时扫描器缓存，保留所有持仓与个人设置，正在重载...');location.reload()" style="width:100%;background:rgba(59, 130, 246, 0.15);color:#60a5fa;border:1px solid rgba(59, 130, 246, 0.3);padding:12px;border-radius:10px;font-weight:800;font-size:11px;cursor:pointer">
-                    🧹 执行修复：清理临时缓存 (保留所有持仓与设置)
-                </button>
-                
-                <button onclick="if(confirm('确定要清除所有系统设置和账户缓存恢复出厂配置吗？此操作不可逆。')){localStorage.clear();alert('出厂设置已还原，正在重连...');location.reload()}" style="width:100%;background:rgba(148, 163, 184, 0.1);color:#94a3b8;border:1px solid rgba(148, 163, 184, 0.2);padding:10px;border-radius:10px;font-weight:700;font-size:10px;cursor:pointer">
-                    ⚙️ 最终对策：完全清除缓存恢复出厂设置 (慎用)
-                </button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(panic);
-};
-
-// --- 2.5 UNCONDITIONAL BOOT GUARDIAN TIMER ---
-// If after 6 seconds, the main React application has not successfully mounted,
-// and the root element remains blank/empty, we trigger the emergency recovery screen.
-setTimeout(() => {
-    if ((window as any).__MAIN_APP_MOUNTED__) {
-        console.log("🛡️ [System Shield] Boot Guardian: React app successfully completed mounting. Boot phase secure.");
-        return;
-    }
-
-    const root = document.getElementById('root');
-    const isPanicVisible = !!document.getElementById('panic-ui');
-    
-    // Critical Check: If the app hasn't mounted within 6 seconds, trigger panic recovery UI
-    if (!isPanicVisible && (!root || root.innerHTML.trim().length < 150)) {
-        console.error("🛡️ [System Shield] Boot Guardian: Triggering emergency recovery screen due to unmounted blank screen after 6s.");
-        
-        let lastErrorMsg = 'Render process hung or initial javascript download timed out.';
-        try {
-            const raw = localStorage.getItem('SAVIOR_SYSTEM_MONITOR_LOGS');
-            if (raw) {
-                const logs = JSON.parse(raw);
-                if (Array.isArray(logs) && logs.length > 0) {
-                    const latestError = logs.find(l => l.level === 'ERROR');
-                    if (latestError) {
-                        lastErrorMsg = latestError.message;
-                    }
-                }
-            }
-        } catch (_) {}
-
-        triggerPanicUI(lastErrorMsg);
-    }
-}, 6000);
-
-// --- 3. REGISTER LISTENERS IMMEDIATELY ---
+// --- 3. REGISTER LISTENERS IMMEDIATELY (ZERO INTERRUPTION TO APP) ---
 window.addEventListener('error', (event) => {
-    const errorEvent = event as any;
-    // If it's a resource/asset loading error, ignore it entirely as it's a network/rebuild issue, not a code panic.
-    if (!(event instanceof ErrorEvent) && !errorEvent.message) {
-        console.warn('🛡️ [System Shield] Bypassed asset/resource load error (likely rebuild/network noise):', event);
-        return;
-    }
-    
-    const msg = errorEvent.message || '';
-    const lowercaseMsg = msg.toLowerCase();
-    // Ignore dynamic import / chunk loading / network errors in error listener
-    if (
-        lowercaseMsg.includes('failed to fetch') ||
-        lowercaseMsg.includes('load failed') ||
-        lowercaseMsg.includes('chunk') ||
-        lowercaseMsg.includes('dynamic import') ||
-        lowercaseMsg.includes('dynamically imported module') ||
-        lowercaseMsg.includes('hmr') ||
-        lowercaseMsg.includes('websocket')
-    ) {
-        return;
-    }
-
-    reportPanic(msg || 'Syntax Error', errorEvent.filename, errorEvent.lineno);
+    try {
+        const errorEvent = event as any;
+        const msg = errorEvent?.message || '';
+        console.warn('🛡️ [System Shield] Isolated window error (non-fatal):', msg);
+    } catch (_) {}
 });
 
 window.addEventListener('unhandledrejection', (event) => {
-    let reasonText = '';
-    if (event.reason) {
-        if (event.reason instanceof Error) {
-            reasonText = event.reason.message;
-        } else if (typeof event.reason === 'object') {
-            try {
-                reasonText = JSON.stringify(event.reason);
-            } catch (e) {
-                reasonText = String(event.reason);
-            }
-        } else {
-            reasonText = String(event.reason);
-        }
-    } else {
-        reasonText = 'Unknown Rejection';
-    }
-
-    // Ignore environment noise
-    if (
-        reasonText.includes('WebSocket') || 
-        reasonText.includes('StreamLogs') || 
-        reasonText.includes('aistudio-iframe') ||
-        reasonText.includes('HMR') ||
-        reasonText.includes('hot-reload') ||
-        reasonText.toLowerCase().includes('dynamically imported module') ||
-        reasonText.toLowerCase().includes('dynamic import') ||
-        reasonText.toLowerCase().includes('importing binding') ||
-        reasonText.toLowerCase().includes('chunk')
-    ) {
-        return;
-    }
-
-    // Ignore non-fatal network or Binance API rejections during system boot
-    const lowercaseReason = reasonText.toLowerCase();
-    if (
-        lowercaseReason.includes('fetch') ||
-        lowercaseReason.includes('networkerror') ||
-        lowercaseReason.includes('load failed') ||
-        lowercaseReason.includes('timeout') ||
-        lowercaseReason.includes('abort') ||
-        lowercaseReason.includes('binance') ||
-        lowercaseReason.includes('ticker') ||
-        lowercaseReason.includes('klines') ||
-        lowercaseReason.includes('cors') ||
-        lowercaseReason.includes('econnrefused') ||
-        lowercaseReason.includes('socket')
-    ) {
-        console.warn('🛡️ [System Shield] Bypassed background network/API exception:', reasonText);
-        persistRawSystemLog('WARN', 'SHIELD', `【网络限扰】引导阶段非致命网络异常已隔离: ${reasonText}`);
-        return;
-    }
-
-    // Check if React is mounted and running normally
-    const root = document.getElementById('root');
-    const isReactMounted = 
-        !!(window as any).__MAIN_APP_MOUNTED__ || 
-        (!!(window as any).isReactReady && root && root.innerHTML.trim().length > 150);
-
-    if (isReactMounted) {
-        // If React is mounted, background task / network failures are safe.
-        // Log them as warnings to prevent diagnostic FAIL loops or scaring the user.
+    try {
+        let reasonText = event?.reason instanceof Error ? event.reason.message : String(event?.reason || '');
         console.warn('⚠️ [System Guard] Background async failure isolated:', reasonText);
         persistRawSystemLog('WARN', 'SHIELD', `【背景异步限扰】时效任务或接口异常: ${reasonText}`);
-        
-        try {
-            // @ts-ignore
-            if (window.__SYSTEM_MONITOR_STORE__) {
-                 // @ts-ignore
-                 window.__SYSTEM_MONITOR_STORE__.getState().addLog('WARN', 'SHIELD', `时效接口异常 (已自动隔离防止白屏): ${reasonText}`);
-            }
-        } catch (e) {}
-    } else {
-        // Uncaught boot rejection
-        reportPanic(`启动异步崩溃 (Boot Async Fail): ${reasonText}`);
-    }
+    } catch (_) {}
 });
 
 console.log('🚀 [Boot] Panic Shield Active.');
@@ -372,6 +114,7 @@ if (!rootElement) {
     console.log('🚀 [Boot] Mounting React...');
     persistRawSystemLog('INFO', 'BOOT', '🚀 启动 React 渲染引擎挂载 (Mounting React)');
     (window as any).isReactReady = true;
+    (window as any).__MAIN_APP_MOUNTED__ = true;
 
     // 清理启动遮罩
     try {

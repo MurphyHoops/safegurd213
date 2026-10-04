@@ -4,8 +4,8 @@ let continuousFailures = 0;
 let circuitBreakerUntil = 0;
 
 // --- GLOBAL CONCURRENCY LOCK (Semaphore) ---
-// High-throughput concurrency limit to ensure 20+ position background checks never block List 1 market scanning
-const MAX_CONCURRENT = 60; // Increased from 20 to 60 to prevent scanner starvation when holding 20+ positions
+// Bounded concurrency limit matching browser socket pool limits to prevent OOM/render crashes
+const MAX_CONCURRENT = 8;
 let activeRequests = 0;
 
 interface QueueItem {
@@ -58,8 +58,27 @@ interface CacheEntry {
     ttl: number;
 }
 
+const MAX_CLIENT_CACHE_ENTRIES = 200;
 const clientSideCache = new Map<string, CacheEntry>();
 const inflightRequests = new Map<string, Promise<any>>();
+
+export const clearClientSideCache = () => {
+    clientSideCache.clear();
+    inflightRequests.clear();
+};
+
+const setWithLruCap = (key: string, entry: CacheEntry) => {
+    // Evict expired entries or oldest entry if over capacity
+    const now = Date.now();
+    if (clientSideCache.size >= MAX_CLIENT_CACHE_ENTRIES) {
+        for (const [k, v] of clientSideCache.entries()) {
+            if (now - v.timestamp >= v.ttl || clientSideCache.size >= MAX_CLIENT_CACHE_ENTRIES) {
+                clientSideCache.delete(k);
+            }
+        }
+    }
+    clientSideCache.set(key, entry);
+};
 
 const normalizeUrlForCache = (urlStr: string): string => {
     try {
@@ -207,7 +226,7 @@ export const fetchWithFallback = async (
         
         // Cache successful responses
         const ttl = getCacheTTL(url);
-        clientSideCache.set(cacheKey, {
+        setWithLruCap(cacheKey, {
             data: parsed,
             timestamp: Date.now(),
             ttl

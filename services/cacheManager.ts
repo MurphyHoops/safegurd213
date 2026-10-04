@@ -10,6 +10,7 @@
  */
 
 import { backtestDb } from './backtest/db';
+import { clearClientSideCache } from './apiService';
 
 export interface StorageEstimateInfo {
     usageBytes: number;
@@ -22,7 +23,7 @@ export interface StorageEstimateInfo {
     lastCleanTime: number;
 }
 
-// 核心保护白名单（绝对不可删除的用户关键数据）
+// 核心保护白名单（绝对不可删除的用户关键数据与扫描器活跃底池）
 const PROTECTED_KEY_PREFIXES = [
     'SAVIOR_SETTINGS',
     'BINANCE_API_KEY',
@@ -33,10 +34,17 @@ const PROTECTED_KEY_PREFIXES = [
     'SCANNER_ACTIVE_MODE',
     'SCANNER_ROTATION',
     'SCANNER_CONFIG_',
+    'SCANNER_LIST1_',
     'SCANNER_LIST2_CONFIG_',
     'SCANNER_LIST3_CONFIG_',
     'SCANNER_LIST4_CONFIG_',
     'SCANNER_ACTION_CONFIG_',
+    'SCANNER_RAW_DATA',
+    'SCANNER_LIST2_CACHE',
+    'SCANNER_LIST3_CACHE',
+    'SCANNER_LIST4_RESULTS',
+    'SCANNER_SIDEWAYS_FILTERED_POOL',
+    'SCANNER_MAJOR_TREND_CANDIDATES',
     'SAVIOR_TRADE_LOGS',
     'SAVIOR_IS_SIMULATING',
     'SAVIOR_AUTO_CLEAN_INTERVAL',
@@ -234,7 +242,8 @@ class CacheManagerService {
                 }
             }
 
-            // 4. 清理全局 window 上的临时图表缓存与对象池
+            // 4. 清理全局 window 上的临时图表缓存与对象池并清空 HTTP 内存缓存
+            clearClientSideCache();
             if (typeof window !== 'undefined') {
                 try {
                     delete (window as any).__KLINE_CACHE__;

@@ -125,8 +125,8 @@ export async function fetchVolume8amBatch(
     targets.forEach(s => activeFetchSymbols.add(s));
     isBatchFetching = true;
 
-    // 分批并发处理 (每批 12 个请求，保证极速响应且不触发币安限频)
-    const BATCH_SIZE = 12;
+    // 分批平稳并发处理 (每批 4 个请求，契合浏览器连接池且绝不引发主线程卡顿或崩溃)
+    const BATCH_SIZE = 4;
     let hasUpdates = false;
 
     for (let i = 0; i < targets.length; i += BATCH_SIZE) {

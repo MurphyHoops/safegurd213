@@ -50,6 +50,8 @@ function syncDedicatedStreams(symbols) {
     positionDirectWsMap.clear();
 }
 
+let lastTickersEmitTime = 0;
+
 function connect() {
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
         return;
@@ -79,7 +81,11 @@ function connect() {
                 const json = JSON.parse(event.data);
                 const data = json.data || json;
                 const newPrices = {};
+                const rawTickers = [];
                 let hasUpdates = false;
+
+                const now = Date.now();
+                const shouldEmitTickers = (now - lastTickersEmitTime > 1000);
 
                 const processItem = (item) => {
                     const rawSymbol = item.s || item.symbol;
@@ -102,6 +108,19 @@ function connect() {
                         newPrices[symbol] = priceVal;
                         hasUpdates = true;
                     }
+
+                    if (shouldEmitTickers && rawSymbol && (item.c || item.lastPrice || item.p)) {
+                        rawTickers.push({
+                            symbol: rawSymbol,
+                            lastPrice: item.c || item.lastPrice || item.p || '0',
+                            openPrice: item.o || item.openPrice || item.c || '0',
+                            highPrice: item.h || item.highPrice || item.c || '0',
+                            lowPrice: item.l || item.lowPrice || item.c || '0',
+                            volume: item.v || item.volume || '0',
+                            quoteVolume: item.q || item.quoteVolume || '0',
+                            priceChangePercent: item.P || item.priceChangePercent || '0',
+                        });
+                    }
                 };
 
                 if (Array.isArray(data)) {
@@ -113,7 +132,12 @@ function connect() {
                 }
 
                 if (hasUpdates) {
-                    postMessage({ type: 'prices', prices: newPrices });
+                    if (shouldEmitTickers && rawTickers.length > 0) {
+                        lastTickersEmitTime = now;
+                        postMessage({ type: 'prices', prices: newPrices, tickers: rawTickers });
+                    } else {
+                        postMessage({ type: 'prices', prices: newPrices });
+                    }
                 }
             } catch (err) {
                 // Ignore parsing exceptions
@@ -253,7 +277,7 @@ export class BinanceWebSocket {
             this.worker = new Worker(workerUrl);
 
             this.worker.onmessage = (event) => {
-                const { type, prices, isConnected, lastMessageTime } = event.data;
+                const { type, prices, tickers, isConnected, lastMessageTime } = event.data;
                 
                 if (type === 'prices') {
                     this.lastMessageTime = Date.now();
@@ -264,10 +288,19 @@ export class BinanceWebSocket {
                     }
                     
                     // Directly broadcast prices to DOM Bypass Registry first
-                    priceRegistry.updatePrices(prices);
+                    if (prices) {
+                        priceRegistry.updatePrices(prices);
+                    }
+
+                    // Broadcast full market tickers to PriceRegistry for List 1 zero-latency calculation
+                    if (tickers && tickers.length > 0) {
+                        priceRegistry.updateMarketTickers(tickers);
+                    }
 
                     // Notify standard app callbacks
-                    this.notifyCallbacks(prices);
+                    if (prices) {
+                        this.notifyCallbacks(prices);
+                    }
                 } else if (type === 'status') {
                     this.isConnected = isConnected;
                     if (lastMessageTime) {

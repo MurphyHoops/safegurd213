@@ -9,6 +9,8 @@ import { calculateEMA } from '../../services/indicators';
 import { pipelineCoordinator } from '../../services/pipelineQueue';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../services/volume8amService';
 import { klineDailyStore } from '../../services/klineDailyStore';
+import { klineMultiTfStore } from '../../services/klineMultiTfStore';
+import { priceRegistry } from '../../services/priceRegistry';
 
 
 // Helper for fast, isolated, non-blocking klines fetching through official proxy endpoints with hard abort timeout
@@ -143,6 +145,7 @@ export const useScannerLogic = (
     // --- 早上8点成交量与开盘价缓存 ---
     const volume8amCacheRef = useRef<Map<string, { volume: number, openPrice: number, timestamp: number }>>(new Map());
     const majorTrendCandidatesRef = useRef<Set<string>>(new Set());
+    const warmedUpSymbolsRef = useRef<Set<string>>(new Set());
     
     // --- MAJOR TREND DISCOVERY STATE ---
     const [hasRunMajorTrend, setHasRunMajorTrend] = useState<boolean>(() => {
@@ -329,6 +332,113 @@ export const useScannerLogic = (
             if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
         };
     }, []);
+
+    // ⚡ [0-DELAY EVENT STREAMING]: Real-Time All-Market WS Ticker Push (0 HTTP Requests, 0 IP Weight)
+    useEffect(() => {
+        let throttleTimer: any = null;
+        let latestTickers: any[] = [];
+
+        const processLiveTickers = (data: any[]) => {
+            if (!isMountedRef.current || !data || data.length === 0) return;
+            rawDataRef.current = data;
+
+            const nowTime = Date.now();
+            const expiry = 5 * 60 * 1000;
+            const enrichedRaw = data.map((t: any) => {
+                const cached = volume8amCacheRef.current.get(t.symbol) || (getVolume8am(t.symbol) ? { volume: getVolume8am(t.symbol)!.volume8am, openPrice: getVolume8am(t.symbol)!.openPrice, timestamp: nowTime } : undefined);
+                if (cached && (nowTime - cached.timestamp < expiry)) {
+                    return {
+                        ...t,
+                        _cachedVolume8am: cached.volume,
+                        _cachedOpenPrice8am: cached.openPrice
+                    };
+                }
+                return t;
+            });
+
+            const { list1: filtered, stats } = processMarketData(
+                enrichedRaw, 
+                configRef.current, 
+                customSymbolSetRef.current, 
+                fixedModeViewRef.current
+            );
+            
+            filtered.forEach(item => {
+                const cached = volume8amCacheRef.current.get(item.symbol) || (getVolume8am(item.symbol) ? { volume: getVolume8am(item.symbol)!.volume8am, openPrice: getVolume8am(item.symbol)!.openPrice, timestamp: nowTime } : undefined);
+                if (cached && (nowTime - cached.timestamp < expiry)) {
+                    item.volume8am = cached.volume;
+                    if (cached.openPrice > 0 && item.price > 0) {
+                        item.change8am = ((item.price - cached.openPrice) / cached.openPrice) * 100;
+                    }
+                }
+            });
+
+            let finalCandidates = filtered;
+            if (!configRef.current.useCustomOnly || fixedModeViewRef.current === 'SEARCH') {
+                finalCandidates = filtered.filter(item => checkVolumeRule(item, configRef.current));
+                if (configRef.current.enableVol8am) {
+                    const minChange = configRef.current.minChange || 0;
+                    const source = configRef.current.source || 'BOTH';
+
+                    finalCandidates = finalCandidates.filter(item => {
+                        const effectiveChange = item.change8am !== undefined ? item.change8am : 0;
+                        if (source === 'GAINERS' && effectiveChange <= 0) return false;
+                        if (source === 'LOSERS' && effectiveChange >= 0) return false;
+                        if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
+                        return true;
+                    });
+                }
+            }
+
+            const smartAnalyzed = modeRef.current === 'SMART' 
+                ? applySmartAnalysis(finalCandidates, configRef.current)
+                : finalCandidates;
+
+            const nonBlacklisted = smartAnalyzed.filter(item => item && item.symbol && !blacklistRef.current.has(item.symbol));
+            const currentList = Array.isArray(list1Ref.current) ? list1Ref.current : [];
+            const prevSymbols = new Set(currentList.map(i => i?.symbol).filter(Boolean));
+            
+            const finalFiltered = nonBlacklisted.map(item => ({
+                ...item,
+                isNew: !prevSymbols.has(item.symbol) && currentList.length > 0
+            }));
+
+            // ⚡ [SILENT PRE-WARMING PIPELINE]: 仅对首次进入初筛池的新增币种执行一次性静默预热，杜绝在100ms高频循环中重复触发
+            finalFiltered.slice(0, 15).forEach(cand => {
+                if (cand && cand.symbol && !warmedUpSymbolsRef.current.has(cand.symbol)) {
+                    warmedUpSymbolsRef.current.add(cand.symbol);
+                    klineMultiTfStore.warmupSymbolKlines(cand.symbol, ['1m', '5m', '15m', '1h'], directModeRef.current);
+                }
+            });
+
+            setMarketStats(prev => {
+                if (JSON.stringify(stats) === JSON.stringify(prev)) return prev;
+                return stats;
+            });
+
+            if (finalFiltered.length > 0) {
+                if (JSON.stringify(finalFiltered) !== JSON.stringify(list1Ref.current)) {
+                    setList1(finalFiltered);
+                    list1Ref.current = finalFiltered;
+                }
+            }
+        };
+
+        const unsub = priceRegistry.registerTickerListener((tickers) => {
+            latestTickers = tickers;
+            if (!throttleTimer) {
+                throttleTimer = setTimeout(() => {
+                    throttleTimer = null;
+                    processLiveTickers(latestTickers);
+                }, 1000); // 1000ms healthy batch throttle
+            }
+        });
+
+        return () => {
+            unsub();
+            if (throttleTimer) clearTimeout(throttleTimer);
+        };
+    }, [applySmartAnalysis]);
 
     // --- EFFECT: Re-filter instantly when config changes or blacklist changes ---
     const lastFilterPulseRef = useRef<string>('');
@@ -1046,7 +1156,8 @@ export const useScannerLogic = (
             currentSymbol: ''
         } as any);
 
-        const perCoinDelayMs = Math.max(1, cfg.intervalSeconds ?? (cfg.intervalMinutes ? Math.min(cfg.intervalMinutes, 60) : 3)) * 1000;
+        // ⚡ [0-DELAY INSTANT PIPELINE]: 采用常驻日K本地持久化缓存，消除冗余网络休眠，毫秒级瞬时计算完成
+        const perCoinDelayMs = (cfg.intervalSeconds ?? 0) * 1000;
         const KLINE_LIMIT_CACHE = ((window as any).KLINE_LIMIT_CACHE = (window as any).KLINE_LIMIT_CACHE || {});
 
         // =========================================================================
@@ -1274,52 +1385,53 @@ export const useScannerLogic = (
                     coinAbortController.abort();
                 } catch (_) {}
                 processedGroup1Count++;
-                if (isMountedRef.current) {
-                    setMajorProgress({
-                        current: processedGroup1Count,
-                        total: targetSymbols.length,
-                        stage: 'group1',
-                        group1Total: targetSymbols.length,
-                        group1Current: processedGroup1Count,
-                        group1Passed: stage1PassedItems.length,
-                        group2Total: stage1PassedItems.length,
-                        group2Current: 0,
-                        group2Passed: 0,
-                        currentSymbol: symbol
-                    } as any);
+                updateStage1ProgressThrottled(symbol);
+            }
+        };
+
+        let lastStage1ProgressTime = 0;
+        const updateStage1ProgressThrottled = (symbol: string, force = false) => {
+            if (!isMountedRef.current) return;
+            const now = Date.now();
+            if (force || now - lastStage1ProgressTime > 80 || processedGroup1Count >= targetSymbols.length) {
+                lastStage1ProgressTime = now;
+                setMajorProgress({
+                    current: Math.min(processedGroup1Count, targetSymbols.length),
+                    total: targetSymbols.length,
+                    stage: 'group1',
+                    group1Total: targetSymbols.length,
+                    group1Current: Math.min(processedGroup1Count, targetSymbols.length),
+                    group1Passed: stage1PassedItems.length,
+                    group2Total: stage1PassedItems.length,
+                    group2Current: 0,
+                    group2Passed: 0,
+                    currentSymbol: symbol
+                } as any);
+            }
+        };
+
+        // ⚡ [BALANCED HIGH-SPEED WORKER POOL]: 4协程平稳并发，契合浏览器Socket池限制，秒级完成第一阶段横盘蓄势扫描且0闪退
+        const CONCURRENCY_STAGE1 = 4;
+        let cursorStage1 = 0;
+
+        const workerStage1 = async () => {
+            while (cursorStage1 < targetSymbols.length && isMountedRef.current && majorTrendConfigRef.current?.enabled && !majorScanAbortRef.current) {
+                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
+
+                const idx = cursorStage1++;
+                if (idx < targetSymbols.length) {
+                    const currentSym = targetSymbols[idx];
+                    await processStage1Coin(currentSym);
                 }
             }
         };
 
-        // 🔒 严格按照设定的时间(秒)逐币稳定推进：消除瞬态并发闪退，确保单币可感知、稳健过滤
-        for (let i = 0; i < targetSymbols.length; i++) {
-            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
-
-            // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
-            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                await new Promise(resolve => setTimeout(resolve, 200));
-            }
-            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
-
-            const currentSym = targetSymbols[i];
-            const stepStart = Date.now();
-            await processStage1Coin(currentSym);
-
-            const elapsed = Date.now() - stepStart;
-            const remaining = Math.max(0, perCoinDelayMs - elapsed);
-            if (remaining > 0 && i < targetSymbols.length - 1 && isMountedRef.current && !majorScanAbortRef.current) {
-                const delayStart = Date.now();
-                while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
-                    if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
-                        while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                            await new Promise(resolve => setTimeout(resolve, 200));
-                        }
-                        break;
-                    }
-                    await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining)));
-                }
-            }
-        }
+        const workersStage1 = Array.from({ length: Math.min(CONCURRENCY_STAGE1, targetSymbols.length) }, () => workerStage1());
+        await Promise.all(workersStage1);
+        updateStage1ProgressThrottled('', true);
 
         // 🔒【第一阶段扫描完成】: 仅在整轮横盘扫描完成后原子化保存到“横盘蓄势过滤底池”，若无通过币种则清空底池
         const poolData = stage1PassedItems.map(item => ({
@@ -1390,20 +1502,12 @@ export const useScannerLogic = (
                 currentSymbol: ''
             } as any);
 
-            for (let s2Idx = 0; s2Idx < totalStage2; s2Idx++) {
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
-                if (majorScanAbortRef.current) break;
-
-                // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
-                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                }
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
-                if (majorScanAbortRef.current) break;
-
+            let processedStage2Count = 0;
+            const processStage2Item = async (s2Idx: number) => {
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) return;
                 const item = stage1PassedItems[s2Idx];
+                if (!item) return;
                 const symbol = item.symbol;
-                const s2CycleStart = Date.now();
 
                 const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
                 let klines = item.klines;
@@ -1539,39 +1643,51 @@ export const useScannerLogic = (
                 successfullyEvaluatedSymbols.add(symbol);
                 successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
                 successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
+                processedStage2Count++;
+                updateStage2ProgressThrottled(symbol);
+            };
 
-                // 仅更新扫描进度显示，绝不在此处触发初筛列表的增减更新
-                if (isMountedRef.current) {
+            let lastStage2ProgressTime = 0;
+            const updateStage2ProgressThrottled = (symbol: string, force = false) => {
+                if (!isMountedRef.current) return;
+                const now = Date.now();
+                if (force || now - lastStage2ProgressTime > 80 || processedStage2Count >= totalStage2) {
+                    lastStage2ProgressTime = now;
                     setMajorProgress({
-                        current: s2Idx + 1,
+                        current: Math.min(processedStage2Count, totalStage2),
                         total: totalStage2,
                         stage: 'group2',
                         group1Total: targetSymbols.length,
                         group1Current: targetSymbols.length,
                         group1Passed: totalStage2,
                         group2Total: totalStage2,
-                        group2Current: s2Idx + 1,
+                        group2Current: Math.min(processedStage2Count, totalStage2),
                         group2Passed: getMatchedUniqueSymbolsCount(stage2PassedSymbols),
                         currentSymbol: symbol
                     } as any);
                 }
+            };
 
-                // 🔒 严格限制回溯周期过滤步进速度：严格按照大行情发现设置中的“时间(秒)”进行扫描
-                const elapsed = Date.now() - s2CycleStart;
-                const remaining = Math.max(0, perCoinDelayMs - elapsed);
-                if (remaining > 0 && s2Idx < totalStage2 - 1 && isMountedRef.current && !majorScanAbortRef.current) {
-                    const delayStart = Date.now();
-                    while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
-                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
-                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                                await new Promise(resolve => setTimeout(resolve, 200));
-                            }
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining)));
+            // ⚡ [BALANCED HIGH-SPEED WORKER POOL]: 4协程平稳并发，契合浏览器Socket池限制，秒级秒算完成且0内存风暴
+            const CONCURRENCY_STAGE2 = 4;
+            let cursorStage2 = 0;
+            const workerStage2 = async () => {
+                while (cursorStage2 < totalStage2 && isMountedRef.current && majorTrendConfigRef.current?.enabled && !majorScanAbortRef.current) {
+                    while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                    }
+                    if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
+
+                    const idx = cursorStage2++;
+                    if (idx < totalStage2) {
+                        await processStage2Item(idx);
                     }
                 }
-            }
+            };
+
+            const workersStage2 = Array.from({ length: Math.min(CONCURRENCY_STAGE2, totalStage2) }, () => workerStage2());
+            await Promise.all(workersStage2);
+            updateStage2ProgressThrottled('', true);
         }
 
         // =========================================================================

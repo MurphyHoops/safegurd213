@@ -69,6 +69,10 @@ class PriceRegistry {
                     if (prEntries) {
                         prEntries.forEach(entry => {
                             try {
+                                if (!entry.element || (typeof document !== 'undefined' && !document.body.contains(entry.element))) {
+                                    prEntries.delete(entry);
+                                    return;
+                                }
                                 const text = `${entry.prefix}${formatPrice(targetPrice)}${entry.suffix}`;
                                 if (entry.element.innerText !== text) {
                                     entry.element.innerText = text;
@@ -78,11 +82,15 @@ class PriceRegistry {
                                         if (price > prevPrice) {
                                             entry.element.classList.add('text-emerald-400');
                                             entry.element.classList.remove('text-red-400');
-                                            setTimeout(() => entry.element.classList.remove('text-emerald-400'), 180);
+                                            setTimeout(() => {
+                                                try { entry.element?.classList.remove('text-emerald-400'); } catch (_) {}
+                                            }, 180);
                                         } else if (price < prevPrice) {
                                             entry.element.classList.add('text-red-400');
                                             entry.element.classList.remove('text-emerald-400');
-                                            setTimeout(() => entry.element.classList.remove('text-red-400'), 180);
+                                            setTimeout(() => {
+                                                try { entry.element?.classList.remove('text-red-400'); } catch (_) {}
+                                            }, 180);
                                         }
                                     }
                                 }
@@ -90,6 +98,9 @@ class PriceRegistry {
                                 // Ignore silent errors for unmounted or stale components
                             }
                         });
+                        if (prEntries.size === 0) {
+                            this.priceElements.delete(targetSym);
+                        }
                     }
 
                     // 2. Direct DOM Position PnL calculation and updates
@@ -97,6 +108,10 @@ class PriceRegistry {
                     if (pnlEntries) {
                         pnlEntries.forEach(entry => {
                             try {
+                                if (!entry.element || (typeof document !== 'undefined' && !document.body.contains(entry.element))) {
+                                    pnlEntries.delete(entry);
+                                    return;
+                                }
                                 const isLong = entry.side === 'LONG';
                                 
                                 // Detect and fix 1000x scale mismatch between entryPrice and targetPrice
@@ -149,6 +164,9 @@ class PriceRegistry {
                                 // Ignore silent errors for unmounted or stale components
                             }
                         });
+                        if (pnlEntries.size === 0) {
+                            this.pnlElements.delete(targetSym);
+                        }
                     }
                 }
             }
@@ -289,6 +307,32 @@ class PriceRegistry {
                 }
             }
         };
+    }
+
+    // --- FULL MARKET TICKER BROADCAST (For List 1 Zero-Latency Streaming) ---
+    private rawTickers: any[] = [];
+    private tickerListeners: Set<(tickers: any[]) => void> = new Set();
+
+    public updateMarketTickers(tickers: any[]) {
+        if (!Array.isArray(tickers) || tickers.length === 0) return;
+        this.rawTickers = tickers;
+        this.tickerListeners.forEach(cb => {
+            try {
+                cb(tickers);
+            } catch (_) {}
+        });
+    }
+
+    public getMarketTickers(): any[] {
+        return this.rawTickers;
+    }
+
+    public registerTickerListener(callback: (tickers: any[]) => void): Unsubscribe {
+        this.tickerListeners.add(callback);
+        if (this.rawTickers.length > 0) {
+            try { callback(this.rawTickers); } catch (_) {}
+        }
+        return () => this.tickerListeners.delete(callback);
     }
 }
 

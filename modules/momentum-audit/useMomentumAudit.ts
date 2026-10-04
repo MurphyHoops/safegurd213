@@ -17,6 +17,8 @@ import { saveState } from '../../utils/persistence';
 import { db, auth } from '../../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { useAutoHistoryLogger } from './components/ScannerHistoryModal';
+import { klineMultiTfStore } from '../../services/klineMultiTfStore';
+import { KLine } from '../../types';
 
 // Helper to get minutes from tf string
 const getTfMinutes = (tf: string) => {
@@ -118,6 +120,16 @@ export const useMomentumAudit = (
         const cleanSym = normalizeSymbol(symbol);
         const key = `${cleanSym}-${tf}`;
         const now = Date.now();
+
+        // ⚡ [0-MS RING BUFFER QUERY]: Check global multi-TF ring buffer
+        const persistentKlines = klineMultiTfStore.getKlinesSync(cleanSym, tf, 20);
+        if (persistentKlines && persistentKlines.length >= 20) {
+            const allCloses = persistentKlines.map(k => k.close).filter(v => !isNaN(v) && v > 0);
+            const priorCloses = allCloses.length > 1 ? allCloses.slice(0, -1) : allCloses;
+            list4KlinesCacheRef.current.set(key, { closes: priorCloses, timestamp: Date.now() });
+            return priorCloses;
+        }
+
         const cached = list4KlinesCacheRef.current.get(key);
         if (cached && now - cached.timestamp < 10000) {
             return cached.closes;
@@ -133,6 +145,16 @@ export const useMomentumAudit = (
             if (res.ok) {
                 const raw = await res.json();
                 if (Array.isArray(raw) && raw.length > 0) {
+                    const klines: KLine[] = raw.map((k: any) => ({
+                        time: Number(k[0]),
+                        open: parseFloat(k[1]),
+                        high: parseFloat(k[2]),
+                        low: parseFloat(k[3]),
+                        close: parseFloat(k[4]),
+                        volume: parseFloat(k[5]),
+                    }));
+                    klineMultiTfStore.setKlines(safeSym, tf, klines);
+
                     const allCloses = raw.map((k: any) => parseFloat(k[4]) || 0).filter((v: number) => !isNaN(v) && v > 0);
                     // 仅提取已收盘的前序K线收盘价切片（剔除正在形成的最后一根）
                     const priorCloses = allCloses.length > 1 ? allCloses.slice(0, -1) : allCloses;
