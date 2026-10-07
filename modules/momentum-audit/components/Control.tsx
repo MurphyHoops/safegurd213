@@ -351,6 +351,37 @@ export const List4Control: React.FC<List4PanelProps> = ({
                 />
               </div>
             </div>
+            <div className="bg-slate-800 p-2 rounded border border-slate-700 flex flex-col gap-1 col-span-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] text-slate-400 font-bold uppercase flex items-center gap-1" title="突破进攻线后允许开仓的最大偏离比例（默认0.5%，超出则视为严重跑飞拦截不开仓）">
+                  突破偏离上限 (防追高)
+                </span>
+                <div className="flex items-center gap-1">
+                  <span className="text-[8px] text-slate-500">±%</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.05"
+                    max="10"
+                    value={
+                      config.maxBreakoutDeviation === undefined ||
+                      Number.isNaN(config.maxBreakoutDeviation)
+                        ? 0.5
+                        : config.maxBreakoutDeviation
+                    }
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setConfig((p) => ({
+                        ...p,
+                        maxBreakoutDeviation: isNaN(val) ? 0.5 : Math.max(0.01, val),
+                      }));
+                    }}
+                    className="w-12 bg-slate-900 border border-slate-700 rounded text-center text-[10px] text-cyan-400 font-bold outline-none"
+                    title="突破进攻线后允许开仓的最大偏离比例（默认0.5%，超出则视为严重跑飞拦截不开仓）"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 

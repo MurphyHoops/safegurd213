@@ -1,3 +1,6 @@
+// 🔒 LOCKED_MODULE: LIST 3 [结构深度审计 逻辑与状态管理 Hook]
+// @LOCKED: 严格原子化单独锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何功能与代码。
+
 import { useState, useRef, useEffect, useCallback } from "react";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import {
@@ -13,14 +16,12 @@ import { KLine } from "../../types";
 import { saveState } from "../../utils/persistence";
 import { normalizeSymbol } from "../../services/symbolUtils";
 import { priceRegistry } from "../../services/priceRegistry";
-import { klineMultiTfStore } from "../../services/klineMultiTfStore";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
   const val = parseInt(tf);
-  if (unit === "s") return val / 60;
   if (unit === "m") return val;
   if (unit === "h") return val * 60;
   if (unit === "d") return val * 1440;
@@ -47,18 +48,23 @@ export const useStructureAudit = (
     initialConfig,
   );
 
-  // Ensure timeframes is sanitized & never empty
+  // Ensure timeframes is sanitized & never empty, and obsolete 15s/30s are stripped
   useEffect(() => {
     if (!config.timeframes || config.timeframes.length === 0) {
       setConfig((prev) => {
         if (prev.timeframes && prev.timeframes.length > 0) return prev;
         return {
           ...prev,
-          timeframes: ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
+          timeframes: ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "1d", "3d"],
         };
       });
+    } else if (config.timeframes.includes("15s") || config.timeframes.includes("30s")) {
+      setConfig((prev) => ({
+        ...prev,
+        timeframes: (prev.timeframes || []).filter((tf) => tf !== "15s" && tf !== "30s"),
+      }));
     }
-  }, [config.timeframes?.length, setConfig]);
+  }, [config.timeframes, setConfig]);
 
   const [list3, setList3] = useState<ScannerItem[]>(() => {
     try {
@@ -440,7 +446,7 @@ export const useStructureAudit = (
     const isBg = strategyId && selectedId ? strategyId !== selectedId : false;
     if (isBg) return;
 
-    const ALL_TFS = ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"];
+    const ALL_TFS = ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "1d", "3d"];
     const timer = setInterval(() => {
       const now = Date.now();
       const newCounts: Record<string, string> = {};
@@ -496,6 +502,7 @@ export const useStructureAudit = (
                     "1m",
                     "3m",
                     "5m",
+                    "10m",
                     "15m",
                     "30m",
                     "1h",
@@ -503,6 +510,7 @@ export const useStructureAudit = (
                     "4h",
                     "8h",
                     "1d",
+                    "3d",
                   ];
                   const idx = ALL_TFS.indexOf(r.tf);
                   if (idx > 0) neededTFs.add(ALL_TFS[idx - 1]);
@@ -624,61 +632,10 @@ export const useStructureAudit = (
             }
 
             const tfList = Array.from(neededTFs);
-            const secTFs = tfList.filter((tf) => tf === '15s' || tf === '30s');
             const synthesizable = tfList.filter(
-              (tf) => (tf === '1m' || tf === '3m' || tf === '5m')
+              (tf) => (tf === '1m' || tf === '3m' || tf === '5m' || tf === '10m')
             );
-            const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5);
-
-            // A0. Ultra-short Second Timeframes (15s, 30s) synthesized from 1s spot klines
-            if (secTFs.length > 0 && !/[\u4e00-\u9fa5]/.test(item.symbol)) {
-              try {
-                const safeSymbol = item.symbol.endsWith("USDT")
-                  ? item.symbol
-                  : `${item.symbol}USDT`;
-                const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${Date.now()}`;
-                const res1s = await fetchWithFallback(
-                  spot1sUrl,
-                  { cache: "no-store" },
-                  (d) => Array.isArray(d),
-                  directMode,
-                );
-                if (res1s.ok) {
-                  const raw1s = await res1s.json();
-                  if (Array.isArray(raw1s) && raw1s.length > 0) {
-                    const secKlines: KLine[] = raw1s.map((k: any) => ({
-                      time: Number(k[0]),
-                      open: parseFloat(k[1]),
-                      high: parseFloat(k[2]),
-                      low: parseFloat(k[3]),
-                      close: parseFloat(k[4]),
-                      volume: parseFloat(k[5]),
-                    }));
-                    secTFs.forEach((tf) => {
-                      lastCandleScanRef.current.set(
-                        `${item.symbol}-${tf}`,
-                        Date.now(),
-                      );
-                      const targetMin = tf === '15s' ? 0.25 : 0.5;
-                      const synthKlines = KLineSynthesizer.synthesize(
-                        secKlines,
-                        targetMin,
-                      );
-                      if (synthKlines.length > 0) {
-                        processStructureForTf(
-                          item,
-                          tf,
-                          synthKlines,
-                          livePrice,
-                          historyExtremes,
-                        );
-                        hasChanges = true;
-                      }
-                    });
-                  }
-                }
-              } catch (e) {}
-            }
+            const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5 && tf !== '10m');
 
             let cache1m: KLine[] | null = null;
 
@@ -736,20 +693,6 @@ export const useStructureAudit = (
                     `${item.symbol}-${tf}`,
                     Date.now(),
                   );
-                  // ⚡ [0-MS RING BUFFER QUERY]: First check local persistent ring buffer
-                  const cachedKlines = klineMultiTfStore.getKlinesSync(item.symbol, tf, 40);
-                  if (cachedKlines && cachedKlines.length >= 40) {
-                    processStructureForTf(
-                      item,
-                      tf,
-                      cachedKlines,
-                      livePrice,
-                      historyExtremes,
-                    );
-                    hasChanges = true;
-                    return;
-                  }
-
                   try {
                     const safeSymbol = item.symbol.endsWith("USDT")
                       ? item.symbol
@@ -771,7 +714,6 @@ export const useStructureAudit = (
                         close: parseFloat(k[4]),
                         volume: parseFloat(k[5]),
                       }));
-                      klineMultiTfStore.setKlines(safeSymbol, tf, klines);
                       processStructureForTf(
                         item,
                         tf,
@@ -862,6 +804,7 @@ export const useStructureAudit = (
                       "1m",
                       "3m",
                       "5m",
+                      "10m",
                       "15m",
                       "30m",
                       "1h",
@@ -869,6 +812,7 @@ export const useStructureAudit = (
                       "4h",
                       "8h",
                       "1d",
+                      "3d",
                     ];
                     const idx = ALL_TFS.indexOf(r.tf);
                     if (idx > 0) neededTFs.add(ALL_TFS[idx - 1]);
@@ -996,61 +940,10 @@ export const useStructureAudit = (
               }
 
               const tfList = Array.from(neededTFs);
-              const secTFs = tfList.filter((tf) => tf === '15s' || tf === '30s');
               const synthesizable = tfList.filter(
-                (tf) => (tf === '1m' || tf === '3m' || tf === '5m'),
+                (tf) => (tf === '1m' || tf === '3m' || tf === '5m' || tf === '10m'),
               );
-              const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5);
-
-              // A0. 处理 15s, 30s 秒级周期 (通过 1s 现货 K 线合成)
-              if (secTFs.length > 0 && !/[\u4e00-\u9fa5]/.test(item.symbol)) {
-                try {
-                  const safeSymbol = item.symbol.endsWith("USDT")
-                    ? item.symbol
-                    : `${item.symbol}USDT`;
-                  const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${Date.now()}`;
-                  const res1s = await fetchWithFallback(
-                    spot1sUrl,
-                    { cache: "no-store" },
-                    (d) => Array.isArray(d),
-                    directMode,
-                  );
-                  if (res1s.ok) {
-                    const raw1s = await res1s.json();
-                    if (Array.isArray(raw1s) && raw1s.length > 0) {
-                      const secKlines: KLine[] = raw1s.map((k: any) => ({
-                        time: Number(k[0]),
-                        open: parseFloat(k[1]),
-                        high: parseFloat(k[2]),
-                        low: parseFloat(k[3]),
-                        close: parseFloat(k[4]),
-                        volume: parseFloat(k[5]),
-                      }));
-                      for (const tf of secTFs) {
-                        lastCandleScanRef.current.set(
-                          `${item.symbol}-${tf}`,
-                          Date.now(),
-                        );
-                        const targetMin = tf === '15s' ? 0.25 : 0.5;
-                        const synthKlines = KLineSynthesizer.synthesize(
-                          secKlines,
-                          targetMin,
-                        );
-                        if (synthKlines.length > 0) {
-                          processStructureForTf(
-                            item,
-                            tf,
-                            synthKlines,
-                            livePrice,
-                            historyExtremes,
-                          );
-                          hasChanges = true;
-                        }
-                      }
-                    }
-                  }
-                } catch (e) {}
-              }
+              const remotes = tfList.filter((tf) => getTfMinutes(tf) > 5 && tf !== '10m');
 
               let cache1m: KLine[] | null = null;
 

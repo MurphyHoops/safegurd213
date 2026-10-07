@@ -72,7 +72,7 @@ export function getList3SignalRejectReason(
 
     // 6. Multi-Resonance (时空共振) - ONLY filter if switch is explicitly ON
     if (config.enableMultiResonance === true && adjacentStrictTrends) {
-        const ALL_TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+        const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
         const idx = ALL_TFS.indexOf(signal.tf);
         if (idx !== -1) {
             const prevTf = idx > 0 ? ALL_TFS[idx - 1] : null;
@@ -187,26 +187,15 @@ export function analyzeList3Structure(
         }
     };
 
-    let isStrictTrend = true;
-    if (config.strictTrend === true) {
-        isSignalTrendValid = checkFan(signalIdx);
-        isCurrentTrendValid = checkFan(idx);
-        isStrictTrend = isSignalTrendValid && isCurrentTrendValid;
-    } else {
-        isSignalTrendValid = true;
-        isCurrentTrendValid = true;
-    }
+    isSignalTrendValid = checkFan(signalIdx);
+    isCurrentTrendValid = checkFan(idx);
+    const isStrictTrend = isSignalTrendValid && isCurrentTrendValid;
 
     // --- METRIC 2: Candle Color Check ---
-    let isColorValid = true; 
-    if (config.checkCandleColor === true) {
-        const sClose = closes[signalIdx];
-        const sOpen = opens[signalIdx];
-        const isGreen = sClose >= sOpen;
-        
-        if (task.direction === 'LONG' && !isGreen) isColorValid = false;
-        if (task.direction === 'SHORT' && isGreen) isColorValid = false;
-    }
+    const sClose = closes[signalIdx];
+    const sOpen = opens[signalIdx];
+    const isGreen = sClose >= sOpen;
+    const isColorValid = task.direction === 'LONG' ? isGreen : !isGreen;
 
     // --- METRIC 3: Post-Signal Extreme (DEFENSE & BREAKOUT PURITY BACKTRACE) ---
     const signalClose = closes[signalIdx];

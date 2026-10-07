@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 3 [结构深度审计 过滤器控制面板组件]
+// @LOCKED: 严格原子化单独锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何功能与代码。
+
 import React, { useState } from 'react';
 import { Clock, Zap, Rocket, ArrowUpDown, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { List3Config } from '../../../components/Scanner/scannerTypes';
@@ -10,7 +13,7 @@ interface List3PanelProps {
 }
 
 export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, countdowns }) => {
-    const ALL_TFS = ['15s', '30s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+    const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
     const toggleTf = (tf: string) => setConfig(prev => ({ ...prev, timeframes: prev.timeframes.includes(tf) ? prev.timeframes.filter(t => t !== tf) : [...prev.timeframes, tf] }));
     const isActive = config.timeframes.length > 0;
     const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('list3_control_collapsed') === 'true');

@@ -58,6 +58,11 @@ export interface List3SignalResult {
         postSignalMaxHigh?: number;
         postSignalMinLow?: number;
         periodChange?: number; 
+        isReverse3K?: boolean;
+        isBreakout3K?: boolean;
+        maxClose3?: number;
+        minClose3?: number;
+        recentCloses?: number[];
     };
 }
 
@@ -192,7 +197,8 @@ export interface List2Config {
     flatLookback: number;
     flatThreshold: number;
     checkEma80Conflict: boolean;
-    sortMode: 'LATEST' | 'MOST';
+    sortMode: 'LATEST' | 'MOST' | 'TIMEFRAME';
+    tfSortOrder?: 'asc' | 'desc';
     requireCrossing: boolean;
     requireAlignment: boolean;
     crossingDivergenceLogic?: 'AND' | 'OR' | 'WAIT';
@@ -231,6 +237,7 @@ export interface List4Config {
     autoExecute: boolean; 
     midlineThreshold: number; 
     breakoutThreshold: number;
+    maxBreakoutDeviation?: number; // 进攻突破偏离上限阈值 % (默认 0.5%)
     directionFilter: 'BOTH' | 'LONG' | 'SHORT';
     enableThresholds: boolean;
     enableAntiChase: boolean;

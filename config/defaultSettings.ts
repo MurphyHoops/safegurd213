@@ -10,13 +10,26 @@ export const DEFAULT_SETTINGS: AppSettings = {
             callbackPercent: 1, 
             closePercent: 100, 
             trailingEnabled: false, 
-            trailingTriggerProfit: 5, 
+            trailingTriggerProfit: 1, 
             trailingRemainingProfit: 2,
             trailingTiers: [
                 { threshold: 6, floor: 2 },
                 { threshold: 12, floor: 4 },
                 { threshold: 24, floor: 8 },
                 { threshold: 48, floor: 16 }
+            ],
+            variableTrailingTiers: [
+                { minProfit: 1, maxProfit: 10, retentionPercent: 30 },
+                { minProfit: 10, maxProfit: 30, retentionPercent: 33 },
+                { minProfit: 30, maxProfit: 50, retentionPercent: 35 },
+                { minProfit: 50, maxProfit: 70, retentionPercent: 40 },
+                { minProfit: 70, maxProfit: 100, retentionPercent: 45 },
+                { minProfit: 100, maxProfit: 150, retentionPercent: 50 },
+                { minProfit: 150, maxProfit: 250, retentionPercent: 55 },
+                { minProfit: 250, maxProfit: 400, retentionPercent: 60 },
+                { minProfit: 400, maxProfit: 600, retentionPercent: 65 },
+                { minProfit: 600, maxProfit: 900, retentionPercent: 70 },
+                { minProfit: 900, maxProfit: 3000, retentionPercent: 75 }
             ]
         },
         atr: { 

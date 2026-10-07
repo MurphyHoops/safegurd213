@@ -126,6 +126,9 @@ export function analyzeList2Crossing(
         bodyValid: boolean;
         isClosed: boolean;
         isPendingGray: boolean;
+        isWaitDivergencePending?: boolean;
+        waitElapsedBars?: number;
+        waitTotalBars?: number;
         kHigh: number;
         kLow: number;
         kClose: number;
@@ -143,6 +146,9 @@ export function analyzeList2Crossing(
         bodyValid: boolean;
         isClosed: boolean;
         isPendingGray: boolean;
+        isWaitDivergencePending?: boolean;
+        waitElapsedBars?: number;
+        waitTotalBars?: number;
         kHigh: number;
         kLow: number;
         kClose: number;

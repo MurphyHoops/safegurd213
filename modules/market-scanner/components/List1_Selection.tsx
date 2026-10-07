@@ -9,6 +9,7 @@ import { List1Control } from './Control';
 import { List1Item } from './Item';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../../services/volume8amService';
+import { SymbolFilterDiagnosticBar } from '../../../components/SymbolFilterDiagnosticBar';
 
 
 interface Props {
@@ -81,6 +82,10 @@ interface Props {
     majorTrendCandidates?: Set<string>;
     onFilteredUpdate?: (list: ScannerItem[]) => void;
     directMode?: boolean;
+    list2Results?: ScannerItem[];
+    list3Results?: ScannerItem[];
+    list3Config?: any;
+    currentPrices?: Record<string, number>;
 }
 
 // 🔒 统一标准化币种代码辅助函数 (去除下划线、斜杠、USDT后缀与方向标识)，实现跨模块、跨底池 100% 绝对一致匹配
@@ -116,7 +121,11 @@ const List1_Selection: React.FC<Props> = ({
     onChangeRotationInterval = () => {},
     majorTrendCandidates = new Set(),
     onFilteredUpdate,
-    directMode
+    directMode,
+    list2Results = [],
+    list3Results = [],
+    list3Config = null,
+    currentPrices = {}
 }) => {
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -1392,6 +1401,16 @@ const List1_Selection: React.FC<Props> = ({
                     </button>
                 </div>
             </div>
+
+            {/* 🔒 单币全链路穿透诊断 (左右压缩，按手绘格式布局，牵移到列表上“市场初筛”上方) */}
+            <SymbolFilterDiagnosticBar
+                scanConfig={scanConfig}
+                list1Candidates={list1}
+                list2Results={list2Results}
+                list3Results={list3Results}
+                list3Config={list3Config}
+                currentPrices={currentPrices}
+            />
 
             <List1Control
                 scanConfig={scanConfig} setScanConfig={setScanConfig} isScanning={isScanning} 

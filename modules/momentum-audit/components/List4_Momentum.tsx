@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 4 [动能趋势审计 视图组件]
+// @LOCKED: 严格原子化单独锁定。未经用户明确下达的专属指令，严禁擅自修改、增加、删减或变动任何功能与代码。
+
 import React, { useMemo, useState } from 'react';
 import { Flame, Compass, AlertTriangle, Maximize2, Trash2, History, Moon, ChevronRight } from 'lucide-react';
 import { List4Config, List3Config, ScannerItem, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';

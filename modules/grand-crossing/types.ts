@@ -10,6 +10,27 @@ export interface RuleCheckDetail {
     details?: string;
 }
 
+export interface PatternOccurrenceRecord {
+    barIndex: number;
+    barsAgo: number;
+    timestamp: number;
+    timeText: string;
+    isCrossing: boolean;
+    divergenceType: 'BULLISH' | 'BEARISH' | 'NONE';
+    patternType: 'CROSSING' | 'BULL_DIV' | 'BEAR_DIV' | 'CROSS_AND_BULL_DIV' | 'CROSS_AND_BEAR_DIV';
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    ema10: number;
+    ema20: number;
+    ema30: number;
+    ema40: number;
+    ema80?: number;
+    isEma80Aligned?: boolean;
+    note?: string;
+}
+
 export interface TimeframeDiagnosticRecord {
     symbol: string;
     tf: string;
@@ -37,6 +58,16 @@ export interface TimeframeDiagnosticRecord {
     rejectionReason: string;
     timestamp: number;
     ruleChecks?: RuleCheckDetail[];
+    // 🔍 200 根 K 线形态历史轨迹与统计记录
+    crossingCount?: number;
+    divergenceCount?: number;
+    bullDivergenceCount?: number;
+    bearDivergenceCount?: number;
+    latestCrossingBarsAgo?: number;
+    latestCrossingTime?: number;
+    latestDivergenceBarsAgo?: number;
+    latestDivergenceTime?: number;
+    historyOccurrences?: PatternOccurrenceRecord[];
 }
 
 export interface GrandCrossingState {

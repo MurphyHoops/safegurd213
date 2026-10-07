@@ -51,24 +51,12 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
     
     return (
         <div className="p-3 bg-slate-900 border-b border-slate-800 shrink-0 flex flex-col">
-            {/* Row 1: Title & Batch Header */}
+            {/* Row 1: Title */}
             <div className="flex items-center justify-between cursor-pointer select-none pb-1.5" onClick={toggleCollapse}>
                 <div className="flex items-center gap-3">
                     <div className="font-bold text-blue-400 text-sm flex items-center gap-2">
                         <Activity size={14} className="text-blue-500" /> 
                         <span>2. 均线穿越</span>
-                    </div>
-                    {/* Batch Input */}
-                    <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-                        <span className="text-[10px] text-slate-400 font-bold">批次</span>
-                        <input 
-                            type="number" 
-                            min="1" 
-                            max="100" 
-                            value={Number.isNaN(scanConfig.batchSize) ? '' : scanConfig.batchSize} 
-                            onChange={(e) => setScanConfig(p => ({...p, batchSize: parseInt(e.target.value) || 40}))} 
-                            className="w-10 h-6 bg-slate-800 border border-slate-700 rounded text-center text-[11px] text-orange-400 outline-none font-bold select-text focus:border-blue-500/50" 
-                        />
                     </div>
                 </div>
                 <div className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300">

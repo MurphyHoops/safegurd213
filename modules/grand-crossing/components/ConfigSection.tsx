@@ -76,27 +76,10 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                 </div>
             </div>
 
-            {/* ROW 2: EMA80 Trend & Sort Mode */}
-            <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center justify-between bg-slate-800/50 p-1.5 rounded border border-slate-700/50">
-                    <div className="flex items-center gap-1 text-[9px] text-blue-400 font-bold"><GitMerge size={10} /> EMA80趋势</div>
-                    <div onClick={() => setConfig(p => ({...p, checkEma80Conflict: !p.checkEma80Conflict}))} className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${config.checkEma80Conflict ? 'bg-blue-600' : 'bg-slate-700'}`}><div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${config.checkEma80Conflict ? 'translate-x-3' : ''}`} /></div>
-                </div>
-                
-                <div className="flex bg-slate-800/50 rounded p-0.5 border border-slate-700/50 items-center">
-                    <button 
-                        onClick={() => setConfig(p => ({...p, sortMode: 'LATEST'}))}
-                        className={`flex-1 h-full text-[9px] font-bold rounded transition-all ${config.sortMode === 'LATEST' ? 'bg-slate-700 text-white shadow-sm border border-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
-                    >
-                        最新
-                    </button>
-                    <button 
-                        onClick={() => setConfig(p => ({...p, sortMode: 'MOST'}))}
-                        className={`flex-1 h-full text-[9px] font-bold rounded transition-all ${config.sortMode === 'MOST' ? 'bg-slate-700 text-white shadow-sm border border-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
-                    >
-                        最多
-                    </button>
-                </div>
+            {/* ROW 2: EMA80 Trend */}
+            <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
+                <div className="flex items-center gap-1.5 text-[10px] text-blue-400 font-bold"><GitMerge size={11} className="text-blue-500" /> EMA80 趋势过滤 (主线趋势保护)</div>
+                <div onClick={() => setConfig(p => ({...p, checkEma80Conflict: !p.checkEma80Conflict}))} className={`w-7 h-3.5 rounded-full p-0.5 cursor-pointer transition-colors ${config.checkEma80Conflict ? 'bg-blue-600' : 'bg-slate-700'}`}><div className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${config.checkEma80Conflict ? 'translate-x-3.5' : ''}`} /></div>
             </div>
 
             {/* NEW: Decoupled Crossing & Divergence Triggers */}

@@ -38,6 +38,21 @@ const Strategy2_HedgeProfit: React.FC<Props> = ({ settings, onChange, toggleFeat
                             <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-red-400" value={settings.hedgeProfitClearStopLoss ?? ''} onChange={(e) => onChange('hedgeProfitClearStopLoss', parseFloat(e.target.value))} />
                         </div>
                     </div>
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-800 mt-2">
+                        <span className="text-[10px] text-indigo-300 font-semibold">启用原仓位完全复开 (清仓时毫秒级重开)</span>
+                        <div 
+                            onClick={() => toggleFeature('amputationReopenEnabled')} 
+                            className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.amputationReopenEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                        >
+                            <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.amputationReopenEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                        </div>
+                    </div>
+                    {settings.amputationReopenEnabled && (
+                        <div className="mt-2">
+                            <label className="text-[10px] text-slate-500 block mb-1">最大复开次数</label>
+                            <input type="number" className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white font-bold" value={settings.maxReopenCount ?? ''} onChange={(e) => onChange('maxReopenCount', parseInt(e.target.value))} />
+                        </div>
+                    )}
                     <div className="text-[9px] text-slate-500 bg-slate-800/50 p-1.5 rounded leading-relaxed border border-slate-700/30">
                         当对冲仓位盈利覆盖【原仓位当前亏损】并多出 {settings.hedgeCoverPercent ?? 0}% 时，清空双向仓位。
                     </div>

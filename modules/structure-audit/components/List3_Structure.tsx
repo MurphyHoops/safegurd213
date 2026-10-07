@@ -1,3 +1,6 @@
+// 🔒 LOCKED_MODULE: LIST 3 [结构深度审计 视图展示组件]
+// @LOCKED: 严格原子化单独锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何功能与代码。
+
 import React, { useMemo, useEffect, useRef, useState } from "react";
 import {
   Loader2,

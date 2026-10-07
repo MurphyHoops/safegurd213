@@ -3,7 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { List2Config, ScannerItem, ScanConfig, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { List2Control } from './Control';
 import { List2Item } from './Item';
-import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History } from 'lucide-react';
+import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History, ArrowUpDown } from 'lucide-react';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { ScannerHistoryModal, useAutoHistoryLogger } from '../../momentum-audit/components/ScannerHistoryModal';
 import { TimeframeDiagnosticRecord } from '../types';
@@ -29,6 +29,12 @@ interface Props {
     onRemoveItem: (symbol: string) => void;
     onClearItems: () => void;
 }
+
+const TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
+const getTfWeight = (tf: string) => {
+    const idx = TF_ORDER.indexOf(tf);
+    return idx !== -1 ? idx : 99;
+};
 
 const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, allList2, setChartData, pollingStatus, activeScanTfs, scanningSymbols, diagnostics, onRemoveItem, onClearItems }) => {
     
@@ -71,7 +77,41 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     }, [filteredList2]);
 
     // Determine display list
-    const displayList = viewMode === 'LONG' ? longs : viewMode === 'SHORT' ? shorts : (filteredList2 || []);
+    const rawDisplayList = viewMode === 'LONG' ? longs : viewMode === 'SHORT' ? shorts : (filteredList2 || []);
+
+    // 📊 列表2 智能排序计算（支持 最新、最多、K线周期从小到大/从大到小）
+    const displayList = useMemo(() => {
+        const list = [...rawDisplayList];
+        const mode = config?.sortMode || 'LATEST';
+        const isDesc = config?.tfSortOrder === 'desc';
+
+        list.sort((a, b) => {
+            if (mode === 'MOST') {
+                const countA = a.groupedResults?.length || 0;
+                const countB = b.groupedResults?.length || 0;
+                if (countA !== countB) return countB - countA;
+            } else if (mode === 'TIMEFRAME') {
+                const getWeights = (item: ScannerItem) => {
+                    if (!item.groupedResults || item.groupedResults.length === 0) return [99];
+                    return item.groupedResults.map(r => getTfWeight(r.tf || '15m'));
+                };
+                const weightA = isDesc ? Math.max(...getWeights(a)) : Math.min(...getWeights(a));
+                const weightB = isDesc ? Math.max(...getWeights(b)) : Math.min(...getWeights(b));
+                if (weightA !== weightB) {
+                    return isDesc ? weightB - weightA : weightA - weightB;
+                }
+            }
+
+            // 默认 / 最新模式：按最新信号K线或最小滞后根数 (lag) 排序
+            const getMinLag = (item: ScannerItem) => {
+                if (!item.groupedResults || item.groupedResults.length === 0) return 999;
+                return Math.min(...item.groupedResults.map(r => r.lag ?? 999));
+            };
+            return getMinLag(a) - getMinLag(b);
+        });
+
+        return list;
+    }, [rawDisplayList, config?.sortMode, config?.tfSortOrder]);
 
     // Defensive: Handle missing config
     if (!config) return <div className="p-4 text-xs text-red-500">List 2 Config Error</div>;
@@ -225,6 +265,83 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                             }`}
                         />
                     </button>
+                </div>
+            </div>
+
+            {/* 📊 列表2 智能排序控制面板 (仿照列表1样式与位置，置于列表上方) */}
+            <div className="px-3 py-1.5 bg-slate-950/70 border-b border-slate-800/60 flex flex-col gap-1 animate-in fade-in shrink-0">
+                <div className="flex items-center justify-between text-[8px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span>列表排序</span>
+                    <span className="text-[7.5px] text-slate-500 font-mono">
+                        {config.sortMode === 'MOST' 
+                            ? '触发周期数量 (最多)' 
+                            : config.sortMode === 'TIMEFRAME' 
+                                ? `K线周期 (${config.tfSortOrder === 'desc' ? '大→小' : '小→大'})` 
+                                : '最新信号 (时间优先)'}
+                    </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                    {/* 最新 */}
+                    <button
+                        type="button"
+                        onClick={() => setConfig(p => ({ ...p, sortMode: 'LATEST' }))}
+                        className={`flex items-center justify-center py-1 px-1.5 rounded text-[8.5px] font-bold transition-all border cursor-pointer ${
+                            (!config.sortMode || config.sortMode === 'LATEST')
+                                ? 'bg-indigo-650/20 bg-indigo-600/20 border-indigo-500 text-indigo-300 shadow-[0_0_8px_rgba(99,102,241,0.2)]'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                        }`}
+                        title="按最新信号K线时间或最小滞后根数 (lag) 排序"
+                    >
+                        最新
+                    </button>
+
+                    {/* 最多 */}
+                    <button
+                        type="button"
+                        onClick={() => setConfig(p => ({ ...p, sortMode: 'MOST' }))}
+                        className={`flex items-center justify-center py-1 px-1.5 rounded text-[8.5px] font-bold transition-all border cursor-pointer ${
+                            config.sortMode === 'MOST'
+                                ? 'bg-indigo-650/20 bg-indigo-600/20 border-indigo-500 text-indigo-300 shadow-[0_0_8px_rgba(99,102,241,0.2)]'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                        }`}
+                        title="按命中触发的周期总数量从多到少排序"
+                    >
+                        最多
+                    </button>
+
+                    {/* K线周期 */}
+                    <div
+                        className={`flex items-center justify-between py-1 px-1.5 rounded text-[8.5px] font-bold transition-all border ${
+                            config.sortMode === 'TIMEFRAME'
+                                ? 'bg-indigo-650/20 bg-indigo-600/20 border-indigo-500 text-indigo-300 shadow-[0_0_8px_rgba(99,102,241,0.2)]'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                        }`}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => setConfig(p => ({ ...p, sortMode: 'TIMEFRAME' }))}
+                            className="flex-1 text-left truncate mr-0.5 cursor-pointer"
+                            title="按K线周期大小排序"
+                        >
+                            K线周期
+                        </button>
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const newOrder = config.tfSortOrder === 'desc' ? 'asc' : 'desc';
+                                setConfig(p => ({ ...p, sortMode: 'TIMEFRAME', tfSortOrder: newOrder }));
+                            }}
+                            className={`p-0.5 rounded cursor-pointer transition-colors flex items-center justify-center ${
+                                config.sortMode === 'TIMEFRAME'
+                                    ? 'text-indigo-200 hover:text-white bg-indigo-500/40'
+                                    : 'text-slate-500 hover:text-slate-300 bg-slate-800'
+                            }`}
+                            title={`当前为: ${config.tfSortOrder === 'desc' ? '由大到小 (3d → 1m)' : '由小到大 (1m → 3d)'}，点击切换`}
+                        >
+                            <ArrowUpDown size={10} />
+                        </button>
+                    </div>
                 </div>
             </div>
 

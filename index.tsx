@@ -62,16 +62,64 @@ const reportPanic = (message: string, source?: string, lineno?: number) => {
 window.addEventListener('error', (event) => {
     try {
         const errorEvent = event as any;
-        const msg = errorEvent?.message || '';
+        const msg = errorEvent?.message || errorEvent?.error?.message || 'Global Window Error';
+        const stack = errorEvent?.error?.stack;
         console.warn('🛡️ [System Shield] Isolated window error (non-fatal):', msg);
+        persistRawSystemLog('ERROR', 'SHIELD', `【全局错误拦截】${msg}`, { stack, filename: errorEvent?.filename, lineno: errorEvent?.lineno });
+        
+        // Write to permanent crash blackbox
+        try {
+            const rawBox = localStorage.getItem('SAVIOR_CRASH_BLACKBOX');
+            const box = rawBox ? JSON.parse(rawBox) : [];
+            box.unshift({
+                id: 'err_' + Date.now().toString(36),
+                timestamp: Date.now(),
+                timeStr: new Date().toLocaleString(),
+                module: 'WINDOW_GLOBAL',
+                message: msg,
+                stack: stack || `${errorEvent?.filename}:${errorEvent?.lineno}:${errorEvent?.colno}`,
+                type: 'UNHANDLED_ERROR'
+            });
+            localStorage.setItem('SAVIOR_CRASH_BLACKBOX', JSON.stringify(box.slice(0, 20)));
+        } catch (_) {}
     } catch (_) {}
 });
 
 window.addEventListener('unhandledrejection', (event) => {
     try {
         let reasonText = event?.reason instanceof Error ? event.reason.message : String(event?.reason || '');
+        const stack = event?.reason instanceof Error ? event.reason.stack : undefined;
+        
+        // 🔒 [HMR & Dev Socket Ignore]: Vite HMR WebSocket issues are non-fatal development artifacts and must not trigger crashes
+        if (
+            reasonText.includes('WebSocket closed without opened') || 
+            reasonText.includes('@vite/client') ||
+            (stack && stack.includes('@vite/client'))
+        ) {
+            console.warn('🛡️ [System Guard] Bypassed dev HMR WebSocket failure (non-fatal):', reasonText);
+            return;
+        }
+
         console.warn('⚠️ [System Guard] Background async failure isolated:', reasonText);
         persistRawSystemLog('WARN', 'SHIELD', `【背景异步限扰】时效任务或接口异常: ${reasonText}`);
+        
+        // Write to permanent crash blackbox if critical
+        if (reasonText && !reasonText.includes('Network is offline') && !reasonText.includes('Failed to fetch')) {
+            try {
+                const rawBox = localStorage.getItem('SAVIOR_CRASH_BLACKBOX');
+                const box = rawBox ? JSON.parse(rawBox) : [];
+                box.unshift({
+                    id: 'rej_' + Date.now().toString(36),
+                    timestamp: Date.now(),
+                    timeStr: new Date().toLocaleString(),
+                    module: 'PROMISE_REJECTION',
+                    message: reasonText,
+                    stack,
+                    type: 'UNHANDLED_REJECTION'
+                });
+                localStorage.setItem('SAVIOR_CRASH_BLACKBOX', JSON.stringify(box.slice(0, 20)));
+            } catch (_) {}
+        }
     } catch (_) {}
 });
 

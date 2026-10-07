@@ -18,13 +18,16 @@ self.onmessage = function(e) {
 
 export class BackgroundTimer {
   private worker: Worker | null = null;
+  private workerUrl: string | null = null;
   private onTick: () => void;
+  private fallbackInterval: any = null;
 
   constructor(onTick: () => void) {
     this.onTick = onTick;
     try {
         const blob = new Blob([workerCode], { type: 'application/javascript' });
-        this.worker = new Worker(URL.createObjectURL(blob));
+        this.workerUrl = URL.createObjectURL(blob);
+        this.worker = new Worker(this.workerUrl);
         this.worker.onmessage = (e) => {
           if (e.data === 'tick') {
             this.onTick();
@@ -32,9 +35,8 @@ export class BackgroundTimer {
         };
     } catch (e) {
         console.error("Worker creation failed, falling back to setInterval", e);
-        // Fallback for environments that restrict blob workers (rare)
-        // Set to 500ms to align with worker and keep app snappy
-        setInterval(onTick, 500);
+        // Fallback for environments that restrict blob workers
+        this.fallbackInterval = setInterval(onTick, 500);
     }
   }
 
@@ -43,6 +45,24 @@ export class BackgroundTimer {
   }
 
   stop() {
-    this.worker?.postMessage('stop');
+    try {
+      if (this.worker) {
+        this.worker.onmessage = null;
+        this.worker.onerror = null;
+        this.worker.postMessage('stop');
+        this.worker.terminate();
+      }
+    } catch (_) {}
+    this.worker = null;
+    if (this.workerUrl) {
+      try {
+        URL.revokeObjectURL(this.workerUrl);
+      } catch (_) {}
+      this.workerUrl = null;
+    }
+    if (this.fallbackInterval) {
+      clearInterval(this.fallbackInterval);
+      this.fallbackInterval = null;
+    }
   }
 }

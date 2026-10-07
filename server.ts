@@ -14,9 +14,9 @@ const latestTickerPrices = new Map<string, number>();
 
 function startBinanceWSBridge() {
   const binanceUrls = [
-    'wss://fstream.binance.com/ws/!bookTicker',
     'wss://fstream.binance.com/ws/!miniTicker@arr',
-    'wss://fstream.binance.com/ws/!ticker@arr'
+    'wss://fstream.binance.com/ws/!ticker@arr',
+    'wss://fstream.binance.com/ws/!bookTicker'
   ];
   let currentIndex = 0;
   let bws: WebSocket | null = null;
@@ -70,7 +70,7 @@ function startBinanceWSBridge() {
                  }
                }
              }
-          }, 100); // 10Hz batching
+          }, 500); // 2Hz smooth consolidation (prevents browser queue congestion)
         }
       });
 
@@ -129,6 +129,51 @@ async function startServer() {
           console.error("Failed to fetch external IP:", error);
           res.status(500).json({ error: "Failed to fetch IP" });
       }
+  });
+
+  // 💥 [CRASH REPORT & SYSTEM LOG ENDPOINTS]
+  const serverCrashReports: any[] = [];
+  const CRASH_LOG_FILE = path.join(process.cwd(), 'crash_reports.json');
+  try {
+    if (fs.existsSync(CRASH_LOG_FILE)) {
+      const fileData = fs.readFileSync(CRASH_LOG_FILE, 'utf-8');
+      const parsed = JSON.parse(fileData);
+      if (Array.isArray(parsed)) serverCrashReports.push(...parsed);
+    }
+  } catch (_) {}
+
+  app.post("/api/monitor/crash-report", (req, res) => {
+    try {
+      const entry = req.body;
+      if (entry && entry.id) {
+        console.warn(`💥 [CRASH REPORT RECORDED] [${entry.module || 'UNKNOWN'}] ${entry.message} (Memory: ${entry.memory ? `${entry.memory.usedMB}MB/${entry.memory.limitMB}MB` : 'N/A'})`);
+        const existingIdx = serverCrashReports.findIndex(r => r.id === entry.id);
+        if (existingIdx >= 0) {
+          serverCrashReports[existingIdx] = entry;
+        } else {
+          serverCrashReports.unshift(entry);
+        }
+        if (serverCrashReports.length > 50) serverCrashReports.length = 50;
+        try {
+          fs.writeFileSync(CRASH_LOG_FILE, JSON.stringify(serverCrashReports.slice(0, 50), null, 2));
+        } catch (_) {}
+      }
+      res.json({ success: true, count: serverCrashReports.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/monitor/crash-report", (req, res) => {
+    res.json({ success: true, reports: serverCrashReports });
+  });
+
+  app.delete("/api/monitor/crash-report", (req, res) => {
+    serverCrashReports.length = 0;
+    try {
+      if (fs.existsSync(CRASH_LOG_FILE)) fs.unlinkSync(CRASH_LOG_FILE);
+    } catch (_) {}
+    res.json({ success: true, count: 0 });
   });
 
   // Create HTTP server
@@ -501,7 +546,7 @@ async function startServer() {
 
     const getServerCacheTTL = (url: string): number => {
         if (url.includes("/klines")) {
-            if (url.includes("interval=1d") || url.includes("interval=1w")) return 30000; // 30s
+            if (url.includes("interval=1d") || url.includes("interval=1w")) return 300000; // 5 minutes (300s)
             return 10000; // 10s for other klines
         }
         if (url.includes("ticker/price")) return 2000; // 2s
@@ -2576,7 +2621,10 @@ async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);

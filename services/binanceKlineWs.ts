@@ -1,3 +1,5 @@
+// 🔒 LOCKED_MODULE: BINANCE_KLINE_WS_SERVICE [初筛币饱满缓存与持仓币保护订阅通道]
+// @LOCKED: 严格原子化锁定。初筛币纯差量增量推流 + 当前持仓币双轨常驻保护订阅通道已固化。
 // ⚡ Binance Real-Time Kline WebSocket Service (Active Push Architecture)
 // Maintains low-latency multiplexed WebSocket connection for live K-line streams
 
@@ -71,16 +73,62 @@ class BinanceKlineWsService {
     }
   }
 
-  public syncSubscriptions(requiredPairs: { symbol: string; tf: string }[]) {
+  // 🔒 [Position Protection Stream Pool]: Tracks streams required by active positions to guarantee they are never dropped
+  private protectedPositionStreams: Set<string> = new Set();
+
+  public registerProtectedPosition(symbol: string, tf: string = '15m') {
+    const stream = this.formatStreamName(symbol, tf);
+    const stream1m = this.formatStreamName(symbol, '1m');
+    if (stream) {
+      this.protectedPositionStreams.add(stream);
+      this.subscribe(symbol, tf);
+    }
+    if (stream1m) {
+      this.protectedPositionStreams.add(stream1m);
+      this.subscribe(symbol, '1m');
+    }
+  }
+
+  public unregisterProtectedPosition(symbol: string, tf: string = '15m') {
+    const stream = this.formatStreamName(symbol, tf);
+    const stream1m = this.formatStreamName(symbol, '1m');
+    if (stream) this.protectedPositionStreams.delete(stream);
+    if (stream1m) this.protectedPositionStreams.delete(stream1m);
+  }
+
+  public syncSubscriptions(requiredPairs: { symbol: string; tf: string }[], activePositionPairs?: { symbol: string; tf?: string }[]) {
     const targetStreams = new Set<string>();
     for (const item of requiredPairs) {
       const stream = this.formatStreamName(item.symbol, item.tf);
       if (stream) targetStreams.add(stream);
     }
 
-    // Identify streams to unsubscribe
+    // Always protect all active positions
+    if (activePositionPairs && activePositionPairs.length > 0) {
+      this.protectedPositionStreams.clear();
+      for (const pos of activePositionPairs) {
+        const pTf = pos.tf || '15m';
+        const pStream = this.formatStreamName(pos.symbol, pTf);
+        const pStream1m = this.formatStreamName(pos.symbol, '1m');
+        if (pStream) {
+          targetStreams.add(pStream);
+          this.protectedPositionStreams.add(pStream);
+        }
+        if (pStream1m) {
+          targetStreams.add(pStream1m);
+          this.protectedPositionStreams.add(pStream1m);
+        }
+      }
+    } else {
+      // Re-add existing protected position streams to target
+      for (const pSub of this.protectedPositionStreams) {
+        targetStreams.add(pSub);
+      }
+    }
+
+    // Identify streams to unsubscribe (Never unsubscribe protected position streams)
     for (const sub of this.subscribedStreams) {
-      if (!targetStreams.has(sub)) {
+      if (!targetStreams.has(sub) && !this.protectedPositionStreams.has(sub)) {
         this.pendingUnsubscribe.add(sub);
       }
     }
@@ -114,7 +162,10 @@ class BinanceKlineWsService {
     }
     // Binance WebSocket supports: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
     const tfLower = tf.toLowerCase();
-    const validTfs = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1m'];
+    if (tfLower === '10m') {
+      return `${cleanSym.toLowerCase()}@kline_5m`;
+    }
+    const validTfs = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w'];
     if (!validTfs.includes(tfLower)) {
       return null;
     }
@@ -163,6 +214,15 @@ class BinanceKlineWsService {
             this.listeners.forEach((cb) => {
               try {
                 cb(update);
+                // Also trigger 10m synthetic update if 5m update arrives
+                if (update.tf === '5m') {
+                  const tenMinTime = Math.floor(update.time / (10 * 60 * 1000)) * (10 * 60 * 1000);
+                  cb({
+                    ...update,
+                    tf: '10m',
+                    time: tenMinTime,
+                  });
+                }
               } catch (e) {
                 // Prevent individual callback failure from breaking loop
               }

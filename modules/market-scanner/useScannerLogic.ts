@@ -3,14 +3,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { ScanConfig, ScannerItem } from '../../components/Scanner/scannerTypes';
 import { processMarketData } from '../../services/rules/list1_market';
+import { evaluateSidewaysFilter, evaluateLookbackFilter, computeCandidatesDiff, getMatchedUniqueSymbolsCount } from '../../services/rules/list1';
 import { fetchWithFallback } from '../../services/apiService';
 import { audioService } from '../../services/audioService';
 import { calculateEMA } from '../../services/indicators';
 import { pipelineCoordinator } from '../../services/pipelineQueue';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../services/volume8amService';
 import { klineDailyStore } from '../../services/klineDailyStore';
-import { klineMultiTfStore } from '../../services/klineMultiTfStore';
-import { priceRegistry } from '../../services/priceRegistry';
 
 
 // Helper for fast, isolated, non-blocking klines fetching through official proxy endpoints with hard abort timeout
@@ -145,7 +144,6 @@ export const useScannerLogic = (
     // --- 早上8点成交量与开盘价缓存 ---
     const volume8amCacheRef = useRef<Map<string, { volume: number, openPrice: number, timestamp: number }>>(new Map());
     const majorTrendCandidatesRef = useRef<Set<string>>(new Set());
-    const warmedUpSymbolsRef = useRef<Set<string>>(new Set());
     
     // --- MAJOR TREND DISCOVERY STATE ---
     const [hasRunMajorTrend, setHasRunMajorTrend] = useState<boolean>(() => {
@@ -332,113 +330,6 @@ export const useScannerLogic = (
             if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
         };
     }, []);
-
-    // ⚡ [0-DELAY EVENT STREAMING]: Real-Time All-Market WS Ticker Push (0 HTTP Requests, 0 IP Weight)
-    useEffect(() => {
-        let throttleTimer: any = null;
-        let latestTickers: any[] = [];
-
-        const processLiveTickers = (data: any[]) => {
-            if (!isMountedRef.current || !data || data.length === 0) return;
-            rawDataRef.current = data;
-
-            const nowTime = Date.now();
-            const expiry = 5 * 60 * 1000;
-            const enrichedRaw = data.map((t: any) => {
-                const cached = volume8amCacheRef.current.get(t.symbol) || (getVolume8am(t.symbol) ? { volume: getVolume8am(t.symbol)!.volume8am, openPrice: getVolume8am(t.symbol)!.openPrice, timestamp: nowTime } : undefined);
-                if (cached && (nowTime - cached.timestamp < expiry)) {
-                    return {
-                        ...t,
-                        _cachedVolume8am: cached.volume,
-                        _cachedOpenPrice8am: cached.openPrice
-                    };
-                }
-                return t;
-            });
-
-            const { list1: filtered, stats } = processMarketData(
-                enrichedRaw, 
-                configRef.current, 
-                customSymbolSetRef.current, 
-                fixedModeViewRef.current
-            );
-            
-            filtered.forEach(item => {
-                const cached = volume8amCacheRef.current.get(item.symbol) || (getVolume8am(item.symbol) ? { volume: getVolume8am(item.symbol)!.volume8am, openPrice: getVolume8am(item.symbol)!.openPrice, timestamp: nowTime } : undefined);
-                if (cached && (nowTime - cached.timestamp < expiry)) {
-                    item.volume8am = cached.volume;
-                    if (cached.openPrice > 0 && item.price > 0) {
-                        item.change8am = ((item.price - cached.openPrice) / cached.openPrice) * 100;
-                    }
-                }
-            });
-
-            let finalCandidates = filtered;
-            if (!configRef.current.useCustomOnly || fixedModeViewRef.current === 'SEARCH') {
-                finalCandidates = filtered.filter(item => checkVolumeRule(item, configRef.current));
-                if (configRef.current.enableVol8am) {
-                    const minChange = configRef.current.minChange || 0;
-                    const source = configRef.current.source || 'BOTH';
-
-                    finalCandidates = finalCandidates.filter(item => {
-                        const effectiveChange = item.change8am !== undefined ? item.change8am : 0;
-                        if (source === 'GAINERS' && effectiveChange <= 0) return false;
-                        if (source === 'LOSERS' && effectiveChange >= 0) return false;
-                        if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
-                        return true;
-                    });
-                }
-            }
-
-            const smartAnalyzed = modeRef.current === 'SMART' 
-                ? applySmartAnalysis(finalCandidates, configRef.current)
-                : finalCandidates;
-
-            const nonBlacklisted = smartAnalyzed.filter(item => item && item.symbol && !blacklistRef.current.has(item.symbol));
-            const currentList = Array.isArray(list1Ref.current) ? list1Ref.current : [];
-            const prevSymbols = new Set(currentList.map(i => i?.symbol).filter(Boolean));
-            
-            const finalFiltered = nonBlacklisted.map(item => ({
-                ...item,
-                isNew: !prevSymbols.has(item.symbol) && currentList.length > 0
-            }));
-
-            // ⚡ [SILENT PRE-WARMING PIPELINE]: 仅对首次进入初筛池的新增币种执行一次性静默预热，杜绝在100ms高频循环中重复触发
-            finalFiltered.slice(0, 15).forEach(cand => {
-                if (cand && cand.symbol && !warmedUpSymbolsRef.current.has(cand.symbol)) {
-                    warmedUpSymbolsRef.current.add(cand.symbol);
-                    klineMultiTfStore.warmupSymbolKlines(cand.symbol, ['1m', '5m', '15m', '1h'], directModeRef.current);
-                }
-            });
-
-            setMarketStats(prev => {
-                if (JSON.stringify(stats) === JSON.stringify(prev)) return prev;
-                return stats;
-            });
-
-            if (finalFiltered.length > 0) {
-                if (JSON.stringify(finalFiltered) !== JSON.stringify(list1Ref.current)) {
-                    setList1(finalFiltered);
-                    list1Ref.current = finalFiltered;
-                }
-            }
-        };
-
-        const unsub = priceRegistry.registerTickerListener((tickers) => {
-            latestTickers = tickers;
-            if (!throttleTimer) {
-                throttleTimer = setTimeout(() => {
-                    throttleTimer = null;
-                    processLiveTickers(latestTickers);
-                }, 1000); // 1000ms healthy batch throttle
-            }
-        });
-
-        return () => {
-            unsub();
-            if (throttleTimer) clearTimeout(throttleTimer);
-        };
-    }, [applySmartAnalysis]);
 
     // --- EFFECT: Re-filter instantly when config changes or blacklist changes ---
     const lastFilterPulseRef = useRef<string>('');
@@ -1156,8 +1047,7 @@ export const useScannerLogic = (
             currentSymbol: ''
         } as any);
 
-        // ⚡ [0-DELAY INSTANT PIPELINE]: 采用常驻日K本地持久化缓存，消除冗余网络休眠，毫秒级瞬时计算完成
-        const perCoinDelayMs = (cfg.intervalSeconds ?? 0) * 1000;
+        const perCoinDelayMs = Math.max(1, cfg.intervalSeconds ?? (cfg.intervalMinutes ? Math.min(cfg.intervalMinutes, 60) : 3)) * 1000;
         const KLINE_LIMIT_CACHE = ((window as any).KLINE_LIMIT_CACHE = (window as any).KLINE_LIMIT_CACHE || {});
 
         // =========================================================================
@@ -1167,12 +1057,13 @@ export const useScannerLogic = (
         let processedGroup1Count = 0;
         const successfullyEvaluatedSymbols = new Set<string>();
 
-        const processStage1Coin = async (symbol: string) => {
-            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) return;
+        const processStage1Coin = async (symbol: string): Promise<boolean> => {
+            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) return true;
             const maxWorkTime = 12000;
 
             const coinAbortController = new AbortController();
             let coinTimeoutId: any = null;
+            let wasCacheHit = false;
             try {
                 await Promise.race([
                     (async () => {
@@ -1188,24 +1079,32 @@ export const useScannerLogic = (
                         const storedKlines = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
                         if (storedKlines && Array.isArray(storedKlines) && (storedKlines.length >= minRequired || storedKlines.length >= 30)) {
                             klines = storedKlines;
+                            wasCacheHit = true;
                         } else {
                             const CACHE_VALIDITY_1D = 86400000;
                             if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][timeParam].klines) && (KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
                                 klines = KLINE_LIMIT_CACHE[symbol][timeParam].klines;
+                                wasCacheHit = true;
                             } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines) && (KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
                                 klines = KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines;
+                                wasCacheHit = true;
                             } else if (KLINE_LIMIT_CACHE[symbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][300].klines) && (KLINE_LIMIT_CACHE[symbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
                                 klines = KLINE_LIMIT_CACHE[symbol][300].klines;
+                                wasCacheHit = true;
                             } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][300].klines) && (KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
                                 klines = KLINE_LIMIT_CACHE[safeSymbol][300].klines;
+                                wasCacheHit = true;
                             } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= minRequired) {
                                 klines = KLINE_LIMIT_CACHE[`${symbol}_1d`];
+                                wasCacheHit = true;
                             } else if (KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && KLINE_LIMIT_CACHE[`${safeSymbol}_1d`].length >= minRequired) {
                                 klines = KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
+                                wasCacheHit = true;
                             }
                         }
 
                         if (!klines || !Array.isArray(klines) || (klines.length < minRequired && klines.length < 30)) {
+                            wasCacheHit = false;
                             const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}&isScanner=true`;
                             klines = await safeFetchKlinesDirect(url, 10000, coinAbortController.signal);
                             if (!klines || klines.length < 2) {
@@ -1238,136 +1137,23 @@ export const useScannerLogic = (
                             successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
                             successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
 
-                            const periodKlines = klines.slice(-timeParam);
-                            const highs = periodKlines.map((k: any) => parseFloat(k[2]));
-                            const lows = periodKlines.map((k: any) => parseFloat(k[3]));
-                            const closes = periodKlines.map((k: any) => parseFloat(k[4]));
-                            const currentPrice = closes[closes.length - 1];
+                            // 1. Stage 1: 横盘蓄势过滤 (调用原子化规则引擎 evaluateSidewaysFilter)
+                            const sidewaysRes = evaluateSidewaysFilter(
+                                symbol,
+                                klines,
+                                cfg,
+                                enableSidewaysLong,
+                                enableSidewaysShort
+                            );
 
-                            // 1. Stage 1: 横盘蓄势过滤 (支持多组过滤 + OR/AND 组合模式)
-                            let maxZ = currentPrice;
-                            let minZ = currentPrice;
-                            let sidewaysMatch = true;
-                            let dropFromMax = 0;
-                            let riseFromMin = 0;
-
-                            if (enableSideways) {
-                                if (!enableSidewaysLong && !enableSidewaysShort) {
-                                    sidewaysMatch = false;
-                                } else if (symbol.endsWith('_LONG') && !enableSidewaysLong) {
-                                    sidewaysMatch = false;
-                                } else if (symbol.endsWith('_SHORT') && !enableSidewaysShort) {
-                                    sidewaysMatch = false;
-                                } else {
-                                    const rawGroups = cfg.sidewaysGroups && cfg.sidewaysGroups.length > 0
-                                        ? cfg.sidewaysGroups
-                                        : [{ days: cfg.sidewaysDays || 7, maxDrop: cfg.sidewaysMaxDrop || 10, maxPump: cfg.sidewaysMaxPump || 10, enabled: true }];
-                                    
-                                    const activeGroups = rawGroups.filter(g => g.enabled !== false && ((Number(g.days) || 0) > 0 || (Number(g.daysLong) || 0) > 0 || (Number(g.daysShort) || 0) > 0));
-
-                                    if (activeGroups.length > 0) {
-                                        const isAndMode = cfg.sidewaysLogic === 'AND';
-                                        const isShortCand = symbol.endsWith('_SHORT');
-                                        const isLongCand = symbol.endsWith('_LONG');
-
-                                        const evalGroupForDirection = (g: any, forShort: boolean) => {
-                                            const gDays = Math.max(1, Math.floor(Number(forShort ? (g.daysShort ?? g.days) : (g.daysLong ?? g.days)) || 7));
-                                            const rawDrop = Number(forShort ? (g.maxDropShort ?? g.maxDrop) : (g.maxDropLong ?? g.maxDrop));
-                                            const rawPump = Number(forShort ? (g.maxPumpShort ?? g.maxPump) : (g.maxPumpLong ?? g.maxPump));
-                                            const gMaxDrop = isNaN(rawDrop) ? 10 : rawDrop;
-                                            const gMaxPump = isNaN(rawPump) ? 10 : rawPump;
-
-                                            // 严格校验历史K线长度：如果历史K线少于观察周期，无法满足指定天数的充分横盘蓄势要求
-                                            if (highs.length < Math.min(gDays, 3)) {
-                                                return { passed: false, gMaxZ: currentPrice, gMinZ: currentPrice, gDrop: 999, gRise: 999, days: gDays };
-                                            }
-
-                                            const sHighs = highs.slice(-gDays);
-                                            const sLows = lows.slice(-gDays);
-                                            const gMaxZ = sHighs.length > 0 ? Math.max(...sHighs) : currentPrice;
-                                            const gMinZ = sLows.length > 0 ? Math.min(...sLows) : currentPrice;
-                                            const gDrop = gMaxZ > 0 ? ((gMaxZ - currentPrice) / gMaxZ) * 100 : 0;
-                                            const gRise = gMinZ > 0 ? ((currentPrice - gMinZ) / gMinZ) * 100 : 0;
-                                            const passed = gDrop <= gMaxDrop && gRise <= gMaxPump;
-                                            return { passed, gMaxZ, gMinZ, gDrop, gRise, days: gDays };
-                                        };
-
-                                        const evalAllGroups = (forShort: boolean) => {
-                                            const results = activeGroups.map(g => evalGroupForDirection(g, forShort));
-                                            // 🔒 严格按逻辑执行：“且”模式下每一个启用的规则组都必须 100% 满足(共振)；“或”模式下任意一组满足即可
-                                            const passed = isAndMode ? results.every(r => r.passed) : results.some(r => r.passed);
-                                            const matched = isAndMode
-                                                ? {
-                                                    passed,
-                                                    gMaxZ: Math.max(...results.map(r => r.gMaxZ)),
-                                                    gMinZ: Math.min(...results.map(r => r.gMinZ)),
-                                                    gDrop: Math.max(...results.map(r => r.gDrop)),
-                                                    gRise: Math.max(...results.map(r => r.gRise)),
-                                                    days: Math.max(...results.map(r => r.days))
-                                                }
-                                                : (results.find(r => r.passed) || results[0]);
-                                            return { passed, matched };
-                                        };
-
-                                        if (isShortCand) {
-                                            const { passed, matched } = evalAllGroups(true);
-                                            sidewaysMatch = passed;
-                                            maxZ = matched.gMaxZ;
-                                            minZ = matched.gMinZ;
-                                            dropFromMax = matched.gDrop;
-                                            riseFromMin = matched.gRise;
-                                        } else if (isLongCand) {
-                                            const { passed, matched } = evalAllGroups(false);
-                                            sidewaysMatch = passed;
-                                            maxZ = matched.gMaxZ;
-                                            minZ = matched.gMinZ;
-                                            dropFromMax = matched.gDrop;
-                                            riseFromMin = matched.gRise;
-                                        } else {
-                                            // 无明确多空后缀时的候选币：根据当前开启的横盘方向判定
-                                            const longRes = enableSidewaysLong ? evalAllGroups(false) : { passed: false, matched: null as any };
-                                            const shortRes = enableSidewaysShort ? evalAllGroups(true) : { passed: false, matched: null as any };
-
-                                            if (longRes.passed && shortRes.passed) {
-                                                sidewaysMatch = true;
-                                                const m = longRes.matched || shortRes.matched;
-                                                maxZ = m.gMaxZ;
-                                                minZ = m.gMinZ;
-                                                dropFromMax = m.gDrop;
-                                                riseFromMin = m.gRise;
-                                            } else if (longRes.passed) {
-                                                sidewaysMatch = true;
-                                                maxZ = longRes.matched.gMaxZ;
-                                                minZ = longRes.matched.gMinZ;
-                                                dropFromMax = longRes.matched.gDrop;
-                                                riseFromMin = longRes.matched.gRise;
-                                            } else if (shortRes.passed) {
-                                                sidewaysMatch = true;
-                                                maxZ = shortRes.matched.gMaxZ;
-                                                minZ = shortRes.matched.gMinZ;
-                                                dropFromMax = shortRes.matched.gDrop;
-                                                riseFromMin = shortRes.matched.gRise;
-                                            } else {
-                                                sidewaysMatch = false;
-                                                const m = (longRes.matched || shortRes.matched || evalGroupForDirection(activeGroups[0], false));
-                                                maxZ = m.gMaxZ;
-                                                minZ = m.gMinZ;
-                                                dropFromMax = m.gDrop;
-                                                riseFromMin = m.gRise;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (sidewaysMatch) {
+                            if (sidewaysRes.passed) {
                                 stage1PassedItems.push({
                                     symbol: safeSymbol,
-                                    maxZ,
-                                    minZ,
-                                    dropFromMax,
-                                    riseFromMin,
-                                    currentPrice,
+                                    maxZ: sidewaysRes.maxZ,
+                                    minZ: sidewaysRes.minZ,
+                                    dropFromMax: sidewaysRes.dropFromMax,
+                                    riseFromMin: sidewaysRes.riseFromMin,
+                                    currentPrice: sidewaysRes.currentPrice,
                                     klines
                                 });
                             }
@@ -1385,53 +1171,56 @@ export const useScannerLogic = (
                     coinAbortController.abort();
                 } catch (_) {}
                 processedGroup1Count++;
-                updateStage1ProgressThrottled(symbol);
-            }
-        };
-
-        let lastStage1ProgressTime = 0;
-        const updateStage1ProgressThrottled = (symbol: string, force = false) => {
-            if (!isMountedRef.current) return;
-            const now = Date.now();
-            if (force || now - lastStage1ProgressTime > 80 || processedGroup1Count >= targetSymbols.length) {
-                lastStage1ProgressTime = now;
-                setMajorProgress({
-                    current: Math.min(processedGroup1Count, targetSymbols.length),
-                    total: targetSymbols.length,
-                    stage: 'group1',
-                    group1Total: targetSymbols.length,
-                    group1Current: Math.min(processedGroup1Count, targetSymbols.length),
-                    group1Passed: stage1PassedItems.length,
-                    group2Total: stage1PassedItems.length,
-                    group2Current: 0,
-                    group2Passed: 0,
-                    currentSymbol: symbol
-                } as any);
-            }
-        };
-
-        // ⚡ [BALANCED HIGH-SPEED WORKER POOL]: 4协程平稳并发，契合浏览器Socket池限制，秒级完成第一阶段横盘蓄势扫描且0闪退
-        const CONCURRENCY_STAGE1 = 4;
-        let cursorStage1 = 0;
-
-        const workerStage1 = async () => {
-            while (cursorStage1 < targetSymbols.length && isMountedRef.current && majorTrendConfigRef.current?.enabled && !majorScanAbortRef.current) {
-                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                if (isMountedRef.current) {
+                    setMajorProgress({
+                        current: processedGroup1Count,
+                        total: targetSymbols.length,
+                        stage: 'group1',
+                        group1Total: targetSymbols.length,
+                        group1Current: processedGroup1Count,
+                        group1Passed: stage1PassedItems.length,
+                        group2Total: stage1PassedItems.length,
+                        group2Current: 0,
+                        group2Passed: 0,
+                        currentSymbol: symbol
+                    } as any);
                 }
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
-
-                const idx = cursorStage1++;
-                if (idx < targetSymbols.length) {
-                    const currentSym = targetSymbols[idx];
-                    await processStage1Coin(currentSym);
-                }
+                return wasCacheHit;
             }
         };
 
-        const workersStage1 = Array.from({ length: Math.min(CONCURRENCY_STAGE1, targetSymbols.length) }, () => workerStage1());
-        await Promise.all(workersStage1);
-        updateStage1ProgressThrottled('', true);
+        // 🚀【智能双态极速扫描 - Stage 1 横盘蓄势过滤】:
+        // 1. 命中日K持久化常驻缓存 (0 权重消耗)：5ms 微步进让出 UI 渲染主线程，瞬间全量完成；
+        // 2. 未命中缓存 (冷启动新币拉取)：保留 100ms 安全流控，杜绝币安 IP 限频风险
+        for (let i = 0; i < targetSymbols.length; i++) {
+            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
+
+            // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
+            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
+
+            const currentSym = targetSymbols[i];
+            const stepStart = Date.now();
+            const wasCacheHit = await processStage1Coin(currentSym);
+
+            const dynamicDelayMs = wasCacheHit ? 5 : 100;
+            const elapsed = Date.now() - stepStart;
+            const remaining = Math.max(0, dynamicDelayMs - elapsed);
+            if (remaining > 0 && i < targetSymbols.length - 1 && isMountedRef.current && !majorScanAbortRef.current) {
+                const delayStart = Date.now();
+                while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
+                    if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
+                        while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                            await new Promise(resolve => setTimeout(resolve, 200));
+                        }
+                        break;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
+                }
+            }
+        }
 
         // 🔒【第一阶段扫描完成】: 仅在整轮横盘扫描完成后原子化保存到“横盘蓄势过滤底池”，若无通过币种则清空底池
         const poolData = stage1PassedItems.map(item => ({
@@ -1459,25 +1248,6 @@ export const useScannerLogic = (
         const stage2LimitsMap: Record<string, { maxZ: number; minZ: number }> = { ...limitsMap };
         const totalStage2 = stage1PassedItems.length;
 
-        // 🔒【回溯周期过滤计数与初筛展示100%绝对一致性函数】:
-        // 严格按当前启用的做多/做空方向统计符合条件的唯一币种数量，绝不因多空双向标签翻倍，确保显示数字与初筛列表完全吻合！
-        const getMatchedUniqueSymbolsCount = (symbolsSet: Set<string>) => {
-            const uniqueSet = new Set<string>();
-            symbolsSet.forEach(cand => {
-                const sym = cand.replace('_LONG', '').replace('_SHORT', '');
-                const hasL = symbolsSet.has(`${sym}_LONG`) || symbolsSet.has(sym);
-                const hasS = symbolsSet.has(`${sym}_SHORT`) || symbolsSet.has(sym);
-                if (enableLong && enableShort) {
-                    if (hasL || hasS) uniqueSet.add(sym);
-                } else if (enableLong) {
-                    if (hasL) uniqueSet.add(sym);
-                } else if (enableShort) {
-                    if (hasS) uniqueSet.add(sym);
-                }
-            });
-            return uniqueSet.size;
-        };
-
         if (!enableLookbackFilter) {
             // 🔒【情况 B】：“回溯周期过滤”未开启，“横盘蓄势过滤”为最后一项过滤规则！
             // 横盘蓄势扫描已全部完成，直接将横盘通过结果作为最终结果进行差量对比
@@ -1502,12 +1272,20 @@ export const useScannerLogic = (
                 currentSymbol: ''
             } as any);
 
-            let processedStage2Count = 0;
-            const processStage2Item = async (s2Idx: number) => {
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) return;
+            for (let s2Idx = 0; s2Idx < totalStage2; s2Idx++) {
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
+                if (majorScanAbortRef.current) break;
+
+                // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
+                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
+                if (majorScanAbortRef.current) break;
+
                 const item = stage1PassedItems[s2Idx];
-                if (!item) return;
                 const symbol = item.symbol;
+                const s2CycleStart = Date.now();
 
                 const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
                 let klines = item.klines;
@@ -1526,116 +1304,24 @@ export const useScannerLogic = (
                 const maxZ = item.maxZ;
                 const minZ = item.minZ;
 
-                const effectiveSidewaysDays = Math.max(...(cfg.sidewaysGroups?.filter(g => g.enabled !== false).map(g => Number(g.daysLong || g.daysShort || g.days || 7)) || [cfg.sidewaysDays || 7]));
-                let histHighs = highs;
-                let histLows = lows;
-                if (enableSideways && highs.length > effectiveSidewaysDays) {
-                    const endIdx = Math.max(1, highs.length - effectiveSidewaysDays);
-                    histHighs = highs.slice(0, endIdx);
-                    histLows = lows.slice(0, endIdx);
-                }
-
-                const rawMaxPrice = histHighs.length > 0 ? Math.max(...histHighs) : currentPrice;
-                const rawMinPrice = histLows.length > 0 ? Math.min(...histLows) : currentPrice;
-
-                // 🔒【消除新低/新高负数误杀漏洞】:
-                // 真实绝对极值涵盖整个回溯周期与最近横盘蓄势期。
-                // 当币种在最近蓄势期创下新低时，当前价离绝对最低点距离为0% (绝不产生负数导致被>=0规则误杀)
-                const minPrice = Math.min(rawMinPrice, minZ !== undefined ? minZ : currentPrice, currentPrice);
-                const maxPrice = Math.max(rawMaxPrice, maxZ !== undefined ? maxZ : currentPrice, currentPrice);
-
-                const dropFromMaxToMin = ((maxPrice - minPrice) / maxPrice) * 100;
-                const pumpFromMinToMax = ((maxPrice - minPrice) / minPrice) * 100;
-
-                const distLong = Math.max(0, ((currentPrice - minPrice) / minPrice) * 100);
-                const distShort = Math.max(0, ((maxPrice - currentPrice) / maxPrice) * 100);
-
-                let lowDaysAgo = 0;
-                if (minPrice === currentPrice || (minZ !== undefined && minPrice === minZ)) {
-                    // 最低点发生在最近横盘蓄势期内 (0 ~ effectiveSidewaysDays 天前)
-                    const sidewaysLows = lows.slice(-effectiveSidewaysDays);
-                    const sIdx = sidewaysLows.lastIndexOf(minPrice);
-                    lowDaysAgo = sIdx !== -1 ? (sidewaysLows.length - 1 - sIdx) : 0;
-                } else {
-                    const minLowIdx = histLows.indexOf(minPrice);
-                    lowDaysAgo = minLowIdx !== -1 ? (periodKlines.length - 1 - minLowIdx) : 0;
-                }
-
-                let highDaysAgo = 0;
-                if (maxPrice === currentPrice || (maxZ !== undefined && maxPrice === maxZ)) {
-                    // 最高点发生在最近横盘蓄势期内 (0 ~ effectiveSidewaysDays 天前)
-                    const sidewaysHighs = highs.slice(-effectiveSidewaysDays);
-                    const sIdx = sidewaysHighs.lastIndexOf(maxPrice);
-                    highDaysAgo = sIdx !== -1 ? (sidewaysHighs.length - 1 - sIdx) : 0;
-                } else {
-                    const maxHighIdx = histHighs.indexOf(maxPrice);
-                    highDaysAgo = maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0;
-                }
-
-                const isLongMatch = enableLong && (
-                    (dropFromMaxToMin >= cfg.minHistoryDrop) && 
-                    (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
-                    (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance)) &&
-                    (lowDaysAgo >= (cfg.extremeDaysMinLong ?? 0)) &&
-                    (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300))
+                // Stage 2: 回溯周期过滤 (调用原子化规则引擎 evaluateLookbackFilter)
+                const lookbackRes = evaluateLookbackFilter(
+                    symbol,
+                    klines || [],
+                    currentPrice,
+                    maxZ,
+                    minZ,
+                    cfg,
+                    enableLong,
+                    enableShort,
+                    enableSideways
                 );
 
-                const isShortMatch = enableShort && (
-                    (pumpFromMinToMax >= cfg.minHistoryPump) && 
-                    (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
-                    (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance)) &&
-                    (highDaysAgo >= (cfg.extremeDaysMinShort ?? 0)) &&
-                    (highDaysAgo <= (cfg.extremeDaysMaxShort ?? 300))
-                );
-
-                const stage2Match = (!enableLong && !enableShort) || isLongMatch || isShortMatch;
-                let emaFailed = false;
-
-                if (stage2Match && cfg.filterEmaPeriod > 0) {
-                    if (prices.length < cfg.filterEmaPeriod) {
-                        emaFailed = true;
-                    } else {
-                        const ema = calculateEMA(prices, cfg.filterEmaPeriod);
-                        let crossCount = 0;
-                        let lastDirection: 'UP' | 'DOWN' | null = null;
-                        let lastCrossIndex = -1;
-
-                        for (let j = cfg.filterEmaPeriod - 1; j < prices.length; j++) {
-                            const emaVal = ema[j - (cfg.filterEmaPeriod - 1)];
-                            const currentDirection = prices[j] > emaVal ? 'UP' : 'DOWN';
-                            if (lastDirection && currentDirection !== lastDirection) {
-                                crossCount++;
-                                lastCrossIndex = j;
-                            }
-                            lastDirection = currentDirection;
-                        }
-
-                        if (crossCount >= cfg.filterCrossingCount) {
-                            emaFailed = true;
-                        } else if (lastCrossIndex !== -1 && lastCrossIndex < prices.length - 1) {
-                            const crossPrice = prices[lastCrossIndex];
-                            const maxFuturePrice = Math.max(...prices.slice(lastCrossIndex + 1));
-                            const minFuturePrice = Math.min(...prices.slice(lastCrossIndex + 1));
-
-                            const maxPumpAfterCross = ((maxFuturePrice - crossPrice) / crossPrice) * 100;
-                            const maxDropAfterCross = ((minFuturePrice - crossPrice) / crossPrice) * 100;
-
-                            if (lastDirection === 'UP' && maxPumpAfterCross > cfg.filterLongMaxPump) emaFailed = true;
-                            if (lastDirection === 'DOWN' && maxDropAfterCross < cfg.filterShortMinDrop) emaFailed = true;
-                        }
-                    }
-                }
-
-                // Stage 2 极值与回溯周期判定
-                const stage2Passed = stage2Match && !emaFailed;
-                const finalLongMatch = stage2Passed && isLongMatch;
-                const finalShortMatch = stage2Passed && isShortMatch;
-
-                if (finalLongMatch) {
+                if (lookbackRes.isLongMatch) {
                     stage2PassedSymbols.add(`${symbol}_LONG`);
                     stage2LimitsMap[symbol] = { maxZ, minZ };
                 }
-                if (finalShortMatch) {
+                if (lookbackRes.isShortMatch) {
                     stage2PassedSymbols.add(`${symbol}_SHORT`);
                     stage2LimitsMap[symbol] = { maxZ, minZ };
                 }
@@ -1643,56 +1329,45 @@ export const useScannerLogic = (
                 successfullyEvaluatedSymbols.add(symbol);
                 successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
                 successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
-                processedStage2Count++;
-                updateStage2ProgressThrottled(symbol);
-            };
 
-            let lastStage2ProgressTime = 0;
-            const updateStage2ProgressThrottled = (symbol: string, force = false) => {
-                if (!isMountedRef.current) return;
-                const now = Date.now();
-                if (force || now - lastStage2ProgressTime > 80 || processedStage2Count >= totalStage2) {
-                    lastStage2ProgressTime = now;
+                // 仅更新扫描进度显示，绝不在此处触发初筛列表的增减更新
+                if (isMountedRef.current) {
                     setMajorProgress({
-                        current: Math.min(processedStage2Count, totalStage2),
+                        current: s2Idx + 1,
                         total: totalStage2,
                         stage: 'group2',
                         group1Total: targetSymbols.length,
                         group1Current: targetSymbols.length,
                         group1Passed: totalStage2,
                         group2Total: totalStage2,
-                        group2Current: Math.min(processedStage2Count, totalStage2),
-                        group2Passed: getMatchedUniqueSymbolsCount(stage2PassedSymbols),
+                        group2Current: s2Idx + 1,
+                        group2Passed: getMatchedUniqueSymbolsCount(stage2PassedSymbols, enableLong, enableShort),
                         currentSymbol: symbol
                     } as any);
                 }
-            };
 
-            // ⚡ [BALANCED HIGH-SPEED WORKER POOL]: 4协程平稳并发，契合浏览器Socket池限制，秒级秒算完成且0内存风暴
-            const CONCURRENCY_STAGE2 = 4;
-            let cursorStage2 = 0;
-            const workerStage2 = async () => {
-                while (cursorStage2 < totalStage2 && isMountedRef.current && majorTrendConfigRef.current?.enabled && !majorScanAbortRef.current) {
-                    while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                        await new Promise(resolve => setTimeout(resolve, 200));
-                    }
-                    if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
-
-                    const idx = cursorStage2++;
-                    if (idx < totalStage2) {
-                        await processStage2Item(idx);
+                // 🚀【智能双态极速扫描 - Stage 2 回溯周期过滤】: 100% 本地内存纯计算，采用 5ms 微步进让出 UI 渲染，秒级完成差量核验
+                const s2DynamicDelayMs = 5;
+                const elapsed = Date.now() - s2CycleStart;
+                const remaining = Math.max(0, s2DynamicDelayMs - elapsed);
+                if (remaining > 0 && s2Idx < totalStage2 - 1 && isMountedRef.current && !majorScanAbortRef.current) {
+                    const delayStart = Date.now();
+                    while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
+                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
+                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
+                                await new Promise(resolve => setTimeout(resolve, 200));
+                            }
+                            break;
+                        }
+                        await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
                     }
                 }
-            };
-
-            const workersStage2 = Array.from({ length: Math.min(CONCURRENCY_STAGE2, totalStage2) }, () => workerStage2());
-            await Promise.all(workersStage2);
-            updateStage2ProgressThrottled('', true);
+            }
         }
 
         // =========================================================================
         // 🔒【回溯周期过滤整轮扫描完成 - 原子差量比对更新】
-        // 规则：必须是“回溯周期过滤”运行完成后，再和市场初筛列表的数量进行比对：
+        // 规则：必须是“回溯周期过滤”运行完成后，再和市场初筛列表的数量进行比对 (调用 computeCandidatesDiff)
         // 1. 如果新过滤结果减少了，初筛列表精准减去少的那一个/几个；
         // 2. 如果新过滤结果增加了，初筛列表精准加上多的那一个/几个；
         // 3. 既有依然符合的币种保持平稳，一次性完成原子差量对齐更新！
@@ -1701,21 +1376,16 @@ export const useScannerLogic = (
         if (isMountedRef.current && !majorScanAbortRef.current) {
             const previousCandidates = majorTrendCandidatesRef.current ? Array.from(majorTrendCandidatesRef.current) : [];
             
-            // 🔒【回溯周期过滤整轮扫描完成 - 原子差量比对更新】:
-            // 1. 如果新过滤结果减少了，初筛列表精准减去不符合的那一个/几个；
-            // 2. 如果新过滤结果增加了，初筛列表精准加上新入选的那一个/几个；
-            // 3. 既有依然符合的币种平滑保留，实现 100% 精准差量对齐更新！
-            const newCandidates = Array.from(stage2PassedSymbols);
-            const prevSet = new Set(previousCandidates);
-            const newSet = new Set(newCandidates);
+            const diffRes = computeCandidatesDiff(
+                previousCandidates,
+                stage2PassedSymbols,
+                enableLong,
+                enableShort
+            );
 
-            const added = newCandidates.filter(x => !prevSet.has(x));
-            const removed = previousCandidates.filter(x => !newSet.has(x));
-            const retained = previousCandidates.filter(x => newSet.has(x));
+            console.log(`[MajorTrendDiscovery] 回溯周期过滤全量完成！初筛差量比对: 原有 ${diffRes.previousCandidates.length} 个 -> 本轮 ${diffRes.newCandidates.length} 个 (保留: ${diffRes.retained.length} 个, 增加: +${diffRes.added.length} 个 [${diffRes.added.join(', ')}], 减去: -${diffRes.removed.length} 个 [${diffRes.removed.join(', ')}])`);
 
-            console.log(`[MajorTrendDiscovery] 回溯周期过滤全量完成！初筛差量比对: 原有 ${previousCandidates.length} 个 -> 本轮 ${newCandidates.length} 个 (保留: ${retained.length} 个, 增加: +${added.length} 个 [${added.join(', ')}], 减去: -${removed.length} 个 [${removed.join(', ')}])`);
-
-            const finalSet = new Set(newCandidates);
+            const finalSet = diffRes.finalSet;
             setMajorTrendCandidates(finalSet);
             majorTrendCandidatesRef.current = finalSet;
             setMajorTrendLimits(stage2LimitsMap);
@@ -1734,7 +1404,7 @@ export const useScannerLogic = (
                 group1Passed: stage1PassedItems.length,
                 group2Total: stage1PassedItems.length,
                 group2Current: stage1PassedItems.length,
-                group2Passed: getMatchedUniqueSymbolsCount(finalSet),
+                group2Passed: diffRes.matchedUniqueCount,
                 currentSymbol: ''
             } as any);
 

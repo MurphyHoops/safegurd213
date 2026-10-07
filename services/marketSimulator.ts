@@ -1298,10 +1298,11 @@ export class MarketSimulator {
         targetPos.maxPnLPercent = targetPos.unrealizedPnLPercentage;
 
         // 记录在交易流水事件中
-        const log = this.tradeLogs.find(l => l.symbol === upperSymbol && l.side === side && l.status === 'OPEN');
+        const log = this.tradeLogs.find(l => l.symbol === upperSymbol && l.direction === side && l.status === 'OPEN');
         if (log) {
-            log.amount = newTokenAmount;
-            log.entryPrice = newWeightedEntryPrice;
+            log.current_amount = newTokenAmount;
+            log.entry_price = newWeightedEntryPrice;
+            if (!log.events) log.events = [];
             log.events.push({
                 timestamp: Date.now(),
                 action: '加仓',
@@ -1688,9 +1689,12 @@ export class MarketSimulator {
             // 原主仓自身盈利（isMainProfitable）或对冲未盈利时，绝对严禁触发任何形式的复开！
             // -------------------------------------------------------------
             if (isHedgeProfitable && !isMainProfitable) {
-                if (isAmputationProfitExit && this.settings.stopLoss.amputationReopenEnabled) {
-                    this.addLog('INFO', `🔄 [断臂完全复开触发] 对冲仓位盈利解套且账户仓位已全部清空。执行原仓位初始开仓数量和方向的完全复开。`);
-                    this.reopenPosition(main, `断臂求生对冲仓盈利解套自动复开`);
+                if (this.settings.stopLoss.amputationReopenEnabled) {
+                    const reopenReason = isAmputationProfitExit
+                        ? `断臂求生对冲仓盈利解套自动复开`
+                        : `对冲盈利解套清仓后原仓位自动完全复开`;
+                    this.addLog('INFO', `🔄 [完全复开触发] 对冲仓位盈利解套且账户仓位已全部清空。执行原仓位初始开仓数量和方向的完全复开。`);
+                    this.reopenPosition(main, reopenReason);
                 }
             } else {
                 if (isMainProfitable) {
@@ -1723,8 +1727,8 @@ export class MarketSimulator {
         const fuseEnabled = this.settings?.stopLoss?.fuseEnabled;
         const maxRetries = this.settings?.stopLoss?.maxHedgeRetries || 3;
 
-        if (pos.isOscillationLocked || (fuseEnabled && currentRefillCount >= maxRetries)) {
-            this.addLog('WARNING', `⚠️ [原仓位复开] 拦截: ${pos.symbol} ${pos.side} 已触发震荡磨损保护熔断 (累计补仓/复开已达${currentRefillCount}次)，停止自动复开！`);
+        if (pos.isOscillationLocked) {
+            this.addLog('WARNING', `⚠️ [原仓位复开] 拦截: ${pos.symbol} ${pos.side} 已触发震荡磨损保护熔断锁定，停止自动复开！`);
             return;
         }
 

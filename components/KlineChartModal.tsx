@@ -10,6 +10,7 @@ import { formatPrice, normalizeSymbol, formatToBinanceSymbol } from '../services
 import { KLineSynthesizer } from '../services/klineSynthesizer';
 import { binanceKlineWs, WsKlineUpdate } from '../services/binanceKlineWs';
 import { klineDailyStore } from '../services/klineDailyStore';
+import { klineMultiTfStore } from '../services/klineMultiTfStore';
 import { BinanceTradingViewChart } from './BinanceTradingViewChart';
 import { LightweightKlineChart } from './LightweightKlineChart';
 
@@ -84,7 +85,7 @@ interface KlineData {
   volume: number;
 }
 
-const TIMEFRAMES = ['15s', '30s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '1w', '1M', '3M'];
+const TIMEFRAMES = ['15s', '30s', '1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '1w', '1M', '3M'];
 
 const sanitizeTf = (tf: string): string => {
     if (!tf) return '15m';
@@ -242,17 +243,6 @@ async function fetchFirstValid(channels: Array<Promise<{ data: any[][], source: 
 }
 
 async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: number): Promise<{ data: any[][], source: string }> {
-    // ⚡ [0-DELAY DAILY KLINE STORE HIT]: 如果是 1d (日K)，优先直接从本地常驻持久化缓存中 0ms 返回 300 根全量日 K 线
-    if (timeframe === '1d') {
-        const cached1d = klineDailyStore.getCachedKlinesSync(safeSymbol, Math.min(limit, 300));
-        if (cached1d && Array.isArray(cached1d) && cached1d.length >= 30) {
-            return {
-                data: cached1d,
-                source: 'KlineDailyStore-Local-0ms'
-            };
-        }
-    }
-
     // 15s and 30s synthesized seconds klines
     if ((timeframe === '15s' || timeframe === '30s') && !/[\u4e00-\u9fa5]/.test(safeSymbol)) {
         const targetMin = timeframe === '15s' ? 0.25 : 0.5;
@@ -281,6 +271,32 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
             }
         } catch (e) {
             console.warn("[KlineRace] 1s synthesis fetch failed, continuing to standard kline race", e);
+        }
+    }
+
+    // 10m synthesized from 5m klines
+    if (timeframe === '10m' && !/[\u4e00-\u9fa5]/.test(safeSymbol)) {
+        try {
+            const res5m = await raceFetchKlines(safeSymbol, '5m', Math.min(1000, limit * 2));
+            if (res5m && res5m.data && res5m.data.length > 0) {
+                const klines5m = res5m.data.map((k: any) => ({
+                    time: Number(k[0]),
+                    open: parseFloat(k[1]),
+                    high: parseFloat(k[2]),
+                    low: parseFloat(k[3]),
+                    close: parseFloat(k[4]),
+                    volume: parseFloat(k[5]),
+                }));
+                const synthesized = KLineSynthesizer.synthesize(klines5m, 10);
+                if (synthesized.length > 0) {
+                    return {
+                        data: synthesized.map(k => [k.time, k.open, k.high, k.low, k.close, k.volume]),
+                        source: `${res5m.source}-Synth10m`
+                    };
+                }
+            }
+        } catch (e) {
+            console.warn("[KlineRace] 10m synthesis fetch failed", e);
         }
     }
 
@@ -1051,7 +1067,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
 
 
   // Viewport State
-  const [visibleCount, setVisibleCount] = useState(showAuditLines ? 120 : 200); 
+  const [visibleCount, setVisibleCount] = useState(200); 
   const [startIndex, setStartIndex] = useState(0); 
   const [hoverIndex, setHoverIndex] = useState<number | null>(null); 
   const [mouseY, setMouseY] = useState<number | null>(null); 
@@ -1225,27 +1241,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     if (isInitialLoad) {
                         const defaultVisible = showAuditLines ? 120 : 200;
                         setVisibleCount(defaultVisible);
-                        
-                        let targetIdx = -1;
-                        if (appearedTime) {
-                            targetIdx = getCandleIdxFast(appearedTime, mappedKlines);
-                        } else if (signals && signals.length > 0) {
-                            targetIdx = getCandleIdxFast(signals[0].time, mappedKlines);
-                        } else if (highlightTime) {
-                            targetIdx = getCandleIdxFast(highlightTime, mappedKlines);
-                        } else if (entryTime) {
-                            targetIdx = getCandleIdxFast(entryTime, mappedKlines);
-                        }
-
-                        if (targetIdx !== -1) {
-                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.45) : (defaultVisible - 1 - 18);
-                            const calculatedStart = targetIdx - offsetFromLeft;
-                            setStartIndex(Math.max(0, Math.min(calculatedStart, mappedKlines.length - defaultVisible)));
-                            setIsAutoScroll(false);
-                        } else {
-                            setStartIndex(Math.max(0, mappedKlines.length - defaultVisible));
-                            setIsAutoScroll(true);
-                        }
+                        setStartIndex(Math.max(0, mappedKlines.length - defaultVisible));
+                        setIsAutoScroll(true);
                     }
                 }
             } catch (e) {
@@ -1265,34 +1262,56 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         const cleanSym = formatToBinanceSymbol(symbol) || (symbol.endsWith('USDT') ? symbol : `${symbol}USDT`);
         const safeSymbol = cleanSym.replace(/[\(（][^\)）]*[\)）]/g, '').trim();
 
-        // ⚡ [0-DELAY SYNC PRE-RENDER]: 日线直接利用本地持久化缓存瞬间绘制，0毫秒无白屏菊花
-        if (timeframe === '1d') {
-            const cached1d = klineDailyStore.getCachedKlinesSync(safeSymbol, Math.min(limit, 300));
-            if (cached1d && Array.isArray(cached1d) && cached1d.length >= 30) {
-                const klines: KlineData[] = cached1d.map((k: any) => ({
-                    time: k[0],
-                    open: parseFloat(k[1]) || 0,
-                    high: parseFloat(k[2]) || 0,
-                    low: parseFloat(k[3]) || 0,
-                    close: parseFloat(k[4]) || 0, 
-                    volume: parseFloat(k[5]) || 0
-                }));
-                const closes = klines.map(k => k.close);
-                setFullData(klines);
-                setEmaData({
-                    10: calculateEMA(closes, 10),
-                    20: calculateEMA(closes, 20),
-                    30: calculateEMA(closes, 30),
-                    40: calculateEMA(closes, 40),
-                    80: calculateEMA(closes, 80)
-                });
-                setError(null);
-                setLoading(false);
-            } else if (isInitialLoad) {
-                setLoading(true);
-                setError(null);
+        // 🚀 0ms 瞬间秒开直调本地缓存通道 (Zero-Latency In-Memory Fast-Path)
+        let cachedLocalKlines: any[] | null = klineMultiTfStore.getKlinesSync(safeSymbol, timeframe, 20);
+        if (!cachedLocalKlines && timeframe === '10m') {
+            const cached5m = klineMultiTfStore.getKlinesSync(safeSymbol, '5m', 40);
+            if (cached5m && cached5m.length >= 40) {
+                const synth = KLineSynthesizer.synthesize(cached5m, 10);
+                if (synth && synth.length >= 20) {
+                    cachedLocalKlines = synth;
+                }
             }
-        } else if (isInitialLoad) {
+        }
+        if (!cachedLocalKlines && (timeframe === '1d' || timeframe === '1D')) {
+            cachedLocalKlines = klineDailyStore.getCachedKlinesSync(safeSymbol, 30);
+        }
+
+        let hasLoadedFromLocal = false;
+        if (cachedLocalKlines && Array.isArray(cachedLocalKlines) && cachedLocalKlines.length >= 20) {
+            const localMapped: KlineData[] = cachedLocalKlines.map((k: any) => ({
+                time: Number(k.time || k[0]),
+                open: parseFloat(k.open || k[1]) || 0,
+                high: parseFloat(k.high || k[2]) || 0,
+                low: parseFloat(k.low || k[3]) || 0,
+                close: parseFloat(k.close || k[4]) || 0,
+                volume: parseFloat(k.volume || k[5]) || 0
+            }));
+            const closes = localMapped.map(k => k.close);
+            const emas = {
+                10: calculateEMA(closes, 10),
+                20: calculateEMA(closes, 20),
+                30: calculateEMA(closes, 30),
+                40: calculateEMA(closes, 40),
+                80: calculateEMA(closes, 80)
+            };
+
+            setFullData(localMapped);
+            setEmaData(emas);
+            setError(null);
+            setLoading(false); // ⚡ 瞬间消除 Loading，0ms 秒开呈现
+            setLastUpdated(Date.now());
+            hasLoadedFromLocal = true;
+
+            if (isInitialLoad) {
+                const defaultVisible = 200;
+                setVisibleCount(defaultVisible);
+                setStartIndex(Math.max(0, localMapped.length - defaultVisible));
+                setIsAutoScroll(true);
+            }
+        }
+
+        if (isInitialLoad && !hasLoadedFromLocal) {
             setLoading(true);
             setError(null);
         }
@@ -1304,6 +1323,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
             
             if (isMounted) {
                 if (Array.isArray(json) && json.length > 0) {
+                    klineMultiTfStore.saveKlines(safeSymbol, timeframe, json);
                     const klines: KlineData[] = json.map((k: any) => ({
                         time: k[0],
                         open: parseFloat(k[1]) || 0,
@@ -1327,30 +1347,11 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     setError(null);
                     setLastUpdated(Date.now());
 
-                    if (isInitialLoad) {
-                        const defaultVisible = showAuditLines ? 120 : 200;
+                    if (isInitialLoad && !hasLoadedFromLocal) {
+                        const defaultVisible = 200;
                         setVisibleCount(defaultVisible);
-                        
-                        let targetIdx = -1;
-                        if (appearedTime) {
-                            targetIdx = getCandleIdxFast(appearedTime, klines);
-                        } else if (signals && signals.length > 0) {
-                            targetIdx = getCandleIdxFast(signals[0].time, klines);
-                        } else if (highlightTime) {
-                            targetIdx = getCandleIdxFast(highlightTime, klines);
-                        } else if (entryTime) {
-                            targetIdx = getCandleIdxFast(entryTime, klines);
-                        }
-
-                        if (targetIdx !== -1) {
-                            const offsetFromLeft = showAuditLines ? Math.floor(defaultVisible * 0.45) : (defaultVisible - 1 - 18);
-                            const calculatedStart = targetIdx - offsetFromLeft;
-                            setStartIndex(Math.max(0, Math.min(calculatedStart, klines.length - defaultVisible)));
-                            setIsAutoScroll(false);
-                        } else {
-                            setStartIndex(Math.max(0, klines.length - defaultVisible));
-                            setIsAutoScroll(true);
-                        }
+                        setStartIndex(Math.max(0, klines.length - defaultVisible));
+                        setIsAutoScroll(true);
                     }
                 } else {
                     throw new Error("Empty data returned");
@@ -1359,7 +1360,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         } catch (e: any) {
             console.warn(`[KlineChart] Failed to fetch real kline data for ${symbol}:`, e);
             if (isMounted) {
-                if (isInitialLoad) {
+                if (isInitialLoad && !hasLoadedFromLocal) {
                     if (e.isInvalidSymbol || e.message?.includes("400")) {
                         setError(`交易对 ${symbol} 在币安暂未上市或不支持，暂无K线数据。`);
                     } else {
@@ -1555,10 +1556,19 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       }
   };
 
+  // 🔒 LOCKED_MODULE: TRADE_LOGS_KLINE_MARKERS
   // Trade Logs Marker Logic (仅在从列表5、持仓列表、交易日志等交易相关入口进入时标记)
   const tradeMarkers = useMemo(() => {
       if (!isTradeViewMode) return [];
-      const markers: { time: number; type: string; label: string; price?: number }[] = [];
+      interface ResolvedMarker {
+          time: number;
+          type: string;
+          label: string;
+          actionText: string;
+          direction: 'LONG' | 'SHORT';
+          price?: number;
+      }
+      const markers: ResolvedMarker[] = [];
       
       // Load trade logs from props or fallback to localStorage if props are empty
       let logsToScan = tradeLogs;
@@ -1608,109 +1618,164 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           return '多';
       };
 
+      const formatUsdtBadge = (cost?: number, qty?: number, price?: number): string => {
+          let val = cost;
+          if ((val === undefined || isNaN(val) || val <= 0) && qty && qty > 0) {
+              val = (price && price > 0) ? qty * price : qty;
+          }
+          if (val === undefined || isNaN(val) || val <= 0) return '';
+          const rounded = Math.round(val);
+          if (Math.abs(val - rounded) < 0.2) {
+              return `（${rounded}U）`;
+          }
+          return `（${val.toFixed(1)}U）`;
+      };
+
       matchedLogs.forEach(l => {
           const dirLabel = resolveDirection(l);
-          const isHedge = l.is_hedge || !!l.main_entry_id;
-          const isCut = (
-              l.entry_id?.includes('_cut_') || 
-              l.entry_id?.includes('_amputate_') || 
-              /砍仓|断臂砍仓|断臂求生.*砍|断臂求生.*削减|部分止损|部分减仓|减仓/i.test(l.exit_reason || '') ||
-              (l.events && l.events.some((e: any) => /砍仓|减仓/i.test(e.action || '')))
-          );
-          const isRefill = (
-              l.entry_id?.includes('_refill_') || 
-              /补仓|回踩补回|回踩补仓/i.test(l.exit_reason || '') ||
-              (l.events && l.events.some((e: any) => /补仓|补回/i.test(e.action || '')))
-          );
+          const isHedge = (
+              l.is_hedge === true ||
+              !!l.main_entry_id ||
+              l.entry_id?.startsWith('HEDGE_') ||
+              (l.exit_reason?.startsWith('防爆对冲') && !l.exit_reason?.includes('原仓位'))
+          ) && !(l.exit_reason?.includes('原仓位') || l.events?.some((e: any) => e.action?.includes('原仓位') || e.action?.includes('实盘开仓') || e.action?.includes('主仓开仓')));
+
+          const isRefill = l.entry_id?.includes('_refill_') || (l.exit_reason?.includes('补仓') && !l.exit_reason?.includes('砍仓'));
+          const isCut = !isRefill && (l.entry_id?.includes('_cut_') || l.entry_id?.includes('_amputate_') || /砍仓|断臂砍仓|部分止损|减仓/i.test(l.exit_reason || ''));
           const isClear = (
-              !isCut && (
-                  /解套|断臂全清|断臂盈利清仓|对冲清仓|防爆安全|成对清仓|双向清仓|保本清仓/i.test(l.exit_reason || '') ||
-                  (l.events && l.events.some((e: any) => /解套|对冲清仓|断臂全清|成对清仓/i.test(e.action || '')))
+              !isCut && !isRefill && (
+                  /解套|断臂全清|断臂盈利清仓|对冲清仓|防爆安全|成对清仓|双向清仓|保本清仓/i.test(l.exit_reason || '')
               )
           );
 
+          const direction: 'LONG' | 'SHORT' = dirLabel === '多' ? 'LONG' : 'SHORT';
+
           if (isCut) {
-              // 砍仓标记：在砍仓发生时间 (exit_timestamp 或 entry_timestamp) 标记
+              // 砍仓标记：区分原仓位砍仓与防爆对冲砍仓 (直接对齐交易日志表格行)
               const cutTime = l.exit_timestamp || l.entry_timestamp;
               if (cutTime) {
+                  const prefix = isHedge ? '防爆对冲砍仓' : '原仓位砍仓';
+                  const uBadge = formatUsdtBadge(l.cost_usdt, l.current_amount, l.exit_price || l.entry_price);
+                  const actionText = `${prefix}${uBadge}`;
                   markers.push({ 
                       time: cutTime, 
                       type: 'HEDGE_CUT', 
-                      label: `砍仓(${dirLabel})`, 
+                      label: `${prefix}(${dirLabel})`, 
+                      actionText,
+                      direction,
                       price: l.exit_price || l.entry_price 
                   });
               }
           } else if (isRefill) {
+              // 补仓标记：区分原仓位补仓与防爆对冲补仓 (直接对齐交易日志表格行)
               const refillTime = l.entry_timestamp || l.exit_timestamp;
               if (refillTime) {
+                  const prefix = isHedge ? '防爆对冲补仓' : '原仓位补仓';
+                  const uBadge = formatUsdtBadge(l.cost_usdt, l.current_amount, l.entry_price || l.exit_price);
+                  const actionText = `${prefix}${uBadge}`;
                   markers.push({ 
                       time: refillTime, 
                       type: 'HEDGE_REFILL', 
-                      label: `防爆对冲补仓(${dirLabel})`, 
+                      label: `${prefix}(${dirLabel})`, 
+                      actionText,
+                      direction,
                       price: l.entry_price || l.exit_price 
                   });
               }
           } else {
-              // 普通开仓 / 对冲开仓
+              // 普通开仓 / 防爆对冲开仓
               if (l.entry_timestamp) {
+                  const uBadge = formatUsdtBadge(l.cost_usdt, l.current_amount, l.entry_price);
                   if (isHedge) {
-                      markers.push({ time: l.entry_timestamp, type: 'HEDGE_OPEN', label: `防爆对冲(${dirLabel})`, price: l.entry_price });
+                      const actionText = dirLabel === '多' ? `防爆对冲多开仓${uBadge}` : `防爆对冲空开仓${uBadge}`;
+                      markers.push({ 
+                          time: l.entry_timestamp, 
+                          type: 'HEDGE_OPEN', 
+                          label: `防爆对冲(${dirLabel})`, 
+                          actionText,
+                          direction,
+                          price: l.entry_price 
+                      });
                   } else {
-                      markers.push({ time: l.entry_timestamp, type: 'OPEN', label: `开仓(${dirLabel})`, price: l.entry_price });
+                      const actionText = dirLabel === '多' ? `做多开仓${uBadge}` : `做空开仓${uBadge}`;
+                      markers.push({ 
+                          time: l.entry_timestamp, 
+                          type: 'OPEN', 
+                          label: `开仓(${dirLabel})`, 
+                          actionText,
+                          direction,
+                          price: l.entry_price 
+                      });
                   }
               }
               // 普通平仓 / 对冲清仓
               if (l.exit_timestamp && l.status === 'CLOSED') {
                   if (isClear) {
-                      markers.push({ time: l.exit_timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${dirLabel})`, price: l.exit_price || l.entry_price || 0 });
+                      markers.push({ 
+                          time: l.exit_timestamp, 
+                          type: 'HEDGE_CLEAR', 
+                          label: `防爆对冲清仓(${dirLabel})`, 
+                          actionText: '防爆对冲清仓',
+                          direction,
+                          price: l.exit_price || l.entry_price || 0 
+                      });
                   } else if (l.profit_usdt !== undefined && l.profit_usdt >= 0) {
-                      markers.push({ time: l.exit_timestamp, type: 'PROFIT_CLOSE', label: `盈利平仓(${dirLabel})`, price: l.exit_price || l.entry_price || 0 });
+                      const pnlBadge = l.profit_usdt > 0 ? `（+${l.profit_usdt.toFixed(1)}U）` : '';
+                      markers.push({ 
+                          time: l.exit_timestamp, 
+                          type: 'PROFIT_CLOSE', 
+                          label: `盈利平仓(${dirLabel})`, 
+                          actionText: `盈利平${dirLabel}${pnlBadge}`,
+                          direction,
+                          price: l.exit_price || l.entry_price || 0 
+                      });
                   } else {
-                      markers.push({ time: l.exit_timestamp, type: 'LOSS_CLOSE', label: `止损平仓(${dirLabel})`, price: l.exit_price || l.entry_price || 0 });
+                      const lossVal = l.profit_usdt !== undefined ? Math.abs(l.profit_usdt) : 0;
+                      const pnlBadge = lossVal > 0 ? `（-${lossVal.toFixed(1)}U）` : '';
+                      markers.push({ 
+                          time: l.exit_timestamp, 
+                          type: 'LOSS_CLOSE', 
+                          label: `止损平仓(${dirLabel})`, 
+                          actionText: `止损平${dirLabel}${pnlBadge}`,
+                          direction,
+                          price: l.exit_price || l.entry_price || 0 
+                      });
                   }
               }
           }
-          
-          if (l.signal_details && l.signal_details.timestamp) {
-                markers.push({ time: l.signal_details.timestamp, type: 'SIGNAL', label: '信号' });
-          }
-          
-          l.events?.forEach((e: any) => {
-             const eventText = `${e.action || ''} ${e.reason || ''}`;
-             let eventDir: '多' | '空' = dirLabel;
-             if (/做空|空单|平空|空头|\(空\)|SHORT/i.test(eventText)) {
-                 eventDir = '空';
-             } else if (/做多|多单|平多|多头|\(多\)|LONG/i.test(eventText)) {
-                 eventDir = '多';
-             }
-
-             if (/对冲开|HEDGE_OPEN|对冲开启/i.test(e.action)) {
-                 markers.push({ time: e.timestamp, type: 'HEDGE_OPEN', label: `防爆对冲(${eventDir})`, price: e.price });
-             } else if (/砍仓|减仓/i.test(e.action)) {
-                 markers.push({ time: e.timestamp, type: 'HEDGE_CUT', label: `砍仓(${eventDir})`, price: e.price });
-             } else if (/补仓|补回/i.test(e.action)) {
-                 markers.push({ time: e.timestamp, type: 'HEDGE_REFILL', label: `防爆对冲补仓(${eventDir})`, price: e.price });
-             } else if (/清仓|解套/i.test(e.action)) {
-                 markers.push({ time: e.timestamp, type: 'HEDGE_CLEAR', label: `防爆对冲清仓(${eventDir})`, price: e.price });
-             }
-          });
       });
 
-      // Deduplicate markers by time and label (tolerate +/- 1000ms timestamp variances)
-      const unique = new Map<string, { time: number; type: string; label: string; price?: number }>();
+      // 🔒 严格时空去重：同一时间窗口(±2500ms)内同一方向的同类动作，强制只保留1个主流水记录
+      // 彻底消除由于事件子列表折算造成的幽灵重复项 (如 9U 与 8.7U、0U 并存问题)
+      const uniqueMarkers: ResolvedMarker[] = [];
       markers.forEach(m => {
-          const roundedTimeSec = Math.floor(m.time / 1000);
-          const key = `${roundedTimeSec}-${m.type}-${m.label}`;
-          if (!unique.has(key)) {
-              unique.set(key, m);
+          const existingIdx = uniqueMarkers.findIndex(existing => {
+              const timeDiff = Math.abs(existing.time - m.time);
+              if (timeDiff <= 2500) {
+                  if (existing.direction === m.direction) {
+                      if (existing.actionText.includes('砍仓') && m.actionText.includes('砍仓')) return true;
+                      if (existing.actionText.includes('补仓') && m.actionText.includes('补仓')) return true;
+                      if (existing.actionText.includes('开仓') && m.actionText.includes('开仓')) return true;
+                      if (existing.type === m.type) return true;
+                  }
+              }
+              return false;
+          });
+
+          if (existingIdx === -1) {
+              uniqueMarkers.push(m);
           } else {
-              const existing = unique.get(key)!;
+              const existing = uniqueMarkers[existingIdx];
+              // 优先保留带有准确价格与正金额的权威流水
               if ((!existing.price || existing.price === 0) && m.price && m.price > 0) {
-                  unique.set(key, m);
+                  uniqueMarkers[existingIdx] = m;
+              } else if (existing.actionText.includes('0U') && !m.actionText.includes('0U')) {
+                  uniqueMarkers[existingIdx] = m;
               }
           }
       });
-      return Array.from(unique.values());
+
+      return uniqueMarkers.sort((a, b) => a.time - b.time);
   }, [tradeLogs, symbol, isTradeViewMode]);
   
   const getCandleIdx = (time: number) => {
@@ -2306,7 +2371,11 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
           });
       }
 
-      // Render Trade Markers (无背景、无边框，多标记在下方，空标记在上方，虚线指引端保留1~3cm距离)
+      // 🔒 LOCKED_MODULE: TRADE_MARKERS_RENDER
+      // Render Trade Markers (严格空间几何：箭头距离最高/最低价1.5~2cm，虚线另一端距汉字0.5cm，时序早的靠近K线，每层上下间距0.5cm，右侧附带执行价格)
+      const placedShortMarkers: { x: number; mIdx: number; tier: number }[] = [];
+      const placedLongMarkers: { x: number; mIdx: number; tier: number }[] = [];
+
       tradeMarkers.forEach((m, idx) => {
           let mIdx = getCandleIdx(m.time);
           if (mIdx !== -1 && mIdx >= startIndex && mIdx < startIndex + visibleCount) {
@@ -2327,11 +2396,11 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                   color = '#ef4444'; // red
               } else if (m.type === 'HEDGE_OPEN') {
                   color = '#c084fc'; // purple
-              } else if (m.type === 'HEDGE_CUT') {
+              } else if (m.type === 'HEDGE_CUT' || m.actionText.includes('砍仓')) {
                   color = '#fb923c'; // orange
-              } else if (m.type === 'HEDGE_REFILL') {
+              } else if (m.type === 'HEDGE_REFILL' || m.actionText.includes('补仓')) {
                   color = '#60a5fa'; // blue
-              } else if (m.type === 'HEDGE_CLEAR') {
+              } else if (m.type === 'HEDGE_CLEAR' || m.actionText.includes('清仓')) {
                   color = '#34d399'; // teal
               } else if (m.type === 'HEDGE_CLOSE') {
                   color = '#c084fc'; // purple
@@ -2341,66 +2410,222 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                   color = '#34d399';
               }
 
-              // 判断多空归属：空相关在K线上方，多相关在K线下方
-              const isShort = m.label.includes('空') || (m.type === 'LOSS_CLOSE' && m.label.includes('(空)'));
-              const layout = getMarkerLayout(mIdx, isShort ? 'SHORT' : 'LONG', d);
+              // 判断多空归属：多单在下方，空单在上方
+              const isShort = m.direction === 'SHORT';
+              const yHigh = getY(d.high);
+              const yLow = getY(d.low);
 
-              signalMarkers.push(
-                  <g key={`trade-${m.type}-${m.time}-${idx}`} pointerEvents="none">
-                      {/* 价格锚点 */}
-                      <circle cx={x} cy={yPrice} r={3} fill={color} opacity={0.85} />
-                      {/* 纵向指引虚线 (靠近K线的一端保留1~3cm距离) */}
-                      {layout.hasDashedLine && (
+              // 物理尺寸精准换算 (标准屏幕 96 DPI：1cm ≈ 38px)
+              const arrowGap = 62;   // 1.5 ~ 2 厘米安全距离 (~62px)
+              const gapHalfCm = 19;  // 0.5 厘米净空与分层步进 (~19px)
+
+              if (isShort) {
+                  // 空单标记：置于 K 线最高价及所有 EMA 均线上方
+                  let highestObstacleY = yHigh;
+                  [10, 20, 30, 40, 80].forEach(p => {
+                      const arr = emaData[p];
+                      if (!arr) return;
+                      for (let offset = -2; offset <= 2; offset++) {
+                          const sIdx = mIdx + offset;
+                          const eIdx = sIdx - (p - 1);
+                          if (eIdx >= 0 && eIdx < arr.length) {
+                              const val = arr[eIdx];
+                              if (val !== undefined && !isNaN(val)) {
+                                  const yE = getY(val);
+                                  if (!isNaN(yE) && yE < highestObstacleY) {
+                                      highestObstacleY = yE;
+                                  }
+                              }
+                          }
+                      }
+                  });
+
+                  // 时序阶梯判定：由于 tradeMarkers 按时间升序排序，时间越早的先处理
+                  // 同一根 K 线或相邻横向重叠区 (<70px) 内，较晚的动作 tier 逐级递增（离 K 线越远）
+                  const colliding = placedShortMarkers.filter(p => p.mIdx === mIdx || Math.abs(x - p.x) < 70);
+                  const tier = colliding.length > 0 ? Math.max(...colliding.map(p => p.tier)) + 1 : 0;
+                  placedShortMarkers.push({ x, mIdx, tier });
+
+                  // 1. 箭头尖端位置距离最高点严格保持 1.5~2 厘米 (~62px)
+                  const arrowTipY = highestObstacleY - arrowGap;
+                  const arrowBaseY = arrowTipY - 7;
+
+                  // 2. 标记汉字位置：最早的 (tier 0) 紧贴虚线端头留白 0.5 厘米；越迟的动作向上每层再保留 0.5 厘米
+                  const labelY = Math.max(padding.top + 14, arrowBaseY - gapHalfCm - (tier * gapHalfCm));
+                  
+                  // 3. 虚线另一端和标记汉字保留 0.5 厘米距离 (虚线端点位于 labelY + gapHalfCm)
+                  const dashTopY = labelY + gapHalfCm;
+
+                  signalMarkers.push(
+                      <g key={`trade-${m.type}-${m.time}-${idx}`} pointerEvents="none">
+                          {/* 执行价格锚点 (实盘点位) */}
+                          <circle cx={x} cy={yPrice} r={3} fill={color} opacity={0.85} />
+                          {/* 价格锚点到最高障碍物的纵向微辅助虚线 */}
                           <line 
                               x1={x} 
-                              y1={layout.dashStartY} 
+                              y1={yPrice} 
                               x2={x} 
-                              y2={layout.dashEndY} 
+                              y2={highestObstacleY} 
                               stroke={color} 
-                              strokeWidth={1.2} 
-                              strokeDasharray="3 2" 
-                              opacity={0.75} 
+                              strokeWidth={1} 
+                              strokeDasharray="2 2" 
+                              opacity={0.35} 
                           />
-                      )}
-                      {/* 指引小箭头 */}
-                      {isShort ? (
+                          {/* 虚线指引：从箭尾延伸至文字下方，虚线端头距文字保持 0.5 厘米 (19px) */}
+                          {dashTopY < arrowBaseY && (
+                              <line 
+                                  x1={x} 
+                                  y1={dashTopY} 
+                                  x2={x} 
+                                  y2={arrowBaseY} 
+                                  stroke={color} 
+                                  strokeWidth={1.2} 
+                                  strokeDasharray="3 2" 
+                                  opacity={0.75} 
+                              />
+                          )}
+                          {/* 指引箭头：尖端距离最高价保持 1.5~2 厘米，向下精准指向 K 线最高价 */}
                           <polygon 
-                              points={`${x},${layout.dashStartY + 3} ${x - 3},${layout.dashStartY - 2} ${x + 3},${layout.dashStartY - 2}`} 
+                              points={`${x},${arrowTipY} ${x - 3.5},${arrowBaseY} ${x + 3.5},${arrowBaseY}`} 
                               fill={color} 
                           />
-                      ) : (
-                          <polygon 
-                              points={`${x},${layout.dashStartY - 3} ${x - 3},${layout.dashStartY + 2} ${x + 3},${layout.dashStartY + 2}`} 
-                              fill={color} 
-                          />
-                      )}
-                      {/* 纯文字标记 (无背景、无边框) */}
-                      <text 
-                          x={x} 
-                          y={isShort ? layout.labelY - (m.price ? 5 : 0) : layout.labelY + (m.price ? 0 : 2)} 
-                          fill={color} 
-                          fontSize="9.5" 
-                          fontWeight="bold" 
-                          textAnchor="middle" 
-                          fontFamily="monospace"
-                      >
-                          {m.label}
-                      </text>
-                      {m.price !== undefined && m.price > 0 && (
+                          {/* 动作文字及右侧执行价格 */}
                           <text 
                               x={x} 
-                              y={isShort ? layout.labelY + 7 : layout.labelY + 12} 
-                              fill={color} 
-                              fontSize="8.5" 
-                              opacity={0.9} 
+                              y={labelY} 
                               textAnchor="middle" 
                               fontFamily="monospace"
                           >
-                              {formatPrice(m.price)}
+                              <tspan 
+                                  fill={color} 
+                                  fontSize="10" 
+                                  fontWeight="bold"
+                                  stroke="#0b0e14"
+                                  strokeWidth="2.5"
+                                  paintOrder="stroke fill"
+                              >
+                                  {m.actionText}
+                              </tspan>
+                              {m.price !== undefined && m.price > 0 && (
+                                  <tspan 
+                                      dx="6" 
+                                      fill="#facc15" 
+                                      fontSize="9.5" 
+                                      fontWeight="bold"
+                                      stroke="#0b0e14"
+                                      strokeWidth="2.5"
+                                      paintOrder="stroke fill"
+                                  >
+                                      {formatPrice(m.price)}
+                                  </tspan>
+                              )}
                           </text>
-                      )}
-                  </g>
-              );
+                      </g>
+                  );
+              } else {
+                  // 多单标记：置于 K 线最低价及所有 EMA 均线下方
+                  let lowestObstacleY = yLow;
+                  [10, 20, 30, 40, 80].forEach(p => {
+                      const arr = emaData[p];
+                      if (!arr) return;
+                      for (let offset = -2; offset <= 2; offset++) {
+                          const sIdx = mIdx + offset;
+                          const eIdx = sIdx - (p - 1);
+                          if (eIdx >= 0 && eIdx < arr.length) {
+                              const val = arr[eIdx];
+                              if (val !== undefined && !isNaN(val)) {
+                                  const yE = getY(val);
+                                  if (!isNaN(yE) && yE > lowestObstacleY) {
+                                      lowestObstacleY = yE;
+                                  }
+                              }
+                          }
+                      }
+                  });
+
+                  // 时序阶梯判定：由于 tradeMarkers 按时间升序排序，时间越早的先处理
+                  // 同一根 K 线或相邻横向重叠区 (<70px) 内，较晚的动作 tier 逐级递增（向下离 K 线越远）
+                  const colliding = placedLongMarkers.filter(p => p.mIdx === mIdx || Math.abs(x - p.x) < 70);
+                  const tier = colliding.length > 0 ? Math.max(...colliding.map(p => p.tier)) + 1 : 0;
+                  placedLongMarkers.push({ x, mIdx, tier });
+
+                  // 1. 箭头尖端位置距离最低点严格保持 1.5~2 厘米 (~62px)
+                  const arrowTipY = lowestObstacleY + arrowGap;
+                  const arrowBaseY = arrowTipY + 7;
+
+                  // 2. 标记汉字位置：最早的 (tier 0) 紧贴虚线端头留白 0.5 厘米；越迟的动作向下每层再保留 0.5 厘米
+                  const labelY = Math.min(chartHeight - 12, arrowBaseY + gapHalfCm + (tier * gapHalfCm));
+                  
+                  // 3. 虚线另一端和标记汉字保留 0.5 厘米距离 (虚线端点位于 labelY - gapHalfCm)
+                  const dashBottomY = labelY - gapHalfCm;
+
+                  signalMarkers.push(
+                      <g key={`trade-${m.type}-${m.time}-${idx}`} pointerEvents="none">
+                          {/* 执行价格锚点 (实盘点位) */}
+                          <circle cx={x} cy={yPrice} r={3} fill={color} opacity={0.85} />
+                          {/* 价格锚点到最低障碍物的纵向微辅助虚线 */}
+                          <line 
+                              x1={x} 
+                              y1={yPrice} 
+                              x2={x} 
+                              y2={lowestObstacleY} 
+                              stroke={color} 
+                              strokeWidth={1} 
+                              strokeDasharray="2 2" 
+                              opacity={0.35} 
+                          />
+                          {/* 虚线指引：从箭尾向下延伸至文字上方，虚线端头距文字保持 0.5 厘米 (19px) */}
+                          {dashBottomY > arrowBaseY && (
+                              <line 
+                                  x1={x} 
+                                  y1={arrowBaseY} 
+                                  x2={x} 
+                                  y2={dashBottomY} 
+                                  stroke={color} 
+                                  strokeWidth={1.2} 
+                                  strokeDasharray="3 2" 
+                                  opacity={0.75} 
+                              />
+                          )}
+                          {/* 指引箭头：尖端距离最低价保持 1.5~2 厘米，向上精准指向 K 线最低价 */}
+                          <polygon 
+                              points={`${x},${arrowTipY} ${x - 3.5},${arrowBaseY} ${x + 3.5},${arrowBaseY}`} 
+                              fill={color} 
+                          />
+                          {/* 动作文字及右侧执行价格 */}
+                          <text 
+                              x={x} 
+                              y={labelY} 
+                              textAnchor="middle" 
+                              fontFamily="monospace"
+                          >
+                              <tspan 
+                                  fill={color} 
+                                  fontSize="10" 
+                                  fontWeight="bold"
+                                  stroke="#0b0e14"
+                                  strokeWidth="2.5"
+                                  paintOrder="stroke fill"
+                              >
+                                  {m.actionText}
+                              </tspan>
+                              {m.price !== undefined && m.price > 0 && (
+                                  <tspan 
+                                      dx="6" 
+                                      fill="#facc15" 
+                                      fontSize="9.5" 
+                                      fontWeight="bold"
+                                      stroke="#0b0e14"
+                                      strokeWidth="2.5"
+                                      paintOrder="stroke fill"
+                                  >
+                                      {formatPrice(m.price)}
+                                  </tspan>
+                              )}
+                          </text>
+                      </g>
+                  );
+              }
           }
       });
 

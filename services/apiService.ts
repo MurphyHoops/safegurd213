@@ -93,7 +93,7 @@ const normalizeUrlForCache = (urlStr: string): string => {
 
 const getCacheTTL = (url: string): number => {
     if (url.includes('interval=1d') || url.includes('interval=1w') || url.includes('interval=1M')) {
-        return 60000; // 60 seconds for daily/weekly/monthly klines
+        return 300000; // 5 minutes for daily/weekly/monthly klines
     }
     if (url.includes('/klines')) {
         return 15000; // 15 seconds for shorter klines (1m, 15m, etc.)

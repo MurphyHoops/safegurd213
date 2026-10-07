@@ -8,6 +8,8 @@
  * 4. 针对上市不足 300 天的次新币记录最大上市日线根数，杜绝反复穿透网络。
  */
 
+import { klineMultiTfStore } from './klineMultiTfStore';
+
 export interface CachedKlineEntry {
     symbol: string;
     timestamp: number;
@@ -196,6 +198,7 @@ class KlineDailyStore {
         this.memoryMap.set(norm, entry);
         this.memoryMap.set(symbol, entry);
         this.syncToWindowCache(symbol, klines, timestamp);
+        klineMultiTfStore.saveKlines(symbol, '1d', klines);
 
         // 只有达到30根及以上完整K线才持久化存储到IndexedDB，杜绝10根片段污染数据库
         if (this.db && klines.length >= 30) {

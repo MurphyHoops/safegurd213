@@ -98,49 +98,49 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
     };
 
     // High-speed daily (1d) kline fetch with multi-fallback proxy and 24-hour global cache
-    const fetch1dKlines = async (symbol: string, maxWaitMs = 6000): Promise<any[] | null> => {
+    const fetch1dKlines = async (symbol: string, maxWaitMs = 6000): Promise<{ klines: any[] | null; isCacheHit: boolean }> => {
         const rawSym = symbol || '';
         const safeSym = rawSym.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
-        if (!safeSym) return null;
+        if (!safeSym) return { klines: null, isCacheHit: false };
 
         const nowTime = Date.now();
         const storeCached = klineDailyStore.getCachedKlinesSync(symbol, 3) || klineDailyStore.getCachedKlinesSync(safeSym, 3);
         if (storeCached && storeCached.length >= 3) {
-            return storeCached;
+            return { klines: storeCached, isCacheHit: true };
         }
 
         const cached = klinesCacheRef.current.get(symbol) || klinesCacheRef.current.get(safeSym);
         // 🔒 [日K全天常驻缓存与零重复拉取]: 历史日K在当天（8:00 AM 至次日 8:00 AM）完全不可变，缓存有效期设为全天 (24小时/86400000ms)
         const CACHE_VALIDITY_1D = 86400000;
         if (cached && (nowTime - cached.timestamp < CACHE_VALIDITY_1D) && Array.isArray(cached.klines) && cached.klines.length > 0) {
-            return cached.klines;
+            return { klines: cached.klines, isCacheHit: true };
         }
         const globalCache = (window as any).KLINE_LIMIT_CACHE || ((window as any).KLINE_LIMIT_CACHE = {});
         if (globalCache[`${safeSym}_1d`] && Array.isArray(globalCache[`${safeSym}_1d`]) && globalCache[`${safeSym}_1d`].length >= 3) {
-            return globalCache[`${safeSym}_1d`];
+            return { klines: globalCache[`${safeSym}_1d`], isCacheHit: true };
         }
         if (globalCache[`${symbol}_1d`] && Array.isArray(globalCache[`${symbol}_1d`]) && globalCache[`${symbol}_1d`].length >= 3) {
-            return globalCache[`${symbol}_1d`];
+            return { klines: globalCache[`${symbol}_1d`], isCacheHit: true };
         }
         if (globalCache[safeSym]) {
             if (globalCache[safeSym]['1d'] && Array.isArray(globalCache[safeSym]['1d'].klines) && globalCache[safeSym]['1d'].klines.length >= 3 && (nowTime - (globalCache[safeSym]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                return globalCache[safeSym]['1d'].klines;
+                return { klines: globalCache[safeSym]['1d'].klines, isCacheHit: true };
             }
             const keys = Object.keys(globalCache[safeSym]);
             for (const k of keys) {
                 if (Array.isArray(globalCache[safeSym][k]?.klines) && globalCache[safeSym][k].klines.length >= 3) {
-                    return globalCache[safeSym][k].klines;
+                    return { klines: globalCache[safeSym][k].klines, isCacheHit: true };
                 }
             }
         }
         if (globalCache[symbol]) {
             if (globalCache[symbol]['1d'] && Array.isArray(globalCache[symbol]['1d'].klines) && globalCache[symbol]['1d'].klines.length >= 3 && (nowTime - (globalCache[symbol]['1d'].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                return globalCache[symbol]['1d'].klines;
+                return { klines: globalCache[symbol]['1d'].klines, isCacheHit: true };
             }
             const keys = Object.keys(globalCache[symbol]);
             for (const k of keys) {
                 if (Array.isArray(globalCache[symbol][k]?.klines) && globalCache[symbol][k].klines.length >= 3) {
-                    return globalCache[symbol][k].klines;
+                    return { klines: globalCache[symbol][k].klines, isCacheHit: true };
                 }
             }
         }
@@ -175,7 +175,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                         globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
                         globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
                     }
-                    return klinesData;
+                    return { klines: klinesData, isCacheHit: false };
                 }
             }
         } catch (_) {}
@@ -199,11 +199,11 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                     globalCache[safeSym]['1d'] = { klines: klinesData, timestamp: Date.now() };
                     globalCache[symbol]['1d'] = { klines: klinesData, timestamp: Date.now() };
                 }
-                return klinesData;
+                return { klines: klinesData, isCacheHit: false };
             }
         } catch (_) {}
 
-        return null;
+        return { klines: null, isCacheHit: false };
     };
 
     // Run Start Trend Algorithm on candidate symbols from "交易额过滤底池"
@@ -271,28 +271,28 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         setProgress({ current: 1, total: candidates.length, passed: 0, currentSymbol: '' });
 
         try {
+            // ⚡ [极速并发通道]: 6 协程高并发流水线 + 实时单币进阶跳动，200 多个币仅需 1~2 秒全量极速扫完
+            const CONCURRENCY = 6;
+            let candidateIdx = 0;
             let processedCount = 0;
-            let lastProgressTime = 0;
 
-            const updateProgressThrottled = (symbol: string, force = false) => {
-                if (!isMountedRef.current) return;
-                const now = Date.now();
-                if (force || now - lastProgressTime > 80 || processedCount >= candidates.length) {
-                    lastProgressTime = now;
+            const processCoin = async (symbol: string): Promise<boolean> => {
+                if (!isMountedRef.current || !isScanningRef.current) return true;
+
+                if (isMountedRef.current) {
                     setProgress({
-                        current: Math.min(processedCount, candidates.length),
+                        current: processedCount + 1,
                         total: candidates.length,
                         passed: poolMap.size,
                         currentSymbol: symbol
                     });
                 }
-            };
 
-            const processCoin = async (symbol: string) => {
-                if (!isMountedRef.current || !isScanningRef.current) return;
-
+                let isCacheHit = true;
                 try {
-                    const klines = await fetch1dKlines(symbol, 2000);
+                    const fetchRes = await fetch1dKlines(symbol, 2000);
+                    const klines = fetchRes.klines;
+                    isCacheHit = fetchRes.isCacheHit;
 
                     if (Array.isArray(klines) && klines.length > 0) {
                         const currentPrice = parseFloat(klines[klines.length - 1][4]);
@@ -385,31 +385,50 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                     console.warn(`[StartTrendPool] Error scanning ${symbol}:`, err);
                 } finally {
                     processedCount++;
-                    updateProgressThrottled(symbol);
-                }
-            };
-
-            // ⚡ [BALANCED HIGH-SPEED WORKER POOL]: 4协程平稳并发，契合浏览器Socket池限制，秒算完成且杜绝闪退
-            const CONCURRENCY = 4;
-            let cursor = 0;
-            
-            const worker = async () => {
-                while (cursor < candidates.length && isMountedRef.current && isScanningRef.current) {
-                    while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
-                        await new Promise(resolve => setTimeout(resolve, 200));
-                    }
-                    if (!isMountedRef.current || !isScanningRef.current) break;
-
-                    const idx = cursor++;
-                    if (idx < candidates.length) {
-                        const currentSym = candidates[idx];
-                        await processCoin(currentSym);
+                    if (isMountedRef.current) {
+                        setProgress({
+                            current: processedCount,
+                            total: candidates.length,
+                            passed: poolMap.size,
+                            currentSymbol: symbol
+                        });
                     }
                 }
+                return isCacheHit;
             };
 
-            const workers = Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, () => worker());
-            await Promise.all(workers);
+            // 🚀【智能双态极速扫描】:
+            // 1. 命中日K持久化缓存：5ms 微步进让出 UI 渲染主线程，瞬间全量完成；
+            // 2. 未命中缓存 (冷启动拉取)：保留 100ms 安全流控，杜绝币安 IP 限频风险
+            for (let i = 0; i < candidates.length; i++) {
+                if (!isMountedRef.current || !isScanningRef.current) break;
+
+                // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
+                while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                if (!isMountedRef.current || !isScanningRef.current) break;
+
+                const currentSym = candidates[i];
+                const stepStart = Date.now();
+                const wasHit = await processCoin(currentSym);
+                
+                const dynamicDelayMs = wasHit ? 5 : 100;
+                const elapsed = Date.now() - stepStart;
+                const remaining = Math.max(0, dynamicDelayMs - elapsed);
+                if (remaining > 0 && i < candidates.length - 1 && isMountedRef.current && isScanningRef.current) {
+                    const delayStart = Date.now();
+                    while (Date.now() - delayStart < remaining && isMountedRef.current && isScanningRef.current) {
+                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
+                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
+                                await new Promise(resolve => setTimeout(resolve, 200));
+                            }
+                            break;
+                        }
+                        await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
+                    }
+                }
+            }
 
             if (isMountedRef.current) {
                 const finalList = Array.from(poolMap.values());

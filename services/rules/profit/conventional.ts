@@ -1,4 +1,4 @@
-// 🔒 LOCKED_MODULE: 模块 1 [常规止盈 / 多组阶梯式托底平仓规则]
+// 🔒 LOCKED_MODULE: 模块 1 [多级阶梯式变量保底平仓 & 常规止盈规则]
 // @LOCKED: 严格原子化锁定。未经用户明确下达的专属指令，严禁擅自触碰、修改、重构或变动任何算法与流转逻辑。
 
 import { Position, ConventionalSettings, PositionSide } from '../../../types';
@@ -27,63 +27,65 @@ export function checkConventionalProfit(
     // 1. 托底平仓检查 (Trailing floor profit protection - 最高优先级)
     const isTrailingActive = settings.trailingEnabled === true || String(settings.trailingEnabled) === 'true';
     if (isTrailingActive) {
-        // Build active tiers to evaluate
-        const activeTiers: { threshold: number; floor: number }[] = [];
-        
-        // 1.1 多组阶梯式托底 (优先使用多组阶梯配置)
-        const customTiers = Array.isArray(settings.trailingTiers) ? settings.trailingTiers : [];
-        const validCustomTiers = customTiers.filter(
-            t => t && !isNaN(Number(t.threshold)) && !isNaN(Number(t.floor)) && Number(t.threshold) > 0
-        );
+        // 1.1 变量托底激活起征点检查
+        const triggerThreshold = !isNaN(Number(settings.trailingTriggerProfit))
+            ? Number(settings.trailingTriggerProfit)
+            : 1;
 
-        if (validCustomTiers.length > 0) {
-            for (const t of validCustomTiers) {
-                activeTiers.push({ 
-                    threshold: Number(t.threshold), 
-                    floor: Number(t.floor) 
-                });
-            }
-        } else {
-            // 1.2 单组默认托底 (备用：仅在未配置多组阶梯时生效)
-            const defaultTrigger = !isNaN(Number(settings.trailingTriggerProfit))
-                ? Number(settings.trailingTriggerProfit) 
-                : 5;
-            const defaultFloor = !isNaN(Number(settings.trailingRemainingProfit))
-                ? Number(settings.trailingRemainingProfit) 
-                : 2;
-            
-            if (defaultTrigger > 0) {
-                activeTiers.push({
-                    threshold: defaultTrigger,
-                    floor: defaultFloor
-                });
-            }
-        }
+        if (maxPnl >= triggerThreshold) {
+            const DEFAULT_VARIABLE_TIERS = [
+                { minProfit: triggerThreshold, maxProfit: 10, retentionPercent: 30 },
+                { minProfit: 10, maxProfit: 30, retentionPercent: 33 },
+                { minProfit: 30, maxProfit: 50, retentionPercent: 35 },
+                { minProfit: 50, maxProfit: 70, retentionPercent: 40 },
+                { minProfit: 70, maxProfit: 100, retentionPercent: 45 },
+                { minProfit: 100, maxProfit: 150, retentionPercent: 50 },
+                { minProfit: 150, maxProfit: 250, retentionPercent: 55 },
+                { minProfit: 250, maxProfit: 400, retentionPercent: 60 },
+                { minProfit: 400, maxProfit: 600, retentionPercent: 65 },
+                { minProfit: 600, maxProfit: 900, retentionPercent: 70 },
+                { minProfit: 900, maxProfit: 3000, retentionPercent: 75 }
+            ];
 
-        // 寻找历史最高盈利所达到的最高阶梯 (maxPnl >= tier.threshold)
-        let activeTier: { threshold: number; floor: number } | null = null;
-        for (const tier of activeTiers) {
-            if (maxPnl >= tier.threshold) {
-                if (!activeTier || tier.threshold > activeTier.threshold) {
-                    activeTier = tier;
+            const rawTiers = Array.isArray(settings.variableTrailingTiers) && settings.variableTrailingTiers.length > 0
+                ? settings.variableTrailingTiers
+                : DEFAULT_VARIABLE_TIERS;
+
+            const validTiers = rawTiers
+                .filter(t => t && !isNaN(Number(t.minProfit)) && !isNaN(Number(t.retentionPercent)))
+                .map(t => ({
+                    minProfit: Number(t.minProfit),
+                    maxProfit: !isNaN(Number(t.maxProfit)) && Number(t.maxProfit) > 0 ? Number(t.maxProfit) : Infinity,
+                    retentionPercent: Number(t.retentionPercent)
+                }))
+                .sort((a, b) => a.minProfit - b.minProfit);
+
+            // 匹配最高盈利所落入的阶梯区间
+            let matchedTier = validTiers.find(t => maxPnl >= t.minProfit && maxPnl < t.maxProfit);
+            if (!matchedTier && validTiers.length > 0) {
+                const highestTier = validTiers[validTiers.length - 1];
+                if (maxPnl >= highestTier.minProfit) {
+                    matchedTier = highestTier;
                 }
             }
-        }
 
-        if (activeTier) {
-            // 当前盈利回撤跌破该阶梯的托底底线 (currentPnl <= activeTier.floor)
-            if (currentPnl <= activeTier.floor) {
-                close(
-                    position.symbol, 
-                    position.side, 
-                    `常规托底平仓触发: 最高盈利曾达 ${maxPnl.toFixed(2)}% >= 阶梯阈值 ${activeTier.threshold.toFixed(2)}%，回撤后当前剩余盈利 ${currentPnl.toFixed(2)}% <= 托底底线 ${activeTier.floor.toFixed(2)}%`,
-                    settings.closePercent || 100
-                );
-                return true;
+            if (matchedTier) {
+                // 动态托底线 = 最高盈利 * 保底留存百分比
+                const dynamicFloor = (maxPnl * matchedTier.retentionPercent) / 100;
+
+                if (currentPnl <= dynamicFloor) {
+                    close(
+                        position.symbol, 
+                        position.side, 
+                        `变量阶梯托底平仓触发: 最高盈利曾达 ${maxPnl.toFixed(2)}% (匹配区间 [${matchedTier.minProfit}%~${matchedTier.maxProfit === Infinity ? '∞' : matchedTier.maxProfit}%] 留存 ${matchedTier.retentionPercent}%)，回撤后当前剩余盈利 ${currentPnl.toFixed(2)}% <= 变量托底线 ${dynamicFloor.toFixed(2)}%`,
+                        settings.closePercent || 100
+                    );
+                    return true;
+                }
+
+                // 变量托底已激活接管，防止普通回撤规则提前抢平
+                return false;
             }
-            
-            // 一旦已进入托底阶梯保护范围，托底规则接管，防止普通回撤提前抢平
-            return false;
         }
     }
 

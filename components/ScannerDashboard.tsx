@@ -53,7 +53,11 @@ const MemoizedMarketScannerModule = React.memo(MarketScannerModule, (prev, next)
          prev.rotationIntervalMinutes === next.rotationIntervalMinutes &&
          prev.rotationTimeLeft === next.rotationTimeLeft &&
          prev.activeStrategyId === next.activeStrategyId &&
-         prev.isSyncing === next.isSyncing;
+         prev.isSyncing === next.isSyncing &&
+         prev.list2Results === next.list2Results &&
+         prev.list3Results === next.list3Results &&
+         prev.list3Config === next.list3Config &&
+         prev.currentPrices === next.currentPrices;
 });
 
 const MemoizedGrandCrossingModule = React.memo(GrandCrossingModule, (prev, next) => {
@@ -96,6 +100,7 @@ import {
   List3Config,
   ScanConfig,
 } from "./Scanner/scannerTypes";
+import { SymbolFilterDiagnosticBar } from "./SymbolFilterDiagnosticBar";
 import { backtestDownloader } from "../services/backtest/downloader";
 import { backtestDb } from "../services/backtest/db";
 import {
@@ -556,16 +561,27 @@ const ScannerDashboardInner: React.FC<
         const now = Date.now();
         const currentPrices = livePricesRef.current;
         
-        // Track price history
+        // Track price history with zero-allocation ring buffer
         if (!priceHistoryRef.current) priceHistoryRef.current = {};
         
-        Object.entries(currentPrices).forEach(([symbol, price]) => {
-          if (!priceHistoryRef.current[symbol]) priceHistoryRef.current[symbol] = [];
-          priceHistoryRef.current[symbol].push({ price, time: now });
+        const limit = now - (config.triggerMinutes || 15) * 60 * 1000;
+        for (const symbol in currentPrices) {
+          const price = currentPrices[symbol];
+          if (!price || isNaN(price)) continue;
           
-          const limit = now - config.triggerMinutes * 60 * 1000;
-          priceHistoryRef.current[symbol] = priceHistoryRef.current[symbol].filter(h => h.time > limit);
-        });
+          if (!priceHistoryRef.current[symbol]) priceHistoryRef.current[symbol] = [];
+          const hist = priceHistoryRef.current[symbol];
+          hist.push({ price, time: now });
+          
+          // Hard ring-buffer cap (max 40 ticks)
+          if (hist.length > 40) {
+            hist.shift();
+          }
+          // In-place window pruning
+          while (hist.length > 0 && hist[0].time <= limit) {
+            hist.shift();
+          }
+        }
 
         // Status Check
         let shouldBeActive = isBreakerActiveRef.current;
@@ -2020,6 +2036,10 @@ const ScannerDashboardInner: React.FC<
                 rotationTimeLeft={rotationTimeLeft}
                 onToggleRotation={setIsRotationEnabled}
                 onChangeRotationInterval={setRotationIntervalMinutes}
+                list2Results={list2Results}
+                list3Results={list3Results}
+                list3Config={list3Config}
+                currentPrices={currentPrices}
               />
             </ErrorBoundary>
 

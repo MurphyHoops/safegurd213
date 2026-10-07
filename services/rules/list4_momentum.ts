@@ -139,18 +139,26 @@ export function analyzeList4Momentum(
 
         const formatN = (val?: number) => typeof val === 'number' && isFinite(val) ? val.toFixed(4) : '';
 
+        const maxDevPct = (config && typeof config.maxBreakoutDeviation === 'number' && !isNaN(config.maxBreakoutDeviation))
+            ? config.maxBreakoutDeviation
+            : 0.5;
+
         if (config.enableThresholds === true) {
             if (item.direction === 'LONG') {
                 const isDefenseBroken = currentPrice < midPoint || extreme < midPoint;
                 const isEmaTrendDead = hasEmas && ema10 < ema30;
+                const maxAllowedLongPrice = entryTrigger * (1 + maxDevPct / 100);
+                const isLongOverDeviated = currentPrice > maxAllowedLongPrice;
 
                 if (isDefenseBroken) {
                     if (isEmaTrendDead) {
                         momentumStatus = 'INVALID';
                         invalidReason = `【规则 1 - 中轴防守瓦解】均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 下穿 EMA30(${ema30?.toFixed(4)})]`;
                     } else if (currentPrice >= (entryTrigger - triggerEpsilon)) {
-                        // 破中轴但均线未死，且当前实时价格再次强力打穿原始突破线 -> 满血复活！
-                        if (!is3KPassed) {
+                        if (isLongOverDeviated) {
+                            momentumStatus = 'INVALID';
+                            invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，禁止追高买入`;
+                        } else if (!is3KPassed) {
                             if (isLongEmaDead && lag > list2Retention) {
                                 momentumStatus = 'INVALID';
                                 invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
@@ -170,7 +178,10 @@ export function analyzeList4Momentum(
                         invalidReason = `【规则 2 - 破中轴休眠蓄势中】[${curStr} < ${midStr}]，均线多头保持完好 (EMA10 > EMA30)，等待突破前高复活`;
                     }
                 } else if (currentPrice >= (entryTrigger - triggerEpsilon)) {
-                    if (!is3KPassed) {
+                    if (isLongOverDeviated) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，禁止追高买入`;
+                    } else if (!is3KPassed) {
                         if (isLongEmaDead && lag > list2Retention) {
                             momentumStatus = 'INVALID';
                             invalidReason = `【规则 1 - 中轴防守瓦解】等待前${kCount}K突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
@@ -192,14 +203,18 @@ export function analyzeList4Momentum(
             } else {
                 const isDefenseBroken = currentPrice > midPoint || extreme > midPoint;
                 const isEmaTrendDead = hasEmas && ema10 > ema30;
+                const minAllowedShortPrice = entryTrigger * (1 - maxDevPct / 100);
+                const isShortOverDeviated = currentPrice < minAllowedShortPrice;
 
                 if (isDefenseBroken) {
                     if (isEmaTrendDead) {
                         momentumStatus = 'INVALID';
                         invalidReason = `【规则 1 - 中轴防守瓦解】均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 上穿 EMA30(${ema30?.toFixed(4)})]`;
                     } else if (currentPrice <= (entryTrigger + triggerEpsilon)) {
-                        // 破中轴但均线未死，且当前实时价格再次打穿原始突破线 -> 满血复活！
-                        if (!is3KPassed) {
+                        if (isShortOverDeviated) {
+                            momentumStatus = 'INVALID';
+                            invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，禁止追低卖出`;
+                        } else if (!is3KPassed) {
                             if (isShortEmaDead && lag > list2Retention) {
                                 momentumStatus = 'INVALID';
                                 invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
@@ -219,7 +234,10 @@ export function analyzeList4Momentum(
                         invalidReason = `【规则 2 - 破中轴休眠蓄势中】[${curStr} > ${midStr}]，均线空头保持完好 (EMA10 < EMA30)，等待跌破前低复活`;
                     }
                 } else if (currentPrice <= (entryTrigger + triggerEpsilon)) {
-                    if (!is3KPassed) {
+                    if (isShortOverDeviated) {
+                        momentumStatus = 'INVALID';
+                        invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，禁止追低卖出`;
+                    } else if (!is3KPassed) {
                         if (isShortEmaDead && lag > list2Retention) {
                             momentumStatus = 'INVALID';
                             invalidReason = `【规则 1 - 中轴防守瓦解】等待前${kCount}K突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
@@ -232,6 +250,7 @@ export function analyzeList4Momentum(
                     }
                 } else {
                     if (isShortEmaDead && lag > list2Retention) {
+                        momentumStatus = 'INVALID';
                         momentumStatus = 'INVALID';
                         invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
                     } else {
@@ -246,7 +265,18 @@ export function analyzeList4Momentum(
                 : (currentPrice <= (entryTrigger + triggerEpsilon));
 
             if (isBreakout) {
-                if (!is3KPassed) {
+                const maxAllowedLongPrice = entryTrigger * (1 + maxDevPct / 100);
+                const minAllowedShortPrice = entryTrigger * (1 - maxDevPct / 100);
+                const isOverDeviated = item.direction === 'LONG'
+                    ? currentPrice > maxAllowedLongPrice
+                    : currentPrice < minAllowedShortPrice;
+
+                if (isOverDeviated) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = item.direction === 'LONG'
+                        ? `【突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，禁止追高买入`
+                        : `【突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，禁止追低卖出`;
+                } else if (!is3KPassed) {
                     if (item.direction === 'LONG' && isLongEmaDead && lag > list2Retention) {
                         momentumStatus = 'INVALID';
                         invalidReason = `等待前${kCount}K突破期间均线形态瓦解且超列表2寿命根数(${lag}>${list2Retention}) [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;

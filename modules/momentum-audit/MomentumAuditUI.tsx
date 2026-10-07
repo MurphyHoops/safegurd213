@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 4 [动能趋势审计 UI 模块]
+// @LOCKED: 严格原子化单独锁定。未经用户明确下达的专属指令，严禁擅自修改、增加、删减或变动任何功能与代码。
+
 import React, { useEffect, useRef } from 'react';
 import { useMomentumAudit } from './useMomentumAudit';
 import { ScannerItem, List4Config, List3Config, ActionConfig } from '../../components/Scanner/scannerTypes';
@@ -25,6 +28,7 @@ const DEFAULT_CONFIG: List4Config = {
     autoExecute: true, 
     midlineThreshold: 80, 
     breakoutThreshold: 10, // 进攻突破线默认10%
+    maxBreakoutDeviation: 0.5, // 突破偏离上限默认 0.5%
     directionFilter: 'BOTH', 
     enableThresholds: true, 
     enableAntiChase: false, 
@@ -105,17 +109,33 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                 const rawLive = priceRegistry.getPrice(cleanSym) || realPrices[cleanSym] || item.price;
                 const livePrice = (typeof rawLive === 'number' && rawLive > 0) ? rawLive : item.price;
 
-                // 🔒 【双重核心锁 1：进攻突破线必须由当前实时价格达成】
+                // 🔒 【双重核心锁 1：进攻突破线必须由当前实时价格达成，且在 0.5% 偏离缓冲区内】
                 const entryTrigger = item.momentum?.entryTrigger || 0;
                 const triggerEpsilon = (livePrice || 1) * 0.00001;
-                const isBreakoutReached = entryTrigger > 0 ? (
-                    item.direction === 'LONG'
-                        ? (livePrice >= (entryTrigger - triggerEpsilon))
-                        : (livePrice <= (entryTrigger + triggerEpsilon))
-                ) : true;
+                const maxDevPct = (typeof config.maxBreakoutDeviation === 'number' && !isNaN(config.maxBreakoutDeviation))
+                    ? config.maxBreakoutDeviation
+                    : 0.5;
 
-                if (!isBreakoutReached) {
-                    return; // 实时价格未达到进攻突破线，绝对禁止开仓
+                if (entryTrigger > 0) {
+                    if (item.direction === 'LONG') {
+                        const isBreakoutReached = livePrice >= (entryTrigger - triggerEpsilon);
+                        const maxAllowedPrice = entryTrigger * (1 + maxDevPct / 100);
+                        if (!isBreakoutReached || livePrice > maxAllowedPrice) {
+                            if (livePrice > maxAllowedPrice) {
+                                console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 超出上限 ${maxAllowedPrice.toFixed(6)} (+${maxDevPct}%)`);
+                            }
+                            return;
+                        }
+                    } else {
+                        const isBreakoutReached = livePrice <= (entryTrigger + triggerEpsilon);
+                        const minAllowedPrice = entryTrigger * (1 - maxDevPct / 100);
+                        if (!isBreakoutReached || livePrice < minAllowedPrice) {
+                            if (livePrice < minAllowedPrice) {
+                                console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 低于下限 ${minAllowedPrice.toFixed(6)} (-${maxDevPct}%)`);
+                            }
+                            return;
+                        }
+                    }
                 }
 
                 // 🔒 【双重核心锁 2：前 NK 突破必须由当前实时价格达成且必须具备该周期真实K线切片】

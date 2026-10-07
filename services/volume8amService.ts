@@ -104,9 +104,9 @@ export async function fetchVolume8amBatch(
     if (!Array.isArray(symbols) || symbols.length === 0) return memoryCache;
 
     const nowTime = Date.now();
-    const CACHE_VALID_MS = 3 * 60 * 1000; // 3分钟内缓存有效
+    const CACHE_VALID_MS = 10 * 60 * 1000; // 10分钟内缓存有效，彻底阻断高频重复穿透
 
-    // 过滤出需要更新的币种
+    // 过滤出需要更新的币种 (优先处理前40个活跃币种，杜绝全域300+币种瞬时并发轰炸)
     const targets = symbols.filter(sym => {
         if (!sym || !sym.endsWith('USDT')) return false;
         if (activeFetchSymbols.has(sym)) return false;
@@ -116,7 +116,7 @@ export async function fetchVolume8amBatch(
         if (nowTime - cached.updatedAt > CACHE_VALID_MS) return true;
         if (!isCurrentTradingDay(cached.openTime)) return true;
         return false;
-    });
+    }).slice(0, 40);
 
     if (targets.length === 0) {
         return memoryCache;

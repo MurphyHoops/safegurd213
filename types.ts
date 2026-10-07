@@ -211,15 +211,22 @@ export interface TrailingTier {
     floor: number;
 }
 
+export interface VariableTrailingTier {
+    minProfit: number; // 阶梯起始盈利%
+    maxProfit: number; // 阶梯截止盈利%
+    retentionPercent: number; // 达到该区间时按最高盈利保留的百分比%
+}
+
 export interface ConventionalSettings {
     minPosition: number;
     profitPercent: number;
     callbackPercent: number;
     closePercent: number;
     trailingEnabled?: boolean;
-    trailingTriggerProfit?: number;
+    trailingTriggerProfit?: number; // 变量托底激活起征点盈利 (%)
     trailingRemainingProfit?: number;
     trailingTiers?: TrailingTier[];
+    variableTrailingTiers?: VariableTrailingTier[]; // 多级变量托底阶梯
 }
 
 export interface AtrSettings {

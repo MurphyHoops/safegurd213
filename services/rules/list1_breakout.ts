@@ -28,6 +28,7 @@ export interface BreakoutAuditItem {
     matchedRules?: string[];
     failReasons: string[];
     timestamp: number;
+    isCacheHit?: boolean;
 }
 
 // In-memory short-lived K-line cache for sub-second responsive audits
@@ -61,14 +62,14 @@ export const DEFAULT_BREAKOUT_CONFIG: BreakoutFilterConfig = {
 /**
  * 快速获取币安指定周期的 K 线数据 (30s 内存保鲜缓存 + HIGH 优先级极速直通)
  */
-export async function fetchTfKlines(symbol: string, tf: string, limit: number = 60, signal?: AbortSignal): Promise<any[] | null> {
+export async function fetchTfKlines(symbol: string, tf: string, limit: number = 60, signal?: AbortSignal): Promise<{ klines: any[] | null; isCacheHit: boolean }> {
     const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
     const cacheKey = `${safeSymbol}_${tf}`;
     const now = Date.now();
 
     const cached = BREAKOUT_KLINE_CACHE[cacheKey];
     if (cached && (now - cached.timestamp < 30000) && cached.klines.length >= limit) {
-        return cached.klines;
+        return { klines: cached.klines, isCacheHit: true };
     }
 
     try {
@@ -80,11 +81,11 @@ export async function fetchTfKlines(symbol: string, tf: string, limit: number = 
                 timestamp: now,
                 klines: data
             };
-            return data;
+            return { klines: data, isCacheHit: false };
         }
-        return null;
+        return { klines: null, isCacheHit: false };
     } catch (_) {
-        return null;
+        return { klines: null, isCacheHit: false };
     }
 }
 
@@ -119,16 +120,20 @@ export async function auditSymbolBreakout(
         confirmTfDir: 'NONE',
         isPassed: false,
         failReasons: ['数据加载中或请求超时'],
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        isCacheHit: false
     };
 
     try {
         // 1. 并发获取主周期 (5m) 与确认周期 (15m) K 线 (Promise.all 毫秒级并行拉取，免除串行等待)
         const needConfirm = Boolean(config.enableMultiTfResonance);
-        const [primaryKlines, confirmKlines] = await Promise.all([
+        const [primaryRes, confirmRes] = await Promise.all([
             fetchTfKlines(symbol, primaryTf, 60, signal),
-            needConfirm ? fetchTfKlines(symbol, confirmTf, 50, signal) : Promise.resolve(null)
+            needConfirm ? fetchTfKlines(symbol, confirmTf, 50, signal) : Promise.resolve({ klines: null, isCacheHit: true })
         ]);
+        const primaryKlines = primaryRes.klines;
+        const confirmKlines = confirmRes.klines;
+        const isCacheHit = primaryRes.isCacheHit && (needConfirm ? confirmRes.isCacheHit : true);
 
         if (!primaryKlines || primaryKlines.length < 30) {
             defaultFailResult.failReasons = ['主周期K线不足'];
@@ -336,7 +341,8 @@ export async function auditSymbolBreakout(
             isPassed,
             matchedRules,
             failReasons: isPassed ? [] : failReasons,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            isCacheHit
         };
     } catch (err: any) {
         defaultFailResult.failReasons = [err?.message || '计算异常'];
@@ -345,7 +351,7 @@ export async function auditSymbolBreakout(
 }
 
 /**
- * 批量执行趋势爆发过滤 (支持 1秒1币 / 自定义步进延时，平稳防封与精细扫描)
+ * 批量执行趋势爆发过滤 (支持 智能双态扫描 / 毫秒级极速流转)
  */
 export async function batchAuditBreakout(
     symbols: string[],
@@ -361,42 +367,26 @@ export async function batchAuditBreakout(
         return { passed, details };
     }
 
-    const delayMs = config.scanDelayMs ?? 1000;
-
-    if (delayMs > 0) {
-        // 🛡️ 稳健步进扫描模式：逐币扫描并等待设定延时 (如 1秒1币)，保证平稳与零漏失
-        for (let i = 0; i < symbols.length; i++) {
-            if (signal?.aborted) break;
-            const sym = symbols[i];
-            const res = await auditSymbolBreakout(sym, config, signal);
-            details[sym] = res;
-            if (res.isPassed) {
-                passed.push(sym);
-            }
-            if (onProgress) {
-                onProgress(i + 1, total, sym, res, [...passed]);
-            }
-            if (i < symbols.length - 1 && !signal?.aborted) {
-                await new Promise(r => setTimeout(r, delayMs));
-            }
+    // 🚀【智能双态极速扫描】:
+    // 1. 命中 5m/15m 内存保鲜缓存：5ms 微步进让出 UI 渲染，瞬间全量完成；
+    // 2. 未命中缓存 (冷启动拉取)：保留 100ms 安全流控，杜绝币安 IP 限频风险
+    for (let i = 0; i < symbols.length; i++) {
+        if (signal?.aborted) break;
+        const sym = symbols[i];
+        const stepStart = Date.now();
+        const res = await auditSymbolBreakout(sym, config, signal);
+        details[sym] = res;
+        if (res.isPassed) {
+            passed.push(sym);
         }
-    } else {
-        // ⚡ 极速全开并发模式 (0ms)
-        const batchSize = 3;
-        for (let i = 0; i < symbols.length; i += batchSize) {
-            if (signal?.aborted) break;
-            const batch = symbols.slice(i, i + batchSize);
-            await Promise.all(batch.map(async (sym, idx) => {
-                if (signal?.aborted) return;
-                const res = await auditSymbolBreakout(sym, config, signal);
-                details[sym] = res;
-                if (res.isPassed) {
-                    passed.push(sym);
-                }
-                if (onProgress) {
-                    onProgress(Math.min(i + idx + 1, total), total, sym, res, [...passed]);
-                }
-            }));
+        if (onProgress) {
+            onProgress(i + 1, total, sym, res, [...passed]);
+        }
+        const dynamicDelayMs = res.isCacheHit ? 5 : 100;
+        const elapsed = Date.now() - stepStart;
+        const remaining = Math.max(0, dynamicDelayMs - elapsed);
+        if (remaining > 0 && i < symbols.length - 1 && !signal?.aborted) {
+            await new Promise(r => setTimeout(r, remaining));
         }
     }
 

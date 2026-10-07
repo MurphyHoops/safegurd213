@@ -1,6 +1,7 @@
 
 import React, { ErrorInfo, ReactNode } from 'react';
 import { RefreshCw, ShieldAlert, Terminal, Trash2, AlertTriangle, Cpu } from 'lucide-react';
+import { recordCrashToBlackbox } from '../services/monitor/monitorService';
 
 interface ErrorBoundaryProps {
   children?: ReactNode;
@@ -33,6 +34,17 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error(`[Savior Guard] Crash caught in ${this.props.moduleName || 'Root'}:`, error);
     
+    // 1. Record complete diagnostics to persistent Crash Blackbox
+    try {
+        recordCrashToBlackbox({
+            module: this.props.moduleName || 'ROOT',
+            message: error?.message || '未知渲染错误',
+            stack: error?.stack,
+            componentStack: errorInfo?.componentStack,
+            type: 'RENDER_CRASH'
+        });
+    } catch (_) {}
+
     try {
         const crashKey = 'SAVIOR_CRASH_COUNT';
         const lastCrashTime = Number(localStorage.getItem('SAVIOR_LAST_CRASH_TIME') || '0');
@@ -48,22 +60,10 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
         localStorage.setItem(crashKey, String(count));
         localStorage.setItem('SAVIOR_LAST_CRASH_TIME', String(now));
 
-        // Automatically purge ONLY scanner and volatile memory cache keys on crash, NEVER wipe user SETTINGS or POSITIONS
-        const keysToRemove: string[] = [];
-        for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (k && (k.startsWith('SCANNER_CACHE_') || k.includes('CACHE_MAP') || k === 'SAVIOR_LOGS')) {
-                keysToRemove.push(k);
-            }
-        }
-        keysToRemove.forEach(k => {
-            try { localStorage.removeItem(k); } catch (e) {}
-        });
-
         // 🔒 [杜绝网页自动退出/刷新]: 异常捕获后保持会话与数据持久稳定，严禁未经用户授权擅自调用 window.location.reload()
         console.warn('[ErrorBoundary] Graceful catch: isolated error without forceful page reload.');
     } catch (e) {
-        console.error('[ErrorBoundary] Auto-heal cache cleanup failed:', e);
+        console.error('[ErrorBoundary] Crash tracking failed:', e);
     }
 
     // Log component rendering crash directly inside persistent local storage

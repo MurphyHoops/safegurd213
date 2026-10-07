@@ -19,15 +19,33 @@ import { saveState } from "../../utils/persistence";
 import { audioService } from "../../services/audioService";
 import { priceRegistry } from "../../services/priceRegistry";
 import { normalizeSymbol, formatToBinanceSymbol, isValidSymbolFormat } from "../../services/symbolUtils";
-import { TimeframeDiagnosticRecord } from "./types";
+import { TimeframeDiagnosticRecord, PatternOccurrenceRecord } from "./types";
 import { getLatestEMA } from "../../services/indicators";
 import { binanceKlineWs, WsKlineUpdate } from "../../services/binanceKlineWs";
+import { klineDailyStore } from "../../services/klineDailyStore";
 import { klineMultiTfStore } from "../../services/klineMultiTfStore";
+
+// Helper to calculate aligned EMA array matching each candle index
+const getAlignedEMA = (prices: number[], period: number): (number | null)[] => {
+  if (prices.length < period) return new Array(prices.length).fill(null);
+  const result: (number | null)[] = new Array(prices.length).fill(null);
+  const k = 2 / (period + 1);
+  let sum = 0;
+  for (let i = 0; i < period; i++) {
+    sum += prices[i];
+  }
+  let ema = sum / period;
+  result[period - 1] = ema;
+  for (let i = period; i < prices.length; i++) {
+    ema = (prices[i] * k) + (ema * (1 - k));
+    result[i] = ema;
+  }
+  return result;
+};
 
 const getTfMinutes = (tf: string) => {
   const unit = tf.slice(-1);
   const val = parseInt(tf);
-  if (unit === "s") return val / 60;
   if (unit === "m") return val;
   if (unit === "h") return val * 60;
   if (unit === "d") return val * 1440;
@@ -37,11 +55,10 @@ const getTfMinutes = (tf: string) => {
 };
 
 const ALL_ORDERED_TIMEFRAMES = [
-  "15s",
-  "30s",
   "1m",
   "3m",
   "5m",
+  "10m",
   "15m",
   "30m",
   "1h",
@@ -49,39 +66,35 @@ const ALL_ORDERED_TIMEFRAMES = [
   "4h",
   "8h",
   "1d",
+  "3d",
 ];
 
 const getTfScanIntervalMs = (tf: string): number => {
   switch (tf) {
-    // 15秒、30秒、60秒、3分钟周期
-    case "15s":
-      return 3000; // 15秒周期，每3秒扫描一个币
-    case "30s":
-      return 4000; // 30秒周期，每4秒扫描一个币
     case "1m":
-      return 5000; // 60秒周期，每5秒扫描一个币
+      return 3000;
     case "3m":
-      return 6000; // 3分钟周期，每6秒扫描一个币
-
-    // 5分钟、15分钟、30分钟、60分钟周期
+      return 4000;
     case "5m":
-      return 3000; // 5分钟周期，每3秒扫描一个币
+      return 5000;
+    case "10m":
+      return 6000;
     case "15m":
-      return 5000; // 15分钟周期，每5秒扫描一个币
+      return 7000;
     case "30m":
-      return 6000; // 30分钟周期，每6秒扫描一个币
+      return 8000;
     case "1h":
-      return 8000; // 60分钟周期，每8秒扫描一个币
-
-    // 2小时、4小时、8小时、24小时周期
+      return 10000;
     case "2h":
-      return 10000; // 2小时周期，每10秒扫描一个币
+      return 12000;
     case "4h":
-      return 15000; // 4小时周期，每15秒扫描一个币
+      return 15000;
     case "8h":
-      return 20000; // 8小时周期，每20秒扫描一个币
+      return 20000;
     case "1d":
-      return 60000; // 24小时周期，每60秒扫描一个币
+      return 30000;
+    case "3d":
+      return 60000;
     default:
       return 5000;
   }
@@ -119,7 +132,7 @@ export const useGrandCrossing = (
         timeframes:
           newTfs.length > 0
             ? newTfs
-            : ["15s", "30s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "1d"],
+            : ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "1d", "3d"],
       }));
     }
   }, [config.timeframes, setConfig]);
@@ -150,22 +163,6 @@ export const useGrandCrossing = (
   // 🔍 [DIAGNOSTICS TELEMETRY]: Real-time multi-period data and rejection audit records
   const [diagnostics, setDiagnostics] = useState<Record<string, TimeframeDiagnosticRecord>>({});
   const diagnosticsRef = useRef<Record<string, TimeframeDiagnosticRecord>>({});
-  const diagThrottleTimerRef = useRef<any>(null);
-
-  const scheduleDiagFlush = useCallback(() => {
-    if (diagThrottleTimerRef.current) return;
-    diagThrottleTimerRef.current = setTimeout(() => {
-      diagThrottleTimerRef.current = null;
-      setDiagnostics({ ...diagnosticsRef.current });
-    }, 1500); // 1.5s healthy UI flush interval
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (diagThrottleTimerRef.current) clearTimeout(diagThrottleTimerRef.current);
-    };
-  }, []);
-
   // ⚡ Short-term in-memory K-line cache (3s TTL) to prevent duplicate network hits across concurrent timeframes
   const klineMemCacheRef = useRef<Map<string, { data: KLine[]; time: number }>>(new Map());
 
@@ -187,112 +184,40 @@ export const useGrandCrossing = (
     }
 
     const now = Date.now();
-    // ⚡ [0-MS RING BUFFER QUERY]: First check in-memory multi-TF persistent ring buffer
-    const persistentCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 40);
-    if (persistentCached && persistentCached.length >= 40) {
-      binanceKlineWs.subscribe(safeSymbol, tf);
-      return { klines: persistentCached, latency: 0 };
-    }
-
     const cacheKey = `${safeSymbol}-${tf}-${limit}`;
     const cached = klineMemCacheRef.current.get(cacheKey);
     if (cached && now - cached.time < 3000 && cached.data.length > 0) {
       return { klines: cached.data, latency: 0 };
     }
 
-    if (tf === '15s' || tf === '30s') {
-      const targetMin = tf === '15s' ? 0.25 : 0.5;
-      const subBarsPer1m = tf === '15s' ? 4 : 2;
-      const intervalMs = targetMin * 60 * 1000;
-
-      // 1. Fetch 1m baseline futures data (100 bars = 100 minutes)
-      let baseline1mKlines: KLine[] = [];
-      try {
-        const url1m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1m&limit=100&_t=${now}`;
-        const res1m = await fetchWithFallback(url1m, { cache: "no-store", timeout: 5000, signal }, (d) => Array.isArray(d), directMode);
-        if (res1m.ok) {
-          const raw1m = await res1m.json();
-          if (Array.isArray(raw1m)) {
-            baseline1mKlines = raw1m.map((k: any) => ({
-              time: Number(k[0]),
-              open: parseFloat(k[1]),
-              high: parseFloat(k[2]),
-              low: parseFloat(k[3]),
-              close: parseFloat(k[4]),
-              volume: parseFloat(k[5]),
-            }));
-          }
-        }
-      } catch (e) {}
-
-      // 2. Fetch 1s spot data for recent high-resolution seconds (skip for Chinese / futures-only tokens)
-      let synthRecent: KLine[] = [];
-      if (!/[\u4e00-\u9fa5]/.test(safeSymbol)) {
-        try {
-          const spot1sUrl = `https://api.binance.com/api/v3/klines?symbol=${safeSymbol}&interval=1s&limit=1000&_t=${now}`;
-          const res1s = await fetchWithFallback(spot1sUrl, { cache: "no-store", timeout: 5000, signal }, (d) => Array.isArray(d), directMode);
-          if (res1s.ok) {
-            const raw1s = await res1s.json();
-            if (Array.isArray(raw1s) && raw1s.length > 0) {
-              const secKlines: KLine[] = raw1s.map((k: any) => ({
-                time: Number(k[0]),
-                open: parseFloat(k[1]),
-                high: parseFloat(k[2]),
-                low: parseFloat(k[3]),
-                close: parseFloat(k[4]),
-                volume: parseFloat(k[5]),
-              }));
-              synthRecent = KLineSynthesizer.synthesize(secKlines, targetMin);
-            }
-          }
-        } catch (e) {}
+    // ⚡ [日K本地存储秒级直通]: 若请求 1d 周期，优先从列表1共享的 24小时持久化存储中 0ms 命中 (0 网络请求，0 权重消耗)
+    if (tf === '1d') {
+      const storeCached = klineDailyStore.getCachedKlinesSync(safeSymbol, limit) || klineDailyStore.getCachedKlinesSync(rawSymbol, limit);
+      if (storeCached && Array.isArray(storeCached) && storeCached.length >= 30) {
+        const klines: KLine[] = storeCached.map((k: any) => ({
+          time: Number(k[0]),
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+          volume: parseFloat(k[5]),
+        }));
+        klineMemCacheRef.current.set(cacheKey, { data: klines, time: Date.now() });
+        return { klines, latency: 0 };
       }
+    }
 
-      if (synthRecent.length > 0) {
-        const earliestSecTime = synthRecent[0].time;
-        const expandedOlder: KLine[] = [];
-        for (const k1m of baseline1mKlines) {
-          if (k1m.time + 60000 <= earliestSecTime) {
-            for (let b = 0; b < subBarsPer1m; b++) {
-              const subTime = k1m.time + b * intervalMs;
-              expandedOlder.push({
-                time: subTime,
-                open: b === 0 ? k1m.open : (k1m.open + (k1m.close - k1m.open) * (b / subBarsPer1m)),
-                high: k1m.high,
-                low: k1m.low,
-                close: b === subBarsPer1m - 1 ? k1m.close : (k1m.open + (k1m.close - k1m.open) * ((b + 1) / subBarsPer1m)),
-                volume: (k1m.volume || 0) / subBarsPer1m,
-              });
-            }
-          }
-        }
-        const combined = [...expandedOlder, ...synthRecent];
-        if (combined.length >= 80) {
-          klineMemCacheRef.current.set(cacheKey, { data: combined, time: Date.now() });
-          return { klines: combined, latency: Date.now() - fetchStart };
+    // ⚡ [10m 纯数学无损快速合成]: 基于 5m 基线数据无损合成 10m K线
+    if (tf === '10m') {
+      const fetch5mRes = await fetchKlinesForTf(rawSymbol, '5m', Math.min(limit * 2, 500), signal);
+      if (fetch5mRes.klines && fetch5mRes.klines.length > 0) {
+        const synth10m = KLineSynthesizer.synthesize(fetch5mRes.klines, 10);
+        if (synth10m.length > 0) {
+          klineMemCacheRef.current.set(cacheKey, { data: synth10m, time: Date.now() });
+          return { klines: synth10m, latency: Date.now() - fetchStart };
         }
       }
-
-      // Fallback: expand 1m candles into seconds candles
-      if (baseline1mKlines.length > 0) {
-        const expandedAll: KLine[] = [];
-        for (const k1m of baseline1mKlines) {
-          for (let b = 0; b < subBarsPer1m; b++) {
-            const subTime = k1m.time + b * intervalMs;
-            expandedAll.push({
-              time: subTime,
-              open: b === 0 ? k1m.open : (k1m.open + (k1m.close - k1m.open) * (b / subBarsPer1m)),
-              high: k1m.high,
-              low: k1m.low,
-              close: b === subBarsPer1m - 1 ? k1m.close : (k1m.open + (k1m.close - k1m.open) * ((b + 1) / subBarsPer1m)),
-              volume: (k1m.volume || 0) / subBarsPer1m,
-            });
-          }
-        }
-        klineMemCacheRef.current.set(cacheKey, { data: expandedAll, time: Date.now() });
-        return { klines: expandedAll, latency: Date.now() - fetchStart };
-      }
-      return { klines: [], errorReason: '【秒级合成】无可用1m/1s基线数据', latency: Date.now() - fetchStart };
+      return { klines: [], errorReason: fetch5mRes.errorReason || '【10m合成】无可用5m基线数据', latency: Date.now() - fetchStart };
     }
 
     const tryFetch = async (sym: string): Promise<{ data: KLine[]; reason?: string }> => {
@@ -349,8 +274,6 @@ export const useGrandCrossing = (
     const latency = Date.now() - fetchStart;
     if (fetchRes.data.length > 0) {
       klineMemCacheRef.current.set(cacheKey, { data: fetchRes.data, time: Date.now() });
-      klineMultiTfStore.setKlines(safeSymbol, tf, fetchRes.data);
-      binanceKlineWs.subscribe(safeSymbol, tf);
       return { klines: fetchRes.data, latency };
     }
     return { klines: [], errorReason: fetchRes.reason || '【获取失败】K线未返回数据', latency };
@@ -702,11 +625,28 @@ export const useGrandCrossing = (
 
     if (hasStructuralChange) {
       // Sort
+      const TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
+      const getTfWeight = (tf: string) => {
+        const idx = TF_ORDER.indexOf(tf);
+        return idx !== -1 ? idx : 99;
+      };
+      const isDesc = configRef.current.tfSortOrder === 'desc';
+
       items.sort((a, b) => {
         if (sortMode === "MOST") {
           const countA = a.groupedResults?.length || 0;
           const countB = b.groupedResults?.length || 0;
           if (countA !== countB) return countB - countA;
+        } else if (sortMode === "TIMEFRAME") {
+          const getWeights = (item: ScannerItem) => {
+            if (!item.groupedResults || item.groupedResults.length === 0) return [99];
+            return item.groupedResults.map(r => getTfWeight(r.tf || '15m'));
+          };
+          const weightA = isDesc ? Math.max(...getWeights(a)) : Math.min(...getWeights(a));
+          const weightB = isDesc ? Math.max(...getWeights(b)) : Math.min(...getWeights(b));
+          if (weightA !== weightB) {
+            return isDesc ? weightB - weightA : weightA - weightB;
+          }
         }
         const getMinLag = (item: ScannerItem) => {
           if (!item.groupedResults || item.groupedResults.length === 0)
@@ -773,7 +713,7 @@ export const useGrandCrossing = (
     const now = Date.now();
     const lastUpdate = lastUpdateTimestampRef.current || 0;
     const timeSinceLast = now - lastUpdate;
-    const throttleMs = 1000; // Increased responsiveness
+    const throttleMs = 150; // Millisecond-level pipeline propagation into downstream modules
 
     if (timeSinceLast > throttleMs) {
       performUpdate();
@@ -1075,6 +1015,7 @@ export const useGrandCrossing = (
 
   // ⚡ Persistent In-Memory Kline Ring-Buffer: key is `${symbol}-${tf}`
   const klineStoreRef = useRef<Map<string, KLine[]>>(new Map());
+  const inFlightPrefetchKeysRef = useRef<Set<string>>(new Set());
 
   // --- CORE: Pure Local Mathematical Evaluation Engine (0ms Latency) ---
   const evaluateKlines = useCallback((
@@ -1125,7 +1066,7 @@ export const useGrandCrossing = (
           timestamp: Date.now(),
         };
         diagnosticsRef.current[diagKey] = record;
-        scheduleDiagFlush();
+        setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
         return;
       }
 
@@ -1190,6 +1131,118 @@ export const useGrandCrossing = (
         }
       }
 
+      // 🔍 [200 根 K 线形态全量历史回溯与统计]
+      const ema10Series = getAlignedEMA(closes, 10);
+      const ema20Series = getAlignedEMA(closes, 20);
+      const ema30Series = getAlignedEMA(closes, 30);
+      const ema40Series = getAlignedEMA(closes, 40);
+      const ema80Series = getAlignedEMA(closes, 80);
+
+      const historyOccurrences: PatternOccurrenceRecord[] = [];
+      let histCrossingCount = 0;
+      let histBullDivCount = 0;
+      let histBearDivCount = 0;
+      let latestCrossingBarsAgo: number | undefined = undefined;
+      let latestCrossingTime: number | undefined = undefined;
+      let latestDivergenceBarsAgo: number | undefined = undefined;
+      let latestDivergenceTime: number | undefined = undefined;
+
+      const totalCandles = closes.length;
+      for (let i = 0; i < totalCandles; i++) {
+        const e10Val = ema10Series[i];
+        const e20Val = ema20Series[i];
+        const e30Val = ema30Series[i];
+        const e40Val = ema40Series[i];
+        const e80Val = ema80Series[i] ?? undefined;
+
+        if (e10Val === null || e20Val === null || e30Val === null || e40Val === null) {
+          continue;
+        }
+
+        const maxE = Math.max(e10Val, e20Val, e30Val, e40Val);
+        const minE = Math.min(e10Val, e20Val, e30Val, e40Val);
+        const barHigh = highs[i] || 0;
+        const barLow = lows[i] || 0;
+        const barOpen = opens[i] || 0;
+        const barClose = closes[i] || 0;
+        const barTime = times[i] || 0;
+        const barsAgo = totalCandles - 1 - i;
+
+        const isBarCrossing = barHigh >= maxE && barLow <= minE;
+        const isBarBullDiv = e10Val > e20Val && e20Val > e30Val && e30Val > e40Val;
+        const isBarBearDiv = e10Val < e20Val && e20Val < e30Val && e30Val < e40Val;
+
+        if (isBarCrossing) {
+          histCrossingCount++;
+          latestCrossingBarsAgo = barsAgo;
+          latestCrossingTime = barTime;
+        }
+
+        if (isBarBullDiv) {
+          histBullDivCount++;
+          latestDivergenceBarsAgo = barsAgo;
+          latestDivergenceTime = barTime;
+        } else if (isBarBearDiv) {
+          histBearDivCount++;
+          latestDivergenceBarsAgo = barsAgo;
+          latestDivergenceTime = barTime;
+        }
+
+        if (isBarCrossing || isBarBullDiv || isBarBearDiv) {
+          let patternType: PatternOccurrenceRecord['patternType'] = 'CROSSING';
+          if (isBarCrossing && isBarBullDiv) {
+            patternType = 'CROSS_AND_BULL_DIV';
+          } else if (isBarCrossing && isBarBearDiv) {
+            patternType = 'CROSS_AND_BEAR_DIV';
+          } else if (isBarBullDiv) {
+            patternType = 'BULL_DIV';
+          } else if (isBarBearDiv) {
+            patternType = 'BEAR_DIV';
+          }
+
+          let isEma80Aligned: boolean | undefined = undefined;
+          if (e80Val !== undefined) {
+            if (isBarBullDiv) isEma80Aligned = e40Val > e80Val;
+            if (isBarBearDiv) isEma80Aligned = e40Val < e80Val;
+          }
+
+          const dateObj = new Date(barTime);
+          const timeText = !isNaN(dateObj.getTime())
+            ? `${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')} ${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`
+            : '--:--';
+
+          let note = '';
+          if (barsAgo === 0) {
+            note = '最新实时K线';
+          } else if (barsAgo <= 3) {
+            note = `近期刚启动 (${barsAgo}根K前)`;
+          } else {
+            note = `历史形态 (${barsAgo}根K前)`;
+          }
+
+          historyOccurrences.push({
+            barIndex: i,
+            barsAgo,
+            timestamp: barTime,
+            timeText,
+            isCrossing: isBarCrossing,
+            divergenceType: isBarBullDiv ? 'BULLISH' : isBarBearDiv ? 'BEARISH' : 'NONE',
+            patternType,
+            open: barOpen,
+            high: barHigh,
+            low: barLow,
+            close: barClose,
+            ema10: e10Val,
+            ema20: e20Val,
+            ema30: e30Val,
+            ema40: e40Val,
+            ema80: e80Val,
+            isEma80Aligned,
+            note,
+          });
+        }
+      }
+
       const diagKey = `${symbol}-${tf}`;
       const record: TimeframeDiagnosticRecord = {
         symbol,
@@ -1212,9 +1265,19 @@ export const useGrandCrossing = (
         isPassed: results.length > 0,
         rejectionReason: diagReason,
         timestamp: Date.now(),
+        // 🔍 200 根 K 线形态轨迹与统计
+        crossingCount: histCrossingCount,
+        divergenceCount: histBullDivCount + histBearDivCount,
+        bullDivergenceCount: histBullDivCount,
+        bearDivergenceCount: histBearDivCount,
+        latestCrossingBarsAgo,
+        latestCrossingTime,
+        latestDivergenceBarsAgo,
+        latestDivergenceTime,
+        historyOccurrences: historyOccurrences.reverse(), // 倒序排列：最新K线在最前
       };
       diagnosticsRef.current[diagKey] = record;
-      scheduleDiagFlush();
+      setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
 
       if (results.length > 0) {
         // 🔒 [USER MANDATORY RULE] 多空独立存续：反向新信号出现时，不覆盖抹除仍在存续寿命内的旧方向信号
@@ -1335,11 +1398,30 @@ export const useGrandCrossing = (
 
     const unsubscribe = binanceKlineWs.addListener((update: WsKlineUpdate) => {
       const { symbol, tf, time, open, high, low, close, volume } = update;
-      const key = `${normalizeSymbol(symbol)}-${tf}`;
+      const normSym = normalizeSymbol(symbol);
+      const safeSym = formatToBinanceSymbol(symbol);
+      const key = `${normSym}-${tf}`;
       const safeKey = `${symbol}-${tf}`;
 
       let currentKlines = klineStoreRef.current.get(key) || klineStoreRef.current.get(safeKey);
-      if (!currentKlines || currentKlines.length === 0) {
+      
+      // 🛡️ [Self-Healing On-Demand Baseline Fetch]: 若本地未完成该周期的200根K线预热，绝不静默放弃，立即发起一次极速补拉
+      if (!currentKlines || currentKlines.length < 40) {
+        const fetchKey = `${normSym}-${tf}`;
+        if (!inFlightPrefetchKeysRef.current.has(fetchKey)) {
+          inFlightPrefetchKeysRef.current.add(fetchKey);
+          fetchKlinesForTf(safeSym, tf, 200).then((res) => {
+            inFlightPrefetchKeysRef.current.delete(fetchKey);
+            if (res.klines && res.klines.length >= 40) {
+              klineStoreRef.current.set(key, res.klines);
+              klineStoreRef.current.set(safeKey, res.klines);
+              klineMultiTfStore.saveKlines(symbol, tf, res.klines);
+              evaluateKlines(symbol, tf, res.klines, 0);
+            }
+          }).catch(() => {
+            inFlightPrefetchKeysRef.current.delete(fetchKey);
+          });
+        }
         return;
       }
 
@@ -1358,6 +1440,7 @@ export const useGrandCrossing = (
 
       klineStoreRef.current.set(key, updated);
       klineStoreRef.current.set(safeKey, updated);
+      klineMultiTfStore.updateRealtimeKline(symbol, tf, { time, open, high, low, close, volume });
 
       // Instantaneous local mathematical evaluation
       evaluateKlines(symbol, tf, updated, 0);
@@ -1374,6 +1457,7 @@ export const useGrandCrossing = (
     tf: string,
     signal?: AbortSignal,
     isRetry: boolean = false,
+    isPrefetch: boolean = false,
   ) => {
     const normSym = normalizeSymbol(symbol);
     const candidateItem = candidatesRef.current.find(
@@ -1388,7 +1472,7 @@ export const useGrandCrossing = (
     const now = Date.now();
     const fetchKey = `${symbol}-${tf}`;
     const lastFetch = symbolTfLastFetchRef.current.get(fetchKey) || 0;
-    if (!isRetry && now - lastFetch < 1500) {
+    if (!isRetry && !isPrefetch && now - lastFetch < 1500) {
       return;
     }
     symbolTfLastFetchRef.current.set(fetchKey, now);
@@ -1402,6 +1486,7 @@ export const useGrandCrossing = (
       if (klines && klines.length > 0) {
         klineStoreRef.current.set(`${normSym}-${tf}`, klines);
         klineStoreRef.current.set(`${safeSymbol}-${tf}`, klines);
+        klineMultiTfStore.saveKlines(symbol, tf, klines);
       }
 
       evaluateKlines(symbol, tf, klines, latency, fetchRes.errorReason);
@@ -1409,6 +1494,74 @@ export const useGrandCrossing = (
       console.warn(`[Rolling] Skip ${symbol} ${tf}:`, e.message);
     }
   };
+
+  // ⚡ [Instant Prefetch 瞬时高并发保底预热流水线]: 
+  // 当列表1产生候选币时，采用小周期优先 + 差量去重并发预热，绝不粗暴中断已在进行的任务
+  const prefetchCandidates = useCallback(async (currentCandidates: ScannerItem[]) => {
+    if (!currentCandidates || currentCandidates.length === 0) return;
+
+    const activeTfs = (configRef.current.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
+    if (activeTfs.length === 0) return;
+
+    // 按小周期优先排序（1m, 3m, 5m, 10m, 15m, 30m 优先预热完成）
+    const PRIORITY_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
+    const sortedTfs = [...activeTfs].sort((a, b) => {
+      const idxA = PRIORITY_ORDER.indexOf(a);
+      const idxB = PRIORITY_ORDER.indexOf(b);
+      return (idxA !== -1 ? idxA : 99) - (idxB !== -1 ? idxB : 99);
+    });
+
+    const tasks: { symbol: string; tf: string }[] = [];
+    for (const item of currentCandidates) {
+      if (!item || !item.symbol) continue;
+      const normSym = normalizeSymbol(item.symbol);
+      const safeSym = formatToBinanceSymbol(item.symbol);
+      for (const tf of sortedTfs) {
+        const key = `${normSym}-${tf}`;
+        const safeKey = `${safeSym}-${tf}`;
+        const existing = klineStoreRef.current.get(key) || klineStoreRef.current.get(safeKey);
+        if (!existing || existing.length < 50) {
+          if (!inFlightPrefetchKeysRef.current.has(key)) {
+            tasks.push({ symbol: item.symbol, tf });
+          }
+        }
+      }
+    }
+
+    if (tasks.length === 0) return;
+
+    // 🚀 8 协程高并发差量预热，保证每个币的每个周期都100%预热到位
+    const CONCURRENCY = 8;
+    let taskIdx = 0;
+
+    const worker = async () => {
+      while (taskIdx < tasks.length) {
+        const currentTask = tasks[taskIdx++];
+        if (!currentTask) break;
+        const taskKey = `${normalizeSymbol(currentTask.symbol)}-${currentTask.tf}`;
+        inFlightPrefetchKeysRef.current.add(taskKey);
+        try {
+          await processSymbol(currentTask.symbol, currentTask.tf, undefined, false, true);
+        } catch (_) {
+        } finally {
+          inFlightPrefetchKeysRef.current.delete(taskKey);
+        }
+      }
+    };
+
+    const pool = Array.from({ length: Math.min(CONCURRENCY, tasks.length) }, () => worker());
+    await Promise.all(pool);
+  }, []);
+
+  // ⚡ [Instant Prefetch Trigger]: 当初筛列表更新或出现新币种时，高并发秒级瞬间预热所有周期200根K线
+  const prevCandidatePulseRef = useRef<string>("");
+  useEffect(() => {
+    const pulse = JSON.stringify((candidates || []).map((c) => c.symbol));
+    if (pulse !== prevCandidatePulseRef.current && candidates && candidates.length > 0) {
+      prevCandidatePulseRef.current = pulse;
+      prefetchCandidates(candidates);
+    }
+  }, [candidates, config.timeframes, prefetchCandidates]);
 
   // --- 🔒 [GLOBAL SINGLE-SECOND PRIORITY TOKEN BUCKET SCHEDULER] ---
   // 全局唯一单秒调度器：严格按照 1 秒 1 个币的物理节奏发包，彻底杜绝 IP 封控与带宽争抢。
@@ -1425,8 +1578,8 @@ export const useGrandCrossing = (
     let isRunning = true;
 
     const runGlobalScheduler = async () => {
-      const SMALL_TFS = ['15s', '30s', '1m', '3m', '5m'];
-      const BIG_TFS = ['15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+      const SMALL_TFS = ['1m', '3m', '5m', '10m'];
+      const BIG_TFS = ['15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
 
       while (isRunning) {
         const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));

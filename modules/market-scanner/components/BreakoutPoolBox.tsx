@@ -223,9 +223,13 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         }
                     }));
 
-                    // 3. 严格精准控制节奏（扣除运算时间补齐剩余间隔，绝对精准保持 1秒1币）
+                    // 3. 🚀【智能双态极速扫描】:
+                    // 1. 命中 5m/15m 内存保鲜缓存：5ms 微步进让出 UI 渲染，瞬间全量完成；
+                    // 2. 未命中缓存 (冷启动拉取)：保留 100ms 安全流控，杜绝币安 IP 限频风险
+                    const wasHit = Boolean(res.isCacheHit);
+                    const dynamicDelayMs = wasHit ? 5 : 100;
                     const elapsed = Date.now() - coinStartTime;
-                    const remainingSleep = Math.max(0, delayMs - elapsed);
+                    const remainingSleep = Math.max(0, dynamicDelayMs - elapsed);
                     if (remainingSleep > 0 && i < targetSymbols.length - 1 && !signal.aborted) {
                         await sleep(remainingSleep);
                     }

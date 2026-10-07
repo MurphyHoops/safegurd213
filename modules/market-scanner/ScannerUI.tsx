@@ -37,6 +37,10 @@ interface Props {
     rotationTimeLeft?: number;
     onToggleRotation?: (enabled: boolean) => void;
     onChangeRotationInterval?: (minutes: number) => void;
+    list2Results?: ScannerItem[];
+    list3Results?: ScannerItem[];
+    list3Config?: any;
+    currentPrices?: Record<string, number>;
 }
 
 export const MarketScannerModule: React.FC<Props> = (props) => {
@@ -86,7 +90,11 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     rotationIntervalMinutes = 5,
     rotationTimeLeft = 0,
     onToggleRotation = () => {},
-    onChangeRotationInterval = () => {}
+    onChangeRotationInterval = () => {},
+    list2Results = [],
+    list3Results = [],
+    list3Config = null,
+    currentPrices = {}
 }) => {
     // --- LOCAL UI STATE ---
     const [fixedModeView, setFixedModeView] = usePersistedState<'MONITOR' | 'SEARCH'>('SCANNER_FIXED_MODE_VIEW', 'MONITOR');
@@ -271,6 +279,10 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             rotationTimeLeft={rotationTimeLeft}
             onToggleRotation={onToggleRotation}
             onChangeRotationInterval={onChangeRotationInterval}
+            list2Results={list2Results}
+            list3Results={list3Results}
+            list3Config={list3Config}
+            currentPrices={currentPrices}
         />
     );
 };

@@ -9,6 +9,7 @@ interface PriceRegEntry {
     suffix: string;
     flashColor: boolean;
     prevPrice?: number;
+    flashTimer?: any;
 }
 
 interface PnlRegEntry {
@@ -70,6 +71,10 @@ class PriceRegistry {
                         prEntries.forEach(entry => {
                             try {
                                 if (!entry.element || (typeof document !== 'undefined' && !document.body.contains(entry.element))) {
+                                    if (entry.flashTimer) {
+                                        clearTimeout(entry.flashTimer);
+                                        entry.flashTimer = null;
+                                    }
                                     prEntries.delete(entry);
                                     return;
                                 }
@@ -78,19 +83,12 @@ class PriceRegistry {
                                     entry.element.innerText = text;
                                     
                                     if (entry.flashColor && prevPrice !== undefined) {
-                                        // Note: Flash uses the original price direction for simplicity
                                         if (price > prevPrice) {
                                             entry.element.classList.add('text-emerald-400');
                                             entry.element.classList.remove('text-red-400');
-                                            setTimeout(() => {
-                                                try { entry.element?.classList.remove('text-emerald-400'); } catch (_) {}
-                                            }, 180);
                                         } else if (price < prevPrice) {
                                             entry.element.classList.add('text-red-400');
                                             entry.element.classList.remove('text-emerald-400');
-                                            setTimeout(() => {
-                                                try { entry.element?.classList.remove('text-red-400'); } catch (_) {}
-                                            }, 180);
                                         }
                                     }
                                 }
