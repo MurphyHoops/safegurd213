@@ -29,6 +29,9 @@ import KlineChartModal from "./KlineChartModal";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { usePersistedState } from "../hooks/usePersistedState";
 import { loadState, saveState } from "../utils/persistence";
+import { eventBus } from "../core/EventBus";
+import { CoinContextMenu, CoinContextMenuState } from "./CoinContextMenu";
+import { QuickTradeModal } from "./QuickTradeModal";
 
 // --- ALL ATOMIC MODULES ---
 import { MarketScannerModule } from "../modules/market-scanner";
@@ -300,6 +303,24 @@ const ScannerDashboardInner: React.FC<
     "strat-1"
   );
   const [rotationTimeLeft, setRotationTimeLeft] = useState<number>(5 * 60);
+
+  // --- RIGHT-CLICK CONTEXT MENU & QUICK TRADE STATES ---
+  const [contextMenuState, setContextMenuState] = useState<CoinContextMenuState>({
+    visible: false,
+    x: 0,
+    y: 0,
+    symbol: '',
+  });
+
+  const [quickTradeState, setQuickTradeState] = useState<{
+    isOpen: boolean;
+    symbol: string;
+    initialDirection?: 'LONG' | 'SHORT';
+    initialPrice?: number;
+  }>({
+    isOpen: false,
+    symbol: '',
+  });
 
   const strategiesRef = useRef(strategies);
   strategiesRef.current = strategies;
@@ -1077,6 +1098,24 @@ const ScannerDashboardInner: React.FC<
   const currentPositions =
     scannerMode === "BACKTEST" ? backtestPositions : livePositions;
 
+  useEffect(() => {
+    const unsubscribe = eventBus.subscribe('OPEN_COIN_CONTEXT_MENU', (payload: any) => {
+      if (!payload || !payload.symbol) return;
+      setContextMenuState({
+        visible: true,
+        x: payload.x || 0,
+        y: payload.y || 0,
+        symbol: payload.symbol,
+        chineseName: payload.chineseName,
+        currentPrice: payload.currentPrice || currentPrices[payload.symbol] || 0,
+        direction: payload.direction || 'LONG',
+      });
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [currentPrices]);
+
   const isUnconfigured = useMemo(() => {
     const activeStrat = strategies.find((s) => s.id === selectedStrategyId);
     return activeStrat?.unconfigured === true;
@@ -1236,7 +1275,7 @@ const ScannerDashboardInner: React.FC<
         breakerConfig: userConfig.breakerConfig || DEFAULT_ACTION_CONFIG.breakerConfig,
       };
 
-      const isManual = reason.includes("Manual");
+      const isManual = reason.includes("Manual") || reason.includes("手动") || reason.includes("快速开仓");
       const isAuto = reason.includes("Auto") && !reason.includes("List1 Auto");
       if (!config.enabled && !isManual) {
         if (onLog)
@@ -1317,12 +1356,14 @@ const ScannerDashboardInner: React.FC<
       }
 
       const amount =
-        config.positionSizeMode === "VARIABLE"
-          ? Math.min(
-              balance * (config.variablePercentage / 100),
-              config.variableMaxLimit || Infinity,
-            )
-          : (typeof config.openAmount === "number" && config.openAmount > 0 ? config.openAmount : 10);
+        (extraProps as any)?.customAmount && (extraProps as any).customAmount > 0
+          ? (extraProps as any).customAmount
+          : (config.positionSizeMode === "VARIABLE"
+            ? Math.min(
+                balance * (config.variablePercentage / 100),
+                config.variableMaxLimit || Infinity,
+              )
+            : (typeof config.openAmount === "number" && config.openAmount > 0 ? config.openAmount : 10));
 
       // List 6: Total Capital Limit Check
       const currentTotalValue = activePositions.reduce((sum, p) => {
@@ -2295,6 +2336,44 @@ const ScannerDashboardInner: React.FC<
           />
         );
       })}
+
+      {/* Global Right-Click Context Menu for Coins */}
+      <CoinContextMenu
+        menuState={contextMenuState}
+        onClose={() => setContextMenuState(prev => ({ ...prev, visible: false }))}
+        onTriggerDiagnosis={(sym) => {
+          eventBus.emit('TRIGGER_SYMBOL_DIAGNOSIS', sym);
+        }}
+        onTriggerOpenPosition={(sym, dir, prc) => {
+          setQuickTradeState({
+            isOpen: true,
+            symbol: sym,
+            initialDirection: dir,
+            initialPrice: prc || currentPrices[sym] || 0
+          });
+        }}
+      />
+
+      {/* Global Quick Trade Modal */}
+      <QuickTradeModal
+        isOpen={quickTradeState.isOpen}
+        onClose={() => setQuickTradeState(prev => ({ ...prev, isOpen: false }))}
+        symbol={quickTradeState.symbol}
+        initialDirection={quickTradeState.initialDirection}
+        initialPrice={quickTradeState.initialPrice}
+        livePrices={currentPrices}
+        onConfirmTrade={(sym, side, price, amountUsdt, reason) => {
+          executeTradeSafe(
+            sym,
+            side,
+            price,
+            reason,
+            undefined,
+            undefined,
+            { customAmount: amountUsdt } as any
+          );
+        }}
+      />
     </div>
   );
 };

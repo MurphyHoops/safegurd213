@@ -7,6 +7,7 @@ import { ScannerItem, List3SignalResult } from '../../../components/Scanner/scan
 import { PositionSide } from '../../../types';
 import { AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
 import { getCoinChineseName } from '../../../services/coinNames';
+import { eventBus } from '../../../core/EventBus';
 
 interface Props {
     item: ScannerItem;
@@ -41,7 +42,22 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
     };
 
     return (
-        <div onClick={handleRowClick} className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group relative ${borderColor} ${hoverColor}`}>
+        <div 
+            onClick={handleRowClick} 
+            onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                eventBus.emit('OPEN_COIN_CONTEXT_MENU', {
+                    x: e.clientX,
+                    y: e.clientY,
+                    symbol: item.symbol,
+                    direction: item.direction || (isLongDominant ? 'LONG' : isShortDominant ? 'SHORT' : 'LONG'),
+                    currentPrice: item.price,
+                    chineseName: getCoinChineseName(item.symbol)
+                });
+            }}
+            className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group relative ${borderColor} ${hoverColor}`}
+        >
             {/* Individual Remove Button (Far Right) */}
             <button 
                 onClick={(e) => {

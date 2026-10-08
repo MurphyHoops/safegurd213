@@ -153,7 +153,7 @@ export const useMomentumAudit = (
                         close: parseFloat(k[4]),
                         volume: parseFloat(k[5]),
                     }));
-                    klineMultiTfStore.setKlines(safeSym, tf, klines);
+                    klineMultiTfStore.saveKlines(safeSym, tf, klines);
 
                     const allCloses = raw.map((k: any) => parseFloat(k[4]) || 0).filter((v: number) => !isNaN(v) && v > 0);
                     // 仅提取已收盘的前序K线收盘价切片（剔除正在形成的最后一根）

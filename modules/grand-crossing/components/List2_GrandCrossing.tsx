@@ -7,6 +7,7 @@ import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, A
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { ScannerHistoryModal, useAutoHistoryLogger } from '../../momentum-audit/components/ScannerHistoryModal';
 import { TimeframeDiagnosticRecord } from '../types';
+import { normalizeSymbol } from '../../../services/symbolUtils';
 
 interface Props {
     networkStatus?: 'healthy' | 'delayed' | 'disconnected';
@@ -49,23 +50,29 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
 
-    // Separate Lists and filter groupedResults by direction for strict separation
+    // Separate Lists and filter groupedResults by direction for strict separation with 100% deduplication
     const { longs, shorts } = useMemo(() => {
         const l: ScannerItem[] = [];
         const s: ScannerItem[] = [];
+        const seenLongs = new Set<string>();
+        const seenShorts = new Set<string>();
+
         (filteredList2 || []).forEach(item => {
-            if (!item) return;
+            if (!item || !item.symbol) return;
+            const norm = normalizeSymbol(item.symbol);
             const longResults = (item.groupedResults || []).filter(r => r.direction === 'LONG');
             const shortResults = (item.groupedResults || []).filter(r => r.direction === 'SHORT');
 
-            if (longResults.length > 0) {
+            if (longResults.length > 0 && !seenLongs.has(norm)) {
+                seenLongs.add(norm);
                 l.push({
                     ...item,
                     direction: 'LONG',
                     groupedResults: longResults
                 });
             }
-            if (shortResults.length > 0) {
+            if (shortResults.length > 0 && !seenShorts.has(norm)) {
+                seenShorts.add(norm);
                 s.push({
                     ...item,
                     direction: 'SHORT',
@@ -76,8 +83,22 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
         return { longs: l, shorts: s };
     }, [filteredList2]);
 
+    const allDeduped = useMemo(() => {
+        const seen = new Set<string>();
+        const res: ScannerItem[] = [];
+        (filteredList2 || []).forEach(item => {
+            if (!item || !item.symbol) return;
+            const norm = normalizeSymbol(item.symbol);
+            if (!seen.has(norm)) {
+                seen.add(norm);
+                res.push(item);
+            }
+        });
+        return res;
+    }, [filteredList2]);
+
     // Determine display list
-    const rawDisplayList = viewMode === 'LONG' ? longs : viewMode === 'SHORT' ? shorts : (filteredList2 || []);
+    const rawDisplayList = viewMode === 'LONG' ? longs : viewMode === 'SHORT' ? shorts : allDeduped;
 
     // 📊 列表2 智能排序计算（支持 最新、最多、K线周期从小到大/从大到小）
     const displayList = useMemo(() => {
@@ -146,7 +167,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                 <div className="px-3 py-2 flex items-center justify-between">
                     <div className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1.5">
                         <Shield size={12} className="text-indigo-500"/> 
-                        <span>2. 绝对防御 Physics Defense</span>
+                        <span>2. 绝对防御</span>
                     </div>
                     <div className="flex items-center gap-1">
                         <button 

@@ -310,12 +310,15 @@ export function analyzeList2Crossing(
             const rawDivergenceValidS = isAlignedS && crossedAllS;
 
             // =========================================================================
-            // 🔒 [USER MANDATORY RULE - 收盘确认机制 (Close-of-Candle Confirmation)]
-            // 核心铁律：所有信号K线必须在【K线正式收盘】后方可判定确立（即 targetLag > 0，不随未收盘实时价格漂移）。
-            // 多头发散：必须为已收盘阳线(Close > Open)。若发散时为阴线，在“信号存续/访问过去”(scanLookbackLimit)内
-            //           向后寻找第一根已收盘阳线作为确认点；若超出设定根数仍未收阳，则本次发散形态彻底作废。
-            // 空头发散：必须为已收盘阴线(Close < Open)。若发散时为阳线，在“信号存续/访问过去”(scanLookbackLimit)内
-            //           向后寻找第一根已收盘阴线作为确认点；若超出设定根数仍未收阴，则本次发散形态彻底作废。
+            // 🔒 [USER MANDATORY RULE - 发散起爆原点锁定与收盘确认机制 (Genesis Divergence & Close Confirmation)]
+            // 核心铁律：
+            // 1. 发散起爆原点锁定 (Genesis Gate)：
+            //    追溯当前连续发散形态的“初生原点”(Genesis Bar K0，即在此K线前均线尚未完全发散，此K线首次确立发散)。
+            //    起爆原点 K0 距离当前最新K线的时间跨度 (idx - K0) 必须严格 <= “信号存续/访问过去”(scanLookbackLimit)。
+            //    若发散已持续过久 (超出存续根数)，坚决判定为老旧趋势/中后期鱼尾，一律彻底淘汰，禁止进入列表2！
+            // 2. 同向收盘确认机制 (Close-of-Candle Confirmation)：
+            //    从起爆原点 K0 开始，在存续有效窗口内寻找第一根已收盘同向K线（做多收阳 Close>Open，做空收阴 Close<Open）作为信号K线；
+            //    确认期间均线发散排列绝不可被反向破坏；若超出存续根数仍无同向K线收盘，则本次发散形态彻底作废。
             // =========================================================================
             let divergenceValidL = false;
             let divConfirmedLagL = lag;
@@ -323,23 +326,43 @@ export function analyzeList2Crossing(
             let divIsPendingGrayL = false;
 
             if (rawDivergenceValidL && lag > 0) {
-                if (kClose > kOpen) {
-                    divergenceValidL = true;
-                    divConfirmedLagL = lag;
-                    divConfirmedIdxL = checkIdx;
-                    divIsPendingGrayL = false;
-                } else {
-                    // 当前收盘不符，向右在 scanLookbackLimit 根K线内寻找第一根已收盘阳线 (fIdx < idx)
+                // 1. 追溯本轮多头发散的初生起爆原点 (Genesis Bar K0)
+                let genesisIdxL = checkIdx;
+                for (let g = checkIdx - 1; g >= Math.max(0, checkIdx - 100); g--) {
+                    const gE10 = getEmaVal(ema10, g, 10);
+                    const gE20 = getEmaVal(ema20, g, 20);
+                    const gE30 = getEmaVal(ema30, g, 30);
+                    const gE40 = getEmaVal(ema40, g, 40);
+                    const gE80 = checkEma80Conflict ? getEmaVal(ema80, g, 80) : null;
+
+                    if (gE10 === null || gE20 === null || gE30 === null || gE40 === null) break;
+                    const gMin = Math.min(gE10, gE20, gE30, gE40);
+                    const gConflict = checkEma80Conflict && (gE80 === null || gE80 >= gMin);
+                    const gIsAligned = gE10 > gE20 && gE20 > gE30 && gE30 > gE40 && !gConflict;
+
+                    if (gIsAligned) {
+                        genesisIdxL = g;
+                    } else {
+                        // 前一根K线不满足多头发散，确定 genesisIdxL 为本轮发散的首次确立原点
+                        break;
+                    }
+                }
+
+                const genesisAgeL = idx - genesisIdxL;
+
+                // 2. 原点寿命硬门禁：起爆原点必须在【信号存续 / 访问过去】设定根数之内
+                if (genesisAgeL <= scanLookbackLimit) {
+                    // 从起爆原点向右寻找第一根已收盘阳线作为确认点
                     let foundBullish = false;
-                    const maxForwardIdx = Math.min(idx - 1, checkIdx + scanLookbackLimit);
-                    for (let fIdx = checkIdx + 1; fIdx <= maxForwardIdx; fIdx++) {
+                    const maxForwardIdx = Math.min(idx - 1, genesisIdxL + scanLookbackLimit);
+
+                    for (let fIdx = genesisIdxL; fIdx <= maxForwardIdx; fIdx++) {
                         const fE10 = getEmaVal(ema10, fIdx, 10);
                         const fE20 = getEmaVal(ema20, fIdx, 20);
                         const fE30 = getEmaVal(ema30, fIdx, 30);
                         const fE40 = getEmaVal(ema40, fIdx, 40);
 
                         // 🔒 铁律门禁：向后寻找确认阳线期间，均线多头形态绝不可被破坏
-                        // 若 EMA10 下穿 EMA20 或 EMA30，说明多头形态已彻底崩塌死叉，直接作废并立即终止
                         if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
                             break;
                         }
@@ -347,10 +370,11 @@ export function analyzeList2Crossing(
                         if (closes[fIdx] > opens[fIdx]) {
                             // 确认K线本身也必须保持多头排列 (EMA10 > EMA20 > EMA30)
                             const isStillBullish = fE30 !== null ? (fE10 > fE20 && fE20 > fE30) : (fE10 > fE20);
-                            if (isStillBullish) {
+                            if (isStillBullish && (idx - fIdx <= scanLookbackLimit) && (idx - fIdx > 0)) {
                                 divergenceValidL = true;
                                 divConfirmedIdxL = fIdx;
                                 divConfirmedLagL = idx - fIdx;
+                                divIsPendingGrayL = false;
                                 foundBullish = true;
                                 break;
                             }
@@ -360,6 +384,9 @@ export function analyzeList2Crossing(
                     if (!foundBullish) {
                         divergenceValidL = false;
                     }
+                } else {
+                    // 超出信号存续根数，判定为老旧发散，坚决淘汰
+                    divergenceValidL = false;
                 }
             }
 
@@ -369,23 +396,43 @@ export function analyzeList2Crossing(
             let divIsPendingGrayS = false;
 
             if (rawDivergenceValidS && lag > 0) {
-                if (kClose < kOpen) {
-                    divergenceValidS = true;
-                    divConfirmedLagS = lag;
-                    divConfirmedIdxS = checkIdx;
-                    divIsPendingGrayS = false;
-                } else {
-                    // 当前收盘不符，向右在 scanLookbackLimit 根K线内寻找第一根已收盘阴线 (fIdx < idx)
+                // 1. 追溯本轮空头发散的初生起爆原点 (Genesis Bar K0)
+                let genesisIdxS = checkIdx;
+                for (let g = checkIdx - 1; g >= Math.max(0, checkIdx - 100); g--) {
+                    const gE10 = getEmaVal(ema10, g, 10);
+                    const gE20 = getEmaVal(ema20, g, 20);
+                    const gE30 = getEmaVal(ema30, g, 30);
+                    const gE40 = getEmaVal(ema40, g, 40);
+                    const gE80 = checkEma80Conflict ? getEmaVal(ema80, g, 80) : null;
+
+                    if (gE10 === null || gE20 === null || gE30 === null || gE40 === null) break;
+                    const gMax = Math.max(gE10, gE20, gE30, gE40);
+                    const gConflict = checkEma80Conflict && (gE80 === null || gE80 <= gMax);
+                    const gIsAligned = gE10 < gE20 && gE20 < gE30 && gE30 < gE40 && !gConflict;
+
+                    if (gIsAligned) {
+                        genesisIdxS = g;
+                    } else {
+                        // 前一根K线不满足空头发散，确定 genesisIdxS 为本轮发散的首次确立原点
+                        break;
+                    }
+                }
+
+                const genesisAgeS = idx - genesisIdxS;
+
+                // 2. 原点寿命硬门禁：起爆原点必须在【信号存续 / 访问过去】设定根数之内
+                if (genesisAgeS <= scanLookbackLimit) {
+                    // 从起爆原点向右寻找第一根已收盘阴线作为确认点
                     let foundBearish = false;
-                    const maxForwardIdx = Math.min(idx - 1, checkIdx + scanLookbackLimit);
-                    for (let fIdx = checkIdx + 1; fIdx <= maxForwardIdx; fIdx++) {
+                    const maxForwardIdx = Math.min(idx - 1, genesisIdxS + scanLookbackLimit);
+
+                    for (let fIdx = genesisIdxS; fIdx <= maxForwardIdx; fIdx++) {
                         const fE10 = getEmaVal(ema10, fIdx, 10);
                         const fE20 = getEmaVal(ema20, fIdx, 20);
                         const fE30 = getEmaVal(ema30, fIdx, 30);
                         const fE40 = getEmaVal(ema40, fIdx, 40);
 
                         // 🔒 铁律门禁：向后寻找确认阴线期间，均线空头形态绝不可被破坏
-                        // 若 EMA10 上穿 EMA20 或 EMA30，说明空头形态已彻底反弹金叉，直接作废并立即终止
                         if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
                             break;
                         }
@@ -393,10 +440,11 @@ export function analyzeList2Crossing(
                         if (closes[fIdx] < opens[fIdx]) {
                             // 确认K线本身也必须保持空头排列 (EMA10 < EMA20 < EMA30)
                             const isStillBearish = fE30 !== null ? (fE10 < fE20 && fE20 < fE30) : (fE10 < fE20);
-                            if (isStillBearish) {
+                            if (isStillBearish && (idx - fIdx <= scanLookbackLimit) && (idx - fIdx > 0)) {
                                 divergenceValidS = true;
                                 divConfirmedIdxS = fIdx;
                                 divConfirmedLagS = idx - fIdx;
+                                divIsPendingGrayS = false;
                                 foundBearish = true;
                                 break;
                             }
@@ -406,6 +454,9 @@ export function analyzeList2Crossing(
                     if (!foundBearish) {
                         divergenceValidS = false;
                     }
+                } else {
+                    // 超出信号存续根数，判定为老旧发散，坚决淘汰
+                    divergenceValidS = false;
                 }
             }
 

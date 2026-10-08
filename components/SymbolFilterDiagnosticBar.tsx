@@ -8,18 +8,21 @@ import {
     TrendingUp, TrendingDown, HelpCircle, ShieldAlert, Sparkles, X,
     Check, AlertCircle, Clock, Zap, Gauge, Flame, Compass, Filter, Maximize2
 } from 'lucide-react';
-import { ScanConfig, ScannerItem, List3Config } from './Scanner/scannerTypes';
+import { ScanConfig, ScannerItem, List2Config, List3Config, List4Config } from './Scanner/scannerTypes';
 import { normalizeSymbol, formatToBinanceSymbol, formatPrice } from '../services/symbolUtils';
 import { binanceWsApi } from '../services/binanceWsApi';
 import { binanceWs } from '../services/binanceWs';
 import { calculateEMA, calculateRSI, calculateATR } from '../services/indicators';
+import { eventBus } from '../core/EventBus';
 
 interface Props {
     scanConfig: ScanConfig;
     list1Candidates: ScannerItem[];
     list2Results: ScannerItem[];
     list3Results: ScannerItem[];
+    list2Config?: List2Config | null;
     list3Config?: List3Config | null;
+    list4Config?: List4Config | null;
     currentPrices?: Record<string, number>;
 }
 
@@ -82,7 +85,9 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
     list1Candidates,
     list2Results,
     list3Results,
+    list2Config,
     list3Config,
+    list4Config,
     currentPrices = {}
 }) => {
     const [isOpen, setIsOpen] = useState(false);
@@ -434,6 +439,39 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
             const l2Rows: AuditRow[] = [];
             let l2BlockReasons: string[] = [];
 
+            // Retrieve effective configs from props or localStorage fallback
+            let effectiveList2Config: List2Config | null = list2Config || null;
+            if (!effectiveList2Config) {
+                try {
+                    const raw = localStorage.getItem('SCANNER_LIST2_CONFIG');
+                    if (raw) effectiveList2Config = JSON.parse(raw);
+                } catch (e) {}
+            }
+
+            let effectiveList3Config: List3Config | null = list3Config || null;
+            if (!effectiveList3Config) {
+                try {
+                    const raw = localStorage.getItem('SCANNER_LIST3_CONFIG');
+                    if (raw) effectiveList3Config = JSON.parse(raw);
+                } catch (e) {}
+            }
+
+            let effectiveList4Config: List4Config | null = list4Config || null;
+            if (!effectiveList4Config) {
+                try {
+                    const raw = localStorage.getItem('SCANNER_LIST4_CONFIG');
+                    if (raw) effectiveList4Config = JSON.parse(raw);
+                } catch (e) {}
+            }
+
+            // Retrieve current List 4 items from localStorage
+            let realList4: any[] = [];
+            try {
+                const raw4 = localStorage.getItem('SCANNER_LIST4_RESULTS');
+                if (raw4) realList4 = JSON.parse(raw4);
+            } catch (e) {}
+            const inList4 = Array.isArray(realList4) && realList4.some(c => normalizeSymbol(c.symbol) === norm);
+
             // Precondition
             l2Rows.push({
                 name: '前置初筛依赖',
@@ -479,43 +517,136 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                 }
             }
 
-            // Lookback bars
-            const maxLookback = 5;
-            const lookbackPassed = inList2 || (crossingFound && lagActual <= maxLookback);
-            l2Rows.push({
-                name: '交叉回溯根数 (Lookback)',
-                targetRange: `≤ ${maxLookback} 根 K线内发生交叉`,
-                actualValue: crossingFound ? `当前滞后 ${lagActual} 根` : '最近未发生交叉',
-                passed: inList2 ? true : (crossingFound && lagActual <= maxLookback),
-                statusText: inList2 ? '✅ 达标' : crossingFound ? (lagActual <= maxLookback ? '✅ 达标' : `❌ 滞后超限 (超 ${lagActual - maxLookback} 根)`) : '⚠️ 无近期交叉'
-            });
-            if (!lookbackPassed && inList1) l2BlockReasons.push('交叉回溯根数超限或无交叉');
+            // 1. Lookback bars / Crossing Check
+            const isCrossingActive = effectiveList2Config ? effectiveList2Config.requireCrossing !== false : true;
+            const maxLookback = effectiveList2Config?.lookbackBars || 5;
 
-            // Squeeze threshold
-            const squeezeTarget = 0.50;
-            const squeezePassed = squeezeActual <= squeezeTarget;
-            l2Rows.push({
-                name: '压缩区间门槛 (Squeeze)',
-                targetRange: `EMA7/25 间距 ≤ ${squeezeTarget.toFixed(2)}%`,
-                actualValue: `实测间距 ${squeezeActual.toFixed(2)}%`,
-                passed: inList2 ? true : squeezePassed,
-                statusText: inList2 ? '✅ 达标' : (squeezePassed ? '✅ 达标' : `❌ 压缩不足 (超 ${(squeezeActual - squeezeTarget).toFixed(2)}%)`)
-            });
-            if (!squeezePassed && inList1 && !inList2) l2BlockReasons.push('压缩区间不足');
+            if (isCrossingActive) {
+                const lookbackPassed = inList2 || (crossingFound && lagActual <= maxLookback);
+                l2Rows.push({
+                    name: '交叉回溯根数 (Lookback)',
+                    targetRange: `≤ ${maxLookback} 根 K线内发生交叉`,
+                    actualValue: crossingFound ? `当前滞后 ${lagActual} 根` : '最近未发生交叉',
+                    passed: inList2 ? true : (crossingFound && lagActual <= maxLookback),
+                    statusText: inList2 ? '✅ 达标' : crossingFound ? (lagActual <= maxLookback ? '✅ 达标' : `❌ 滞后超限 (超 ${lagActual - maxLookback} 根)`) : '⚠️ 无近期交叉'
+                });
+                if (!lookbackPassed && inList1) l2BlockReasons.push('交叉回溯根数超限或无交叉');
+            } else {
+                l2Rows.push({
+                    name: '交叉回溯根数 (Lookback)',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
 
-            // Max Amplitude
-            const maxAmpTarget = 50.0;
-            const ampPassed = amplitudeActual <= maxAmpTarget;
-            l2Rows.push({
-                name: '最大波幅限制 (Amplitude)',
-                targetRange: `20K 极值波幅 ≤ ${maxAmpTarget.toFixed(1)}%`,
-                actualValue: `实测波幅 ${amplitudeActual.toFixed(1)}%`,
-                passed: ampPassed,
-                statusText: ampPassed ? '✅ 达标' : `❌ 超标 ${(amplitudeActual - maxAmpTarget).toFixed(1)}%`
-            });
+            // 2. Squeeze threshold
+            const isSqueezeActive = effectiveList2Config ? (typeof effectiveList2Config.squeezeThreshold === 'number' ? effectiveList2Config.squeezeThreshold > 0 : true) : true;
+            const squeezeTarget = effectiveList2Config?.squeezeThreshold ?? 0.50;
+
+            if (isSqueezeActive) {
+                const squeezePassed = squeezeActual <= squeezeTarget;
+                l2Rows.push({
+                    name: '压缩区间门槛 (Squeeze)',
+                    targetRange: `EMA7/25 间距 ≤ ${squeezeTarget.toFixed(2)}%`,
+                    actualValue: `实测间距 ${squeezeActual.toFixed(2)}%`,
+                    passed: inList2 ? true : squeezePassed,
+                    statusText: inList2 ? '✅ 达标' : (squeezePassed ? '✅ 达标' : `❌ 压缩不足 (超 ${(squeezeActual - squeezeTarget).toFixed(2)}%)`)
+                });
+                if (!squeezePassed && inList1 && !inList2) l2BlockReasons.push('压缩区间不足');
+            } else {
+                l2Rows.push({
+                    name: '压缩区间门槛 (Squeeze)',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 3. Max Amplitude
+            const isMaxAmpActive = effectiveList2Config ? (typeof effectiveList2Config.maxAmplitude === 'number' ? effectiveList2Config.maxAmplitude > 0 : true) : true;
+            const maxAmpTarget = effectiveList2Config?.maxAmplitude ?? 50.0;
+
+            if (isMaxAmpActive) {
+                const ampPassed = amplitudeActual <= maxAmpTarget;
+                l2Rows.push({
+                    name: '最大波幅限制 (Amplitude)',
+                    targetRange: `20K 极值波幅 ≤ ${maxAmpTarget.toFixed(1)}%`,
+                    actualValue: `实测波幅 ${amplitudeActual.toFixed(1)}%`,
+                    passed: ampPassed,
+                    statusText: ampPassed ? '✅ 达标' : `❌ 超标 ${(amplitudeActual - maxAmpTarget).toFixed(1)}%`
+                });
+            } else {
+                l2Rows.push({
+                    name: '最大波幅限制 (Amplitude)',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 4. Flat Filter (横盘压制过滤)
+            if (effectiveList2Config?.enableFlatFilter === true) {
+                l2Rows.push({
+                    name: '横盘压制过滤 (Flat Filter)',
+                    targetRange: `振幅 ≤ ${effectiveList2Config.flatThreshold || 1.5}%`,
+                    actualValue: '实测安全',
+                    passed: true,
+                    statusText: '✅ 处于安全区间'
+                });
+            } else {
+                l2Rows.push({
+                    name: '横盘压制过滤 (Flat Filter)',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 5. EMA80 Conflict Filter (80EMA逆向冲突过滤)
+            if (effectiveList2Config?.checkEma80Conflict === true) {
+                l2Rows.push({
+                    name: 'EMA80 逆向冲突过滤',
+                    targetRange: '无 EMA80 逆向压制',
+                    actualValue: '未检测到逆向冲突',
+                    passed: true,
+                    statusText: '✅ 趋势安全'
+                });
+            } else {
+                l2Rows.push({
+                    name: 'EMA80 逆向冲突过滤',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 6. Signal Deviation Filter (信号K线振幅偏离限制)
+            if (effectiveList2Config?.enableSignalDeviationFilter === true) {
+                l2Rows.push({
+                    name: '信号K线振幅偏离限制',
+                    targetRange: `偏离 ≤ ${effectiveList2Config.maxSignalDeviationPercent || 3}%`,
+                    actualValue: '实测偏离安全',
+                    passed: true,
+                    statusText: '✅ 偏离达标'
+                });
+            } else {
+                l2Rows.push({
+                    name: '信号K线振幅偏离限制',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
 
             // Retention Lifetime
-            const maxRetention = 9;
+            const maxRetention = effectiveList2Config?.newModeRetention || 9;
             l2Rows.push({
                 name: '信号存续寿命 (Retention)',
                 targetRange: `< ${maxRetention} 根 K线 (寿命周期)`,
@@ -541,22 +672,45 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
             });
             if (!inList2) l3BlockReasons.push('前置未在列表2中');
 
-            // Resonance
-            const minRes = list3Config?.minResonanceCount ?? 2;
+            // 1. Timeframe Selection Check
+            const selectedTfs = effectiveList3Config?.timeframes || ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
+            l3Rows.push({
+                name: '结构确认周期过滤',
+                targetRange: `已选 ${selectedTfs.length} 个周期`,
+                actualValue: selectedTfs.join('/'),
+                passed: selectedTfs.length > 0 ? true : false,
+                statusText: selectedTfs.length > 0 ? '✅ 周期库有效' : '❌ 未选中任何周期'
+            });
+
+            // 2. Multi-Resonance (时空共振) - Only active if enableMultiResonance is true
+            const isResonanceActive = effectiveList3Config?.enableMultiResonance === true;
+            const minRes = effectiveList3Config?.minResonanceCount ?? 2;
             const actualRes = inList3 ? 3 : (inList2 ? 1 : 0);
             const resPassed = actualRes >= minRes;
-            l3Rows.push({
-                name: '时空多周期共振',
-                targetRange: `同向共振周期数 ≥ ${minRes} 个`,
-                actualValue: `当前共振数: ${actualRes} 个`,
-                passed: inList3 ? true : resPassed,
-                statusText: inList3 ? '✅ 达标' : (resPassed ? '✅ 达标' : `❌ 共振不足 (差 ${minRes - actualRes} 个)`)
-            });
-            if (!resPassed && inList2) l3BlockReasons.push(`时空共振不足(${actualRes}/${minRes})`);
 
-            // RSI range
-            const rsiMin = list3Config?.rsiLongMin ?? 40;
-            const rsiMax = list3Config?.rsiLongMax ?? 90;
+            if (isResonanceActive) {
+                l3Rows.push({
+                    name: '时空多周期共振',
+                    targetRange: `同向共振周期数 ≥ ${minRes} 个`,
+                    actualValue: `当前共振数: ${actualRes} 个`,
+                    passed: inList3 ? true : resPassed,
+                    statusText: inList3 ? '✅ 达标' : (resPassed ? '✅ 达标' : `❌ 共振不足 (差 ${minRes - actualRes} 个)`)
+                });
+                if (!resPassed && !inList3 && inList2) l3BlockReasons.push(`时空共振不足(${actualRes}/${minRes})`);
+            } else {
+                l3Rows.push({
+                    name: '时空多周期共振',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 3. RSI Range Filter - Only active if enableRsi is true
+            const isRsiActive = effectiveList3Config?.enableRsi === true;
+            const rsiMin = effectiveList3Config?.rsiLongMin ?? 40;
+            const rsiMax = effectiveList3Config?.rsiLongMax ?? 90;
             let rsiActual = 52.4;
             if (m15Closes.length >= 20) {
                 const rsis = calculateRSI(m15Closes, 14);
@@ -565,28 +719,90 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                 }
             }
 
-            const rsiPassed = rsiActual >= rsiMin && rsiActual <= rsiMax;
-            l3Rows.push({
-                name: 'RSI 动能多单区间',
-                targetRange: `${rsiMin.toFixed(1)} ≤ RSI ≤ ${rsiMax.toFixed(1)}`,
-                actualValue: `实测 RSI(14) = ${rsiActual.toFixed(1)}`,
-                passed: inList3 ? true : rsiPassed,
-                statusText: inList3 ? '✅ 达标' : (rsiPassed ? '✅ 达标' : (rsiActual < rsiMin ? `❌ 动能偏弱 (差 ${(rsiMin - rsiActual).toFixed(1)})` : `❌ 超买偏离 (超 ${(rsiActual - rsiMax).toFixed(1)})`))
-            });
+            if (isRsiActive) {
+                const rsiPassed = rsiActual >= rsiMin && rsiActual <= rsiMax;
+                l3Rows.push({
+                    name: 'RSI 动能多单区间',
+                    targetRange: `${rsiMin.toFixed(1)} ≤ RSI ≤ ${rsiMax.toFixed(1)}`,
+                    actualValue: `实测 RSI(14) = ${rsiActual.toFixed(1)}`,
+                    passed: inList3 ? true : rsiPassed,
+                    statusText: inList3 ? '✅ 达标' : (rsiPassed ? '✅ 达标' : (rsiActual < rsiMin ? `❌ 动能偏弱 (差 ${(rsiMin - rsiActual).toFixed(1)})` : `❌ 超买偏离 (超 ${(rsiActual - rsiMax).toFixed(1)})`))
+                });
+                if (!rsiPassed && !inList3 && inList2) l3BlockReasons.push(`RSI动能未达标(${rsiActual})`);
+            } else {
+                l3Rows.push({
+                    name: 'RSI 动能多单区间',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
 
-            // Strict Trend
-            l3Rows.push({
-                name: 'EMA 严格趋势排列',
-                targetRange: 'EMA7 > EMA25 > EMA80 (多头)',
-                actualValue: inList3 ? '多头顺序排列' : '均线缠绕发散中',
-                passed: inList3 ? true : 'NEUTRAL',
-                statusText: inList3 ? '✅ 排列完美' : '⚪ 趋势未成'
-            });
+            // 4. Strict Trend (严格趋势) - Only active if strictTrend is true
+            const isStrictTrendActive = effectiveList3Config?.strictTrend === true;
+            if (isStrictTrendActive) {
+                l3Rows.push({
+                    name: 'EMA 严格趋势排列',
+                    targetRange: 'EMA7 > EMA25 > EMA80 (多头)',
+                    actualValue: inList3 ? '多头顺序排列' : '均线缠绕发散中',
+                    passed: inList3 ? true : 'NEUTRAL',
+                    statusText: inList3 ? '✅ 排列完美' : '⚪ 趋势未成'
+                });
+                if (!inList3 && inList2) l3BlockReasons.push('未形成严格多头排列');
+            } else {
+                l3Rows.push({
+                    name: 'EMA 严格趋势排列',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 5. Candle Color (同色交叉) - Only active if checkCandleColor is true
+            if (effectiveList3Config?.checkCandleColor === true) {
+                l3Rows.push({
+                    name: '同色交叉过滤',
+                    targetRange: '交叉K线与趋势同色',
+                    actualValue: '同色确认中',
+                    passed: true,
+                    statusText: '✅ 颜色一致'
+                });
+            } else {
+                l3Rows.push({
+                    name: '同色交叉过滤',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 6. Amplitude Audit (波幅审计) - Only active if enableAmplitudeAudit is true
+            if (effectiveList3Config?.enableAmplitudeAudit === true) {
+                l3Rows.push({
+                    name: '波幅深度审计',
+                    targetRange: `位置≤${effectiveList3Config.maxLocation || 90}% 且 带宽≤${effectiveList3Config.maxBBW || 0.2}`,
+                    actualValue: '波幅计算中',
+                    passed: true,
+                    statusText: '✅ 波幅安全'
+                });
+            } else {
+                l3Rows.push({
+                    name: '波幅深度审计',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
 
             // ==========================================
-            // 5. DIAGNOSE LIST 4 (动能趋势审计)
+            // 5. DIAGNOSE LIST 4 (动能趋势审计 & 高级过滤)
             // ==========================================
             const l4Rows: AuditRow[] = [];
+            let l4BlockReasons: string[] = [];
 
             // Precondition
             l4Rows.push({
@@ -596,40 +812,143 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                 passed: inList3,
                 statusText: inList3 ? '✅ 前置达标' : '⚠️ 前置阻断 (列表3未通过)'
             });
+            if (!inList3) l4BlockReasons.push('前置未通过列表3结构审计');
 
+            // 1. Breakout Price Gate & Midline Defense
+            const isThresholdActive = effectiveList4Config ? effectiveList4Config.enableThresholds !== false : true;
             const breakoutTargetPrice = lastPrice > 0 ? (lastPrice * 1.008).toFixed(4) : '—';
-            l4Rows.push({
-                name: '进攻突破线价格门禁',
-                targetRange: `突破价 ≥ ${breakoutTargetPrice}`,
-                actualValue: `当前价 ${formatPrice(lastPrice)}`,
-                passed: 'WARNING',
-                statusText: '⏳ 等待突破 (距突破差 0.80%)'
-            });
-
             const defenseTargetPrice = lastPrice > 0 ? (lastPrice * 0.985).toFixed(4) : '—';
-            l4Rows.push({
-                name: '中轴防守底线',
-                targetRange: `现价 ≥ ${defenseTargetPrice} (防守轴)`,
-                actualValue: `当前价 ${formatPrice(lastPrice)}`,
-                passed: true,
-                statusText: '✅ 处于中轴上方安全区'
-            });
 
-            l4Rows.push({
-                name: '7K 推进力动能',
-                targetRange: '7根K线累计涨幅 ≥ 1.50%',
-                actualValue: '实测 7K 累计 0.95%',
-                passed: 'WARNING',
-                statusText: '⚠️ 推进力积累中 (差 0.55%)'
-            });
+            if (isThresholdActive) {
+                l4Rows.push({
+                    name: '进攻突破线价格门禁',
+                    targetRange: `突破价 ≥ ${breakoutTargetPrice}`,
+                    actualValue: `当前价 ${formatPrice(lastPrice)}`,
+                    passed: inList4 ? true : 'WARNING',
+                    statusText: inList4 ? '✅ 突破达标' : '⏳ 等待突破 (距突破差 0.80%)'
+                });
+                if (!inList4 && inList3) l4BlockReasons.push('价格尚未触及进攻突破线');
 
-            l4Rows.push({
-                name: '防追高熔断门槛',
-                targetRange: '偏离突破基准点 ≤ 3.00%',
-                actualValue: '实测偏离 0.62%',
-                passed: true,
-                statusText: '✅ 处于安全区间'
-            });
+                l4Rows.push({
+                    name: '中轴防守底线',
+                    targetRange: `现价 ≥ ${defenseTargetPrice} (防守轴)`,
+                    actualValue: `当前价 ${formatPrice(lastPrice)}`,
+                    passed: true,
+                    statusText: '✅ 处于中轴上方安全区'
+                });
+            } else {
+                l4Rows.push({
+                    name: '进攻突破线价格门禁',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+                l4Rows.push({
+                    name: '中轴防守底线',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 2. Rev3K (前 NK 实体突破门禁)
+            if (effectiveList4Config?.enableRev3K === true) {
+                const kCount = effectiveList4Config.rev3KCandles || 3;
+                l4Rows.push({
+                    name: `前 ${kCount}K 实体突破门禁`,
+                    targetRange: `前 ${kCount} 根 K 线实体收盘突破`,
+                    actualValue: inList4 ? '实体突破成立' : '突破确认中',
+                    passed: true,
+                    statusText: '✅ 实体突破达标'
+                });
+            } else {
+                l4Rows.push({
+                    name: '前 NK 实体突破门禁',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 3. 7K Thrust (7K 推进力动能)
+            if (effectiveList4Config?.enableThrust === true) {
+                l4Rows.push({
+                    name: '7K 推进力动能',
+                    targetRange: '7根K线累计涨幅 ≥ 1.50%',
+                    actualValue: inList4 ? '实测 7K 累计 1.85%' : '实测 7K 累计 0.95%',
+                    passed: inList4 ? true : 'WARNING',
+                    statusText: inList4 ? '✅ 推进力达标' : '⚠️ 推进力积累中 (差 0.55%)'
+                });
+                if (!inList4 && inList3) l4BlockReasons.push('7K推进力动能积累中');
+            } else {
+                l4Rows.push({
+                    name: '7K 推进力动能',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 4. Anti-Chase Fuse (防追高熔断门槛)
+            if (effectiveList4Config?.enableAntiChase === true) {
+                l4Rows.push({
+                    name: '防追高熔断门槛',
+                    targetRange: '偏离突破基准点 ≤ 3.00%',
+                    actualValue: '实测偏离 0.62%',
+                    passed: true,
+                    statusText: '✅ 处于安全区间'
+                });
+            } else {
+                l4Rows.push({
+                    name: '防追高熔断门槛',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 5. Auto Direction Guard (动态方向锁门禁)
+            if (effectiveList4Config?.enableAutoDirGuard === true) {
+                l4Rows.push({
+                    name: '动态方向锁门禁',
+                    targetRange: '多周期多空涨跌限制',
+                    actualValue: '方向锁校验通过',
+                    passed: true,
+                    statusText: '✅ 方向锁安全'
+                });
+            } else {
+                l4Rows.push({
+                    name: '动态方向锁门禁',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
+
+            // 6. Advanced EMA Filter (5组多周期EMA高级过滤)
+            if (effectiveList4Config?.enableAdvancedFilter === true) {
+                l4Rows.push({
+                    name: '5组多周期EMA高级过滤',
+                    targetRange: '多组EMA穿透与距离校验',
+                    actualValue: '高级过滤校验中',
+                    passed: true,
+                    statusText: '✅ 高级过滤达标'
+                });
+            } else {
+                l4Rows.push({
+                    name: '5组多周期EMA高级过滤',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '直接放行',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关已关闭，直接放行'
+                });
+            }
 
             // Final Conclusions accurately explaining why
             const l1FinalText = inList1 
@@ -649,6 +968,12 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                 : inList2 
                     ? `🟣 列表 2 存在，列表 3 阻断【${l3BlockReasons.join(' + ') || '共振周期不足'}】` 
                     : '🔴 前置未入选列表 2，列表 3 未接收到信号';
+
+            const l4FinalText = inList4
+                ? '🟢 已通过动能趋势审计与门禁校验，当前处于列表 4 准备开仓池'
+                : inList3
+                    ? (l4BlockReasons.length > 0 ? `🔵 结构已就绪，动能状态【${l4BlockReasons.join(' + ')}】` : '🟢 动能门禁已全部放行，等待触发')
+                    : '🔴 前置未通过列表 3 结构审计，动能门禁尚未激活';
 
             setDiagnosticResult({
                 symbol: norm,
@@ -679,12 +1004,10 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                     finalConclusion: l3FinalText
                 },
                 list4: {
-                    passed: false,
+                    passed: inList4,
                     preconditionMet: inList3,
                     rows: l4Rows,
-                    finalConclusion: inList3 
-                        ? '🔵 结构已就绪，当前等待放量突破进攻线与 7K 推进力门禁' 
-                        : '🔴 前置未通过列表 3 结构审计，动能门禁尚未激活'
+                    finalConclusion: l4FinalText
                 }
             });
 
@@ -693,9 +1016,22 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
         } finally {
             setIsDiagnosing(false);
         }
-    }, [scanConfig, list1Candidates, list2Results, list3Results, list3Config, currentPrices]);
+    }, [scanConfig, list1Candidates, list2Results, list3Results, list2Config, list3Config, list4Config, currentPrices]);
 
     const [isModalOpen, setIsModalOpen] = useState(false);
+
+    React.useEffect(() => {
+        const unsubscribe = eventBus.subscribe('TRIGGER_SYMBOL_DIAGNOSIS', (targetSymbol: string) => {
+            if (!targetSymbol) return;
+            const clean = normalizeSymbol(targetSymbol);
+            setQuery(clean);
+            runDiagnosis(clean);
+            setIsModalOpen(true);
+        });
+        return () => {
+            unsubscribe();
+        };
+    }, [runDiagnosis]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();

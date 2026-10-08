@@ -15,11 +15,11 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
             {/* ROW 1: Signal Retention & Lookback */}
             <div className="bg-slate-800/50 p-2 rounded border border-slate-700/50 space-y-2">
                 <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-bold">
-                    <History size={11} className="text-emerald-500"/> 信号存续 (Retention & Lookback)
+                    <History size={11} className="text-emerald-500"/> 信号存续
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                     <div className="flex items-center justify-between bg-slate-900/50 rounded px-2 py-1 border border-slate-800/50">
-                        <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">访问过去 (Lookback)</span>
+                        <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">访问过去</span>
                         <div className="flex items-center gap-1">
                             <input 
                                 type="number" 
@@ -31,7 +31,7 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                         </div>
                     </div>
                     <div className="flex items-center justify-between bg-slate-900/50 rounded px-2 py-1 border border-slate-800/50">
-                        <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">寿命根数 (Retention)</span>
+                        <span className="text-[9px] text-slate-500 font-bold whitespace-nowrap">寿命根数</span>
                         <div className="flex items-center gap-1">
                             <input 
                                 type="number" 

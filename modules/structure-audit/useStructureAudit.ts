@@ -1094,39 +1094,103 @@ export const useStructureAudit = (
     }
     prevCandidatesSignatureRef.current = currentSig;
 
-    // Sync Cache Removal & Expired Signals Cleanup
-    const validSymbols = new Set(candidates.map((c) => c.symbol));
-    const validUniqueIds = new Set<string>();
+    // Sync Cache Removal & Expired Signals Cleanup with strict List 2 inheritance
+    const candMap = new Map<string, ScannerItem>();
     candidates.forEach((c) => {
-      c.groupedResults?.forEach((r) => {
-        validUniqueIds.add(`${c.symbol}-${r.tf}-${r.direction || 'LONG'}`);
-      });
+      if (c.symbol) {
+        candMap.set(c.symbol, c);
+        candMap.set(normalizeSymbol(c.symbol), c);
+      }
     });
 
     let cleaned = false;
-    for (const [symbol, cached] of cacheRef.current.entries()) {
-      if (!validSymbols.has(symbol)) {
+    for (const [symbol, cached] of Array.from(cacheRef.current.entries())) {
+      const normSym = normalizeSymbol(symbol);
+      const matchingCandidate = candMap.get(symbol) || candMap.get(normSym);
+
+      if (!matchingCandidate) {
         cacheRef.current.delete(symbol);
         structureHashRef.current.delete(symbol);
         cleaned = true;
-      } else if (cached && cached.list3Results) {
-        const initialLen = cached.list3Results.length;
-        cached.list3Results = cached.list3Results.filter((r) => {
-          const uniqueId = `${symbol}-${r.tf}-${r.direction || 'LONG'}`;
-          return validUniqueIds.has(uniqueId);
-        });
-        if (cached.list3Results.length !== initialLen) {
-          cleaned = true;
-          if (cached.list3Results.length === 0) {
+      } else {
+        // Strict inheritance: Candidate is the sole source of truth for symbol, timeframe, and direction
+        const activeCandSignals = new Set(
+          (matchingCandidate.groupedResults || [])
+            .filter((r) => !r.isPendingGray)
+            .map((r) => `${r.tf}_${r.direction || 'LONG'}`),
+        );
+
+        // Synchronize candidate groupedResults and base properties
+        cached.symbol = matchingCandidate.symbol;
+        cached.timeframe = matchingCandidate.timeframe;
+        cached.groupedResults = matchingCandidate.groupedResults;
+
+        if (cached.list3Results && cached.list3Results.length > 0) {
+          const initialLen = cached.list3Results.length;
+          // Filter out any timeframe/direction that does not exist in List 2 candidate
+          cached.list3Results = cached.list3Results.filter((r) => {
+            return activeCandSignals.has(`${r.tf}_${r.direction || 'LONG'}`);
+          });
+
+          if (cached.list3Results.length !== initialLen) {
+            cleaned = true;
+          }
+        }
+
+        // If list3Results is empty or all previous timeframes were purged, re-seed from candidate's active signals
+        if (!cached.list3Results || cached.list3Results.length === 0) {
+          const nonGrayGrouped = (matchingCandidate.groupedResults || []).filter((r) => !r.isPendingGray);
+          if (nonGrayGrouped.length > 0) {
+            cached.list3Results = nonGrayGrouped.map((r) => {
+              const defaultStructure = {
+                rsi: 50,
+                bbw: 0.1,
+                crossCount: 2,
+                locationPct: 10,
+                thrustValid: true,
+                isStrictTrend: true,
+                isColorValid: true,
+                isBreakout3K: false,
+                lag: r.lag || 0,
+                signalTime: (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0),
+                signalPrice: matchingCandidate.price,
+                signalHigh: r.kHigh ?? matchingCandidate.price,
+                signalLow: r.kLow ?? matchingCandidate.price,
+                ema10: matchingCandidate.emaDetails?.ema10 || matchingCandidate.price,
+                ema20: matchingCandidate.emaDetails?.ema20 || matchingCandidate.price,
+                ema30: matchingCandidate.emaDetails?.ema30 || matchingCandidate.price,
+                ema40: matchingCandidate.emaDetails?.ema40 || matchingCandidate.price,
+                ema80: matchingCandidate.emaDetails?.ema80 || matchingCandidate.price,
+              };
+              return {
+                tf: r.tf,
+                direction: r.direction || 'LONG',
+                structure: defaultStructure,
+                latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, configRef.current),
+              };
+            });
+            cleaned = true;
+          } else {
             cacheRef.current.delete(symbol);
             structureHashRef.current.delete(symbol);
+            cleaned = true;
           }
         }
       }
     }
 
     // Clean up expiredSignalCacheRef for signals that are no longer in candidates
-    for (const uniqueId of expiredSignalCacheRef.current) {
+    const validUniqueIds = new Set<string>();
+    candidates.forEach((c) => {
+      c.groupedResults?.forEach((r) => {
+        if (!r.isPendingGray) {
+          validUniqueIds.add(`${c.symbol}-${r.tf}-${r.direction || 'LONG'}`);
+          validUniqueIds.add(`${normalizeSymbol(c.symbol)}-${r.tf}-${r.direction || 'LONG'}`);
+        }
+      });
+    });
+
+    for (const uniqueId of Array.from(expiredSignalCacheRef.current)) {
       if (!validUniqueIds.has(uniqueId)) {
         expiredSignalCacheRef.current.delete(uniqueId);
       }

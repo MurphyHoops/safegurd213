@@ -9,6 +9,7 @@ import { PositionSide } from '../../../types';
 import { formatPrice } from '../../../services/symbolUtils';
 import { getCoinChineseName } from '../../../services/coinNames';
 import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
+import { eventBus } from '../../../core/EventBus';
 
 interface Props {
     item: ScannerItem;
@@ -72,7 +73,22 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
     };
 
     return (
-        <div onClick={handleOpenChart} className={`bg-slate-800/60 border rounded overflow-hidden animate-in fade-in transition-all cursor-pointer hover:border-indigo-500/50 relative ${item.fuseBlocked ? 'border-slate-700 opacity-60 grayscale-[0.8]' : isInvalid ? 'border-red-500/30' : isTriggered ? 'border-amber-500/60 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'border-slate-600'}`}>
+        <div 
+            onClick={handleOpenChart} 
+            onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                eventBus.emit('OPEN_COIN_CONTEXT_MENU', {
+                    x: e.clientX,
+                    y: e.clientY,
+                    symbol: item.symbol,
+                    direction: item.direction || (isLong ? 'LONG' : 'SHORT'),
+                    currentPrice: item.price,
+                    chineseName: getCoinChineseName(item.symbol)
+                });
+            }}
+            className={`bg-slate-800/60 border rounded overflow-hidden animate-in fade-in transition-all cursor-pointer hover:border-indigo-500/50 relative ${item.fuseBlocked ? 'border-slate-700 opacity-60 grayscale-[0.8]' : isInvalid ? 'border-red-500/30' : isTriggered ? 'border-amber-500/60 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'border-slate-600'}`}
+        >
             {/* Individual Remove Button (Far Right) */}
             <button 
                 onClick={(e) => {

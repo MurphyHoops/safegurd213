@@ -5,6 +5,7 @@ import { ScannerItem, List2Config } from '../../../components/Scanner/scannerTyp
 import { verifyAndFixSymbolPrice } from '../../../services/priceVerifier';
 import { getCoinChineseName } from '../../../services/coinNames';
 import { normalizeSymbol } from '../../../services/symbolUtils';
+import { eventBus } from '../../../core/EventBus';
 
 const getTfMinutes = (tf: string) => {
     const unit = tf.slice(-1);
@@ -51,7 +52,21 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
     };
 
     return (
-        <div onClick={handleItemClick} className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${
+        <div 
+            onClick={handleItemClick} 
+            onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                eventBus.emit('OPEN_COIN_CONTEXT_MENU', {
+                    x: e.clientX,
+                    y: e.clientY,
+                    symbol: item.symbol,
+                    direction: item.direction || (isLong ? 'LONG' : isShort ? 'SHORT' : 'LONG'),
+                    currentPrice: item.price,
+                    chineseName: getCoinChineseName(item.symbol)
+                });
+            }}
+            className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${
             isGray 
                 ? 'border-slate-600/40 hover:border-slate-500/60' 
                 : isLong 

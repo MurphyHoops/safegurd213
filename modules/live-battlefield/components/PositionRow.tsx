@@ -5,6 +5,7 @@ import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
 import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
 import { formatPrice } from '../../../services/symbolUtils';
 import { getCoinChineseName } from '../../../services/coinNames';
+import { eventBus } from '../../../core/EventBus';
 
 interface Props {
     position: Position;
@@ -124,6 +125,18 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
     return (
         <div 
             onClick={(e) => handleOpenChart(e)}
+            onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                eventBus.emit('OPEN_COIN_CONTEXT_MENU', {
+                    x: e.clientX,
+                    y: e.clientY,
+                    symbol: position.symbol,
+                    direction: isLong ? 'LONG' : 'SHORT',
+                    currentPrice: currentPrice,
+                    chineseName: getCoinChineseName(position.symbol)
+                });
+            }}
             className="bg-slate-800/80 p-2 rounded border border-slate-700 relative overflow-hidden group animate-in fade-in shrink-0 cursor-pointer hover:border-indigo-500/50 transition-colors"
         >
              <div className={`absolute left-0 top-0 bottom-0 w-1 ${pnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>

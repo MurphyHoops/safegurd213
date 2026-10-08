@@ -3,6 +3,7 @@ import React from 'react';
 import { CheckSquare, Square, Trash2, Brain, TrendingUp } from 'lucide-react';
 import { ScannerItem, ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { getVolume8am } from '../../../services/volume8amService';
+import { eventBus } from '../../../core/EventBus';
 
 interface Props {
     item: ScannerItem;
@@ -49,6 +50,17 @@ export const List1Item: React.FC<Props> = ({
                 timeframe: scanConfig.list1DefaultTf || '1d', 
                 lookbackDays 
             })}
+            onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                eventBus.emit('OPEN_COIN_CONTEXT_MENU', {
+                    x: e.clientX,
+                    y: e.clientY,
+                    symbol: item.symbol,
+                    direction: item.direction || 'LONG',
+                    currentPrice: item.price
+                });
+            }}
             className={`bg-slate-800/50 p-1.5 px-2 rounded border text-[11px] group hover:bg-slate-800 transition-colors cursor-pointer relative ${item.isNew ? 'border-indigo-500/50 bg-indigo-900/10' : 'border-slate-700/50'} ${isSmart ? 'border-purple-500/30 shadow-lg shadow-purple-950/10 hover:border-purple-400/50' : ''}`}
         >
             {/* Absolute positioned hover Delete Button */}

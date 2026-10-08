@@ -551,9 +551,41 @@ export const useGrandCrossing = (
     // 🔒 [USER MANDATORY RULE - 列表2独立生命周期与信号存续]:
     // 只要进入列表2的币种与信号，其存续期完全由“信号存续/寿命根数”(newModeRetention)独立控制，
     // 严禁因列表1初筛池的瞬时浮动而过滤或删除。
-    items = Array.from(cacheRef.current.values()).filter(
-      (item) => item && item.symbol
-    );
+    // 🔒 [STRICT DE-DUPLICATION]: 绝对保证列表2每个币种只保留唯一实例，绝不重复显示
+    const dedupedItemsMap = new Map<string, ScannerItem>();
+    const redundantKeysToDelete: string[] = [];
+
+    cacheRef.current.forEach((item, k) => {
+      if (!item || !item.symbol) {
+        redundantKeysToDelete.push(k);
+        return;
+      }
+      const norm = normalizeSymbol(item.symbol);
+      const existing = dedupedItemsMap.get(norm);
+      if (!existing) {
+        dedupedItemsMap.set(norm, item);
+      } else {
+        // Merge groupedResults from duplicate entries
+        const mergedSigMap = new Map<string, any>();
+        (existing.groupedResults || []).forEach((r) => mergedSigMap.set(`${r.tf}-${r.direction}`, r));
+        (item.groupedResults || []).forEach((r) => {
+          const sigKey = `${r.tf}-${r.direction}`;
+          const cur = mergedSigMap.get(sigKey);
+          if (!cur || (r.lag || 0) < (cur.lag || 0)) {
+            mergedSigMap.set(sigKey, r);
+          }
+        });
+        const mergedList = Array.from(mergedSigMap.values());
+        mergedList.sort((a, b) => (a.lag || 0) - (b.lag || 0));
+        existing.groupedResults = mergedList;
+        if (k !== `${norm}-FULL`) {
+          redundantKeysToDelete.push(k);
+        }
+      }
+    });
+
+    redundantKeysToDelete.forEach((k) => cacheRef.current.delete(k));
+    items = Array.from(dedupedItemsMap.values());
 
     const sortMode = cfg.sortMode;
 
@@ -726,16 +758,49 @@ export const useGrandCrossing = (
   // --- MANUAL ACTIONS ---
   const removeItem = useCallback(
     (symbol: string) => {
+      const normSym = normalizeSymbol(symbol);
+      const safeSym = formatToBinanceSymbol(symbol);
+
+      // Clean up all key variations from cache
       cacheRef.current.delete(`${symbol}-FULL`);
+      cacheRef.current.delete(`${normSym}-FULL`);
+      cacheRef.current.delete(`${safeSym}-FULL`);
+      cacheRef.current.delete(symbol);
+      cacheRef.current.delete(normSym);
+      cacheRef.current.delete(safeSym);
+
+      Array.from(cacheRef.current.keys()).forEach((key) => {
+        if (
+          key.startsWith(`${symbol}-`) ||
+          key.startsWith(`${normSym}-`) ||
+          key.startsWith(`${safeSym}-`) ||
+          normalizeSymbol(key.replace('-FULL', '')) === normSym
+        ) {
+          cacheRef.current.delete(key);
+        }
+      });
+
       // Remove related captured signals
       const captured = Array.from(capturedSignalsRef.current);
       let removedCount = 0;
       captured.forEach((id) => {
-        if (id.startsWith(`${symbol}-`)) {
+        if (
+          id.startsWith(`${symbol}-`) ||
+          id.startsWith(`${normSym}-`) ||
+          id.startsWith(`${safeSym}-`)
+        ) {
           capturedSignalsRef.current.delete(id);
           removedCount++;
         }
       });
+
+      // Force UI state to drop the item immediately
+      setList2((prev) => prev.filter((i) => normalizeSymbol(i.symbol) !== normSym));
+
+      // Reset hash so performUpdate will force-trigger setList2 and re-evaluate stats
+      lastListSignalsHashRef.current = "";
+      lastListLengthRef.current = -1;
+
       performUpdate();
       onLog?.(
         "INFO",
@@ -751,29 +816,49 @@ export const useGrandCrossing = (
       const parts = uniqueId.split("-");
       if (parts.length < 3) return;
       const symbol = parts[0];
-      const tf = parts[1];
-      const direction = parts[2];
+      const normSym = normalizeSymbol(symbol);
+      const safeSym = formatToBinanceSymbol(symbol);
 
       expiredList2SignalCacheRef.current.add(uniqueId);
+      expiredList2SignalCacheRef.current.add(`${normSym}-${parts[1]}-${parts[2]}`);
+      expiredList2SignalCacheRef.current.add(`${safeSym}-${parts[1]}-${parts[2]}`);
 
-      // We only have symbol level items here.
-      // Let's remove the signal from groupedResults
-      const cached = cacheRef.current.get(`${symbol}-FULL`);
-      if (cached && cached.groupedResults) {
-        // ALWAYS delete the entire symbol from List 2, regardless of TF/Direction
-        // User requested: "不管是什么时间周期的都删除掉"
-        cacheRef.current.delete(`${symbol}-FULL`);
+      // Delete all variants from cache
+      cacheRef.current.delete(`${symbol}-FULL`);
+      cacheRef.current.delete(`${normSym}-FULL`);
+      cacheRef.current.delete(`${safeSym}-FULL`);
+      cacheRef.current.delete(symbol);
+      cacheRef.current.delete(normSym);
+      cacheRef.current.delete(safeSym);
 
-        // Remove captured signals too
-        const captured = Array.from(capturedSignalsRef.current);
-        captured.forEach((id) => {
-          // captured signal id: "SYMBOL-TF-DIRECTION-TIME"
-          if (id.startsWith(`${symbol}-`)) {
-            capturedSignalsRef.current.delete(id);
-          }
-        });
-        performUpdate();
-      }
+      Array.from(cacheRef.current.keys()).forEach((key) => {
+        if (
+          key.startsWith(`${symbol}-`) ||
+          key.startsWith(`${normSym}-`) ||
+          key.startsWith(`${safeSym}-`) ||
+          normalizeSymbol(key.replace('-FULL', '')) === normSym
+        ) {
+          cacheRef.current.delete(key);
+        }
+      });
+
+      // Remove captured signals too
+      const captured = Array.from(capturedSignalsRef.current);
+      captured.forEach((id) => {
+        if (
+          id.startsWith(`${symbol}-`) ||
+          id.startsWith(`${normSym}-`) ||
+          id.startsWith(`${safeSym}-`)
+        ) {
+          capturedSignalsRef.current.delete(id);
+        }
+      });
+
+      setList2((prev) => prev.filter((i) => normalizeSymbol(i.symbol) !== normSym));
+      lastListSignalsHashRef.current = "";
+      lastListLengthRef.current = -1;
+
+      performUpdate();
     },
     [performUpdate],
   );
@@ -1331,8 +1416,10 @@ export const useGrandCrossing = (
         });
       }
 
-      const finalCacheKey = `${symbol}-FULL`;
-      const latestItem = cacheRef.current.get(finalCacheKey) || item;
+      const normSym = normalizeSymbol(symbol);
+      const safeSym = formatToBinanceSymbol(symbol);
+      const finalCacheKey = `${normSym}-FULL`;
+      const latestItem = cacheRef.current.get(finalCacheKey) || cacheRef.current.get(`${symbol}-FULL`) || cacheRef.current.get(`${safeSym}-FULL`) || item;
       let finalResults = mergedResults;
 
       if (latestItem && latestItem.groupedResults) {
@@ -1364,7 +1451,10 @@ export const useGrandCrossing = (
 
       if (finalResults.length > 0) {
         finalResults.sort((a, b) => (a.lag || 0) - (b.lag || 0));
-        const livePrice = priceRegistry.getAllPrices()[normalizeSymbol(symbol)];
+        const livePrice = priceRegistry.getAllPrices()[normSym];
+        // Clean up any non-normalized legacy keys
+        cacheRef.current.delete(`${symbol}-FULL`);
+        cacheRef.current.delete(`${safeSym}-FULL`);
         cacheRef.current.set(finalCacheKey, {
           ...item,
           groupedResults: finalResults,
@@ -1377,6 +1467,7 @@ export const useGrandCrossing = (
       } else {
         cacheRef.current.delete(finalCacheKey);
         cacheRef.current.delete(`${symbol}-FULL`);
+        cacheRef.current.delete(`${safeSym}-FULL`);
         cacheRef.current.delete(symbol);
         scheduleUpdate();
       }
