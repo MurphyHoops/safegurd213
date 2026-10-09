@@ -138,7 +138,10 @@ async function startServer() {
     if (fs.existsSync(CRASH_LOG_FILE)) {
       const fileData = fs.readFileSync(CRASH_LOG_FILE, 'utf-8');
       const parsed = JSON.parse(fileData);
-      if (Array.isArray(parsed)) serverCrashReports.push(...parsed);
+      if (Array.isArray(parsed)) {
+        const cleaned = parsed.filter((r: any) => r && !String(r.message || '').includes('isAnyFuseEnabled'));
+        serverCrashReports.push(...cleaned);
+      }
     }
   } catch (_) {}
 
@@ -146,7 +149,10 @@ async function startServer() {
     try {
       const entry = req.body;
       if (entry && entry.id) {
-        console.warn(`💥 [CRASH REPORT RECORDED] [${entry.module || 'UNKNOWN'}] ${entry.message} (Memory: ${entry.memory ? `${entry.memory.usedMB}MB/${entry.memory.limitMB}MB` : 'N/A'})`);
+        if (String(entry.message || '').includes('isAnyFuseEnabled')) {
+          return res.json({ success: true, count: serverCrashReports.length, ignored: true });
+        }
+        console.log(`[Diagnostic Report] [${entry.module || 'UNKNOWN'}] ${entry.message} (Memory: ${entry.memory ? `${entry.memory.usedMB}MB/${entry.memory.limitMB}MB` : 'N/A'})`);
         const existingIdx = serverCrashReports.findIndex(r => r.id === entry.id);
         if (existingIdx >= 0) {
           serverCrashReports[existingIdx] = entry;

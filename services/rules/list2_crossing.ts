@@ -193,6 +193,10 @@ export function analyzeList2Crossing(
             }
 
             // =========================================================================
+            // 🔒 @LOCKED_MODULE: LIST2_DIVERGENCE_RULES (列表2均线发散规则永久硬锁定)
+            // 严禁未授权修改：没有用户明确下达指令，绝对不能触碰关于“发散”规则的所有代码和任何规则！
+            // 包含：EMA10/20/30/40发散形态、同向收盘确立信号K线、信号存续访问过去范围、发散回溯穿越、起爆原点Genesis锁定等全部逻辑
+            // =========================================================================
             // 🔒 [USER MANDATORY RULE - 核心前置门禁 (Core Gate 1 & Gate 2)]
             // 核心原则：
             // 步骤一：只在“信号存续/访问过去”设定值（lookbackLimit）内检查是否有 EMA10/20/30/40 呈发散形态
@@ -207,125 +211,25 @@ export function analyzeList2Crossing(
             const isAlignedL = isAlignedLong && !conflictL;
             const isAlignedS = isAlignedShort && !conflictS;
 
-            // Core Condition 2: 发散回溯穿越 (Directional Lookback Crossing)
-            let crossedAllL = true;
-            let crossedAllS = true;
-
-            if (enableDivergenceCrossCheck) {
-                let crossed20L = false;
-                let crossed30L = false;
-                let crossed40L = false;
-
-                let crossed20S = false;
-                let crossed30S = false;
-                let crossed40S = false;
-
-                // Track if EMA10 was on the opposing side at any point in the lookback window
-                let was10Below20 = false;
-                let was10Below30 = false;
-                let was10Below40 = false;
-
-                let was10Above20 = false;
-                let was10Above30 = false;
-                let was10Above40 = false;
-
-                for (let b = 0; b < divergenceLookbackBars; b++) {
-                    const bIdx = checkIdx - b;
-                    if (bIdx - 1 < minHistoryNeeded) break;
-
-                    const cur10 = getEmaVal(ema10, bIdx, 10);
-                    const cur20 = getEmaVal(ema20, bIdx, 20);
-                    const cur30 = getEmaVal(ema30, bIdx, 30);
-                    const cur40 = getEmaVal(ema40, bIdx, 40);
-
-                    const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                    const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                    const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                    const prev40 = getEmaVal(ema40, bIdx - 1, 40);
-
-                    if (cur10 !== null) {
-                        if (cur20 !== null && cur10 <= cur20) was10Below20 = true;
-                        if (cur30 !== null && cur10 <= cur30) was10Below30 = true;
-                        if (cur40 !== null && cur10 <= cur40) was10Below40 = true;
-
-                        if (cur20 !== null && cur10 >= cur20) was10Above20 = true;
-                        if (cur30 !== null && cur10 >= cur30) was10Above30 = true;
-                        if (cur40 !== null && cur10 >= cur40) was10Above40 = true;
-                    }
-
-                    if (cur10 !== null && prev10 !== null) {
-                        // 做多：EMA10 向上穿越 EMA20 / EMA30 / EMA40
-                        if (cur20 !== null && prev20 !== null) {
-                            if ((prev10 <= prev20 && cur10 >= cur20) || (prev10 < prev20 && cur10 > cur20)) {
-                                crossed20L = true;
-                            }
-                        }
-                        if (cur30 !== null && prev30 !== null) {
-                            if ((prev10 <= prev30 && cur10 >= cur30) || (prev10 < prev30 && cur10 > cur30)) {
-                                crossed30L = true;
-                            }
-                        }
-                        if (cur40 !== null && prev40 !== null) {
-                            if ((prev10 <= prev40 && cur10 >= cur40) || (prev10 < prev40 && cur10 > cur40)) {
-                                crossed40L = true;
-                            }
-                        }
-
-                        // 做空：EMA10 向下穿越 EMA20 / EMA30 / EMA40
-                        if (cur20 !== null && prev20 !== null) {
-                            if ((prev10 >= prev20 && cur10 <= cur20) || (prev10 > prev20 && cur10 < cur20)) {
-                                crossed20S = true;
-                            }
-                        }
-                        if (cur30 !== null && prev30 !== null) {
-                            if ((prev10 >= prev30 && cur10 <= cur30) || (prev10 > prev30 && cur10 < cur30)) {
-                                crossed30S = true;
-                            }
-                        }
-                        if (cur40 !== null && prev40 !== null) {
-                            if ((prev10 >= prev40 && cur10 <= cur40) || (prev10 > prev40 && cur10 < cur40)) {
-                                crossed40S = true;
-                            }
-                        }
-                    }
-                }
-
-                // If currently bullish aligned (e10 > e20/30/40) and EMA10 was <= target within lookback window, it crossed!
-                if (e10 > e20 && was10Below20) crossed20L = true;
-                if (e10 > e30 && was10Below30) crossed30L = true;
-                if (e10 > e40 && was10Below40) crossed40L = true;
-
-                // If currently bearish aligned (e10 < e20/30/40) and EMA10 was >= target within lookback window, it crossed!
-                if (e10 < e20 && was10Above20) crossed20S = true;
-                if (e10 < e30 && was10Above30) crossed30S = true;
-                if (e10 < e40 && was10Above40) crossed40S = true;
-
-                // 🔒 [USER MANDATORY RULE] 当开启发散回溯穿越时：在 divergenceLookbackBars 根K线内，EMA10必须完成对EMA20/30/40的完整方向性穿越
-                crossedAllL = crossed20L && crossed30L && crossed40L;
-                crossedAllS = crossed20S && crossed30S && crossed40S;
-            }
-
-            // 核心前置门禁判断：发散与穿越双重校验必须同时通过
-            const rawDivergenceValidL = isAlignedL && crossedAllL;
-            const rawDivergenceValidS = isAlignedS && crossedAllS;
+            let crossedAllL = !enableDivergenceCrossCheck;
+            let crossedAllS = !enableDivergenceCrossCheck;
 
             // =========================================================================
-            // 🔒 [USER MANDATORY RULE - 发散起爆原点锁定与收盘确认机制 (Genesis Divergence & Close Confirmation)]
-            // 核心铁律：
-            // 1. 发散起爆原点锁定 (Genesis Gate)：
-            //    追溯当前连续发散形态的“初生原点”(Genesis Bar K0，即在此K线前均线尚未完全发散，此K线首次确立发散)。
-            //    起爆原点 K0 距离当前最新K线的时间跨度 (idx - K0) 必须严格 <= “信号存续/访问过去”(scanLookbackLimit)。
-            //    若发散已持续过久 (超出存续根数)，坚决判定为老旧趋势/中后期鱼尾，一律彻底淘汰，禁止进入列表2！
-            // 2. 同向收盘确认机制 (Close-of-Candle Confirmation)：
-            //    从起爆原点 K0 开始，在存续有效窗口内寻找第一根已收盘同向K线（做多收阳 Close>Open，做空收阴 Close<Open）作为信号K线；
-            //    确认期间均线发散排列绝不可被反向破坏；若超出存续根数仍无同向K线收盘，则本次发散形态彻底作废。
+            // 🔒 [USER MANDATORY RULE - 两大场景均线发散首发起爆与收盘确认机制]
+            // 核心铁律：坚决只找龙头，不吃鱼身！
+            // 场景 1 (冷启动/重启程序):
+            //   - 发散回溯穿越: 起爆原点前 divergenceLookbackBars 根内，EMA10必须穿越EMA20/30/40
+            //   - 信号存续访问过去: 起爆原点距最新K线必须严格 <= scanLookbackLimit (访问过去N根)
+            // 场景 2 (程序常驻实时运行):
+            //   - 最新出现的发散形态，起爆原点前 divergenceLookbackBars 根内有穿越，即作为一手新信号入榜
+            //   - 信号入选后，在 retentionThreshold (寿命根数L根) 内合法存续，超出寿命自然淘汰
             // =========================================================================
             let divergenceValidL = false;
             let divConfirmedLagL = lag;
             let divConfirmedIdxL = checkIdx;
             let divIsPendingGrayL = false;
 
-            if (rawDivergenceValidL && lag > 0) {
+            if (isAlignedL && lag > 0) {
                 // 1. 追溯本轮多头发散的初生起爆原点 (Genesis Bar K0)
                 let genesisIdxL = checkIdx;
                 for (let g = checkIdx - 1; g >= Math.max(0, checkIdx - 100); g--) {
@@ -350,43 +254,98 @@ export function analyzeList2Crossing(
 
                 const genesisAgeL = idx - genesisIdxL;
 
-                // 2. 原点寿命硬门禁：起爆原点必须在【信号存续 / 访问过去】设定根数之内
-                if (genesisAgeL <= scanLookbackLimit) {
-                    // 从起爆原点向右寻找第一根已收盘阳线作为确认点
-                    let foundBullish = false;
-                    const maxForwardIdx = Math.min(idx - 1, genesisIdxL + scanLookbackLimit);
+                // 2. 龙头寿命与准入门禁：起爆原点必须在寿命期内；若为冷启动新准入，必须在访问过去设定根数之内
+                // 坚决只抓龙头，老旧趋势 (超出寿命或冷启动超访问过去) 坚决淘汰！
+                const isGenesisEligibleL = genesisAgeL <= scanLookbackLimit || (genesisAgeL <= retentionThreshold && maxNewLag >= retentionThreshold);
 
-                    for (let fIdx = genesisIdxL; fIdx <= maxForwardIdx; fIdx++) {
-                        const fE10 = getEmaVal(ema10, fIdx, 10);
-                        const fE20 = getEmaVal(ema20, fIdx, 20);
-                        const fE30 = getEmaVal(ema30, fIdx, 30);
-                        const fE40 = getEmaVal(ema40, fIdx, 40);
+                if (isGenesisEligibleL) {
+                    // 3. 发散回溯穿越校验：从起爆原点向前回溯 divergenceLookbackBars 根K线内，EMA10必须完成对EMA20/30/40的完整方向性穿越
+                    crossedAllL = true;
+                    if (enableDivergenceCrossCheck) {
+                        let crossed20L = false;
+                        let crossed30L = false;
+                        let crossed40L = false;
+                        let was10Below20 = false;
+                        let was10Below30 = false;
+                        let was10Below40 = false;
 
-                        // 🔒 铁律门禁：向后寻找确认阳线期间，均线多头形态绝不可被破坏
-                        if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
-                            break;
-                        }
+                        for (let b = 0; b < divergenceLookbackBars; b++) {
+                            const bIdx = genesisIdxL - b;
+                            if (bIdx - 1 < minHistoryNeeded) break;
 
-                        if (closes[fIdx] > opens[fIdx]) {
-                            // 确认K线本身也必须保持多头排列 (EMA10 > EMA20 > EMA30)
-                            const isStillBullish = fE30 !== null ? (fE10 > fE20 && fE20 > fE30) : (fE10 > fE20);
-                            if (isStillBullish && (idx - fIdx <= scanLookbackLimit) && (idx - fIdx > 0)) {
-                                divergenceValidL = true;
-                                divConfirmedIdxL = fIdx;
-                                divConfirmedLagL = idx - fIdx;
-                                divIsPendingGrayL = false;
-                                foundBullish = true;
-                                break;
+                            const cur10 = getEmaVal(ema10, bIdx, 10);
+                            const cur20 = getEmaVal(ema20, bIdx, 20);
+                            const cur30 = getEmaVal(ema30, bIdx, 30);
+                            const cur40 = getEmaVal(ema40, bIdx, 40);
+
+                            const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+
+                            if (cur10 !== null) {
+                                if (cur20 !== null && cur10 <= cur20) was10Below20 = true;
+                                if (cur30 !== null && cur10 <= cur30) was10Below30 = true;
+                                if (cur40 !== null && cur10 <= cur40) was10Below40 = true;
+                            }
+
+                            if (cur10 !== null && prev10 !== null) {
+                                if (cur20 !== null && prev20 !== null && ((prev10 <= prev20 && cur10 >= cur20) || (prev10 < prev20 && cur10 > cur20))) crossed20L = true;
+                                if (cur30 !== null && prev30 !== null && ((prev10 <= prev30 && cur10 >= cur30) || (prev10 < prev30 && cur10 > cur30))) crossed30L = true;
+                                if (cur40 !== null && prev40 !== null && ((prev10 <= prev40 && cur10 >= cur40) || (prev10 < prev40 && cur10 > cur40))) crossed40L = true;
                             }
                         }
+
+                        const genE10 = getEmaVal(ema10, genesisIdxL, 10);
+                        const genE20 = getEmaVal(ema20, genesisIdxL, 20);
+                        const genE30 = getEmaVal(ema30, genesisIdxL, 30);
+                        const genE40 = getEmaVal(ema40, genesisIdxL, 40);
+                        if (genE10 !== null && genE20 !== null && genE10 > genE20 && was10Below20) crossed20L = true;
+                        if (genE10 !== null && genE30 !== null && genE10 > genE30 && was10Below30) crossed30L = true;
+                        if (genE10 !== null && genE40 !== null && genE10 > genE40 && was10Below40) crossed40L = true;
+
+                        crossedAllL = crossed20L && crossed30L && crossed40L;
                     }
 
-                    if (!foundBullish) {
-                        divergenceValidL = false;
+                    if (crossedAllL) {
+                        // 4. 从起爆原点向右寻找第一根已收盘阳线作为确认点
+                        let foundBullish = false;
+                        const maxForwardIdx = Math.min(idx - 1, genesisIdxL + retentionThreshold);
+
+                        for (let fIdx = genesisIdxL; fIdx <= maxForwardIdx; fIdx++) {
+                            const fE10 = getEmaVal(ema10, fIdx, 10);
+                            const fE20 = getEmaVal(ema20, fIdx, 20);
+                            const fE30 = getEmaVal(ema30, fIdx, 30);
+
+                            // 🔒 铁律门禁：向后寻找确认阳线期间，均线多头形态绝不可被破坏
+                            if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
+                                break;
+                            }
+
+                            if (closes[fIdx] > opens[fIdx]) {
+                                const isStillBullish = fE30 !== null ? (fE10 > fE20 && fE20 > fE30) : (fE10 > fE20);
+                                const sigLagL = idx - fIdx;
+                                if (isStillBullish && sigLagL <= retentionThreshold && sigLagL > 0) {
+                                    // 🔒 [STRICT BODY GATE]: 若开启严格过滤，确认阳线实体比例必须达到设定阈值
+                                    const fRangeL = highs[fIdx] - lows[fIdx];
+                                    const fBodyRatioL = fRangeL > 0 ? (closes[fIdx] - opens[fIdx]) / fRangeL * 100 : 0;
+                                    if (strictFiltering && fBodyRatioL < minBodyRatio) {
+                                        continue;
+                                    }
+                                    divergenceValidL = true;
+                                    divConfirmedIdxL = fIdx;
+                                    divConfirmedLagL = sigLagL;
+                                    divIsPendingGrayL = false;
+                                    foundBullish = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!foundBullish) {
+                            divergenceValidL = false;
+                        }
                     }
-                } else {
-                    // 超出信号存续根数，判定为老旧发散，坚决淘汰
-                    divergenceValidL = false;
                 }
             }
 
@@ -395,7 +354,7 @@ export function analyzeList2Crossing(
             let divConfirmedIdxS = checkIdx;
             let divIsPendingGrayS = false;
 
-            if (rawDivergenceValidS && lag > 0) {
+            if (isAlignedS && lag > 0) {
                 // 1. 追溯本轮空头发散的初生起爆原点 (Genesis Bar K0)
                 let genesisIdxS = checkIdx;
                 for (let g = checkIdx - 1; g >= Math.max(0, checkIdx - 100); g--) {
@@ -420,43 +379,97 @@ export function analyzeList2Crossing(
 
                 const genesisAgeS = idx - genesisIdxS;
 
-                // 2. 原点寿命硬门禁：起爆原点必须在【信号存续 / 访问过去】设定根数之内
-                if (genesisAgeS <= scanLookbackLimit) {
-                    // 从起爆原点向右寻找第一根已收盘阴线作为确认点
-                    let foundBearish = false;
-                    const maxForwardIdx = Math.min(idx - 1, genesisIdxS + scanLookbackLimit);
+                // 2. 龙头寿命与准入门禁：起爆原点必须在寿命期内；若为冷启动新准入，必须在访问过去设定根数之内
+                const isGenesisEligibleS = genesisAgeS <= scanLookbackLimit || (genesisAgeS <= retentionThreshold && maxNewLag >= retentionThreshold);
 
-                    for (let fIdx = genesisIdxS; fIdx <= maxForwardIdx; fIdx++) {
-                        const fE10 = getEmaVal(ema10, fIdx, 10);
-                        const fE20 = getEmaVal(ema20, fIdx, 20);
-                        const fE30 = getEmaVal(ema30, fIdx, 30);
-                        const fE40 = getEmaVal(ema40, fIdx, 40);
+                if (isGenesisEligibleS) {
+                    // 3. 发散回溯穿越校验：从起爆原点向前回溯 divergenceLookbackBars 根K线内，EMA10必须完成对EMA20/30/40的完整方向性穿越
+                    crossedAllS = true;
+                    if (enableDivergenceCrossCheck) {
+                        let crossed20S = false;
+                        let crossed30S = false;
+                        let crossed40S = false;
+                        let was10Above20 = false;
+                        let was10Above30 = false;
+                        let was10Above40 = false;
 
-                        // 🔒 铁律门禁：向后寻找确认阴线期间，均线空头形态绝不可被破坏
-                        if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
-                            break;
-                        }
+                        for (let b = 0; b < divergenceLookbackBars; b++) {
+                            const bIdx = genesisIdxS - b;
+                            if (bIdx - 1 < minHistoryNeeded) break;
 
-                        if (closes[fIdx] < opens[fIdx]) {
-                            // 确认K线本身也必须保持空头排列 (EMA10 < EMA20 < EMA30)
-                            const isStillBearish = fE30 !== null ? (fE10 < fE20 && fE20 < fE30) : (fE10 < fE20);
-                            if (isStillBearish && (idx - fIdx <= scanLookbackLimit) && (idx - fIdx > 0)) {
-                                divergenceValidS = true;
-                                divConfirmedIdxS = fIdx;
-                                divConfirmedLagS = idx - fIdx;
-                                divIsPendingGrayS = false;
-                                foundBearish = true;
-                                break;
+                            const cur10 = getEmaVal(ema10, bIdx, 10);
+                            const cur20 = getEmaVal(ema20, bIdx, 20);
+                            const cur30 = getEmaVal(ema30, bIdx, 30);
+                            const cur40 = getEmaVal(ema40, bIdx, 40);
+
+                            const prev10 = getEmaVal(ema10, bIdx - 1, 10);
+                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+
+                            if (cur10 !== null) {
+                                if (cur20 !== null && cur10 >= cur20) was10Above20 = true;
+                                if (cur30 !== null && cur10 >= cur30) was10Above30 = true;
+                                if (cur40 !== null && cur10 >= cur40) was10Above40 = true;
+                            }
+
+                            if (cur10 !== null && prev10 !== null) {
+                                if (cur20 !== null && prev20 !== null && ((prev10 >= prev20 && cur10 <= cur20) || (prev10 > prev20 && cur10 < cur20))) crossed20S = true;
+                                if (cur30 !== null && prev30 !== null && ((prev10 >= prev30 && cur10 <= cur30) || (prev10 > prev30 && cur10 < cur30))) crossed30S = true;
+                                if (cur40 !== null && prev40 !== null && ((prev10 >= prev40 && cur10 <= cur40) || (prev10 > prev40 && cur10 < cur40))) crossed40S = true;
                             }
                         }
+
+                        const genE10 = getEmaVal(ema10, genesisIdxS, 10);
+                        const genE20 = getEmaVal(ema20, genesisIdxS, 20);
+                        const genE30 = getEmaVal(ema30, genesisIdxS, 30);
+                        const genE40 = getEmaVal(ema40, genesisIdxS, 40);
+                        if (genE10 !== null && genE20 !== null && genE10 < genE20 && was10Above20) crossed20S = true;
+                        if (genE10 !== null && genE30 !== null && genE10 < genE30 && was10Above30) crossed30S = true;
+                        if (genE10 !== null && genE40 !== null && genE10 < genE40 && was10Above40) crossed40S = true;
+
+                        crossedAllS = crossed20S && crossed30S && crossed40S;
                     }
 
-                    if (!foundBearish) {
-                        divergenceValidS = false;
+                    if (crossedAllS) {
+                        // 4. 从起爆原点向右寻找第一根已收盘阴线作为确认点
+                        let foundBearish = false;
+                        const maxForwardIdx = Math.min(idx - 1, genesisIdxS + retentionThreshold);
+
+                        for (let fIdx = genesisIdxS; fIdx <= maxForwardIdx; fIdx++) {
+                            const fE10 = getEmaVal(ema10, fIdx, 10);
+                            const fE20 = getEmaVal(ema20, fIdx, 20);
+                            const fE30 = getEmaVal(ema30, fIdx, 30);
+
+                            // 🔒 铁律门禁：向后寻找确认阴线期间，均线空头形态绝不可被破坏
+                            if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
+                                break;
+                            }
+
+                            if (closes[fIdx] < opens[fIdx]) {
+                                const isStillBearish = fE30 !== null ? (fE10 < fE20 && fE20 < fE30) : (fE10 < fE20);
+                                const sigLagS = idx - fIdx;
+                                if (isStillBearish && sigLagS <= retentionThreshold && sigLagS > 0) {
+                                    // 🔒 [STRICT BODY GATE]: 若开启严格过滤，确认阴线实体比例必须达到设定阈值
+                                    const fRangeS = highs[fIdx] - lows[fIdx];
+                                    const fBodyRatioS = fRangeS > 0 ? (opens[fIdx] - closes[fIdx]) / fRangeS * 100 : 0;
+                                    if (strictFiltering && fBodyRatioS < minBodyRatio) {
+                                        continue;
+                                    }
+                                    divergenceValidS = true;
+                                    divConfirmedIdxS = fIdx;
+                                    divConfirmedLagS = sigLagS;
+                                    divIsPendingGrayS = false;
+                                    foundBearish = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!foundBearish) {
+                            divergenceValidS = false;
+                        }
                     }
-                } else {
-                    // 超出信号存续根数，判定为老旧发散，坚决淘汰
-                    divergenceValidS = false;
                 }
             }
 
@@ -586,6 +599,12 @@ export function analyzeList2Crossing(
 
                             // 必须为已收盘阳线，且确立多头发散
                             if (isBulldiv && closes[fIdx] > opens[fIdx] && (idx - fIdx > 0)) {
+                                // 🔒 [STRICT BODY GATE]: 先穿越等待发散模式下，发散确认K线也必须严格满足实体比例门禁
+                                const fRangeL = highs[fIdx] - lows[fIdx];
+                                const fBodyRatioL = fRangeL > 0 ? (closes[fIdx] - opens[fIdx]) / fRangeL * 100 : 0;
+                                if (strictFiltering && fBodyRatioL < minBodyRatio) {
+                                    continue;
+                                }
                                 waitDivergenceFoundL = true;
                                 waitDivergenceIdxL = fIdx;
                                 break;
@@ -639,6 +658,12 @@ export function analyzeList2Crossing(
 
                             // 必须为已收盘阴线，且确立空头发散
                             if (isBearDiv && closes[fIdx] < opens[fIdx] && (idx - fIdx > 0)) {
+                                // 🔒 [STRICT BODY GATE]: 先穿越等待发散模式下，发散确认K线也必须严格满足实体比例门禁
+                                const fRangeS = highs[fIdx] - lows[fIdx];
+                                const fBodyRatioS = fRangeS > 0 ? (opens[fIdx] - closes[fIdx]) / fRangeS * 100 : 0;
+                                if (strictFiltering && fBodyRatioS < minBodyRatio) {
+                                    continue;
+                                }
                                 waitDivergenceFoundS = true;
                                 waitDivergenceIdxS = fIdx;
                                 break;
@@ -756,53 +781,83 @@ export function analyzeList2Crossing(
             }
 
             if (isValidL) {
-                const signalLagL = idx - targetIdxL;
-                const signalTimeL = timestamps[targetIdxL];
-                longSignals.push({ 
-                    lag: signalLagL, 
-                    direction: 'LONG', 
-                    amp: ampL, 
-                    time: signalTimeL, 
-                    bodyRatio: bodyRatioL, 
-                    isAligned: isAlignedLong,
-                    ampValid: ampValidL,
-                    volValid: volValidL,
-                    bodyValid: bodyValidL,
-                    isClosed: true,
-                    isPendingGray: false,
-                    isWaitDivergencePending: isWaitPendingL,
-                    waitElapsedBars: waitElapsedL,
-                    waitTotalBars: waitTotalL,
-                    kHigh: highs[targetIdxL],
-                    kLow: lows[targetIdxL],
-                    kClose: closes[targetIdxL],
-                    kOpen: opens[targetIdxL]
-                });
+                // 🔒 [STRICT RE-CHECK]: 对最终标记确立的信号K线 (targetIdxL) 终极核验实际实体比例与振幅
+                const finalRangeL = highs[targetIdxL] - lows[targetIdxL];
+                const finalAmpL = opens[targetIdxL] > 0 ? (finalRangeL / opens[targetIdxL]) * 100 : 0;
+                const finalIsLongL = closes[targetIdxL] >= opens[targetIdxL];
+                let finalBodyRatioL = 0;
+                if (finalRangeL > 0) {
+                    finalBodyRatioL = (finalIsLongL ? (closes[targetIdxL] - opens[targetIdxL]) : (opens[targetIdxL] - closes[targetIdxL])) / finalRangeL * 100;
+                }
+                const finalBodyValidL = finalBodyRatioL >= minBodyRatio;
+                const finalAmpValidL = finalAmpL >= squeezeThreshold && finalAmpL <= maxAmplitude;
+
+                if (strictFiltering && (!finalBodyValidL || !finalAmpValidL)) {
+                    isValidL = false;
+                } else {
+                    const signalLagL = idx - targetIdxL;
+                    const signalTimeL = timestamps[targetIdxL];
+                    longSignals.push({ 
+                        lag: signalLagL, 
+                        direction: 'LONG', 
+                        amp: finalAmpL, 
+                        time: signalTimeL, 
+                        bodyRatio: finalBodyRatioL, 
+                        isAligned: isAlignedLong,
+                        ampValid: finalAmpValidL,
+                        volValid: volValidL,
+                        bodyValid: finalBodyValidL,
+                        isClosed: true,
+                        isPendingGray: false,
+                        isWaitDivergencePending: isWaitPendingL,
+                        waitElapsedBars: waitElapsedL,
+                        waitTotalBars: waitTotalL,
+                        kHigh: highs[targetIdxL],
+                        kLow: lows[targetIdxL],
+                        kClose: closes[targetIdxL],
+                        kOpen: opens[targetIdxL]
+                    });
+                }
             }
 
             if (isValidS) {
-                const signalLagS = idx - targetIdxS;
-                const signalTimeS = timestamps[targetIdxS];
-                shortSignals.push({ 
-                    lag: signalLagS, 
-                    direction: 'SHORT', 
-                    amp: ampS, 
-                    time: signalTimeS, 
-                    bodyRatio: bodyRatioS, 
-                    isAligned: isAlignedShort,
-                    ampValid: ampValidS,
-                    volValid: volValidS,
-                    bodyValid: bodyValidS,
-                    isClosed: true,
-                    isPendingGray: false,
-                    isWaitDivergencePending: isWaitPendingS,
-                    waitElapsedBars: waitElapsedS,
-                    waitTotalBars: waitTotalS,
-                    kHigh: highs[targetIdxS],
-                    kLow: lows[targetIdxS],
-                    kClose: closes[targetIdxS],
-                    kOpen: opens[targetIdxS]
-                });
+                // 🔒 [STRICT RE-CHECK]: 对最终标记确立的信号K线 (targetIdxS) 终极核验实际实体比例与振幅
+                const finalRangeS = highs[targetIdxS] - lows[targetIdxS];
+                const finalAmpS = opens[targetIdxS] > 0 ? (finalRangeS / opens[targetIdxS]) * 100 : 0;
+                const finalIsLongS = closes[targetIdxS] >= opens[targetIdxS];
+                let finalBodyRatioS = 0;
+                if (finalRangeS > 0) {
+                    finalBodyRatioS = (finalIsLongS ? (closes[targetIdxS] - opens[targetIdxS]) : (opens[targetIdxS] - closes[targetIdxS])) / finalRangeS * 100;
+                }
+                const finalBodyValidS = finalBodyRatioS >= minBodyRatio;
+                const finalAmpValidS = finalAmpS >= squeezeThreshold && finalAmpS <= maxAmplitude;
+
+                if (strictFiltering && (!finalBodyValidS || !finalAmpValidS)) {
+                    isValidS = false;
+                } else {
+                    const signalLagS = idx - targetIdxS;
+                    const signalTimeS = timestamps[targetIdxS];
+                    shortSignals.push({ 
+                        lag: signalLagS, 
+                        direction: 'SHORT', 
+                        amp: finalAmpS, 
+                        time: signalTimeS, 
+                        bodyRatio: finalBodyRatioS, 
+                        isAligned: isAlignedShort,
+                        ampValid: finalAmpValidS,
+                        volValid: volValidS,
+                        bodyValid: finalBodyValidS,
+                        isClosed: true,
+                        isPendingGray: false,
+                        isWaitDivergencePending: isWaitPendingS,
+                        waitElapsedBars: waitElapsedS,
+                        waitTotalBars: waitTotalS,
+                        kHigh: highs[targetIdxS],
+                        kLow: lows[targetIdxS],
+                        kClose: closes[targetIdxS],
+                        kOpen: opens[targetIdxS]
+                    });
+                }
             }
         }
     }
@@ -863,8 +918,11 @@ export function analyzeList2Crossing(
         const isAlignmentModeL = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
         const validClusters = longClusters.filter(cluster => {
             const latestMember = cluster[0];
-            const isWithinLookback = latestMember.lag <= scanLookbackLimit;
             const isWithinRetention = latestMember.lag <= retentionThreshold;
+            if (isAlignmentModeL) {
+                return isWithinRetention;
+            }
+            const isWithinLookback = latestMember.lag <= scanLookbackLimit;
             return isWithinLookback && isWithinRetention;
         });
 
@@ -929,8 +987,11 @@ export function analyzeList2Crossing(
         const isAlignmentModeS = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
         const validClusters = shortClusters.filter(cluster => {
             const latestMember = cluster[0];
-            const isWithinLookback = latestMember.lag <= scanLookbackLimit;
             const isWithinRetention = latestMember.lag <= retentionThreshold;
+            if (isAlignmentModeS) {
+                return isWithinRetention;
+            }
+            const isWithinLookback = latestMember.lag <= scanLookbackLimit;
             return isWithinLookback && isWithinRetention;
         });
 

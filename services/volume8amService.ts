@@ -217,6 +217,10 @@ export async function fetchVolume8amBatch(
 }
 
 /**
+ * 🔒 LOCKED_MODULE: 列表1 [配置A 常规模式 - 交易额范围过滤规则与独立开关判定]
+ * 包含 24H 交易额区间校验、早上8点起交易额独立开关门禁校验、0 与 999999+ 无上限识别。
+ * 未获用户直接指令严禁擅自修改！
+ * 
  * 统一的交易额刚性过滤判定器
  * 严格遵从规则：
  * 1. 24H 交易额：只要大于设定值，或在设定值范围内即可，后面为 0 是无上限；
@@ -243,9 +247,13 @@ export function checkVolumeRule(
         let min24h = Number(config.minVolume) || 0;
         let max24h = Number(config.maxVolume) || 0;
 
-        // 防呆换算：若用户输入为原始 USDT (如输入 50000000 即 50M)，自动安全换算为 M
+        // 防呆换算：若用户输入为原始 USDT (如输入 50000000 即 50M)，自动安全换算为 M；若输入 999999+ (如9999999) 意为无上限，直接视为 0 (不设上限)
         if (min24h >= 100000) min24h = +(min24h / 1000000).toFixed(2);
-        if (max24h >= 100000) max24h = +(max24h / 1000000).toFixed(2);
+        if (max24h >= 999999) {
+            max24h = 0; // 视为无上限
+        } else if (max24h >= 100000) {
+            max24h = +(max24h / 1000000).toFixed(2);
+        }
 
         // 防呆容错：若最大值非零且小于最小值 (如 min=50, max=10)，属于无效倒挂区间，最大值自动视为无上限 (0)
         const effectiveMax24h = (max24h > 0 && min24h > 0 && max24h <= min24h) ? 0 : max24h;
@@ -276,13 +284,18 @@ export function checkVolumeRule(
     }
 
     // 2. 早上8点起交易额校验 (北京时间 08:00:00 至今)
-    const enable8am = Boolean(config.enableVol8am || config.timeBasis === '8AM');
+    // 🔒 修复独立判定：严格由独立开关 enableVol8am 决定，绝不因 timeBasis === '8AM' 强行越界开启
+    const enable8am = Boolean(config.enableVol8am);
     if (enable8am) {
-        let min8am = Number(config.minVolume8am !== undefined ? config.minVolume8am : (config.timeBasis === '8AM' ? 1 : 0)) || 0;
+        let min8am = Number(config.minVolume8am !== undefined ? config.minVolume8am : 0) || 0;
         let max8am = Number(config.maxVolume8am !== undefined ? config.maxVolume8am : 0) || 0;
 
         if (min8am >= 100000) min8am = +(min8am / 1000000).toFixed(2);
-        if (max8am >= 100000) max8am = +(max8am / 1000000).toFixed(2);
+        if (max8am >= 999999) {
+            max8am = 0; // 视为无上限
+        } else if (max8am >= 100000) {
+            max8am = +(max8am / 1000000).toFixed(2);
+        }
 
         const effectiveMax8am = (max8am > 0 && min8am > 0 && max8am <= min8am) ? 0 : max8am;
 

@@ -20,7 +20,19 @@ interface Props {
 
 export const List3Item: React.FC<Props> = ({ item, results, setChartData, executeTradeSafe, onRemove, idx }) => {
     // Use passed results if available, otherwise fall back to item.list3Results
-    const signals = results || item.list3Results || [];
+    const rawSignals = results || item.list3Results || [];
+    
+    // 🔒 [STRICT DE-DUPLICATION]: 周期唯一性保障，相同周期绝不重复渲染
+    const signals = React.useMemo(() => {
+        const sigMap = new Map<string, List3SignalResult>();
+        rawSignals.forEach(r => {
+            const key = `${r.tf}_${r.direction || 'LONG'}`;
+            if (!sigMap.has(key)) {
+                sigMap.set(key, r);
+            }
+        });
+        return Array.from(sigMap.values());
+    }, [rawSignals]);
     
     if (signals.length === 0) return null; // Should not render if empty
 
@@ -113,7 +125,7 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                                     <AlertTriangle size={8} className="text-amber-500 bg-amber-900/80 rounded-full" />
                                 )}
                                 {res.structure.thrustValid && (
-                                    <div className="w-1.5 h-1.5 bg-orange-500 rounded-full shadow-sm" title="Thrust Valid" />
+                                    <div className="w-1.5 h-1.5 bg-orange-500 rounded-full shadow-sm" title={`5K爆发推进达标 (${res.structure.maxThrust ? res.structure.maxThrust + '%' : '≥1%'})`} />
                                 )}
                             </div>
                         </div>

@@ -385,7 +385,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
           </div>
         </div>
 
-        {/* NEW: Independent Momentum Conditions (NK & 7K) */}
+        {/* NEW: Independent Momentum Conditions (NK & 5K) */}
         <div className="grid grid-cols-2 gap-2 py-1">
           <div className="bg-slate-800 p-1.5 rounded border border-slate-700 flex items-center justify-between gap-1">
             <div className="flex items-center gap-1">
@@ -423,7 +423,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
             </div>
           </div>
 
-          <div className="bg-slate-800 p-1.5 rounded border border-slate-700 flex items-center justify-between">
+          <div className="bg-slate-800 p-1.5 rounded border border-slate-700 flex items-center justify-between gap-1">
             <div className="flex items-center gap-1">
               <Rocket
                 size={10}
@@ -431,15 +431,33 @@ export const List4Control: React.FC<List4PanelProps> = ({
                   config.enableThrust ? "text-orange-400" : "text-slate-500"
                 }
               />
-              <span className="text-[8px] text-slate-400 font-bold">
-                7K爆发推进
+              <span className="text-[8px] text-slate-400 font-bold" title="5K爆发推进：以信号K为中心覆盖左右各2根(共5根)，核验包含信号K的234、345、456任意组合做多涨幅/做空跌幅≥设定阈值">
+                5K推进
               </span>
+              <input
+                type="number"
+                step="0.1"
+                min="0.1"
+                max="20"
+                value={config.thrustThreshold ?? 1.0}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  setConfig((p) => ({
+                    ...p,
+                    thrustThreshold: isNaN(val) ? 1.0 : Math.max(0.1, Math.min(20, val)),
+                  }));
+                }}
+                className="w-7 bg-slate-900 border border-slate-700 rounded text-center text-[9px] text-orange-400 font-bold outline-none py-0.5"
+                title="设置5K爆发推进振幅阈值 % (默认 1.0%，支持自定义如 1.5%、2.0% 等)"
+              />
+              <span className="text-[8px] text-slate-500 font-bold">%</span>
             </div>
             <div
               onClick={() =>
                 setConfig((p) => ({ ...p, enableThrust: !p.enableThrust }))
               }
-              className={`w-6 h-3 rounded-full p-0.5 transition-colors cursor-pointer ${config.enableThrust ? "bg-orange-500" : "bg-slate-700"}`}
+              className={`w-6 h-3 rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${config.enableThrust ? "bg-orange-500" : "bg-slate-700"}`}
+              title={config.enableThrust ? "点击关闭5K爆发推进" : "点击开启5K爆发推进"}
             >
               <div
                 className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${config.enableThrust ? "translate-x-3" : "translate-x-0"}`}

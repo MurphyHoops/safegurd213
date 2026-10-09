@@ -35,6 +35,7 @@ const DEFAULT_CONFIG: List4Config = {
     enableRev3K: false,
     rev3KCandles: 3,
     enableThrust: false,
+    thrustThreshold: 1.0,
     invalidRetentionMinutes: 10, 
     removeInvalidMinutes: 15,
     removeTriggeredMinutes: 15,

@@ -883,8 +883,10 @@ const List1_Selection: React.FC<Props> = ({
             return checkVolumeRule(item, scanConfig);
         });
 
-        // 判断“行情启动趋势”是否处于活动状态（必须开启 enableStartTrend 总开关，且多或空至少开启一个）
+        // 判断“行情启动趋势”是否处于活动状态（必须在大行情发现模式开启且 enableStartTrend 总开关开启，且多或空至少开启一个）
+        const isMajorTrendActive = Boolean(scanConfig.majorTrend?.enabled && scanConfig.timeBasis !== '8AM');
         const isStartTrendActive = Boolean(
+            isMajorTrendActive &&
             scanConfig.majorTrend?.enableStartTrend &&
             (scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort)
         );
@@ -893,20 +895,21 @@ const List1_Selection: React.FC<Props> = ({
             : null;
 
         // 🔒【行情启动趋势底池前置过滤】：
-        // 1. 若行情启动趋势多/空开启且启动底池有数据，凡不在启动趋势底池中的币种过滤剔除；
-        // 2. 若“行情启动趋势”关闭或底池为空，则不进行强制过滤拦截，保证市场初筛底池完整可用！
+        // 1. 若大行情发现模式下行情启动趋势多/空开启且启动底池有数据，凡不在启动趋势底池中的币种过滤剔除；
+        // 2. 若“大行情发现”未开启、或“行情启动趋势”关闭或底池为空，则不进行强制过滤拦截，保证常规模式初筛底池完整可用！
         const startTrendFilteredList = startTrendNormalizedSet
             ? volumeFilteredList.filter(item => startTrendNormalizedSet.has(normalizeSym(item.symbol)) || (startTrendPool && startTrendPool.some(p => p.symbol === item.symbol)))
             : volumeFilteredList;
 
         // =========================================================================
-        // 🌊 状态 1：当【大行情发现】关闭时，市场初筛列表按照【行情启动底池】规则过滤
-        // 凡不再符合启动趋势规则的币种立即被剔除，不留存任何失效币种
+        // 🌊 状态 1：当【配置 A (常规模式)】（即大行情发现未激活）时：
+        // 市场初筛列表彻底放行，100% 仅由成交范围过滤（24H 交易额/早上8点起交易额）与涨跌幅决定，
+        // 绝不被大行情发现模式中的“行情启动底池”拦截，确保全市场币种完整呈现！
         // =========================================================================
         let finalResult: ScannerItem[] = [];
 
-        if (!scanConfig.majorTrend?.enabled) {
-            finalResult = startTrendFilteredList;
+        if (!isMajorTrendActive) {
+            finalResult = volumeFilteredList;
         } else {
             // =========================================================================
             // 🌊 状态 2：当【大行情发现】开启时！

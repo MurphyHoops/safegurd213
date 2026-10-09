@@ -59,7 +59,13 @@ export const getCrashBlackbox = (): CrashBlackboxEntry[] => {
         const raw = localStorage.getItem(CRASH_BLACKBOX_KEY);
         if (raw) {
             const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) return parsed;
+            if (Array.isArray(parsed)) {
+                const sanitized = parsed.filter(item => item && !String(item.message || '').includes('isAnyFuseEnabled'));
+                if (sanitized.length !== parsed.length) {
+                    localStorage.setItem(CRASH_BLACKBOX_KEY, JSON.stringify(sanitized));
+                }
+                return sanitized;
+            }
         }
     } catch (_) {}
     return [];
@@ -84,6 +90,7 @@ export const recordCrashToBlackbox = (params: {
     details?: any;
 }): void => {
     if (typeof window === 'undefined') return;
+    if (String(params.message || '').includes('isAnyFuseEnabled')) return;
     try {
         const existing = getCrashBlackbox();
         const now = Date.now();
@@ -296,11 +303,15 @@ export const logger = {
 };
 
 // --- CRASH BACKEND SYNC & FLIGHT RECORDER WATCHDOG ---
+const syncedCrashIds = new Set<string>();
 export const syncCrashesToBackend = async () => {
     if (typeof window === 'undefined') return;
     try {
         const local = getCrashBlackbox();
         for (const entry of local.slice(0, 10)) {
+            if (!entry || !entry.id || syncedCrashIds.has(entry.id)) continue;
+            if (String(entry.message || '').includes('isAnyFuseEnabled')) continue;
+            syncedCrashIds.add(entry.id);
             fetch('/api/monitor/crash-report', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 1 [大行情发现模式 - 运行规则、参数配置与UI控制面板]
+// @LOCKED: 严格原子化锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动大行情发现模式的任何功能、规则与代码。
+
 import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Activity, Settings2, PlayCircle, Loader2, CheckCircle2, Clock, Plus, Trash2, Layers, Link2, Unlink } from 'lucide-react';
 import { MajorTrendConfig, SidewaysRuleGroup } from '../../../components/Scanner/scannerTypes';

@@ -41,6 +41,7 @@ export const useBacktestMomentumAudit = (
         enableRev3K: true,
         rev3KCandles: 3,
         enableThrust: true,
+        thrustThreshold: 1.0,
         directionFilter: 'BOTH',
         autoExecute: true,
         invalidRetentionMinutes: 10,

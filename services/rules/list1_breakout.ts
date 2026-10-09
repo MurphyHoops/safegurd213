@@ -1,4 +1,7 @@
 
+// 🔒 LOCKED_MODULE: LIST 1 [大行情爆发/突破过滤规则 - 规则计算引擎]
+// @LOCKED: 严格原子化锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动大行情突破/爆发规则的任何功能与代码。
+
 import { BreakoutFilterConfig } from '../../components/Scanner/scannerTypes';
 import { calculateBollingerBands, calculateATR, calculateADX, calculateEMA, checkEmaDivergence } from '../indicators';
 import { fetchWithFallback } from '../apiService';

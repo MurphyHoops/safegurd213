@@ -18,6 +18,7 @@ import {
   ActionConfig,
   COLUMN_WIDTH_CLASS,
   StructureScanStatus,
+  List3SignalResult,
 } from "../../../components/Scanner/scannerTypes";
 import { PositionSide, Position } from "../../../types";
 import { List3Control } from "./Control";
@@ -25,6 +26,7 @@ import { List3Item } from "./Item";
 import { ScannerVisualizerModal } from "../../../components/ScannerVisualizerModal";
 import { ScannerHistoryModal, useAutoHistoryLogger } from "../../momentum-audit/components/ScannerHistoryModal";
 import { checkList3SignalPasses } from "../../../services/rules/list3_structure";
+import { normalizeSymbol } from "../../../services/symbolUtils";
 
 interface Props {
   config: List3Config;
@@ -69,21 +71,54 @@ const List3_Structure: React.FC<Props> = ({
   const filteredList = useMemo(() => {
     if (!list3) return [];
 
-    return list3
-      .map((item) => {
-        // Defensive Check: Ensure item and list3Results exist
-        if (!item || !item.list3Results) return null;
+    // 🔒 [STRICT DE-DUPLICATION]: 绝对保证列表3每个币种只保留唯一卡片，同币种同周期绝不重复显示
+    const dedupedCoinsMap = new Map<string, ScannerItem>();
 
-        const validResults = item.list3Results.filter((r) =>
-          checkList3SignalPasses(r, config, item.adjacentStrictTrends)
-        );
+    list3.forEach((item) => {
+      // Defensive Check: Ensure item and list3Results exist
+      if (!item || !item.symbol || !item.list3Results) return;
 
-        // Minimum Results Check
-        if (validResults.length === 0) return null;
+      const validResults = item.list3Results.filter((r) =>
+        checkList3SignalPasses(r, config, item.adjacentStrictTrends)
+      );
 
-        return { ...item, list3Results: validResults };
-      })
-      .filter(Boolean) as ScannerItem[];
+      // Minimum Results Check
+      if (validResults.length === 0) return;
+
+      // 周期去重：确保同一个币种下同一个周期绝不重复存在
+      const tfMap = new Map<string, List3SignalResult>();
+      validResults.forEach((r) => {
+        const sigKey = `${r.tf}_${r.direction || 'LONG'}`;
+        const cur = tfMap.get(sigKey);
+        if (!cur || (r.structure?.lag || 0) <= (cur.structure?.lag || 0)) {
+          tfMap.set(sigKey, r);
+        }
+      });
+      const uniqueResults = Array.from(tfMap.values());
+      if (uniqueResults.length === 0) return;
+
+      const norm = normalizeSymbol(item.symbol);
+      const existing = dedupedCoinsMap.get(norm);
+      if (!existing) {
+        dedupedCoinsMap.set(norm, { ...item, list3Results: uniqueResults });
+      } else {
+        // 合并重复币种卡片的信号，并再次去重周期
+        const mergedMap = new Map<string, List3SignalResult>();
+        (existing.list3Results || []).forEach((r) => {
+          mergedMap.set(`${r.tf}_${r.direction || 'LONG'}`, r);
+        });
+        uniqueResults.forEach((r) => {
+          const sigKey = `${r.tf}_${r.direction || 'LONG'}`;
+          const cur = mergedMap.get(sigKey);
+          if (!cur || (r.structure?.lag || 0) <= (cur.structure?.lag || 0)) {
+            mergedMap.set(sigKey, r);
+          }
+        });
+        existing.list3Results = Array.from(mergedMap.values());
+      }
+    });
+
+    return Array.from(dedupedCoinsMap.values());
   }, [list3, config]);
 
   useAutoHistoryLogger('LIST3', filteredList || [], activePositions || []);

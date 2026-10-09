@@ -91,13 +91,21 @@ export const BacktestGrandCrossingModule: React.FC<Props> = ({
       });
     });
 
-    if (config?.syncDirectionFilterToList3) {
-      const dir = config.viewMode || 'ALL';
-      if (dir === 'LONG') {
-        outputList = outputList.filter(item => item && item.direction === 'LONG');
-      } else if (dir === 'SHORT') {
-        outputList = outputList.filter(item => item && item.direction === 'SHORT');
-      }
+    // 🔒 [方向严格门禁] 若列表2指定了 [多] (LONG) 或 [空] (SHORT)，则无论独立同步开关状态如何，均严格只向下游列表3输送对应方向的标的与内部周期信号
+    const activeDir = config?.viewMode || 'ALL';
+    if (activeDir === 'LONG' || activeDir === 'SHORT') {
+      outputList = outputList.map(item => {
+        if (!item || !item.groupedResults) return null;
+        const matchingResults = item.groupedResults.filter(r => r.direction === activeDir);
+        if (matchingResults.length === 0) return null;
+        const primaryResult = matchingResults[0];
+        return {
+          ...item,
+          direction: activeDir,
+          timeframe: primaryResult.timeframe || item.timeframe,
+          groupedResults: matchingResults
+        };
+      }).filter(Boolean) as any[];
     }
     const resultsStr = JSON.stringify(outputList);
     if (resultsStr !== lastResultsStrRef.current) {

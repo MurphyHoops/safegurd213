@@ -14,10 +14,11 @@
 | 模块单元 (Atomic Unit) | 物理路径 (Path) | 锁定级别 | 责任范围 |
 | :--- | :--- | :--- | :--- |
 | **List 1 [全域底边扫描 & 过滤规则]** | `modules/market-scanner/`<br>`services/rules/list1_market.ts`<br>`modules/market-scanner/components/StartTrendPoolBox.tsx` | 🔴 LOCKED | 行情启动趋势、横盘蓄势、回溯周期等全部过滤算法与流转规则（严禁擅自修改） |
+| **List 1 [配置A 常规模式全套规则与代码]** | `modules/market-scanner/components/FilterSection.tsx`<br>`modules/market-scanner/components/VolumePoolBox.tsx`<br>`services/volume8amService.ts`<br>`services/rules/list1_market.ts` | 🔴 LOCKED | 24H成交额区间校验、早上8点起成交额独立开关门禁判定、超大数值防呆容错、涨跌幅过滤、常规模式放行底池等所有运行规则与代码（绝对固化锁定，无指令严禁触碰修改） |
 | **市场初筛列表 [增删/差量更新机制]** | `modules/market-scanner/components/List1_Selection.tsx`<br>`modules/market-scanner/useScannerLogic.ts` | 🔴 LOCKED | 最后一项过滤完成后的差量对比、永不清零、精准增删同步机制（严禁擅自修改） |
-| **List 2 [大十字星监控]** | `modules/grand-crossing/`<br>`services/rules/list2_crossing.ts` | 🔴 LOCKED | 大十字星 K 线特征与极值监控 |
+| **List 2 [大十字星监控 & 均线发散规则]** | `modules/grand-crossing/`<br>`services/rules/list2_crossing.ts` | 🔴 LOCKED | 大十字星 K 线特征与极值监控、EMA10/20/30/40均线发散形态、同向K线收盘确立信号K线、信号存续访问过去K线范围核验、发散回溯穿越、发散起爆原点锁定与老旧发散淘汰门禁、列表2至列表3方向过滤强行门禁与周期信号原子净化等全部发散规则与代码（严禁擅自修改） |
 | **List 3 [结构深度审计 & 过滤规则]** | `modules/structure-audit/`<br>`services/rules/list3_structure.ts` | 🔴 LOCKED | 支撑阻力、严格趋势、同色交叉、波幅审计、RSI动能、时空共振等全部结构深度审计功能与代码（严禁擅自修改） |
-| **List 4 [动能趋势审计 & 高级过滤]** | `modules/momentum-audit/`<br>`services/rules/list4_momentum.ts` | 🔴 LOCKED | 进攻突破线、中轴防守、前NK突破门禁、突破偏离拦截、7K推进力、防追高熔断、动态方向锁、5组多周期EMA高级过滤（严禁擅自修改/增删） |
+| **List 4 [动能趋势审计 & 高级过滤]** | `modules/momentum-audit/`<br>`services/rules/list4_momentum.ts`<br>`services/rules/list3_structure.ts` | 🔴 LOCKED | 进攻突破线、中轴防守、前NK突破门禁、突破偏离拦截、5K爆发推进（234/345/456连续3根组合、做多涨幅/做空跌幅阈值调节与熔断）、防追高熔断、动态方向锁、5组多周期EMA高级过滤（已全面固化锁定，严禁擅自修改/增删） |
 | **List 5 [实况战场监控]** | `modules/live-battlefield/` | 🔴 LOCKED | 盘面持仓雷达与多空强弱实况看板 |
 | **List 6 [终极战术终端]** | `modules/tactical-command/` | 🔴 LOCKED | 战术执行与手动策略指令控制 |
 | **模块 1 [多维止盈止损]** | `modules/profit-manager/`<br>`services/rules/profit_loss_rules.ts`<br>`services/rules/profit/conventional.ts` | 🔴 LOCKED | 智能止盈、ATR追踪止盈、常规止损、多级阶梯式变量保底平仓算法与配置（严禁擅自修改） |

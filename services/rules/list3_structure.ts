@@ -237,37 +237,69 @@ export function analyzeList3Structure(
         postSignalMinLow = Infinity;
     }
 
-    // --- METRIC 4: Thrust Logic (New 4K Window Logic) ---
-    // Rule: Signal candle (1K) OR [Signal + 3 Left] OR [Signal + 3 Right] amplitude > 1%
+    // --- METRIC 4: 5K 爆发推进 (5-Candle Window & 3-Candle Combos 234, 345, 456) ---
+    // 规则：以信号K线(S)为中心，覆盖左侧2根 + 信号K自身 + 右侧2根 (总计5根K线)。
+    // 必须包含信号K线的3根连续组合：
+    // - 组合 234: [S-2, S-1, S] (信号K前第2根到信号K自身)
+    // - 组合 345: [S-1, S, S+1] (信号K前第1根到信号K后第1根)
+    // - 组合 456: [S, S+1, S+2] (信号K自身到信号K后第2根)
+    // 判定：做多涨幅 (Close - Open) / Open，做空跌幅 (Open - Close) / Open。
+    // 只要任意已形成的组合涨/跌幅达到设定阈值 (默认 1.0%) 即算达标通过。
+    let thrustThreshold = 1.0;
+    try {
+        const activeId = typeof window !== 'undefined' ? localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID") : null;
+        const cleanId = activeId ? (activeId.startsWith('"') ? JSON.parse(activeId) : activeId) : '';
+        const savedL4 = typeof window !== 'undefined' ? (
+            (cleanId ? localStorage.getItem(`SCANNER_LIST4_CONFIG_${cleanId}`) : null) || 
+            localStorage.getItem('SCANNER_LIST4_CONFIG')
+        ) : null;
+        if (savedL4) {
+            const parsed = JSON.parse(savedL4);
+            if (typeof parsed.thrustThreshold === 'number' && !isNaN(parsed.thrustThreshold) && parsed.thrustThreshold > 0) {
+                thrustThreshold = parsed.thrustThreshold;
+            }
+        }
+    } catch(e) {}
+
     let isThrustValid = false;
-    const signalCandleAmp = (highs[signalIdx] - lows[signalIdx]) / opens[signalIdx];
-    
-    if (signalCandleAmp >= 0.01) {
+    let maxThrust = -Infinity;
+
+    const combos = [
+        { name: '234', s: signalIdx - 2, e: signalIdx },
+        { name: '345', s: signalIdx - 1, e: signalIdx + 1 },
+        { name: '456', s: signalIdx,     e: signalIdx + 2 }
+    ];
+
+    for (const c of combos) {
+        if (c.s >= 0 && c.e < closes.length && c.e >= c.s) {
+            const o = opens[c.s];
+            const cl = closes[c.e];
+            if (o > 0) {
+                const pushPct = task.direction === 'LONG'
+                    ? ((cl - o) / o) * 100
+                    : ((o - cl) / o) * 100;
+                if (pushPct > maxThrust) {
+                    maxThrust = pushPct;
+                }
+            }
+        }
+    }
+
+    // 边界容错：若信号K位于最左端(signalIdx < 2)导致无完整3根组合，则兜底检查已有区间的位移
+    if (maxThrust === -Infinity && signalIdx >= 0) {
+        const o = opens[0];
+        const cl = closes[Math.min(closes.length - 1, signalIdx + 2)];
+        if (o > 0) {
+            maxThrust = task.direction === 'LONG'
+                ? ((cl - o) / o) * 100
+                : ((o - cl) / o) * 100;
+        } else {
+            maxThrust = 0;
+        }
+    }
+
+    if (maxThrust >= thrustThreshold) {
         isThrustValid = true;
-    } else {
-        // Check Left Window: [signalIdx-3, signalIdx]
-        const leftStart = Math.max(0, signalIdx - 3);
-        let leftMax = -Infinity;
-        let leftMin = Infinity;
-        for (let i = leftStart; i <= signalIdx; i++) {
-            if (highs[i] > leftMax) leftMax = highs[i];
-            if (lows[i] < leftMin) leftMin = lows[i];
-        }
-        const leftAmp = (leftMax - leftMin) / opens[leftStart];
-        
-        // Check Right Window: [signalIdx, signalIdx+3]
-        const rightEnd = Math.min(closes.length - 1, signalIdx + 3);
-        let rightMax = -Infinity;
-        let rightMin = Infinity;
-        for (let i = signalIdx; i <= rightEnd; i++) {
-            if (highs[i] > rightMax) rightMax = highs[i];
-            if (lows[i] < rightMin) rightMin = lows[i];
-        }
-        const rightAmp = (rightMax - rightMin) / opens[signalIdx];
-        
-        if (leftAmp >= 0.01 || rightAmp >= 0.01) {
-            isThrustValid = true;
-        }
     }
 
     // --- METRIC 5: Resonance & Location ---
@@ -347,6 +379,7 @@ export function analyzeList3Structure(
             rsi: currentRsi,
             bbw: bbw,
             thrustValid: isThrustValid,
+            maxThrust: maxThrust > -Infinity ? parseFloat(maxThrust.toFixed(2)) : 0,
             isStrictTrend: isStrictTrend,
             isColorValid: isColorValid,
             crossCount: crossCount,

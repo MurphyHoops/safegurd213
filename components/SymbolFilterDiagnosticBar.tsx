@@ -873,19 +873,20 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                 });
             }
 
-            // 3. 7K Thrust (7K 推进力动能)
+            // 3. 5K Thrust (5K 爆发推进动能)
             if (effectiveList4Config?.enableThrust === true) {
+                const targetThrust = effectiveList4Config?.thrustThreshold ?? 1.0;
                 l4Rows.push({
-                    name: '7K 推进力动能',
-                    targetRange: '7根K线累计涨幅 ≥ 1.50%',
-                    actualValue: inList4 ? '实测 7K 累计 1.85%' : '实测 7K 累计 0.95%',
+                    name: '5K 爆发推进动能',
+                    targetRange: `5K组合(234/345/456)涨跌幅 ≥ ${targetThrust.toFixed(1)}%`,
+                    actualValue: inList4 ? `实测 5K 推进达标 (≥${targetThrust.toFixed(1)}%)` : `实测 5K 推进不足 (<${targetThrust.toFixed(1)}%)`,
                     passed: inList4 ? true : 'WARNING',
-                    statusText: inList4 ? '✅ 推进力达标' : '⚠️ 推进力积累中 (差 0.55%)'
+                    statusText: inList4 ? '✅ 推进力达标' : '⚠️ 推进力积累中'
                 });
-                if (!inList4 && inList3) l4BlockReasons.push('7K推进力动能积累中');
+                if (!inList4 && inList3) l4BlockReasons.push('5K爆发推进动能积累中');
             } else {
                 l4Rows.push({
-                    name: '7K 推进力动能',
+                    name: '5K 爆发推进动能',
                     targetRange: '未开启 (开关已关闭)',
                     actualValue: '直接放行',
                     passed: 'NEUTRAL',

@@ -40,6 +40,7 @@ export interface List3SignalResult {
         crossCount: number;
         locationPct: number;
         thrustValid: boolean;
+        maxThrust?: number;
         timestamp?: number;
         isStrictTrend: boolean;
         isColorValid: boolean; 
@@ -112,6 +113,7 @@ export interface ScannerItem {
         crossCount: number;
         locationPct: number;
         thrustValid: boolean;
+        maxThrust?: number;
         timestamp?: number;
         isStrictTrend: boolean;
         isColorValid: boolean; 
@@ -182,6 +184,13 @@ export interface ScannerItem {
         scalars?: Record<string, number>; // NEW: Pre-calculated extremes for optimization
     };
     removalReason?: string;
+    isTraded?: boolean;
+    tradedAt?: number;
+    tradedTotalMs?: number;
+    tradedCountdownMs?: number;
+    fuseEnteredAt?: number;
+    fuseTotalMs?: number;
+    fuseCountdownMs?: number;
 }
 
 export interface List2Config {
@@ -244,6 +253,7 @@ export interface List4Config {
     enableRev3K: boolean;
     rev3KCandles?: number; // 前 N 根 K 线突破检测根数 (默认 3，可设 1~50)
     enableThrust: boolean;
+    thrustThreshold?: number; // 5K 爆发推进振幅阈值 % (默认 1.0%)
     invalidRetentionMinutes: number; 
     removeInvalidMinutes?: number; // 结构破坏后多少分钟消除 (0 = 不按分钟消除)
     removeTriggeredMinutes?: number;  // 已触发突破后多少分钟消除 (0 = 不按分钟消除)

@@ -10,6 +10,7 @@ import { priceRegistry } from '../../services/priceRegistry';
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { ScannerItem, List4Config, List3Config } from '../../components/Scanner/scannerTypes';
 import { analyzeList4Momentum } from '../../services/rules/list4_momentum';
+import { checkList3SignalPasses } from '../../services/rules/list3_structure';
 import { Position } from '../../types';
 import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
 import { fetchWithFallback } from '../../services/apiService';
@@ -106,6 +107,22 @@ export const useMomentumAudit = (
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     return Array.isArray(parsed) ? parsed : [];
+                }
+            } catch (e) {}
+            return [];
+        })()
+    ));
+
+    // 🔒 [列表4独立常驻候选记忆池] 杜绝上游一帧刷新或重算导致列表中处于等待的币突然“闪退”
+    const list4CacheRef = useRef<Map<string, ScannerItem>>(new Map(
+        (() => {
+            try {
+                const saved = localStorage.getItem(resultsKey);
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    if (Array.isArray(parsed)) {
+                        return parsed.map((item: any) => [`${item.symbol}-${item.tf}-${item.direction}`, item]);
+                    }
                 }
             } catch (e) {}
             return [];
@@ -210,18 +227,26 @@ export const useMomentumAudit = (
             return;
         }
 
-        // 1. Flatten & Filter Candidates (List 3 -> List 4)
-        const flatCandidates: ScannerItem[] = [];
-        
+        const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
+        if (!isAnyFuseEnabled) {
+            expiredSignalCacheRef.current.clear();
+        }
+
+        // 1. Maintain & Ingest Candidates into list4CacheRef
         currentCandidates.forEach(item => {
-            // Use live price if available, else cached
             const livePrice = resolvePrice(item.symbol, currentPrices, item.price);
 
             if (item.list3Results) {
                 item.list3Results.forEach(res => {
-                    if (!res.latched) return;
+                    // 🎯 列表3放行信号全量进入列表4候选池：兼容 res.latched 判定与列表3配置合法性校验
+                    const isLatched = res.latched !== false && (res.latched === true || (list3Config ? checkList3SignalPasses(res, list3Config, item.adjacentStrictTrends) : true));
+                    if (!isLatched) return;
                     
                     const uniqueId = `${item.symbol}-${res.tf}-${res.direction}`;
+                    
+                    // If already permanently expired, skip
+                    if (isAnyFuseEnabled && expiredSignalCacheRef.current.has(uniqueId)) return;
+                    
                     const cleanSym = normalizeSymbol(item.symbol);
                     const klineKey = `${cleanSym}-${res.tf}`;
 
@@ -245,23 +270,29 @@ export const useMomentumAudit = (
                     
                     // LATCH LOGIC: If previously determined as permanently BLOCKED by fuse, retain latch
                     const latchedAudit = fuseAuditLatchRef.current.get(uniqueId);
-                    const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
+                    const existing = list4CacheRef.current.get(uniqueId);
 
-                    flatCandidates.push({
+                    list4CacheRef.current.set(uniqueId, {
                         ...item,
                         price: livePrice, // Inject fresh live price for dynamic anti-chase evaluation
                         direction: res.direction,
                         tf: res.tf,
                         structure: structureEnriched,
                         historyExtremes: item.historyExtremes,
-                        // If already latched as blocked, preserve it; otherwise allow real-time audit on fresh live price
-                        fuseBlocked: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false,
-                        fuseReason: isAnyFuseEnabled ? (latchedAudit?.reason || '') : '',
+                        fuseBlocked: existing?.fuseBlocked ?? (isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false),
+                        fuseReason: existing?.fuseReason ?? ((isAnyFuseEnabled && latchedAudit) ? (latchedAudit?.reason || '') : ''),
                         fuseLatched: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false
                     });
                 });
             }
         });
+
+        // 🔄 更新常驻池中所有标的实时最新价格
+        list4CacheRef.current.forEach((cachedItem) => {
+            cachedItem.price = resolvePrice(cachedItem.symbol, currentPrices, cachedItem.price);
+        });
+
+        const flatCandidates = Array.from(list4CacheRef.current.values());
 
         // 2. Run Momentum Math
         const analyzedItems = analyzeList4Momentum(flatCandidates, currentConfig);
@@ -279,31 +310,29 @@ export const useMomentumAudit = (
             const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
             
             // If already permanently expired, skip
-            if (expiredSignalCacheRef.current.has(uniqueId)) return;
+            if (isAnyFuseEnabled && expiredSignalCacheRef.current.has(uniqueId)) {
+                list4CacheRef.current.delete(uniqueId);
+                return;
+            }
             
             let shouldKeep = true;
             const tfMinutes = getTfMinutes(item.tf || '15m');
             
-            // Check "Structure Broken" (INVALID) - 均线瓦解彻底清除 (EMA10 穿过 EMA30)
+            // Check "Structure Broken" (INVALID) - 均线瓦解与偏离过大拦截
+            // 🎯 用户明确指令：绝不瞬间闪退！凡是触发限制条件的，统一转入【规则拦截待清除队列 (浅黄色)】，进行倒计时缓冲与文字提示！
             if (item.momentum?.status === 'INVALID') {
-                expiredSignalCacheRef.current.add(uniqueId);
-                shouldKeep = false;
-                item.removalReason = item.momentum.invalidReason || '由列表4中轴防守线规则删除';
-                safeRemoveSignal(uniqueId);
-                logToHistory(item, item.removalReason);
-            } else {
-                // Reset if it becomes valid again
-                invalidSignalCacheRef.current.delete(uniqueId);
+                item.fuseBlocked = true;
+                item.fuseReason = item.fuseReason || item.momentum.invalidReason || '由列表4中轴防守瓦解/偏离规则拦截';
             }
 
             // Check "Dormant Retention" (DORMANT) - 破中轴进入保留期，限制最大寿命K线根数 (默认20根)
-            if (item.momentum?.status === 'DORMANT') {
+            if (item.momentum?.status === 'DORMANT' && !item.fuseBlocked) {
                 if (!dormantSignalCacheRef.current.has(uniqueId)) {
                     dormantSignalCacheRef.current.set(uniqueId, now);
                 }
 
                 const maxCandles = currentConfig.dormantRetentionCandles ?? 20;
-                if (maxCandles > 0) {
+                if (isAnyFuseEnabled && maxCandles > 0) {
                     const enterDormantTime = dormantSignalCacheRef.current.get(uniqueId) || now;
                     const elapsedMs = now - enterDormantTime;
                     const maxMs = maxCandles * tfMinutes * 60 * 1000;
@@ -312,6 +341,7 @@ export const useMomentumAudit = (
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
                         item.removalReason = `破中轴休眠超期彻底清除 [已休眠 ${Math.round(elapsedMs / (tfMinutes * 60 * 1000))} / ${maxCandles} 根K线]`;
+                        list4CacheRef.current.delete(uniqueId);
                         safeRemoveSignal(uniqueId);
                         logToHistory(item, item.removalReason);
                     }
@@ -322,7 +352,7 @@ export const useMomentumAudit = (
             }
             
             // Check "Triggered" (TRIGGERED)
-            if (item.momentum?.status === 'TRIGGERED') {
+            if (item.momentum?.status === 'TRIGGERED' && !item.fuseBlocked) {
                 if (!triggeredSignalCacheRef.current.has(uniqueId)) {
                     triggeredSignalCacheRef.current.set(uniqueId, now);
                 }
@@ -336,6 +366,7 @@ export const useMomentumAudit = (
                         expiredSignalCacheRef.current.add(uniqueId);
                         shouldKeep = false;
                         item.removalReason = `由列表4触发后超时规则删除 [已持续: ${Math.round(elapsedMs / 60000)}分钟]`;
+                        list4CacheRef.current.delete(uniqueId);
                         safeRemoveSignal(uniqueId);
                     }
                 }
@@ -343,20 +374,43 @@ export const useMomentumAudit = (
                 triggeredSignalCacheRef.current.delete(uniqueId);
             }
 
-            // Check "Fuse Blocked" (fuseBlocked) - IMMEDIATELY CLEAR ON FAILURE (USER DIRECTIVE)
-            if (item.fuseBlocked) {
-                expiredSignalCacheRef.current.add(uniqueId);
-                shouldKeep = false;
-                item.removalReason = item.fuseReason || '由列表4防追高过滤规则删除';
+            // Check "Fuse Blocked" (fuseBlocked) - 包含防追高熔断、动态方向锁、高级过滤、偏离熔断、中轴瓦解等所有规则拦截
+            if (isAnyFuseEnabled && item.fuseBlocked) {
+                if (!fuseBlockedSignalCacheRef.current.has(uniqueId)) {
+                    fuseBlockedSignalCacheRef.current.set(uniqueId, now);
+                }
+                const enterFuseTime = fuseBlockedSignalCacheRef.current.get(uniqueId) || now;
+                const elapsedMs = now - enterFuseTime;
                 
-                // Clear from latch to be safe
-                fuseAuditLatchRef.current.delete(uniqueId);
+                // 用户配置的熔断拦截清除分钟数，默认15分钟
+                const fuseMinutes = (currentConfig.removeFuseMinutes && currentConfig.removeFuseMinutes > 0)
+                    ? currentConfig.removeFuseMinutes
+                    : 15;
+                const maxMs = fuseMinutes * 60 * 1000;
                 
-                // Remove from upstream List 3 structure audit and cache
-                safeRemoveSignal(uniqueId);
-                
-                // Background log to history
-                logToHistory(item, item.removalReason);
+                item.fuseEnteredAt = enterFuseTime;
+                item.fuseTotalMs = maxMs;
+                item.fuseCountdownMs = Math.max(0, maxMs - elapsedMs);
+
+                if (elapsedMs >= maxMs) {
+                    expiredSignalCacheRef.current.add(uniqueId);
+                    shouldKeep = false;
+                    item.removalReason = item.fuseReason || `由列表4防追高/方向锁/高级过滤规则超时清除 [已持续: ${Math.round(elapsedMs / 60000)}分钟]`;
+                    
+                    // Clear from latch to be safe
+                    fuseAuditLatchRef.current.delete(uniqueId);
+                    fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                    list4CacheRef.current.delete(uniqueId);
+                    
+                    // Remove from upstream List 3 structure audit and cache (联动清除列表3与列表2)
+                    safeRemoveSignal(uniqueId);
+                    
+                    // Background log to history
+                    logToHistory(item, item.removalReason);
+                } else {
+                    // 🎯 在倒计时未结束前，绝对保留在列表4中，由前端展示为浅黄色并提示倒计时！绝不瞬时闪退！
+                    shouldKeep = true;
+                }
             } else {
                 fuseBlockedSignalCacheRef.current.delete(uniqueId);
                 advancedFilterBlockedSignalCacheRef.current.delete(uniqueId);
@@ -369,17 +423,32 @@ export const useMomentumAudit = (
                     tradedSignalCacheRef.current.set(uniqueId, now);
                 }
                 
-                if (currentConfig.removeTradedCandles && currentConfig.removeTradedCandles > 0) {
-                    const tradedTime = tradedSignalCacheRef.current.get(uniqueId) || now;
-                    const elapsedMs = now - tradedTime;
-                    const maxMs = currentConfig.removeTradedCandles * tfMinutes * 60 * 1000;
-                    
-                    if (elapsedMs >= maxMs) {
-                        expiredSignalCacheRef.current.add(uniqueId);
-                        shouldKeep = false;
-                        item.removalReason = `满足动能突破开仓成功，建立仓位后移出 [持仓持续: ${Math.round(elapsedMs / 60000)}分钟]`;
-                        safeRemoveSignal(uniqueId);
-                    }
+                const tradedTime = tradedSignalCacheRef.current.get(uniqueId) || now;
+                const elapsedMs = now - tradedTime;
+                
+                item.isTraded = true;
+                item.tradedAt = tradedTime;
+
+                // 达到开仓条件开仓后，标记为已开仓，（？）分钟/秒后清除这个币
+                const tradeRetentionMinutes = (currentConfig.removeTradedCandles && currentConfig.removeTradedCandles > 0)
+                    ? currentConfig.removeTradedCandles * tfMinutes
+                    : (currentConfig.removeTriggeredMinutes && currentConfig.removeTriggeredMinutes > 0)
+                        ? currentConfig.removeTriggeredMinutes
+                        : 15;
+                const maxMs = tradeRetentionMinutes * 60 * 1000;
+                item.tradedTotalMs = maxMs;
+                item.tradedCountdownMs = Math.max(0, maxMs - elapsedMs);
+
+                if (elapsedMs >= maxMs) {
+                    expiredSignalCacheRef.current.add(uniqueId);
+                    shouldKeep = false;
+                    item.removalReason = `满足动能突破开仓成功，建立仓位后移出 [持仓持续: ${Math.round(elapsedMs / 60000)}分钟]`;
+                    tradedSignalCacheRef.current.delete(uniqueId);
+                    list4CacheRef.current.delete(uniqueId);
+                    safeRemoveSignal(uniqueId);
+                    logToHistory(item, item.removalReason);
+                } else {
+                    shouldKeep = true;
                 }
             } else {
                 // Reset if position is closed
@@ -388,6 +457,8 @@ export const useMomentumAudit = (
             
             if (shouldKeep) {
                 finalItems.push(item);
+            } else {
+                list4CacheRef.current.delete(uniqueId);
             }
         });
 
@@ -428,7 +499,10 @@ export const useMomentumAudit = (
                     prev.momentum?.entryTrigger !== next.momentum?.entryTrigger ||
                     prev.momentum?.midPoint !== next.momentum?.midPoint ||
                     prev.fuseBlocked !== next.fuseBlocked ||
-                    prev.fuseReason !== next.fuseReason
+                    prev.fuseReason !== next.fuseReason ||
+                    prev.isTraded !== next.isTraded ||
+                    prev.fuseEnteredAt !== next.fuseEnteredAt ||
+                    prev.tradedAt !== next.tradedAt
                 ) {
                     shouldUpdateState = true;
                     break;
@@ -500,16 +574,28 @@ export const useMomentumAudit = (
         const itemsToRemove = list4.filter(item => item.symbol === symbol);
         itemsToRemove.forEach(item => {
             const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
+            list4CacheRef.current.delete(uniqueId);
+            fuseBlockedSignalCacheRef.current.delete(uniqueId);
+            tradedSignalCacheRef.current.delete(uniqueId);
+            dormantSignalCacheRef.current.delete(uniqueId);
+            expiredSignalCacheRef.current.add(uniqueId);
             onRemoveSignalRef.current?.(uniqueId);
         });
+        setList4(prev => prev.filter(i => i.symbol !== symbol));
     }, [list4]);
 
     const clearItems = useCallback(() => {
         // Clear all List 4 signals from List 3
+        list4CacheRef.current.clear();
+        fuseBlockedSignalCacheRef.current.clear();
+        tradedSignalCacheRef.current.clear();
+        dormantSignalCacheRef.current.clear();
+        expiredSignalCacheRef.current.clear();
         list4.forEach(item => {
             const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
             onRemoveSignalRef.current?.(uniqueId);
         });
+        setList4([]);
     }, [list4]);
 
     // --- HEARTBEAT & DUAL-INSURANCE PULSE TIMER ---

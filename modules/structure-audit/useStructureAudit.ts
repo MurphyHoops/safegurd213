@@ -72,7 +72,16 @@ export const useStructureAudit = (
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          const allItems = parsed.map((item: any) => item.value);
+          const dedupedMap = new Map<string, ScannerItem>();
+          parsed.forEach((item: any) => {
+            const val = item.value;
+            if (!val || !val.symbol) return;
+            const norm = normalizeSymbol(val.symbol);
+            if (!dedupedMap.has(norm)) {
+              dedupedMap.set(norm, val);
+            }
+          });
+          const allItems = Array.from(dedupedMap.values());
           allItems.sort(
             (a: any, b: any) =>
               (b.list3Results?.length || 0) - (a.list3Results?.length || 0),
@@ -97,9 +106,18 @@ export const useStructureAudit = (
           const saved = localStorage.getItem(cacheMapKey);
           if (saved) {
             const parsed = JSON.parse(saved);
-            return Array.isArray(parsed)
-              ? parsed.map((item: any) => [item.key, item.value])
-              : [];
+            if (Array.isArray(parsed)) {
+              const dedupedMap = new Map<string, ScannerItem>();
+              parsed.forEach((item: any) => {
+                const val = item.value;
+                if (!val || !val.symbol) return;
+                const norm = normalizeSymbol(val.symbol);
+                if (!dedupedMap.has(norm)) {
+                  dedupedMap.set(norm, val);
+                }
+              });
+              return Array.from(dedupedMap.entries());
+            }
           }
         } catch (e) {}
         return [];
@@ -164,7 +182,52 @@ export const useStructureAudit = (
   const extremesCacheRef = useRef<Map<string, any>>(new Map());
 
   const updateList3FromCache = useCallback(() => {
-    const allItems: ScannerItem[] = Array.from(cacheRef.current.values());
+    // 🔒 [STRICT DE-DUPLICATION]: 绝对保证列表3每个币种只保留唯一实例，同币种同周期绝不重复显示
+    const dedupedItemsMap = new Map<string, ScannerItem>();
+    const redundantKeysToDelete: string[] = [];
+
+    cacheRef.current.forEach((item, k) => {
+      if (!item || !item.symbol) {
+        redundantKeysToDelete.push(k);
+        return;
+      }
+      const norm = normalizeSymbol(item.symbol);
+      const existing = dedupedItemsMap.get(norm);
+      if (!existing) {
+        // 周期去重：确保单币种内同一个周期绝不重复存在
+        if (item.list3Results && item.list3Results.length > 0) {
+          const tfMap = new Map<string, List3SignalResult>();
+          item.list3Results.forEach((r) => {
+            const tfKey = `${r.tf}_${r.direction || 'LONG'}`;
+            const cur = tfMap.get(tfKey);
+            if (!cur || (r.structure?.lag || 0) <= (cur.structure?.lag || 0)) {
+              tfMap.set(tfKey, r);
+            }
+          });
+          item.list3Results = Array.from(tfMap.values());
+        }
+        dedupedItemsMap.set(norm, item);
+      } else {
+        // 重复币种检测：合并 list3Results 并按周期严格去重
+        redundantKeysToDelete.push(k);
+        const tfMap = new Map<string, List3SignalResult>();
+        (existing.list3Results || []).forEach((r) => {
+          tfMap.set(`${r.tf}_${r.direction || 'LONG'}`, r);
+        });
+        (item.list3Results || []).forEach((r) => {
+          const tfKey = `${r.tf}_${r.direction || 'LONG'}`;
+          const cur = tfMap.get(tfKey);
+          if (!cur || (r.structure?.lag || 0) <= (cur.structure?.lag || 0)) {
+            tfMap.set(tfKey, r);
+          }
+        });
+        existing.list3Results = Array.from(tfMap.values());
+      }
+    });
+
+    redundantKeysToDelete.forEach((k) => cacheRef.current.delete(k));
+
+    const allItems: ScannerItem[] = Array.from(dedupedItemsMap.values());
     allItems.sort(
       (a, b) => (b.list3Results?.length || 0) - (a.list3Results?.length || 0),
     );
@@ -195,12 +258,22 @@ export const useStructureAudit = (
     const curCandidates = candidatesRef.current || [];
     curCandidates.forEach((c) => {
       if (!c.symbol) return;
+      const normSym = normalizeSymbol(c.symbol);
       const validGrouped = (c.groupedResults || []).filter(r => !r.isPendingGray);
       if (validGrouped.length === 0) return;
 
-      const cached = cacheRef.current.get(c.symbol);
+      const cached = cacheRef.current.get(normSym) || cacheRef.current.get(c.symbol);
       if (!cached) {
-        const mappedResults = validGrouped.map((r) => {
+        // Deduplicate validGrouped by tf + direction
+        const dedupedGrouped = new Map<string, any>();
+        validGrouped.forEach((r) => {
+          const key = `${r.tf}_${r.direction || 'LONG'}`;
+          if (!dedupedGrouped.has(key)) {
+            dedupedGrouped.set(key, r);
+          }
+        });
+
+        const mappedResults = Array.from(dedupedGrouped.values()).map((r) => {
           const defaultStructure = {
             rsi: 50,
             bbw: 0.1,
@@ -226,10 +299,10 @@ export const useStructureAudit = (
             structure: defaultStructure,
             latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, config),
           };
-        }).filter(r => !expiredSignalCacheRef.current.has(`${c.symbol}-${r.tf}-${r.direction}`));
+        }).filter(r => !expiredSignalCacheRef.current.has(`${c.symbol}-${r.tf}-${r.direction}`) && !expiredSignalCacheRef.current.has(`${normSym}-${r.tf}-${r.direction}`));
 
         if (mappedResults.length > 0) {
-          cacheRef.current.set(c.symbol, {
+          cacheRef.current.set(normSym, {
             ...c,
             list3Results: mappedResults,
           });
@@ -332,7 +405,8 @@ export const useStructureAudit = (
       );
 
       if (result3) {
-        let cached: ScannerItem = cacheRef.current.get(item.symbol) || {
+        const normSym = normalizeSymbol(item.symbol);
+        let cached: ScannerItem = cacheRef.current.get(normSym) || cacheRef.current.get(item.symbol) || {
           ...item,
           list3Results: [],
         };
@@ -357,7 +431,7 @@ export const useStructureAudit = (
         }
 
         const idx = cached.list3Results.findIndex(
-          (r) => r.tf === entry.tf && r.direction === entry.direction,
+          (r) => r.tf === entry.tf && (r.direction || 'LONG') === (entry.direction || 'LONG'),
         );
         if (idx >= 0) {
           entry.latched = passes;
@@ -369,11 +443,12 @@ export const useStructureAudit = (
 
         cached.price = livePrice;
         if (historyExtremes) cached.historyExtremes = historyExtremes;
-        cacheRef.current.set(item.symbol, cached);
+        cacheRef.current.set(normSym, cached);
       }
     }
 
     if (configRef.current.enableMultiResonance) {
+      const normSym = normalizeSymbol(item.symbol);
       const rawKlines = klines.map((k) => [
         k.time,
         k.open,
@@ -382,7 +457,7 @@ export const useStructureAudit = (
         k.close,
         k.volume,
       ]);
-      let cached: ScannerItem = cacheRef.current.get(item.symbol) || {
+      let cached: ScannerItem = cacheRef.current.get(normSym) || cacheRef.current.get(item.symbol) || {
         ...item,
         list3Results: [],
       };
@@ -436,7 +511,7 @@ export const useStructureAudit = (
         cached.adjacentStrictTrends[`${tf}-SHORT`] = false;
       }
 
-      cacheRef.current.set(item.symbol, cached);
+      cacheRef.current.set(normSym, cached);
     }
   };
 
@@ -1122,15 +1197,23 @@ export const useStructureAudit = (
 
         // Synchronize candidate groupedResults and base properties
         cached.symbol = matchingCandidate.symbol;
-        cached.timeframe = matchingCandidate.timeframe;
+        cached.tf = matchingCandidate.tf;
         cached.groupedResults = matchingCandidate.groupedResults;
 
         if (cached.list3Results && cached.list3Results.length > 0) {
           const initialLen = cached.list3Results.length;
-          // Filter out any timeframe/direction that does not exist in List 2 candidate
-          cached.list3Results = cached.list3Results.filter((r) => {
-            return activeCandSignals.has(`${r.tf}_${r.direction || 'LONG'}`);
+          // Filter out any timeframe/direction that does not exist in List 2 candidate and deduplicate by tf + direction
+          const tfMap = new Map<string, List3SignalResult>();
+          cached.list3Results.forEach((r) => {
+            const sigKey = `${r.tf}_${r.direction || 'LONG'}`;
+            if (activeCandSignals.has(sigKey)) {
+              const cur = tfMap.get(sigKey);
+              if (!cur || (r.structure?.lag || 0) <= (cur.structure?.lag || 0)) {
+                tfMap.set(sigKey, r);
+              }
+            }
           });
+          cached.list3Results = Array.from(tfMap.values());
 
           if (cached.list3Results.length !== initialLen) {
             cleaned = true;
@@ -1141,7 +1224,16 @@ export const useStructureAudit = (
         if (!cached.list3Results || cached.list3Results.length === 0) {
           const nonGrayGrouped = (matchingCandidate.groupedResults || []).filter((r) => !r.isPendingGray);
           if (nonGrayGrouped.length > 0) {
-            cached.list3Results = nonGrayGrouped.map((r) => {
+            // Deduplicate nonGrayGrouped by tf + direction
+            const dedupedGrouped = new Map<string, any>();
+            nonGrayGrouped.forEach((r) => {
+              const key = `${r.tf}_${r.direction || 'LONG'}`;
+              if (!dedupedGrouped.has(key)) {
+                dedupedGrouped.set(key, r);
+              }
+            });
+
+            cached.list3Results = Array.from(dedupedGrouped.values()).map((r) => {
               const defaultStructure = {
                 rsi: 50,
                 bbw: 0.1,
@@ -1205,15 +1297,25 @@ export const useStructureAudit = (
 
     candidates.forEach((c) => {
       if (!c.symbol) return;
+      const normSym = normalizeSymbol(c.symbol);
       const currentHash = getStructureHash(c);
-      const lastHash = structureHashRef.current.get(c.symbol);
-      const cached = cacheRef.current.get(c.symbol);
+      const lastHash = structureHashRef.current.get(normSym) || structureHashRef.current.get(c.symbol);
+      const cached = cacheRef.current.get(normSym) || cacheRef.current.get(c.symbol);
 
       const nonGrayGrouped = (c.groupedResults || []).filter(r => !r.isPendingGray);
       if (nonGrayGrouped.length === 0) return;
 
       if (!cached || !cached.list3Results || cached.list3Results.length === 0) {
-        const results = nonGrayGrouped.map((r) => {
+        // Deduplicate nonGrayGrouped by tf + direction
+        const dedupedNonGray = new Map<string, any>();
+        nonGrayGrouped.forEach((r) => {
+          const key = `${r.tf}_${r.direction || 'LONG'}`;
+          if (!dedupedNonGray.has(key)) {
+            dedupedNonGray.set(key, r);
+          }
+        });
+
+        const results = Array.from(dedupedNonGray.values()).map((r) => {
           const defaultStructure = {
             rsi: 50,
             bbw: 0.1,
@@ -1242,7 +1344,8 @@ export const useStructureAudit = (
           };
         }).filter((r) => {
           const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;
-          return !expiredSignalCacheRef.current.has(uniqueId);
+          const normUniqueId = `${normSym}-${r.tf}-${r.direction}`;
+          return !expiredSignalCacheRef.current.has(uniqueId) && !expiredSignalCacheRef.current.has(normUniqueId);
         });
 
         if (results.length > 0) {
@@ -1250,7 +1353,7 @@ export const useStructureAudit = (
             ...c,
             list3Results: results,
           };
-          cacheRef.current.set(c.symbol, immediateItem);
+          cacheRef.current.set(normSym, immediateItem);
           instantAdded = true;
         }
         if (!areAllRulesOff) {
@@ -1260,10 +1363,12 @@ export const useStructureAudit = (
         // If cached exists, sync any new timeframes
         let addedTf = false;
         nonGrayGrouped.forEach((r) => {
-          const exists = cached.list3Results?.some(cr => cr.tf === r.tf && cr.direction === r.direction);
+          const rDir = r.direction || 'LONG';
+          const exists = cached.list3Results?.some(cr => cr.tf === r.tf && (cr.direction || 'LONG') === rDir);
           if (!exists) {
-            const uniqueId = `${c.symbol}-${r.tf}-${r.direction || 'LONG'}`;
-            if (!expiredSignalCacheRef.current.has(uniqueId)) {
+            const uniqueId = `${c.symbol}-${r.tf}-${rDir}`;
+            const normUniqueId = `${normSym}-${r.tf}-${rDir}`;
+            if (!expiredSignalCacheRef.current.has(uniqueId) && !expiredSignalCacheRef.current.has(normUniqueId)) {
               const defaultStructure = {
                 rsi: 50,
                 bbw: 0.1,
@@ -1285,15 +1390,18 @@ export const useStructureAudit = (
               };
               cached.list3Results?.push({
                 tf: r.tf,
-                direction: r.direction || 'LONG',
+                direction: rDir,
                 structure: defaultStructure,
-                latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, cfg, cached.adjacentStrictTrends),
+                latched: checkList3SignalPasses({ tf: r.tf, direction: rDir, structure: defaultStructure }, cfg, cached.adjacentStrictTrends),
               });
               addedTf = true;
             }
           }
         });
-        if (addedTf) instantAdded = true;
+        if (addedTf) {
+          cacheRef.current.set(normSym, cached);
+          instantAdded = true;
+        }
 
         if (currentHash !== lastHash && !areAllRulesOff) {
           itemsToScan.push(c);
@@ -1380,23 +1488,30 @@ export const useStructureAudit = (
   const removeItem = useCallback(
     (symbol: string) => {
       // Find the item and add all its signals to expired signals so they don't get re-added!
-      const cached = cacheRef.current.get(symbol);
+      const normSym = normalizeSymbol(symbol);
+      const cached = cacheRef.current.get(normSym) || cacheRef.current.get(symbol);
       if (cached && cached.list3Results) {
         cached.list3Results.forEach((r) => {
           const uniqueId = `${symbol}-${r.tf}-${r.direction}`;
+          const normUniqueId = `${normSym}-${r.tf}-${r.direction}`;
           expiredSignalCacheRef.current.add(uniqueId);
+          expiredSignalCacheRef.current.add(normUniqueId);
         });
       } else {
         // Fallback: if not in cache, find in candidates and expire all its potential signals
-        const cand = candidatesRef.current.find((c) => c.symbol === symbol);
+        const cand = candidatesRef.current.find((c) => c.symbol === symbol || normalizeSymbol(c.symbol) === normSym);
         if (cand && cand.groupedResults) {
           cand.groupedResults.forEach((r) => {
             const uniqueId = `${symbol}-${r.tf}-${r.direction || 'LONG'}`;
+            const normUniqueId = `${normSym}-${r.tf}-${r.direction || 'LONG'}`;
             expiredSignalCacheRef.current.add(uniqueId);
+            expiredSignalCacheRef.current.add(normUniqueId);
           });
         }
       }
+      cacheRef.current.delete(normSym);
       cacheRef.current.delete(symbol);
+      structureHashRef.current.delete(normSym);
       structureHashRef.current.delete(symbol);
       updateList3FromCache();
     },

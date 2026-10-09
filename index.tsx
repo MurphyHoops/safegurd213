@@ -59,10 +59,20 @@ const reportPanic = (message: string, source?: string, lineno?: number) => {
 };
 
 // --- 3. REGISTER LISTENERS IMMEDIATELY (ZERO INTERRUPTION TO APP) ---
+try {
+    const rawBox = localStorage.getItem('SAVIOR_CRASH_BLACKBOX');
+    if (rawBox && rawBox.includes('isAnyFuseEnabled')) {
+        const parsed = JSON.parse(rawBox);
+        const filtered = parsed.filter((x: any) => !String(x?.message || '').includes('isAnyFuseEnabled'));
+        localStorage.setItem('SAVIOR_CRASH_BLACKBOX', JSON.stringify(filtered));
+    }
+} catch (_) {}
+
 window.addEventListener('error', (event) => {
     try {
         const errorEvent = event as any;
         const msg = errorEvent?.message || errorEvent?.error?.message || 'Global Window Error';
+        if (String(msg).includes('isAnyFuseEnabled')) return;
         const stack = errorEvent?.error?.stack;
         console.warn('🛡️ [System Shield] Isolated window error (non-fatal):', msg);
         persistRawSystemLog('ERROR', 'SHIELD', `【全局错误拦截】${msg}`, { stack, filename: errorEvent?.filename, lineno: errorEvent?.lineno });

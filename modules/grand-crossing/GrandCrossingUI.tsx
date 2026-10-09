@@ -120,14 +120,25 @@ export const GrandCrossingModule: React.FC<Props> = ({
             };
         }).filter(Boolean) as ScannerItem[];
 
-        if (config?.syncDirectionFilterToList3) {
-            const dir = config.viewMode || 'ALL';
-            if (dir === 'LONG') {
-                outputList = outputList.filter(item => item && (item.direction === 'LONG' || item.groupedResults?.some(r => r.direction === 'LONG')));
-            } else if (dir === 'SHORT') {
-                outputList = outputList.filter(item => item && (item.direction === 'SHORT' || item.groupedResults?.some(r => r.direction === 'SHORT')));
-            }
+        // 🔒 [方向严格门禁] 若列表2指定了 [多] (LONG) 或 [空] (SHORT)，则无论独立同步开关状态如何，均严格只向下游列表3输送对应方向的标的与内部周期信号
+        const activeDir = config?.viewMode || 'ALL';
+        if (activeDir === 'LONG' || activeDir === 'SHORT') {
+            outputList = outputList.map(item => {
+                if (!item || !item.groupedResults) return null;
+                // 仅保留与筛选方向完全一致的周期信号
+                const matchingResults = item.groupedResults.filter(r => r.direction === activeDir);
+                if (matchingResults.length === 0) return null;
+                // 选取首选方向一致的最新信号作为主呈现，更新 item.direction 与周期列表
+                const primaryResult = matchingResults[0];
+                return {
+                    ...item,
+                    direction: activeDir,
+                    timeframe: primaryResult.timeframe || item.timeframe,
+                    groupedResults: matchingResults
+                };
+            }).filter(Boolean) as ScannerItem[];
         }
+
         const str = JSON.stringify(outputList);
         if (str !== lastListStrRef.current) {
             lastListStrRef.current = str;

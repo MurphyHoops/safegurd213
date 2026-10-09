@@ -1,4 +1,8 @@
 
+// 🔒 LOCKED_MODULE: 列表1 [配置A 常规模式参数控制面板]
+// 包含 24H 交易额区间、早上8点起独立开关与区间、涨跌幅、方向筛选等 UI 配置。
+// 未获用户明确指令，严禁擅自修改！
+
 import React from 'react';
 import { ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput, MarketSentimentWidget } from '../../../components/Scanner/ScannerUIHelpers';

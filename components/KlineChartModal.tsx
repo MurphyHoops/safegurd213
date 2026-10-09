@@ -389,16 +389,17 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
   const serializedConfig = JSON.stringify(list2Config);
 
-  // ⚡ 币安主推 TradingView / Lightweight Canvas / 战术标绘 多引擎模式
+  // ⚡ 币安自研原生战术标绘 / Lightweight Canvas / TradingView 多引擎模式
   type ChartEngine = 'TRADINGVIEW' | 'LIGHTWEIGHT' | 'TACTICAL';
   const [chartEngine, setChartEngine] = useState<ChartEngine>(() => {
     try {
-      const saved = localStorage.getItem('SAVIOR_CHART_ENGINE_PREF');
+      const saved = localStorage.getItem('SAVIOR_CHART_ENGINE_PREF_V2');
       if (saved === 'TRADINGVIEW' || saved === 'LIGHTWEIGHT' || saved === 'TACTICAL') {
         return saved;
       }
     } catch (e) {}
-    return 'TRADINGVIEW';
+    // 方案 1：默认锁定为系统原生【战术标绘/审计】引擎，绝对固定在当前页面不跳动、不跳转外部网页
+    return 'TACTICAL';
   });
 
   // 🎯 View Mode Determination:
@@ -1364,10 +1365,8 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                     if (e.isInvalidSymbol || e.message?.includes("400")) {
                         setError(`交易对 ${symbol} 在币安暂未上市或不支持，暂无K线数据。`);
                     } else {
-                        // 自动无缝切换到币安官方主推 TradingView 专业图表，彻底消除阻断性报错弹窗
-                        setChartEngine('TRADINGVIEW');
-                        localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TRADINGVIEW');
-                        setError(null);
+                        // 方案 1：保持在系统原生图表模式，提示网络加载重试，严禁自动静默切换到外部 TradingView 导致页面乱跳
+                        setError(`网络连接响应稍慢，点击刷新即可重新获取 K 线数据。`);
                     }
                     setFullData([]);
                 }
@@ -3118,43 +3117,43 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                <div className="flex items-center gap-2">
                    <h2 className="text-lg font-bold text-slate-100">{symbol}</h2>
 
-                    {/* ⚡ 币安主推技术与多引擎极速切换 */}
+                    {/* ⚡ 系统原生战术标绘与多引擎极速切换 */}
                     <div className="flex items-center bg-slate-900/90 p-0.5 rounded-lg border border-slate-700/80 shadow-inner">
                         <button
-                            onClick={() => { setChartEngine('TRADINGVIEW'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TRADINGVIEW'); }}
+                            onClick={() => { setChartEngine('TACTICAL'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF_V2', 'TACTICAL'); }}
                             className={`flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
-                                chartEngine === 'TRADINGVIEW'
-                                    ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md shadow-cyan-950/60 ring-1 ring-cyan-400'
+                                chartEngine === 'TACTICAL'
+                                    ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-950/60 ring-1 ring-indigo-400'
                                     : 'text-slate-400 hover:text-slate-200'
                             }`}
-                            title="币安官方主推 TradingView 专业图表：毫秒级直连，全套专业指标与画线工具，彻底脱离主线程渲染队列，0卡顿"
+                            title="系统原生战术标绘图（推荐）：固定在当前页面不跳动，高精展示首根发散/穿越形态、List4突破与防守决策线及实况审计"
                         >
-                            <BarChart2 size={11} className={chartEngine === 'TRADINGVIEW' ? 'text-cyan-200' : 'text-slate-400'} />
-                            <span>币安 TradingView (主推)</span>
+                            <Activity size={11} className={chartEngine === 'TACTICAL' ? 'text-indigo-200' : 'text-slate-400'} />
+                            <span>战术标绘/审计 (原生推荐)</span>
                         </button>
                         <button
-                            onClick={() => { setChartEngine('LIGHTWEIGHT'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'LIGHTWEIGHT'); }}
+                            onClick={() => { setChartEngine('LIGHTWEIGHT'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF_V2', 'LIGHTWEIGHT'); }}
                             className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${
                                 chartEngine === 'LIGHTWEIGHT'
                                     ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-950/60 ring-1 ring-emerald-400'
                                     : 'text-slate-400 hover:text-slate-200'
                             }`}
-                            title="TradingView 官方 Lightweight Charts：HTML5 Canvas 硬件加速 60FPS 极速渲染"
+                            title="TradingView 官方 Lightweight Charts：HTML5 Canvas 硬件加速 60FPS 极速渲染，本地固定窗口"
                         >
                             <Zap size={11} className={chartEngine === 'LIGHTWEIGHT' ? 'text-emerald-200' : 'text-slate-400'} />
                             <span>极速 Canvas (60帧)</span>
                         </button>
                         <button
-                            onClick={() => { setChartEngine('TACTICAL'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TACTICAL'); }}
+                            onClick={() => { setChartEngine('TRADINGVIEW'); localStorage.setItem('SAVIOR_CHART_ENGINE_PREF_V2', 'TRADINGVIEW'); }}
                             className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold transition-all ${
-                                chartEngine === 'TACTICAL'
-                                    ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-950/60 ring-1 ring-indigo-400'
+                                chartEngine === 'TRADINGVIEW'
+                                    ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md shadow-cyan-950/60 ring-1 ring-cyan-400'
                                     : 'text-slate-400 hover:text-slate-200'
                             }`}
-                            title="系统战术标绘图：显示发散/穿越首根形态、进攻突破/中轴防守决策线与历史实盘交易审计"
+                            title="币安 TradingView 外部嵌入图表（包含外部链接与跨域脚本）"
                         >
-                            <Activity size={11} className={chartEngine === 'TACTICAL' ? 'text-indigo-200' : 'text-slate-400'} />
-                            <span>战术标绘/审计</span>
+                            <BarChart2 size={11} className={chartEngine === 'TRADINGVIEW' ? 'text-cyan-200' : 'text-slate-400'} />
+                            <span>币安 TradingView (外部)</span>
                         </button>
                     </div>
 
@@ -3366,30 +3365,30 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                 <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[#161A25]/95 p-6">
                     <AlertTriangle size={32} className="text-amber-400 mb-2 animate-bounce" />
                     <span className="text-sm font-bold text-slate-200 mb-1">{error}</span>
-                    <span className="text-[11px] text-slate-400 mb-4">网络请求通道切换中，可立即切换至专业图表或重试</span>
+                    <span className="text-[11px] text-slate-400 mb-4">网络请求通道更新中，可刷新重试或切换图表引擎</span>
                     
                     <div className="flex flex-wrap items-center justify-center gap-3">
-                        <button 
-                            onClick={() => {
-                                setError(null);
-                                setChartEngine('TRADINGVIEW');
-                                localStorage.setItem('SAVIOR_CHART_ENGINE_PREF', 'TRADINGVIEW');
-                            }} 
-                            className="px-4 py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded text-xs font-bold transition-all shadow-md shadow-cyan-900/40 flex items-center gap-1.5"
-                        >
-                            <BarChart2 size={13} />
-                            <span>切换至【币安 TradingView 专业图表】</span>
-                        </button>
                         <button 
                             onClick={() => { 
                                 setError(null); 
                                 setLoading(true); 
                                 setRetryCount(c => c + 1); 
                             }} 
-                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-xs font-bold transition-all border border-slate-700 flex items-center gap-1.5"
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-bold transition-all shadow-md shadow-indigo-900/40 flex items-center gap-1.5"
                         >
                             <RefreshCw size={12} />
-                            <span>重试加载</span>
+                            <span>重试加载 K 线数据</span>
+                        </button>
+                        <button 
+                            onClick={() => {
+                                setError(null);
+                                setChartEngine('LIGHTWEIGHT');
+                                localStorage.setItem('SAVIOR_CHART_ENGINE_PREF_V2', 'LIGHTWEIGHT');
+                            }} 
+                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-xs font-bold transition-all border border-slate-700 flex items-center gap-1.5"
+                        >
+                            <Zap size={12} className="text-emerald-400" />
+                            <span>切换至【极速 Canvas (60帧)】</span>
                         </button>
                     </div>
                 </div>
