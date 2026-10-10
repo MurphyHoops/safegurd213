@@ -33,6 +33,260 @@ const formatRemainingTime = (ms: number): string => {
     return `${secs}秒`;
 };
 
+interface ParsedFuseInfo {
+    ruleName: string;
+    paramName: string;
+    period: string;
+    threshold: string;
+    actual: string;
+    diff: string;
+    diffType: 'excess' | 'deficit' | 'info';
+    detailSummary: string;
+}
+
+const resolveItemFuseInfo = (item: ScannerItem, config?: List4Config): ParsedFuseInfo => {
+    // 1. If explicit fuseDetails exists with structured parameters
+    if (item.fuseDetails && (item.fuseDetails.threshold !== undefined || item.fuseDetails.paramName)) {
+        const d = item.fuseDetails;
+        const unit = d.unit ?? '%';
+        const threshStr = typeof d.threshold === 'number' ? `${d.threshold}${unit}` : (d.threshold ? String(d.threshold) : '-');
+        const actStr = typeof d.actual === 'number' ? `${d.actual}${unit}` : (d.actual ? String(d.actual) : '-');
+        
+        let diffStr = '-';
+        let diffType: 'excess' | 'deficit' | 'info' = 'info';
+        if (typeof d.diff === 'number') {
+            if (d.diff > 0) {
+                diffStr = `超出 +${d.diff}${unit}`;
+                diffType = 'excess';
+            } else if (d.diff < 0) {
+                diffStr = `相差 ${d.diff}${unit}`;
+                diffType = 'deficit';
+            } else {
+                diffStr = `正好临界 0${unit}`;
+            }
+        } else if (d.diff) {
+            diffStr = String(d.diff);
+            diffType = diffStr.includes('超出') ? 'excess' : 'deficit';
+        }
+
+        return {
+            ruleName: d.ruleName || (item.fuseReason?.includes('动态方向锁') ? '动态方向锁' : item.fuseReason?.includes('高级过滤') ? '高级过滤' : item.fuseReason?.includes('5K爆发推进') ? '5K爆发推进' : '防追高熔断'),
+            paramName: d.paramName || '参数门禁',
+            period: d.period || item.tf || '30m',
+            threshold: threshStr,
+            actual: actStr,
+            diff: diffStr,
+            diffType,
+            detailSummary: item.fuseReason || ''
+        };
+    }
+
+    const reason = item.fuseReason || item.momentum?.invalidReason || '';
+    const currentPrice = item.price || 0;
+    const isLong = item.direction === 'LONG';
+
+    // 2. Pattern Matching against reason string
+    // A. Anti-chase: [1小时内涨幅 18.5% > 阈值 15%]
+    const antiChaseMatch = reason.match(/(?:(\d+)小时内)?(涨幅|跌幅)\s*([\d\.]+)%\s*>\s*(?:阈值|限制)\s*([\d\.]+)%/);
+    if (antiChaseMatch) {
+        const hours = antiChaseMatch[1] || '1';
+        const type = antiChaseMatch[2];
+        const actualNum = parseFloat(antiChaseMatch[3]);
+        const threshNum = parseFloat(antiChaseMatch[4]);
+        const diffNum = parseFloat((actualNum - threshNum).toFixed(1));
+        return {
+            ruleName: '防追高熔断',
+            paramName: `${hours}小时${type === '涨幅' ? '做多涨幅' : '做空跌幅'}限制`,
+            period: `${hours}小时`,
+            threshold: `${threshNum}%`,
+            actual: `${actualNum}%`,
+            diff: `超出 +${diffNum}%`,
+            diffType: 'excess',
+            detailSummary: reason
+        };
+    }
+
+    // B. Advanced Filter Intersections: [第1组]: 在最近 50 根 15m K线内，EMA10 与 EMA50 相交 4 次，超过允许的最大相交次数 2 次
+    const advInterMatch = reason.match(/\[第(\d+)组\]:.*?(?:在最近\s*(\d+)\s*根\s*(\w+)\s*K线内.*?相交\s*(\d+)\s*次.*?最大相交次数\s*(\d+)\s*次)/);
+    if (advInterMatch) {
+        const group = advInterMatch[1];
+        const kCount = advInterMatch[2];
+        const tf = advInterMatch[3];
+        const actCount = parseInt(advInterMatch[4]);
+        const maxCount = parseInt(advInterMatch[5]);
+        return {
+            ruleName: `高级过滤 (第${group}组)`,
+            paramName: `EMA相交次数上限`,
+            period: `${kCount}根 ${tf}`,
+            threshold: `${maxCount}次`,
+            actual: `${actCount}次`,
+            diff: `超出 +${actCount - maxCount}次`,
+            diffType: 'excess',
+            detailSummary: reason
+        };
+    }
+
+    // C. Advanced Filter Cross Pump/Drop: [第1组]: ...从最近一次EMA50交叉点涨幅过大 (12.3% > 限制 10.0%)
+    const advCrossMatch = reason.match(/\[第(\d+)组\]:.*?(?:从最近一次EMA(\d+)交叉点(涨幅|跌幅)过大\s*\(([\d\.]+)%\s*>\s*限制\s*([\d\.]+)%\))/);
+    if (advCrossMatch) {
+        const group = advCrossMatch[1];
+        const emaPeriod = advCrossMatch[2];
+        const type = advCrossMatch[3];
+        const actNum = parseFloat(advCrossMatch[4]);
+        const limitNum = parseFloat(advCrossMatch[5]);
+        const diffVal = parseFloat((actNum - limitNum).toFixed(1));
+        return {
+            ruleName: `高级过滤 (第${group}组)`,
+            paramName: `从EMA${emaPeriod}交叉点${type}上限`,
+            period: item.tf || '30m',
+            threshold: `${limitNum}%`,
+            actual: `${actNum}%`,
+            diff: `超出 +${diffVal}%`,
+            diffType: 'excess',
+            detailSummary: reason
+        };
+    }
+
+    // D. 5K Burst Thrust: 实测连续3根最大推进幅度仅 0.35%，未达到设定阈值 1.00%
+    const thrustMatch = reason.match(/实测连续3根最大推进幅度仅\s*([\d\.]+)%，未达到设定阈值\s*([\d\.]+)%/);
+    if (thrustMatch) {
+        const actNum = parseFloat(thrustMatch[1]);
+        const threshNum = parseFloat(thrustMatch[2]);
+        const diffVal = parseFloat((threshNum - actNum).toFixed(2));
+        return {
+            ruleName: '5K爆发推进',
+            paramName: '连续3根K线爆发推进幅度',
+            period: item.tf || '30m',
+            threshold: `${threshNum}%`,
+            actual: `${actNum}%`,
+            diff: `相差 -${diffVal}%`,
+            diffType: 'deficit',
+            detailSummary: reason
+        };
+    }
+
+    // E. Breakout Over-Deviation: 超出进攻突破线 0.5% 缓冲区 [现价 0.160100 > 上限 0.159300]
+    const devMatch = reason.match(/(?:超出|跌破)进攻突破线\s*([\d\.]+)%\s*缓冲区\s*\[现价\s*([\d\.]+)\s*(?:>|<)\s*(?:上限|下限)\s*([\d\.]+)\]/);
+    if (devMatch) {
+        const devPct = parseFloat(devMatch[1]);
+        const curPrice = parseFloat(devMatch[2]);
+        const limitPrice = parseFloat(devMatch[3]);
+        const priceDiffPct = limitPrice > 0 ? parseFloat((Math.abs(curPrice - limitPrice) / limitPrice * 100).toFixed(2)) : 0;
+        return {
+            ruleName: '突破偏离过大拦截',
+            paramName: '进攻突破线偏离上限',
+            period: item.tf || '30m',
+            threshold: `${devPct}% (上限 ${limitPrice})`,
+            actual: `现价 ${curPrice}`,
+            diff: `超出 +${priceDiffPct}%`,
+            diffType: 'excess',
+            detailSummary: reason
+        };
+    }
+
+    // F. Prior NK Gate: 未越过前NK收盘最高价/最低价
+    const nkMatch = reason.match(/等待前(\d+)K突破.*?未越过前\d+K收盘(最高价|最低价):\s*([\d\.]+)/);
+    if (nkMatch) {
+        const count = nkMatch[1];
+        const sideStr = nkMatch[2];
+        const limitPrice = parseFloat(nkMatch[3]);
+        return {
+            ruleName: `前${count}K突破门禁`,
+            paramName: `前${count}K收盘${sideStr}`,
+            period: item.tf || '30m',
+            threshold: `${limitPrice}`,
+            actual: `现价 ${currentPrice}`,
+            diff: `未越过实体线`,
+            diffType: 'deficit',
+            detailSummary: reason
+        };
+    }
+
+    // G. Midpoint Broken: 中轴防守瓦解
+    const midMatch = reason.match(/【规则 1 - 中轴防守瓦解】.*?超列表2寿命根数\((\d+)>(\d+)\)/);
+    if (midMatch) {
+        const actBars = parseInt(midMatch[1]);
+        const maxBars = parseInt(midMatch[2]);
+        return {
+            ruleName: '中轴防守瓦解',
+            paramName: '列表2存续寿命门禁',
+            period: item.tf || '30m',
+            threshold: `≤ ${maxBars}根`,
+            actual: `${actBars}根`,
+            diff: `超出 +${actBars - maxBars}根`,
+            diffType: 'excess',
+            detailSummary: reason
+        };
+    }
+
+    // H. Dynamic Direction Guard
+    const dirMatch = reason.match(/【规则 4 - 动态方向锁阻断】\[(\w+)\]/);
+    if (dirMatch) {
+        return {
+            ruleName: '动态方向锁',
+            paramName: '大周期逆向趋势阻断',
+            period: dirMatch[1],
+            threshold: '同向运行',
+            actual: '逆向运行',
+            diff: '触发方向锁熔断',
+            diffType: 'excess',
+            detailSummary: reason
+        };
+    }
+
+    // 3. Dynamic Calculation Fallback against live config & item extremes
+    if (config?.enableAntiChase && item.historyExtremes && config.antiChaseConfig) {
+        const extremes = item.historyExtremes;
+        const thresholds = isLong ? config.antiChaseConfig.longThresholds : config.antiChaseConfig.shortThresholds;
+        if (thresholds) {
+            for (const [hoursStr, tVal] of Object.entries(thresholds)) {
+                const thresh = Number(tVal);
+                if (!thresh || thresh <= 0) continue;
+                const hours = parseInt(hoursStr);
+                if (isNaN(hours) || hours <= 0) continue;
+                
+                const slice = isLong 
+                    ? (extremes.lows1h ? extremes.lows1h.slice(-hours) : [])
+                    : (extremes.highs1h ? extremes.highs1h.slice(-hours) : []);
+                
+                if (slice.length > 0) {
+                    const extremePrice = isLong ? Math.min(...slice) : Math.max(...slice);
+                    const changePct = isLong 
+                        ? (extremePrice > 0 ? ((currentPrice - extremePrice) / extremePrice) * 100 : 0)
+                        : (extremePrice > 0 ? ((extremePrice - currentPrice) / extremePrice) * 100 : 0);
+                    
+                    if (changePct > thresh) {
+                        const actNum = parseFloat(changePct.toFixed(1));
+                        const diffNum = parseFloat((actNum - thresh).toFixed(1));
+                        return {
+                            ruleName: '防追高熔断',
+                            paramName: `${hours}小时${isLong ? '做多涨幅' : '做空跌幅'}限制`,
+                            period: `${hours}小时`,
+                            threshold: `${thresh}%`,
+                            actual: `${actNum}%`,
+                            diff: `超出 +${diffNum}%`,
+                            diffType: 'excess',
+                            detailSummary: reason || `由列表4防追高过滤规则删除 [${hours}小时内${isLong ? '涨幅' : '跌幅'} ${actNum}% > 阈值 ${thresh}%]`
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Ultimate Fallback
+    return {
+        ruleName: reason.includes('方向') ? '动态方向锁' : reason.includes('高级过滤') ? '高级过滤' : reason.includes('偏离') ? '突破偏离拦截' : reason.includes('中轴') ? '中轴防守瓦解' : '防追高熔断',
+        paramName: '规则参数核验',
+        period: item.tf || '30m',
+        threshold: '设定限制值',
+        actual: '实测触发值',
+        diff: '超出规则限制',
+        diffType: 'excess',
+        detailSummary: reason || '触发列表4动能审计拦截规则，进入待清除队列'
+    };
+};
+
 const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartData, onRemove, idx, config, tier }) => {
     // Robust defensive check: Ensure item and its nested objects exist
     if (!item) return null;
@@ -315,41 +569,98 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
 
             <div className="p-2 space-y-2">
                 {/* 🟡 TIER 2: 触发熔断 / 规则拦截待清除队列 (浅黄色标记) */}
-                {currentTier === 'FUSE_BLOCKED' ? (
-                    <div className="bg-amber-950/30 border border-amber-400/40 p-2 rounded text-center space-y-1.5">
-                        <div className="text-amber-300 font-bold text-[10px] flex items-center justify-center gap-1">
-                            <AlertTriangle size={13} className="text-amber-400 shrink-0"/>
-                            <span>符合【{item.fuseReason?.includes('动态方向锁') ? '动态方向锁' : item.fuseReason?.includes('高级过滤') ? '高级过滤' : '防追高熔断'}】过滤规则</span>
-                        </div>
-                        
-                        <div className="flex items-center justify-center gap-1.5 py-1 px-2 bg-amber-900/40 rounded border border-amber-500/30 text-amber-300 text-[10px] font-bold">
-                            <Clock size={12} className="text-amber-400 animate-spin" />
-                            <span>将在 <span className="font-mono text-amber-200 text-xs">{fuseCountdownStr}</span> 后彻底清除</span>
-                        </div>
-
-                        <div className="text-[8px] text-amber-300/70">
-                            倒计时结束后，将自动从列表4移除，并联动清除列表3与列表2
-                        </div>
-
-                        {item.fuseDetails && (
-                            <div className="text-[9px] text-slate-300 space-y-0.5 border-t border-amber-500/20 pt-1 text-left grid grid-cols-3 gap-1">
-                                <div>周期: <span className="font-bold text-white">{item.fuseDetails.period || '-'}</span></div>
-                                <div>阈值: <span className="font-bold text-amber-400">{item.fuseDetails.threshold ?? 0}%</span></div>
-                                <div>实测: <span className="font-bold text-white">{item.fuseDetails.actual ?? 0}%</span></div>
+                {currentTier === 'FUSE_BLOCKED' ? (() => {
+                    const fuseInfo = resolveItemFuseInfo(item, config);
+                    return (
+                        <div className="bg-amber-950/30 border border-amber-400/40 p-2 rounded text-center space-y-1.5">
+                            <div className="text-amber-300 font-bold text-[10px] flex items-center justify-center gap-1">
+                                <AlertTriangle size={13} className="text-amber-400 shrink-0"/>
+                                <span>符合【{fuseInfo.ruleName}】过滤规则</span>
                             </div>
-                        )}
+                            
+                            <div className="flex items-center justify-center gap-1.5 py-1 px-2 bg-amber-900/40 rounded border border-amber-500/30 text-amber-300 text-[10px] font-bold">
+                                <Clock size={12} className="text-amber-400 animate-spin" />
+                                <span>将在 <span className="font-mono text-amber-200 text-xs">{fuseCountdownStr}</span> 后彻底清除</span>
+                            </div>
 
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onRemove();
-                            }}
-                            className="w-full py-1 mt-1 bg-amber-900/30 hover:bg-amber-900/60 border border-amber-500/40 rounded text-[9px] text-amber-300 font-bold transition-all flex items-center justify-center gap-1"
-                        >
-                            <Trash2 size={11} /> 立即联动清除
-                        </button>
-                    </div>
-                ) : (
+                            <div className="text-[8px] text-amber-300/70">
+                                倒计时结束后，将自动从列表4移除，并联动清除列表3与列表2
+                            </div>
+
+                            {/* 详细规则与参数量化审计看板 */}
+                            <div className="text-[9px] bg-slate-900/90 border border-amber-500/40 rounded p-2 space-y-1.5 text-left shadow-md">
+                                {/* 顶部标题行: 拦截规则与周期 */}
+                                <div className="flex items-center justify-between border-b border-slate-700/60 pb-1">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-slate-400">拦截规则:</span>
+                                        <span className="font-bold text-amber-300 text-[10px]">
+                                            【{fuseInfo.ruleName}】
+                                        </span>
+                                    </div>
+                                    <span className="px-1.5 py-0.2 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded font-mono text-[8px] font-bold">
+                                        {fuseInfo.period}
+                                    </span>
+                                </div>
+
+                                {/* 拦截具体参数名 */}
+                                <div className="flex items-center justify-between text-slate-300">
+                                    <span className="text-slate-400">拦截参数:</span>
+                                    <span className="font-mono font-semibold text-amber-200">
+                                        {fuseInfo.paramName}
+                                    </span>
+                                </div>
+
+                                {/* 设定阈值 vs 当前实测 2列对比看板 */}
+                                <div className="grid grid-cols-2 gap-1.5 pt-0.5 border-t border-slate-800">
+                                    <div className="bg-slate-800/80 rounded p-1 border border-slate-700/50">
+                                        <span className="text-[8px] text-slate-400 block font-medium">设定参数 (阈值)</span>
+                                        <span className="font-mono font-bold text-amber-400 text-[10px]">
+                                            {fuseInfo.threshold}
+                                        </span>
+                                    </div>
+                                    <div className="bg-slate-800/80 rounded p-1 border border-slate-700/50">
+                                        <span className="text-[8px] text-slate-400 block font-medium">当前参数 (实测)</span>
+                                        <span className={`font-mono font-bold text-[10px] ${fuseInfo.diffType === 'excess' ? 'text-red-400' : 'text-white'}`}>
+                                            {fuseInfo.actual}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* 量化差距 (超出多少 / 相差多少) 高亮指示行 */}
+                                <div className="flex items-center justify-between bg-amber-950/60 rounded px-2 py-1 border border-amber-500/30">
+                                    <span className="text-[8px] text-amber-300/80 font-medium">量化差距:</span>
+                                    <span className={`font-mono text-[10px] font-extrabold ${
+                                        fuseInfo.diffType === 'excess' 
+                                            ? 'text-red-400' 
+                                            : fuseInfo.diffType === 'deficit' 
+                                                ? 'text-amber-400' 
+                                                : 'text-emerald-400'
+                                    }`}>
+                                        {fuseInfo.diff}
+                                    </span>
+                                </div>
+
+                                {/* 原生详细说明文字 */}
+                                {fuseInfo.detailSummary && (
+                                    <div className="text-[8px] text-slate-400 leading-tight pt-0.5 border-t border-slate-800/80 break-words">
+                                        <span className="text-slate-500">审计说明: </span>
+                                        <span className="text-slate-300">{fuseInfo.detailSummary}</span>
+                                    </div>
+                                )}
+                            </div>
+
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onRemove();
+                                }}
+                                className="w-full py-1 mt-1 bg-amber-900/30 hover:bg-amber-900/60 border border-amber-500/40 rounded text-[9px] text-amber-300 font-bold transition-all flex items-center justify-center gap-1"
+                            >
+                                <Trash2 size={11} /> 立即联动清除
+                            </button>
+                        </div>
+                    );
+                })() : (
                     <>
                         {/* 🟢 TIER 1: 等待开仓队列 (浅绿色标记) - 4宫格核心量化 + 方案A折叠操作栏 */}
                         {currentTier === 'WAITING' && (
@@ -572,6 +883,8 @@ export const List4Item = React.memo(List4ItemComponent, (prev, next) => {
     if (prev.tier !== next.tier) return false;
     if (prev.item.momentum?.status !== next.item.momentum?.status) return false;
     if (prev.item.fuseBlocked !== next.item.fuseBlocked) return false;
+    if (prev.item.fuseReason !== next.item.fuseReason) return false;
+    if (JSON.stringify(prev.item.fuseDetails) !== JSON.stringify(next.item.fuseDetails)) return false;
     if (prev.item.isTraded !== next.item.isTraded) return false;
     if (prev.item.fuseEnteredAt !== next.item.fuseEnteredAt) return false;
     if (prev.item.tradedAt !== next.item.tradedAt) return false;

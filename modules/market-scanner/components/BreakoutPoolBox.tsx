@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ScanConfig, BreakoutFilterConfig } from '../../../components/Scanner/scannerTypes';
-import { ChevronDown, ChevronUp, Copy, Check, Search, Zap, RefreshCw, Sliders, Activity, Loader2, Timer, ArrowRight, Play, CheckCircle2, ShieldCheck, Flame } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Check, Search, Zap, RefreshCw, Sliders, Activity, Loader2, Timer, ArrowRight, Play, CheckCircle2, ShieldCheck, Flame, Sparkles } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
 import { DEFAULT_BREAKOUT_CONFIG, BreakoutAuditItem, auditSymbolBreakout } from '../../../services/rules/list1_breakout';
@@ -54,6 +54,96 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
             ...p,
             breakoutFilter: next,
             majorTrend: p.majorTrend ? { ...p.majorTrend, breakoutFilter: next } : p.majorTrend
+        }));
+    };
+
+    // 🌟 一键应用【放宽推荐】预设：三项规则全开，参数全面放宽，确保币种容易达标入池
+    const applyRelaxedPreset = () => {
+        updateConfig(p => ({
+            ...p,
+            enabled: true,
+            combinationMode: 'OR',
+            // 维度 1: 空间极致蓄势 (放宽)
+            enableSqueeze: true,
+            maxBbwPercent: 5.0,
+            requireSqueezeInKc: false,
+            squeezeBars: 20,
+            // 维度 2: 突破点火放量 (放宽)
+            enableVolumeSpike: true,
+            volMultiplier: 1.3,
+            breakoutMode: 'BB_BANDS',
+            breakoutBars: 20,
+            breakoutDirection: 'BOTH',
+            consecutiveVolBars: 1,
+            requireConsecutiveVolRise: false,
+            minSolidBodyRatio: 35.0,
+            maxDistancePctFromLow: 40.0,
+            // 维度 3: 动能爆发与多周期共振 (放宽)
+            enableAdx: true,
+            minAdx: 18,
+            requireAdxRising: false,
+            enableMultiTfResonance: true,
+            primaryTf: '5m',
+            confirmTf: '15m',
+            resonanceMode: 'TWO_TF'
+        }));
+    };
+
+    // ⚖️ 平衡适中预设
+    const applyBalancedPreset = () => {
+        updateConfig(p => ({
+            ...p,
+            enabled: true,
+            combinationMode: 'OR',
+            enableSqueeze: true,
+            maxBbwPercent: 3.5,
+            requireSqueezeInKc: false,
+            squeezeBars: 20,
+            enableVolumeSpike: true,
+            volMultiplier: 1.8,
+            breakoutMode: 'BB_BANDS',
+            breakoutBars: 20,
+            breakoutDirection: 'BOTH',
+            consecutiveVolBars: 1,
+            requireConsecutiveVolRise: false,
+            minSolidBodyRatio: 45.0,
+            maxDistancePctFromLow: 30.0,
+            enableAdx: true,
+            minAdx: 20,
+            requireAdxRising: false,
+            enableMultiTfResonance: true,
+            primaryTf: '5m',
+            confirmTf: '15m',
+            resonanceMode: 'TWO_TF'
+        }));
+    };
+
+    // 🛡️ 严苛精选预设
+    const applyStrictPreset = () => {
+        updateConfig(p => ({
+            ...p,
+            enabled: true,
+            combinationMode: 'OR',
+            enableSqueeze: true,
+            maxBbwPercent: 2.5,
+            requireSqueezeInKc: true,
+            squeezeBars: 20,
+            enableVolumeSpike: true,
+            volMultiplier: 2.5,
+            breakoutMode: 'BB_BANDS',
+            breakoutBars: 20,
+            breakoutDirection: 'BOTH',
+            consecutiveVolBars: 1,
+            requireConsecutiveVolRise: false,
+            minSolidBodyRatio: 60.0,
+            maxDistancePctFromLow: 20.0,
+            enableAdx: true,
+            minAdx: 25,
+            requireAdxRising: true,
+            enableMultiTfResonance: true,
+            primaryTf: '5m',
+            confirmTf: '15m',
+            resonanceMode: 'TWO_TF'
         }));
     };
 
@@ -268,8 +358,13 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
         config.enableVolumeSpike,
         config.volMultiplier,
         config.breakoutMode,
+        config.minSolidBodyRatio,
+        config.maxDistancePctFromLow,
+        config.consecutiveVolBars,
+        config.requireConsecutiveVolRise,
         config.enableAdx,
         config.minAdx,
+        config.requireAdxRising,
         config.enableMultiTfResonance,
         config.primaryTf,
         config.confirmTf,
@@ -454,36 +549,82 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                     </div>
 
                     {/* 🔀 综合判定逻辑模式选择栏 (OR 模式 / AND 模式) */}
-                    <div className="bg-slate-900/90 border border-slate-800 rounded p-2 flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                            <Sliders size={12} className="text-amber-400" />
-                            <span className="text-[10px] font-bold text-slate-200">底池准入判定规则:</span>
-                            <span className="text-[8.5px] text-slate-400">
-                                {(config.combinationMode || 'OR') === 'OR' ? '（符合3个条件中的任何一个即放入底池）' : '（必须全部满足开启的条件）'}
-                            </span>
+                    <div className="bg-slate-900/90 border border-slate-800 rounded p-2 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                                <Sliders size={12} className="text-amber-400" />
+                                <span className="text-[10px] font-bold text-slate-200">底池准入判定规则:</span>
+                                <span className="text-[8.5px] text-slate-400">
+                                    {(config.combinationMode || 'OR') === 'OR' ? '（符合3个条件中的任何一个即放入底池）' : '（必须全部满足开启的条件）'}
+                                </span>
+                            </div>
+                            <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
+                                <button
+                                    onClick={() => updateConfig(p => ({ ...p, combinationMode: 'OR' }))}
+                                    className={`px-2 py-0.5 rounded text-[8.5px] font-bold transition-all ${
+                                        (config.combinationMode || 'OR') === 'OR'
+                                            ? 'bg-amber-600 text-white shadow-[0_0_8px_rgba(245,158,11,0.3)]'
+                                            : 'text-slate-400 hover:text-slate-200'
+                                    }`}
+                                    title="OR 模式 (推荐)：只要符合空间蓄势、突破放量、动能共振任一条件，即放入趋势爆发底池，全部过滤完后与初筛列表差量同步"
+                                >
+                                    符合任一 (OR)
+                                </button>
+                                <button
+                                    onClick={() => updateConfig(p => ({ ...p, combinationMode: 'AND' }))}
+                                    className={`px-2 py-0.5 rounded text-[8.5px] font-bold transition-all ${
+                                        config.combinationMode === 'AND'
+                                            ? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(6,182,212,0.3)]'
+                                            : 'text-slate-400 hover:text-slate-200'
+                                    }`}
+                                    title="AND 模式：必须同时满足所有已开启的维度条件"
+                                >
+                                    全部满足 (AND)
+                                </button>
+                            </div>
                         </div>
-                        <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
+                        <div className="text-[7.5px] text-slate-400 pt-1 border-t border-slate-800/60 flex items-center justify-between">
+                            <span>💡 <span className="text-amber-300 font-bold">放宽指南</span>: 三个规则全选时，推荐选 <span className="text-amber-400 font-bold">【符合任一 (OR)】</span>，只要蓄势、放量、共振任一达标即入池，容错率最高！</span>
+                            <span className="text-amber-400 font-bold shrink-0 ml-1">放宽首选: OR 模式</span>
+                        </div>
+                    </div>
+
+                    {/* 🎛️ 智能参数预设快捷切换 (放宽推荐 / 平衡适中 / 严苛精选) */}
+                    <div className="bg-gradient-to-r from-amber-950/40 via-slate-900 to-slate-950 p-2 rounded border border-amber-500/30 flex flex-wrap items-center justify-between gap-1.5 shadow-sm">
+                        <div className="flex items-center gap-1.5">
+                            <Sparkles size={12} className="text-amber-400 shrink-0" />
+                            <div className="flex flex-col">
+                                <div className="flex items-center gap-1">
+                                    <span className="text-[10px] font-bold text-amber-200">参数设定方案:</span>
+                                    <span className="text-[8px] text-amber-400 font-bold bg-amber-950/80 px-1 rounded border border-amber-800/40">三项全开</span>
+                                </div>
+                                <span className="text-[7.5px] text-slate-400">
+                                    不知道填什么？点击一键配置合适参数，轻松放宽入池
+                                </span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
                             <button
-                                onClick={() => updateConfig(p => ({ ...p, combinationMode: 'OR' }))}
-                                className={`px-2 py-0.5 rounded text-[8.5px] font-bold transition-all ${
-                                    (config.combinationMode || 'OR') === 'OR'
-                                        ? 'bg-amber-600 text-white shadow-[0_0_8px_rgba(245,158,11,0.3)]'
-                                        : 'text-slate-400 hover:text-slate-200'
-                                }`}
-                                title="OR 模式 (推荐)：只要符合空间蓄势、突破放量、动能共振任一条件，即放入趋势爆发底池，全部过滤完后与初筛列表差量同步"
+                                onClick={applyRelaxedPreset}
+                                className="px-2 py-1 rounded text-[8.5px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow-[0_0_8px_rgba(245,158,11,0.4)] flex items-center gap-1 transition-all active:scale-95"
+                                title="【推荐】三项规则全开，参数全面放宽（BBW≤5%、量比≥1.3x、实体≥35%、防追高≤40%、ADX≥18），币种容易入池"
                             >
-                                符合任一 (OR)
+                                <Sparkles size={10} className="fill-black" />
+                                <span>🌟 一键放宽 (宽松推荐)</span>
                             </button>
                             <button
-                                onClick={() => updateConfig(p => ({ ...p, combinationMode: 'AND' }))}
-                                className={`px-2 py-0.5 rounded text-[8.5px] font-bold transition-all ${
-                                    config.combinationMode === 'AND'
-                                        ? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(6,182,212,0.3)]'
-                                        : 'text-slate-400 hover:text-slate-200'
-                                }`}
-                                title="AND 模式：必须同时满足所有已开启的维度条件"
+                                onClick={applyBalancedPreset}
+                                className="px-2 py-1 rounded text-[8.5px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all active:scale-95"
+                                title="三项规则全开，适中标准参数（BBW≤3.5%、量比≥1.8x、实体≥45%、ADX≥20）"
                             >
-                                全部满足 (AND)
+                                <span>⚖️ 平衡适中</span>
+                            </button>
+                            <button
+                                onClick={applyStrictPreset}
+                                className="px-2 py-1 rounded text-[8.5px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all active:scale-95"
+                                title="三项规则全开，高要求严选参数（BBW≤2.5%、强制KC、量比≥2.5x、ADX≥25）"
+                            >
+                                <span>🛡️ 严苛精选</span>
                             </button>
                         </div>
                     </div>
@@ -643,28 +784,40 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 text-[9px]">
-                            <div className="flex items-center justify-between bg-black/20 px-2 py-1 rounded border border-slate-800/40">
-                                <span className="text-slate-400">布林带宽 (BBW) &le;</span>
-                                <div className="flex items-center gap-1">
-                                    <SmartNumberInput
-                                        value={config.maxBbwPercent}
-                                        onChange={v => updateConfig(p => ({ ...p, maxBbwPercent: v }))}
-                                        className="w-9 bg-slate-950 border border-slate-700 rounded text-center text-cyan-300 font-bold"
-                                    />
-                                    <span className="text-slate-500">%</span>
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-slate-800/40">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">布林带宽 (BBW) &le;</span>
+                                    <div className="flex items-center gap-1">
+                                        <SmartNumberInput
+                                            value={config.maxBbwPercent}
+                                            onChange={v => updateConfig(p => ({ ...p, maxBbwPercent: v }))}
+                                            className="w-10 bg-slate-950 border border-slate-700 rounded text-center text-cyan-300 font-bold"
+                                        />
+                                        <span className="text-slate-500">%</span>
+                                    </div>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-cyan-300 font-bold">宽 4~6%</span> | 适中 2.5~3.5% | 窄 &lt;2%</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 5.0%</span>
                                 </div>
                             </div>
 
-                            <div className="flex items-center justify-between bg-black/20 px-2 py-1 rounded border border-slate-800/40">
-                                <span className="text-slate-400">KC 通道挤压 (Squeeze)</span>
-                                <button
-                                    onClick={() => updateConfig(p => ({ ...p, requireSqueezeInKc: !p.requireSqueezeInKc }))}
-                                    className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${
-                                        config.requireSqueezeInKc ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-500'
-                                    }`}
-                                >
-                                    {config.requireSqueezeInKc ? '强制要求' : '仅看带宽'}
-                                </button>
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-slate-800/40">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">KC 通道挤压 (Squeeze)</span>
+                                    <button
+                                        onClick={() => updateConfig(p => ({ ...p, requireSqueezeInKc: !p.requireSqueezeInKc }))}
+                                        className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${
+                                            config.requireSqueezeInKc ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-300 border border-slate-700'
+                                        }`}
+                                    >
+                                        {config.requireSqueezeInKc ? '强制要求' : '仅看带宽'}
+                                    </button>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-cyan-300 font-bold">仅看带宽(放宽易入池)</span> | 强制要求(严谨)</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 仅看带宽</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -696,28 +849,112 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 text-[9px]">
-                            <div className="flex items-center justify-between bg-black/20 px-2 py-1 rounded border border-slate-800/40">
-                                <span className="text-slate-400">成交量放量 &ge;</span>
-                                <div className="flex items-center gap-1">
-                                    <SmartNumberInput
-                                        value={config.volMultiplier}
-                                        onChange={v => updateConfig(p => ({ ...p, volMultiplier: v }))}
-                                        className="w-9 bg-slate-950 border border-slate-700 rounded text-center text-amber-300 font-bold"
-                                    />
-                                    <span className="text-slate-500">x 均量</span>
+                            {/* 单K爆量倍数 */}
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-slate-800/40">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">单K爆量倍数 &ge;</span>
+                                    <div className="flex items-center gap-1">
+                                        <SmartNumberInput
+                                            value={config.volMultiplier}
+                                            onChange={v => updateConfig(p => ({ ...p, volMultiplier: v }))}
+                                            className="w-10 bg-slate-950 border border-slate-700 rounded text-center text-amber-300 font-bold"
+                                        />
+                                        <span className="text-slate-500">x 均量</span>
+                                    </div>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-amber-300 font-bold">宽 1.2~1.5x</span> | 适中 1.8~2.2x | 强 &gt;3x</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 1.3x</span>
                                 </div>
                             </div>
 
-                            <div className="flex items-center justify-between bg-black/20 px-2 py-1 rounded border border-slate-800/40">
-                                <span className="text-slate-400">突破模式</span>
-                                <select
-                                    value={config.breakoutMode}
-                                    onChange={e => updateConfig(p => ({ ...p, breakoutMode: e.target.value as any }))}
-                                    className="bg-slate-950 text-amber-300 border border-slate-700 rounded px-1 py-0.5 text-[8px] font-bold outline-none"
-                                >
-                                    <option value="BB_BANDS">破布林上下轨</option>
-                                    <option value="EXTREME_K">破近20根极值</option>
-                                </select>
+                            {/* 突破模式 */}
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-slate-800/40">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">突破模式</span>
+                                    <select
+                                        value={config.breakoutMode}
+                                        onChange={e => updateConfig(p => ({ ...p, breakoutMode: e.target.value as any }))}
+                                        className="bg-slate-950 text-amber-300 border border-slate-700 rounded px-1 py-0.5 text-[8px] font-bold outline-none"
+                                    >
+                                        <option value="BB_BANDS">破布林上下轨</option>
+                                        <option value="EXTREME_K">破近20根极值</option>
+                                    </select>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-amber-300 font-bold">破布林轨(高灵敏放宽)</span> | 破20K极值(稳健)</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 破布林轨</span>
+                                </div>
+                            </div>
+
+                            {/* 🐉【龙抬头防伪 ①】实体饱满度门禁 */}
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-amber-900/30">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">实体饱满度 &ge;</span>
+                                    <div className="flex items-center gap-1">
+                                        <SmartNumberInput
+                                            value={config.minSolidBodyRatio !== undefined ? config.minSolidBodyRatio : 35}
+                                            onChange={v => updateConfig(p => ({ ...p, minSolidBodyRatio: v }))}
+                                            className="w-10 bg-slate-950 border border-slate-700 rounded text-center text-amber-300 font-bold"
+                                        />
+                                        <span className="text-slate-500">%</span>
+                                    </div>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-amber-300 font-bold">宽 30~40%</span> | 适中 50% | 严格 &gt;65%</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 35%</span>
+                                </div>
+                            </div>
+
+                            {/* 🐉【龙抬头防伪 ②】防追高极值门禁 */}
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-amber-900/30">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">离阶段极值 &le;</span>
+                                    <div className="flex items-center gap-1">
+                                        <SmartNumberInput
+                                            value={config.maxDistancePctFromLow !== undefined ? config.maxDistancePctFromLow : 40}
+                                            onChange={v => updateConfig(p => ({ ...p, maxDistancePctFromLow: v }))}
+                                            className="w-10 bg-slate-950 border border-slate-700 rounded text-center text-amber-300 font-bold"
+                                        />
+                                        <span className="text-slate-500">%</span>
+                                    </div>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-amber-300 font-bold">宽 35~50%</span> | 适中 25% | 极紧 &lt;15%</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 40%</span>
+                                </div>
+                            </div>
+
+                            {/* 🐉【龙抬头防伪 ③】连续资金梯级递增 */}
+                            <div className="col-span-2 flex flex-col gap-1 bg-black/30 p-2 rounded border border-slate-800">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-slate-300 font-bold">连续放量梯级:</span>
+                                        <div className="flex items-center gap-1">
+                                            <SmartNumberInput
+                                                value={config.consecutiveVolBars || 1}
+                                                onChange={v => updateConfig(p => ({ ...p, consecutiveVolBars: Math.max(1, Math.min(10, v)) }))}
+                                                className="w-8 bg-slate-950 border border-slate-700 rounded text-center text-amber-300 font-bold"
+                                            />
+                                            <span className="text-slate-500">根K线</span>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-[8px] text-slate-400">要求逐根递增:</span>
+                                        <button
+                                            onClick={() => updateConfig(p => ({ ...p, requireConsecutiveVolRise: !p.requireConsecutiveVolRise }))}
+                                            className={`px-1.5 py-0.5 rounded text-[8px] font-bold transition-all ${
+                                                config.requireConsecutiveVolRise ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-300 border border-slate-700'
+                                            }`}
+                                        >
+                                            {config.requireConsecutiveVolRise ? '开启' : '关闭'}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-amber-300 font-bold">宽松设1根(抓单K启动)</span> | 稳健设2~3根；递增放宽建议关</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 1根且关闭递增</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -759,41 +996,74 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 text-[9px]">
-                            <div className="flex items-center justify-between bg-black/20 px-2 py-1 rounded border border-slate-800/40">
-                                <span className="text-slate-400">ADX(14) 阈值 &ge;</span>
-                                <div className="flex items-center gap-1">
-                                    <SmartNumberInput
-                                        value={config.minAdx}
-                                        onChange={v => updateConfig(p => ({ ...p, minAdx: v }))}
-                                        className="w-9 bg-slate-950 border border-slate-700 rounded text-center text-emerald-300 font-bold"
-                                    />
-                                    <span className="text-slate-500">点</span>
+                            {/* ADX 阈值 */}
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-slate-800/40">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">ADX(14) 阈值 &ge;</span>
+                                    <div className="flex items-center gap-1">
+                                        <SmartNumberInput
+                                            value={config.minAdx}
+                                            onChange={v => updateConfig(p => ({ ...p, minAdx: v }))}
+                                            className="w-10 bg-slate-950 border border-slate-700 rounded text-center text-emerald-300 font-bold"
+                                        />
+                                        <span className="text-slate-500">点</span>
+                                    </div>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-emerald-300 font-bold">宽 15~18点</span> | 适中 20~25点 | 强 &gt;30点</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 18点</span>
                                 </div>
                             </div>
 
-                            <div className="flex items-center justify-between bg-black/20 px-2 py-1 rounded border border-slate-800/40">
-                                <span className="text-slate-400">共振周期组合</span>
-                                <div className="flex items-center gap-1">
-                                    <select
-                                        value={config.primaryTf}
-                                        onChange={e => updateConfig(p => ({ ...p, primaryTf: e.target.value as any }))}
-                                        className="bg-slate-950 text-emerald-300 border border-slate-700 rounded px-1 text-[8px] font-bold outline-none"
+                            {/* ADX 拐头向上要求 */}
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded border border-slate-800/40">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">ADX 向上拐头要求</span>
+                                    <button
+                                        onClick={() => updateConfig(p => ({ ...p, requireAdxRising: !p.requireAdxRising }))}
+                                        className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${
+                                            config.requireAdxRising ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 border border-slate-700'
+                                        }`}
                                     >
-                                        <option value="1m">1M</option>
-                                        <option value="3m">3M</option>
-                                        <option value="5m">5M</option>
-                                        <option value="15m">15M</option>
-                                    </select>
-                                    <span className="text-slate-500">+</span>
-                                    <select
-                                        value={config.confirmTf}
-                                        onChange={e => updateConfig(p => ({ ...p, confirmTf: e.target.value as any }))}
-                                        className="bg-slate-950 text-emerald-300 border border-slate-700 rounded px-1 text-[8px] font-bold outline-none"
-                                    >
-                                        <option value="15m">15M</option>
-                                        <option value="30m">30M</option>
-                                        <option value="1h">1H</option>
-                                    </select>
+                                        {config.requireAdxRising ? '必须向上' : '不限拐头'}
+                                    </button>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-emerald-300 font-bold">不限拐头(放宽易入池)</span> | 必须向上(防钝化)</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 不限拐头</span>
+                                </div>
+                            </div>
+
+                            {/* 共振周期组合 */}
+                            <div className="col-span-2 flex flex-col gap-1 bg-black/20 p-2 rounded border border-slate-800/40">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-300 font-bold">共振周期组合</span>
+                                    <div className="flex items-center gap-1">
+                                        <select
+                                            value={config.primaryTf}
+                                            onChange={e => updateConfig(p => ({ ...p, primaryTf: e.target.value as any }))}
+                                            className="bg-slate-950 text-emerald-300 border border-slate-700 rounded px-1 text-[8px] font-bold outline-none"
+                                        >
+                                            <option value="1m">1M</option>
+                                            <option value="3m">3M</option>
+                                            <option value="5m">5M</option>
+                                            <option value="15m">15M</option>
+                                        </select>
+                                        <span className="text-slate-500">+</span>
+                                        <select
+                                            value={config.confirmTf}
+                                            onChange={e => updateConfig(p => ({ ...p, confirmTf: e.target.value as any }))}
+                                            className="bg-slate-950 text-emerald-300 border border-slate-700 rounded px-1 text-[8px] font-bold outline-none"
+                                        >
+                                            <option value="15m">15M</option>
+                                            <option value="30m">30M</option>
+                                            <option value="1h">1H</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="text-[7.5px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/40">
+                                    <span>参考: <span className="text-emerald-300 font-bold">5M+15M(高灵敏快动能)</span> | 15M+1H(大级别波段)</span>
+                                    <span className="text-amber-400 font-bold">建议放宽: 5M+15M</span>
                                 </div>
                             </div>
                         </div>
@@ -848,8 +1118,8 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                                             <span title="布林带宽 (BBW)" className={item.squeezePassed ? 'text-cyan-300 font-bold' : 'text-slate-500'}>
                                                 BBW:{item.bbwPct}%
                                             </span>
-                                            <span title="量比 (Volume Ratio)" className={item.volumePassed ? 'text-amber-300 font-bold' : 'text-slate-500'}>
-                                                量:{item.volRatio}x
+                                            <span title="量比与实体饱满度" className={item.volumePassed ? 'text-amber-300 font-bold' : 'text-slate-500'}>
+                                                量:{item.volRatio}x{item.solidBodyRatio !== undefined ? ` 实:${item.solidBodyRatio}%` : ''}
                                             </span>
                                             <span title="ADX 动能" className={item.adxPassed ? 'text-emerald-300 font-bold' : 'text-slate-500'}>
                                                 ADX:{item.adxValue}

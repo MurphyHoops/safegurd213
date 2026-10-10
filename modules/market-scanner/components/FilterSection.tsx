@@ -410,7 +410,7 @@ export const FilterSection: React.FC<Props> = ({
                         isPrimaryMode={true}
                     />
 
-                    {/* 🚀 趋势爆发综合过滤大卡片 (Breakout Filter Pool Box) - 位于防恐慌熔断上方 */}
+                    {/* 🚀 趋势爆发综合过滤大卡片 (Breakout Filter Pool Box - 融合龙抬头防伪进阶) - 位于防恐慌熔断上方 */}
                     <BreakoutPoolBox 
                         scanConfig={scanConfig} 
                         setScanConfig={setScanConfig} 

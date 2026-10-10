@@ -160,9 +160,13 @@ export interface ScannerItem {
     fuseBlocked?: boolean;
     fuseReason?: string;
     fuseDetails?: {
-        period: string;
-        threshold: number;
-        actual: number;
+        ruleName?: string;
+        paramName?: string;
+        period?: string;
+        threshold: number | string;
+        actual: number | string;
+        diff?: number | string;
+        unit?: string;
     };
     fuseLatched?: boolean; // NEW: Audit Latch status
 
@@ -425,12 +429,18 @@ export interface BreakoutFilterConfig {
     requireSqueezeInKc: boolean; // 是否要求 BB 收缩进 KC 通道内部 (Squeeze ON)，默认 true
     squeezeBars: number; // 压缩K线根数 (默认 20)
 
-    // 2. 突破点火放量 (Volume & Breakout)
+    // 2. 突破点火放量 (Volume & Breakout - 融入连续放量与实体真突破防伪)
     enableVolumeSpike: boolean; // 突破点火子开关
     volMultiplier: number; // 爆量倍数 (Vol / MA_Vol_20)，默认 2.0x
     breakoutMode: 'BB_BANDS' | 'EXTREME_K'; // 突破判定方式: 破布林带上下轨 / 破近N根极值
     breakoutBars?: number; // 突破极值回溯K线根数 (默认 20)
     breakoutDirection?: 'BOTH' | 'LONG' | 'SHORT'; // 突破方向过滤 (默认 'BOTH')
+    
+    // 🐉【龙抬头防伪进阶】连续放量与实体饱满度
+    consecutiveVolBars?: number; // 连续放量K线根数 (默认 1 根为单K爆量，设为 2~3 则为连续放量梯级推进)
+    requireConsecutiveVolRise?: boolean; // 是否要求连续几根成交额逐根递增 (默认 false)
+    minSolidBodyRatio?: number; // K线实体饱满度下限 % (实体长 / 整根K线高，默认 50%，过滤假拉量诱多长上影/长下影)
+    maxDistancePctFromLow?: number; // 距离阶段极值最大距离 % (默认 25%，防追高/抄底锁定)
 
     // 3. 动能爆发与多周期共振 (ADX & Multi-TF)
     enableAdx: boolean; // ADX 动能子开关
@@ -441,6 +451,28 @@ export interface BreakoutFilterConfig {
     primaryTf: '1m' | '3m' | '5m' | '15m'; // 主触发周期，默认 5m
     confirmTf: '15m' | '30m' | '1h'; // 高级确认周期，默认 15m
     resonanceMode: 'TWO_TF' | 'THREE_TF'; // 双周期同向 / 三周期同向，默认 'TWO_TF'
+}
+
+export interface DragonHeadFilterConfig {
+    enabled: boolean;                      // 龙抬头资金异动过滤总开关
+    direction: 'LONG' | 'SHORT' | 'BOTH';  // 监测方向 (默认 LONG 做多龙抬头)
+    timeframe: '15m' | '1h' | '4h' | '1d'; // 监测K线周期 (默认 '1d' 日K级别，也可选 1h/4h/15m)
+    scanDelayMs?: number;                  // 扫描节拍延迟毫秒 (默认 800ms)
+    
+    // 1. 静默蓄势底池 (Base Calm Period)
+    baseLookbackBars: number;              // 静默期回溯K线根数 (默认 14 根，如前14天地量潜伏)
+    maxBaseAmplitude: number;              // 静默期最大振幅或涨幅限制 % (默认 25%，确保平时安静稳定无异常暴涨)
+    
+    // 2. 资金异动连续放量 (Continuous Volume Inflow)
+    consecutiveBars: number;               // 连续放量K线根数 (默认 3 根，即最近连续3根K线成交额递增)
+    minVolumeMultiplier: number;           // 放量倍数 (当前/最近成交额相比静默期均量的倍数，默认 2.0x)
+    requireConsecutiveRise: boolean;       // 是否要求交易额逐根连续递增 (默认 true)
+    
+    // 3. 价格启动窗口 (Price Action Initiation - 防追高/抄底起爆)
+    isBottomFishingMode: boolean;          // 是否启用底部反转/抄底保护模式 (默认 true)
+    minPriceChangePct: number;             // 启动最小涨幅 % (默认 2.0%)
+    maxPriceChangePct: number;             // 启动最大涨幅 % (默认 25.0%，防追高)
+    maxDistancePctFromLow?: number;        // 距离阶段低点最大距离 % (默认 15.0%，用于抄底锁定)
 }
 
 export interface ScanConfig {
@@ -463,6 +495,7 @@ export interface ScanConfig {
     smartMode?: SmartScanConfig;
     majorTrend?: MajorTrendConfig;
     breakoutFilter?: BreakoutFilterConfig;
+    dragonHeadFilter?: DragonHeadFilterConfig;
     enableAlphabeticalFilter?: boolean; // 币安排序 A~Z 分片开关
     alphabeticalRangeStart?: number;    // 起始币种序号 (如 1)
     alphabeticalRangeEnd?: number;      // 结束币种序号 (如 70)

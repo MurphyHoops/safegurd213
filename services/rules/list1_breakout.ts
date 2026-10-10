@@ -19,6 +19,11 @@ export interface BreakoutAuditItem {
     isBrokenOut: boolean;
     breakoutDirection: 'LONG' | 'SHORT' | 'NONE';
     volumePassed: boolean;
+    // 🐉 龙抬头防伪进阶指标
+    solidBodyRatio?: number;        // K线实体饱满度 %
+    consecutiveVolCount?: number;   // 连续放量根数
+    isVolRising?: boolean;          // 连续放量是否逐根递增
+    distFromExtremePct?: number;    // 距离阶段极值距离 %
     // 3. 动能与多周期
     adxValue: number;
     isAdxRising: boolean;
@@ -41,21 +46,25 @@ export const DEFAULT_BREAKOUT_CONFIG: BreakoutFilterConfig = {
     enabled: false,
     combinationMode: 'OR', // 默认 'OR' 模式 (满足任一即可进入市场初筛)
     scanDelayMs: 1000, // 默认 1000ms (1秒1币，平稳扫描防超频)
-    // 1. 空间极致蓄势
+    // 1. 空间极致蓄势 (宽松推荐)
     enableSqueeze: true,
-    maxBbwPercent: 3.0,
-    requireSqueezeInKc: true,
+    maxBbwPercent: 5.0,
+    requireSqueezeInKc: false,
     squeezeBars: 20,
-    // 2. 突破点火放量
+    // 2. 突破点火放量 (宽松推荐)
     enableVolumeSpike: true,
-    volMultiplier: 2.0,
+    volMultiplier: 1.3,
     breakoutMode: 'BB_BANDS',
     breakoutBars: 20,
     breakoutDirection: 'BOTH',
-    // 3. 动能与多周期
+    consecutiveVolBars: 1, // 默认 1 (单K爆发)
+    requireConsecutiveVolRise: false, // 默认 false
+    minSolidBodyRatio: 35.0, // 宽松推荐 35% 实体饱满度门禁
+    maxDistancePctFromLow: 40.0, // 宽松推荐 40% 防追高极值门禁
+    // 3. 动能与多周期 (宽松推荐)
     enableAdx: true,
-    minAdx: 22,
-    requireAdxRising: true,
+    minAdx: 18,
+    requireAdxRising: false,
     enableMultiTfResonance: true,
     primaryTf: '5m',
     confirmTf: '15m',
@@ -189,11 +198,15 @@ export async function auditSymbolBreakout(
             }
         }
 
-        // --- 维度 ②: 突破点火放量 (Volume & Breakout) ---
+        // --- 维度 ②: 突破点火放量 (Volume & Breakout - 融入龙抬头防伪进阶) ---
         let volRatio = 1.0;
         let isBrokenOut = false;
         let breakoutDirection: 'LONG' | 'SHORT' | 'NONE' = 'NONE';
         let volumePassed = true;
+        let solidBodyRatio = 100.0;
+        let consecutiveVolCount = 1;
+        let isVolRising = true;
+        let distFromExtremePct = 0.0;
 
         const volPeriod = 20;
         if (volumes.length >= volPeriod) {
@@ -204,9 +217,12 @@ export async function auditSymbolBreakout(
 
             const curClose = closes[closes.length - 1];
             const curOpen = opens[opens.length - 1];
+            const curHigh = highs[highs.length - 1];
+            const curLow = lows[lows.length - 1];
             const prevUpperBB = lastBbIdx >= 0 ? bb.upper[lastBbIdx] : 0;
             const prevLowerBB = lastBbIdx >= 0 ? bb.lower[lastBbIdx] : 0;
 
+            // 1. 突破判定 (破布林带 / 破近N根极值)
             if (config.breakoutMode === 'BB_BANDS' && prevUpperBB > 0 && prevLowerBB > 0) {
                 if (curClose > prevUpperBB && curClose > curOpen) {
                     isBrokenOut = true;
@@ -232,6 +248,38 @@ export async function auditSymbolBreakout(
                 }
             }
 
+            // 2. 🐉【龙抬头防伪 ①】K线实体饱满度计算 (Body Height / Total Range)
+            const candleRange = curHigh - curLow;
+            const bodyHeight = Math.abs(curClose - curOpen);
+            solidBodyRatio = candleRange > 0 ? +((bodyHeight / candleRange) * 100).toFixed(1) : 100.0;
+
+            // 3. 🐉【龙抬头防伪 ②】连续放量与递增梯级检验
+            const cBars = Math.max(1, config.consecutiveVolBars || 1);
+            consecutiveVolCount = cBars;
+            if (cBars > 1 && volumes.length >= cBars + 1) {
+                const recentVolSteps = volumes.slice(-cBars);
+                for (let vi = 1; vi < recentVolSteps.length; vi++) {
+                    if (recentVolSteps[vi] < recentVolSteps[vi - 1] * 0.97) {
+                        isVolRising = false;
+                        break;
+                    }
+                }
+            }
+
+            // 4. 🐉【龙抬头防伪 ③】阶段极值距离计算 (防高位追高/防深跌过头)
+            const lookbackBarsForExtreme = Math.max(20, config.breakoutBars || 20);
+            const recentLowestLows = lows.slice(-lookbackBarsForExtreme);
+            const recentHighestHighs = highs.slice(-lookbackBarsForExtreme);
+            const periodMinL = Math.min(...recentLowestLows);
+            const periodMaxH = Math.max(...recentHighestHighs);
+
+            if (breakoutDirection === 'SHORT') {
+                distFromExtremePct = periodMaxH > 0 ? +(((periodMaxH - curClose) / periodMaxH) * 100).toFixed(2) : 0;
+            } else {
+                distFromExtremePct = periodMinL > 0 ? +(((curClose - periodMinL) / periodMinL) * 100).toFixed(2) : 0;
+            }
+
+            // 门禁判定
             if (config.enableVolumeSpike) {
                 if (volRatio < (config.volMultiplier ?? 2.0)) {
                     volumePassed = false;
@@ -246,6 +294,26 @@ export async function auditSymbolBreakout(
                         volumePassed = false;
                         failReasons.push(`突破方向不符合(${config.breakoutDirection})`);
                     }
+                }
+
+                // 实体饱满度硬门禁 (过滤诱多长上影/长下影)
+                const minBodyReq = config.minSolidBodyRatio !== undefined ? config.minSolidBodyRatio : 50.0;
+                if (minBodyReq > 0 && solidBodyRatio < minBodyReq) {
+                    volumePassed = false;
+                    failReasons.push(`K线实体饱满度(${solidBodyRatio}%)低于门禁(${minBodyReq}%)`);
+                }
+
+                // 连续放量梯级门禁
+                if (cBars > 1 && config.requireConsecutiveVolRise && !isVolRising) {
+                    volumePassed = false;
+                    failReasons.push(`未满足连续${cBars}根K线放量递增`);
+                }
+
+                // 防追高/极值距离门禁
+                const maxDistReq = config.maxDistancePctFromLow !== undefined ? config.maxDistancePctFromLow : 25.0;
+                if (maxDistReq > 0 && distFromExtremePct > maxDistReq) {
+                    volumePassed = false;
+                    failReasons.push(`离阶段极值距离(${distFromExtremePct}%)超出防追高门禁(${maxDistReq}%)`);
                 }
             }
         }
@@ -335,6 +403,10 @@ export async function auditSymbolBreakout(
             isBrokenOut,
             breakoutDirection,
             volumePassed,
+            solidBodyRatio,
+            consecutiveVolCount,
+            isVolRising,
+            distFromExtremePct,
             adxValue,
             isAdxRising,
             adxPassed,

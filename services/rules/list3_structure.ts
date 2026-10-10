@@ -71,17 +71,19 @@ export function getList3SignalRejectReason(
     }
 
     // 6. Multi-Resonance (时空共振) - ONLY filter if switch is explicitly ON
+    // 规则：信号K线向下的两个更小周期（小一级与小两级）均线必须同时呈相对应的发散形态，才能通过；取消大一级K线均线发散验证。
     if (config.enableMultiResonance === true && adjacentStrictTrends) {
         const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
         const idx = ALL_TFS.indexOf(signal.tf);
         if (idx !== -1) {
-            const prevTf = idx > 0 ? ALL_TFS[idx - 1] : null;
-            const nextTf = idx < ALL_TFS.length - 1 ? ALL_TFS[idx + 1] : null;
+            const sub1Tf = idx > 0 ? ALL_TFS[idx - 1] : null;
+            const sub2Tf = idx > 1 ? ALL_TFS[idx - 2] : null;
             const dir = signal.direction;
-            const prevOk = prevTf ? !!adjacentStrictTrends[`${prevTf}-${dir}`] : false;
-            const nextOk = nextTf ? !!adjacentStrictTrends[`${nextTf}-${dir}`] : false;
-            if (!prevOk && !nextOk) {
-                return '由列表3时空共振规则删除';
+            const sub1Ok = sub1Tf ? !!adjacentStrictTrends[`${sub1Tf}-${dir}`] : true;
+            const sub2Ok = sub2Tf ? !!adjacentStrictTrends[`${sub2Tf}-${dir}`] : true;
+            if (!sub1Ok || !sub2Ok) {
+                const subLabels = [sub1Tf, sub2Tf].filter(Boolean).join('、');
+                return `由列表3时空共振规则删除 [小两级(${subLabels})未同时呈${dir === 'LONG' ? '多头' : '空头'}发散]`;
             }
         }
     }

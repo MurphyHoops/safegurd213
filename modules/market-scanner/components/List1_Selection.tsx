@@ -198,6 +198,8 @@ const List1_Selection: React.FC<Props> = ({
         }
     });
 
+
+
     // 🌊 回溯周期大行情候选池数据本地监听 (确保实时极速毫秒级响应，与扫描线程绝对零延迟同步)
     const [localMajorTrendCandidates, setLocalMajorTrendCandidates] = useState<Set<string>>(() => {
         try {
@@ -251,6 +253,7 @@ const List1_Selection: React.FC<Props> = ({
                 setBreakoutPool(raw ? JSON.parse(raw) : []);
             } catch (_) {}
         };
+
         const handleMajorTrendUpdate = (e?: any) => {
             try {
                 if (e?.detail && Array.isArray(e.detail)) {
@@ -489,6 +492,8 @@ const List1_Selection: React.FC<Props> = ({
                 }
             });
         }
+
+
 
         return Array.from(poolMap.values());
     }, [startTrendPool, sidewaysPool, breakoutPool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
@@ -955,7 +960,8 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    finalResult = [];
+                    // 🔒 永不清零防呆保障：当趋势爆发过滤底池尚在初次扫描或结果为空时，平滑维持上游基础交易额底池或启动趋势池
+                    finalResult = startTrendFilteredList.length > 0 ? startTrendFilteredList : volumeFilteredList;
                 }
             } else if (!enableSideways && !enableLookbackFilter) {
                 // 🎯 情况 C: “横盘蓄势过滤”和“回溯周期过滤”都未开启，直接平滑读取基础交易额底池！
@@ -1030,6 +1036,8 @@ const List1_Selection: React.FC<Props> = ({
                 }
             }
         }
+
+
 
         // 🔒 [严格数量限制 (Limit)]: 若设置了数量限制 (limit > 0)，截取前 limit 个初筛币种展示与输出
         const limit = Number(scanConfig.limit);

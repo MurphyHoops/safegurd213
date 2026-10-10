@@ -10,6 +10,7 @@ import {
   StructureScanStatus,
 } from "../../components/Scanner/scannerTypes";
 import { analyzeList3Structure, checkList3SignalPasses, getList3SignalRejectReason } from "../../services/rules/list3_structure";
+import { checkEmaDivergence } from "../../services/indicators";
 import { fetchWithFallback } from "../../services/apiService";
 import { KLineSynthesizer } from "../../services/klineSynthesizer";
 import { KLine } from "../../types";
@@ -481,7 +482,8 @@ export const useStructureAudit = (
         configRef.current,
         rawKlines as any,
       );
-      if (resultLong?.structure?.isStrictTrend) {
+      const divMode = checkEmaDivergence(closes, [10, 20, 30, 40]);
+      if (divMode === "LONG" || resultLong?.structure?.isStrictTrend) {
         cached.adjacentStrictTrends[`${tf}-LONG`] = true;
       } else {
         cached.adjacentStrictTrends[`${tf}-LONG`] = false;
@@ -505,7 +507,7 @@ export const useStructureAudit = (
         configRef.current,
         rawKlines as any,
       );
-      if (resultShort?.structure?.isStrictTrend) {
+      if (divMode === "SHORT" || resultShort?.structure?.isStrictTrend) {
         cached.adjacentStrictTrends[`${tf}-SHORT`] = true;
       } else {
         cached.adjacentStrictTrends[`${tf}-SHORT`] = false;
@@ -589,8 +591,7 @@ export const useStructureAudit = (
                   ];
                   const idx = ALL_TFS.indexOf(r.tf);
                   if (idx > 0) neededTFs.add(ALL_TFS[idx - 1]);
-                  if (idx < ALL_TFS.length - 1)
-                    neededTFs.add(ALL_TFS[idx + 1]);
+                  if (idx > 1) neededTFs.add(ALL_TFS[idx - 2]);
                 }
               }
             });
@@ -891,8 +892,7 @@ export const useStructureAudit = (
                     ];
                     const idx = ALL_TFS.indexOf(r.tf);
                     if (idx > 0) neededTFs.add(ALL_TFS[idx - 1]);
-                    if (idx < ALL_TFS.length - 1)
-                      neededTFs.add(ALL_TFS[idx + 1]);
+                    if (idx > 1) neededTFs.add(ALL_TFS[idx - 2]);
                   }
                 }
               });

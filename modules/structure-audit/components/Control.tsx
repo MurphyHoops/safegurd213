@@ -81,7 +81,7 @@ export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, cou
                         <div className={`flex items-center justify-between bg-slate-800/50 rounded border ${config.enableMultiResonance ? 'border-yellow-500/50' : 'border-slate-700'} px-2 py-1.5`}>
                             <div className="flex items-center gap-1">
                                 <ArrowUpDown size={10} className="text-yellow-400" />
-                                <span className="text-[9px] text-slate-300 font-bold whitespace-nowrap" title="需大小级别之一符合严格趋势">时空共振</span>
+                                <span className="text-[9px] text-slate-300 font-bold whitespace-nowrap" title="信号K线小两级周期均线必须同时呈相对应发散形态">时空共振</span>
                             </div>
                             <div onClick={() => setConfig(p => ({...p, enableMultiResonance: !p.enableMultiResonance}))} className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${config.enableMultiResonance ? 'bg-yellow-600' : 'bg-slate-700'}`}>
                                 <div className={`w-2 h-2 bg-white rounded-full shadow transition-transform ${config.enableMultiResonance ? 'translate-x-3' : ''}`} />

@@ -20,6 +20,7 @@ import { collection, addDoc } from 'firebase/firestore';
 import { useAutoHistoryLogger } from './components/ScannerHistoryModal';
 import { klineMultiTfStore } from '../../services/klineMultiTfStore';
 import { KLine } from '../../types';
+import { getLatestEMA } from '../../services/indicators';
 
 // Helper to get minutes from tf string
 const getTfMinutes = (tf: string) => {
@@ -88,7 +89,7 @@ export const useMomentumAudit = (
             return [];
         })()
     ));
-    const fuseAuditLatchRef = useRef<Map<string, { blocked: boolean, reason: string }>>(new Map(
+    const fuseAuditLatchRef = useRef<Map<string, { blocked: boolean, reason: string, details?: any }>>(new Map(
         (() => {
             try {
                 const saved = localStorage.getItem(fuseLatchKey);
@@ -228,9 +229,6 @@ export const useMomentumAudit = (
         }
 
         const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
-        if (!isAnyFuseEnabled) {
-            expiredSignalCacheRef.current.clear();
-        }
 
         // 1. Maintain & Ingest Candidates into list4CacheRef
         currentCandidates.forEach(item => {
@@ -245,7 +243,7 @@ export const useMomentumAudit = (
                     const uniqueId = `${item.symbol}-${res.tf}-${res.direction}`;
                     
                     // If already permanently expired, skip
-                    if (isAnyFuseEnabled && expiredSignalCacheRef.current.has(uniqueId)) return;
+                    if (expiredSignalCacheRef.current.has(uniqueId)) return;
                     
                     const cleanSym = normalizeSymbol(item.symbol);
                     const klineKey = `${cleanSym}-${res.tf}`;
@@ -263,10 +261,44 @@ export const useMomentumAudit = (
                         list4KlinesCacheRef.current.set(klineKey, { closes: resolvedCloses, timestamp: Date.now() });
                     }
 
-                    const structureEnriched = res.structure ? {
+                    let structureEnriched = res.structure ? {
                         ...res.structure,
                         recentCloses: resolvedCloses || []
                     } : res.structure;
+
+                    if (structureEnriched) {
+                        let dynamicLag = structureEnriched.lag;
+                        if (structureEnriched.signalTime && structureEnriched.signalTime > 0) {
+                            const sigMs = structureEnriched.signalTime > 1e11 ? structureEnriched.signalTime : structureEnriched.signalTime * 1000;
+                            const tfMs = getTfMinutes(res.tf || '15m') * 60 * 1000;
+                            if (tfMs > 0) {
+                                dynamicLag = Math.max(structureEnriched.lag || 0, (now - sigMs) / tfMs);
+                            }
+                        }
+
+                        if (resolvedCloses && resolvedCloses.length >= 30) {
+                            const dynamicEma10 = getLatestEMA(resolvedCloses, 10);
+                            const dynamicEma20 = getLatestEMA(resolvedCloses, 20);
+                            const dynamicEma30 = getLatestEMA(resolvedCloses, 30);
+                            const dynamicEma40 = resolvedCloses.length >= 40 ? getLatestEMA(resolvedCloses, 40) : structureEnriched.ema40;
+                            const dynamicEma80 = resolvedCloses.length >= 80 ? getLatestEMA(resolvedCloses, 80) : structureEnriched.ema80;
+
+                            structureEnriched = {
+                                ...structureEnriched,
+                                ema10: dynamicEma10 || structureEnriched.ema10,
+                                ema20: dynamicEma20 || structureEnriched.ema20,
+                                ema30: dynamicEma30 || structureEnriched.ema30,
+                                ema40: dynamicEma40,
+                                ema80: dynamicEma80,
+                                lag: dynamicLag
+                            };
+                        } else {
+                            structureEnriched = {
+                                ...structureEnriched,
+                                lag: dynamicLag
+                            };
+                        }
+                    }
                     
                     // LATCH LOGIC: If previously determined as permanently BLOCKED by fuse, retain latch
                     const latchedAudit = fuseAuditLatchRef.current.get(uniqueId);
@@ -277,19 +309,64 @@ export const useMomentumAudit = (
                         price: livePrice, // Inject fresh live price for dynamic anti-chase evaluation
                         direction: res.direction,
                         tf: res.tf,
+                        lag: structureEnriched?.lag ?? item.lag,
                         structure: structureEnriched,
                         historyExtremes: item.historyExtremes,
                         fuseBlocked: existing?.fuseBlocked ?? (isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false),
                         fuseReason: existing?.fuseReason ?? ((isAnyFuseEnabled && latchedAudit) ? (latchedAudit?.reason || '') : ''),
+                        fuseDetails: existing?.fuseDetails ?? latchedAudit?.details,
                         fuseLatched: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false
                     });
                 });
             }
         });
 
-        // 🔄 更新常驻池中所有标的实时最新价格
+        // 🔄 更新常驻池中所有标的实时最新价格与动态 EMA 均线以及实时 Lag
         list4CacheRef.current.forEach((cachedItem) => {
             cachedItem.price = resolvePrice(cachedItem.symbol, currentPrices, cachedItem.price);
+            if (cachedItem.structure && cachedItem.tf) {
+                const kKey = `${normalizeSymbol(cachedItem.symbol)}-${cachedItem.tf}`;
+                const cachedKlines = list4KlinesCacheRef.current.get(kKey);
+                const closes = cachedKlines?.closes || cachedItem.structure.recentCloses;
+                
+                // 1. 动态 Lag 计算：无论 K 线 closes 是否已抓取，结合真实流逝时间自增
+                const signalTime = cachedItem.structure.signalTime || 0;
+                const sigMs = signalTime > 1e11 ? signalTime : signalTime * 1000;
+                const tfMinutes = getTfMinutes(cachedItem.tf || '15m');
+                const realTimeLag = (sigMs > 0 && tfMinutes > 0)
+                    ? (now - sigMs) / (tfMinutes * 60 * 1000)
+                    : (cachedItem.structure.lag || 0);
+                const dynLag = Math.max(cachedItem.structure.lag || 0, cachedItem.lag || 0, realTimeLag);
+
+                if (closes && closes.length >= 30) {
+                    const dyn10 = getLatestEMA(closes, 10);
+                    const dyn20 = getLatestEMA(closes, 20);
+                    const dyn30 = getLatestEMA(closes, 30);
+                    const dyn40 = closes.length >= 40 ? getLatestEMA(closes, 40) : cachedItem.structure.ema40;
+                    const dyn80 = closes.length >= 80 ? getLatestEMA(closes, 80) : cachedItem.structure.ema80;
+
+                    cachedItem.structure = {
+                        ...cachedItem.structure,
+                        recentCloses: closes,
+                        ema10: dyn10 || cachedItem.structure.ema10,
+                        ema20: dyn20 || cachedItem.structure.ema20,
+                        ema30: dyn30 || cachedItem.structure.ema30,
+                        ema40: dyn40,
+                        ema80: dyn80,
+                        lag: dynLag
+                    };
+                    cachedItem.lag = dynLag;
+                } else {
+                    cachedItem.structure = {
+                        ...cachedItem.structure,
+                        lag: dynLag
+                    };
+                    cachedItem.lag = dynLag;
+                    if (!cachedKlines || Date.now() - cachedKlines.timestamp > 15000) {
+                        fetchList4Klines(cachedItem.symbol, cachedItem.tf);
+                    }
+                }
+            }
         });
 
         const flatCandidates = Array.from(list4CacheRef.current.values());
@@ -310,7 +387,7 @@ export const useMomentumAudit = (
             const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
             
             // If already permanently expired, skip
-            if (isAnyFuseEnabled && expiredSignalCacheRef.current.has(uniqueId)) {
+            if (expiredSignalCacheRef.current.has(uniqueId)) {
                 list4CacheRef.current.delete(uniqueId);
                 return;
             }
@@ -319,10 +396,29 @@ export const useMomentumAudit = (
             const tfMinutes = getTfMinutes(item.tf || '15m');
             
             // Check "Structure Broken" (INVALID) - 均线瓦解与偏离过大拦截
-            // 🎯 用户明确指令：绝不瞬间闪退！凡是触发限制条件的，统一转入【规则拦截待清除队列 (浅黄色)】，进行倒计时缓冲与文字提示！
+            // 🎯 核心铁律：破中轴且EMA10穿越EMA30、或达到寿命根数，必须立即彻底清除！
             if (item.momentum?.status === 'INVALID') {
-                item.fuseBlocked = true;
-                item.fuseReason = item.fuseReason || item.momentum.invalidReason || '由列表4中轴防守瓦解/偏离规则拦截';
+                const reason = item.momentum.invalidReason || '';
+                const isTerminalClear = reason.includes('中轴防守瓦解') || 
+                                        reason.includes('信号寿命耗尽') || 
+                                        reason.includes('彻底清除') || 
+                                        !reason.includes('突破偏离过大拦截');
+
+                if (isTerminalClear) {
+                    shouldKeep = false;
+                    item.removalReason = reason || '中轴防守瓦解或信号寿命耗尽彻底清除';
+                    expiredSignalCacheRef.current.add(uniqueId);
+                    try {
+                        localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
+                    } catch(e) {}
+                    list4CacheRef.current.delete(uniqueId);
+                    safeRemoveSignal(uniqueId);
+                    logToHistory(item, item.removalReason);
+                    return; // 立即剔除，绝不存入 finalItems
+                } else {
+                    item.fuseBlocked = true;
+                    item.fuseReason = reason;
+                }
             }
 
             // Check "Dormant Retention" (DORMANT) - 破中轴进入保留期，限制最大寿命K线根数 (默认20根)
@@ -332,18 +428,22 @@ export const useMomentumAudit = (
                 }
 
                 const maxCandles = currentConfig.dormantRetentionCandles ?? 20;
-                if (isAnyFuseEnabled && maxCandles > 0) {
+                if (maxCandles > 0) {
                     const enterDormantTime = dormantSignalCacheRef.current.get(uniqueId) || now;
                     const elapsedMs = now - enterDormantTime;
                     const maxMs = maxCandles * tfMinutes * 60 * 1000;
 
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
+                        try {
+                            localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
+                        } catch(e) {}
                         shouldKeep = false;
                         item.removalReason = `破中轴休眠超期彻底清除 [已休眠 ${Math.round(elapsedMs / (tfMinutes * 60 * 1000))} / ${maxCandles} 根K线]`;
                         list4CacheRef.current.delete(uniqueId);
                         safeRemoveSignal(uniqueId);
                         logToHistory(item, item.removalReason);
+                        return;
                     }
                 }
             } else {
@@ -364,17 +464,21 @@ export const useMomentumAudit = (
                     
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
+                        try {
+                            localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
+                        } catch(e) {}
                         shouldKeep = false;
                         item.removalReason = `由列表4触发后超时规则删除 [已持续: ${Math.round(elapsedMs / 60000)}分钟]`;
                         list4CacheRef.current.delete(uniqueId);
                         safeRemoveSignal(uniqueId);
+                        return;
                     }
                 }
             } else {
                 triggeredSignalCacheRef.current.delete(uniqueId);
             }
 
-            // Check "Fuse Blocked" (fuseBlocked) - 包含防追高熔断、动态方向锁、高级过滤、偏离熔断、中轴瓦解等所有规则拦截
+            // Check "Fuse Blocked" (fuseBlocked) - 包含防追高熔断、动态方向锁、高级过滤、偏离熔断等所有规则拦截
             if (isAnyFuseEnabled && item.fuseBlocked) {
                 if (!fuseBlockedSignalCacheRef.current.has(uniqueId)) {
                     fuseBlockedSignalCacheRef.current.set(uniqueId, now);
@@ -392,8 +496,24 @@ export const useMomentumAudit = (
                 item.fuseTotalMs = maxMs;
                 item.fuseCountdownMs = Math.max(0, maxMs - elapsedMs);
 
+                // Latch into fuseAuditLatchRef & update memory cache so fuseDetails persists across cycles
+                fuseAuditLatchRef.current.set(uniqueId, { 
+                    blocked: true, 
+                    reason: item.fuseReason || '',
+                    details: item.fuseDetails
+                });
+                const cachedItem = list4CacheRef.current.get(uniqueId);
+                if (cachedItem) {
+                    cachedItem.fuseBlocked = true;
+                    cachedItem.fuseReason = item.fuseReason;
+                    cachedItem.fuseDetails = item.fuseDetails;
+                }
+
                 if (elapsedMs >= maxMs) {
                     expiredSignalCacheRef.current.add(uniqueId);
+                    try {
+                        localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
+                    } catch(e) {}
                     shouldKeep = false;
                     item.removalReason = item.fuseReason || `由列表4防追高/方向锁/高级过滤规则超时清除 [已持续: ${Math.round(elapsedMs / 60000)}分钟]`;
                     
@@ -407,6 +527,7 @@ export const useMomentumAudit = (
                     
                     // Background log to history
                     logToHistory(item, item.removalReason);
+                    return;
                 } else {
                     // 🎯 在倒计时未结束前，绝对保留在列表4中，由前端展示为浅黄色并提示倒计时！绝不瞬时闪退！
                     shouldKeep = true;
@@ -500,6 +621,7 @@ export const useMomentumAudit = (
                     prev.momentum?.midPoint !== next.momentum?.midPoint ||
                     prev.fuseBlocked !== next.fuseBlocked ||
                     prev.fuseReason !== next.fuseReason ||
+                    JSON.stringify(prev.fuseDetails) !== JSON.stringify(next.fuseDetails) ||
                     prev.isTraded !== next.isTraded ||
                     prev.fuseEnteredAt !== next.fuseEnteredAt ||
                     prev.tradedAt !== next.tradedAt

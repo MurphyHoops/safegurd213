@@ -175,14 +175,14 @@ export const useBacktestStructureAudit = (
                 // To support Resonance checking in backtest: Add adjacent Strict Trend logic if enabled
                 let adjacentStrictTrends: Record<string, boolean> = {};
                 if (config.enableMultiResonance) {
-                     const ALL_TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '1d'];
+                     const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
                      const neededTfs = new Set<string>();
                      for (const signal of item.groupedResults!) {
                          const tf = signal.tf || '15m';
                          neededTfs.add(tf);
                          const idx = ALL_TFS.indexOf(tf);
                          if (idx > 0) neededTfs.add(ALL_TFS[idx - 1]);
-                         if (idx < ALL_TFS.length - 1) neededTfs.add(ALL_TFS[idx + 1]);
+                         if (idx > 1) neededTfs.add(ALL_TFS[idx - 2]);
                      }
                      for (const tf of neededTfs) {
                          const klines = await fetchVirtualKlines(item.symbol, tf, config.lookback + 20);

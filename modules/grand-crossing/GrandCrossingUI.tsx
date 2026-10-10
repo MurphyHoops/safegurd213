@@ -133,7 +133,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
                 return {
                     ...item,
                     direction: activeDir,
-                    timeframe: primaryResult.timeframe || item.timeframe,
+                    tf: primaryResult.tf || item.tf,
                     groupedResults: matchingResults
                 };
             }).filter(Boolean) as ScannerItem[];
