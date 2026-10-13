@@ -27,7 +27,7 @@ interface Props {
     onAddStrategy?: () => void;
     onDeleteStrategy?: (id: string) => void;
     onRenameStrategy?: (id: string, name: string) => void;
-    onExportStrategy?: (id: string) => void;
+    onExportStrategy?: (id: string, customName?: string) => void;
     onImportStrategy?: (id: string, file: File) => void;
     isBackground?: boolean;
     activeStrategyId?: string;
@@ -160,7 +160,8 @@ const LiveMarketScannerModule: React.FC<Props> = ({
 
         const activeStratId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
         const isBg = selectedStrategyId && activeStratId ? selectedStrategyId !== activeStratId : false;
-        const scale = isBg ? 15 : 1;
+        // 🚀 [中央行情总线零延迟并行通道]: 后台策略同样直接由中央总线极速驱动，无需15倍降频，实现所有策略全速并发运行
+        const scale = 1;
         const intervalMs = scanInterval * 1000 * scale;
         
         const tick = () => {

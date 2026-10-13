@@ -7,7 +7,7 @@
  * 2. major_trend (横盘蓄势过滤 -> 回溯周期过滤) -> 完成后更新初筛并交回接力
  */
 
-export type TaskId = 'volume_pool' | 'start_trend' | 'major_trend';
+export type TaskId = 'volume_pool' | 'start_trend' | 'major_trend' | string;
 
 class PipelineCoordinator {
     private currentRunning: TaskId | null = null;

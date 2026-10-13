@@ -190,7 +190,25 @@ export const useGrandCrossing = (
       return { klines: cached.data, latency: 0 };
     }
 
-    // ⚡ [日K本地存储秒级直通]: 若请求 1d 周期，优先从列表1共享的 24小时持久化存储中 0ms 命中 (0 网络请求，0 权重消耗)
+    // ⚡ [中央行情数据总线 0ms 直读通道]: 优先从中央多周期高速总线及初筛 300 根数据读取
+    const busKlines = klineDailyStore.getShortlistKlineSync(safeSymbol, tf, Math.min(limit, 30)) || 
+                      klineDailyStore.getShortlistKlineSync(rawSymbol, tf, Math.min(limit, 30)) ||
+                      klineMultiTfStore.getKlinesSync(safeSymbol, tf, Math.min(limit, 30)) ||
+                      klineMultiTfStore.getKlinesSync(rawSymbol, tf, Math.min(limit, 30));
+    if (busKlines && Array.isArray(busKlines) && busKlines.length >= 20) {
+      const klines: KLine[] = busKlines.map((k: any) => ({
+        time: Number(k.time || k[0]),
+        open: parseFloat(k.open || k[1]) || 0,
+        high: parseFloat(k.high || k[2]) || 0,
+        low: parseFloat(k.low || k[3]) || 0,
+        close: parseFloat(k.close || k[4]) || 0,
+        volume: parseFloat(k.volume || k[5]) || 0,
+      }));
+      klineMemCacheRef.current.set(cacheKey, { data: klines, time: Date.now() });
+      return { klines, latency: 0 };
+    }
+
+    // ⚡ [日K本地存储秒级直通]: 若请求 1d 周期，优先从 24小时持久化存储中 0ms 命中
     if (tf === '1d') {
       const storeCached = klineDailyStore.getCachedKlinesSync(safeSymbol, limit) || klineDailyStore.getCachedKlinesSync(rawSymbol, limit);
       if (storeCached && Array.isArray(storeCached) && storeCached.length >= 30) {

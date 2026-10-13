@@ -85,6 +85,7 @@ const Dashboard: React.FC<Props> = ({
                 networkStatus={networkStatus}
                 isOnline={isOnline}
                 settings={settings}
+                onOpenScanner={onOpenScanner}
             />
 
             {/* MODULE B: POSITIONS LIST (Active Trades) */}

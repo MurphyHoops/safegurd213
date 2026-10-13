@@ -3,6 +3,7 @@ import { normalizeSymbol } from './symbolUtils';
 import { fetchWithFallback } from './apiService';
 import { priceRegistry } from './priceRegistry';
 import { recordBreadcrumb } from './monitor/monitorService';
+import { klineDailyStore } from './klineDailyStore';
 
 type PriceCallback = (prices: Record<string, number>) => void;
 type StatusCallback = (status: { isConnected: boolean, lastMessageTime: number }) => void;
@@ -168,6 +169,7 @@ export class BinanceWebSocket {
                     if (shouldEmitTickers && rawTickers.length > 0) {
                         this.lastTickersEmitTime = now;
                         priceRegistry.updateMarketTickers(rawTickers);
+                        klineDailyStore.save24hTickers(rawTickers);
                     }
                 } catch (parseErr) {
                     // Ignore transient json parsing glitch

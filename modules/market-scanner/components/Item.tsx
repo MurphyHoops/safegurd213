@@ -29,11 +29,12 @@ interface Props {
     downloadProgress?: number; // 0-100
     onDownload?: (symbol: string) => void;
     pushRank?: number;
+    symbolList?: string[];
 }
 
 export const List1Item: React.FC<Props> = ({ 
     item, idx, scanConfig, fixedModeView, customSymbolSet, onToggleSymbol, onDeleteSymbol, setChartData,
-    mode = 'LIVE', extremeMetrics, downloadProgress, onDownload, pushRank
+    mode = 'LIVE', extremeMetrics, downloadProgress, onDownload, pushRank, symbolList
 }) => {
     if (!item || !item.symbol) return null;
     
@@ -48,7 +49,10 @@ export const List1Item: React.FC<Props> = ({
                 symbol: item.symbol, 
                 tf: scanConfig.list1DefaultTf || '1d',
                 timeframe: scanConfig.list1DefaultTf || '1d', 
-                lookbackDays 
+                lookbackDays,
+                symbolList: symbolList || undefined,
+                symbolIndex: idx,
+                source: 'list1'
             })}
             onContextMenu={(e) => {
                 e.preventDefault();

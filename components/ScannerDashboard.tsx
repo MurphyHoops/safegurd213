@@ -331,6 +331,8 @@ const ScannerDashboardInner: React.FC<
   const onLogRef = useRef(onLog);
   onLogRef.current = onLog;
 
+  const handleSelectStrategyRef = useRef<((id: string) => void) | null>(null);
+
   // --- AUTOMATIC STRATEGY ROTATION TIMER ---
   useEffect(() => {
     if (!isRotationEnabled) {
@@ -354,10 +356,10 @@ const ScannerDashboardInner: React.FC<
             // Defer rotation update outside state reducer loop
             setTimeout(() => {
               setRotationActiveStrategyId(nextStrat.id);
+              handleSelectStrategyRef.current?.(nextStrat.id);
               if (onLogRef.current) {
-                onLogRef.current("INFO", `[策略轮循] 切换扫描线程至: "${nextStrat.name}" 进行大盘初筛。`);
+                onLogRef.current("INFO", `[策略轮循] 当前前台界面与后台巡检策略同步聚焦为: "${nextStrat.name}"，所有已开启策略保持全速并发监控中。`);
               }
-              audioService.speak(`开始扫描${nextStrat.name}`);
             }, 0);
           }
           return rotationIntervalMinutesRef.current * 60;
@@ -388,6 +390,8 @@ const ScannerDashboardInner: React.FC<
     setList2Results(loadState<ScannerItem[]>(`SCANNER_LIST2_${id}`, []));
     setList3Results(loadState<ScannerItem[]>(`SCANNER_LIST3_${id}`, []));
   }, [setSelectedStrategyId]);
+
+  handleSelectStrategyRef.current = handleSelectStrategy;
 
   const handleAddStrategy = useCallback(() => {
     const nextNum = (strategiesRef.current?.length || 0) + 1;
@@ -451,7 +455,7 @@ const ScannerDashboardInner: React.FC<
     );
   }, [setStrategies]);
 
-  const handleExportStrategy = useCallback((id: string) => {
+  const handleExportStrategy = useCallback((id: string, customName?: string) => {
     const strat = strategies.find((s) => s.id === id);
     const name = strat ? strat.name : id;
     
@@ -475,6 +479,7 @@ const ScannerDashboardInner: React.FC<
       version: "1.0",
       strategyId: id,
       strategyName: name,
+      customFileName: customName || undefined,
       configs: {
         SCANNER_CONFIG_24H: config24H,
         SCANNER_CONFIG_8AM: config8AM,
@@ -489,12 +494,21 @@ const ScannerDashboardInner: React.FC<
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Strategy_${name.replace(/\s+/g, "_")}_Config.json`;
+    
+    let downloadFileName = '';
+    if (customName && customName.trim()) {
+      const cleanName = customName.trim();
+      downloadFileName = cleanName.toLowerCase().endsWith('.json') ? cleanName : `${cleanName}.json`;
+    } else {
+      downloadFileName = `Strategy_${name.replace(/\s+/g, "_")}_Config.json`;
+    }
+    
+    a.download = downloadFileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    if (onLog) onLog("SUCCESS", `[策略导出] 导出策略 "${name}" 成功。`);
+    if (onLog) onLog("SUCCESS", `[策略导出] 导出策略 "${downloadFileName}" 成功。`);
   }, [strategies, onLog]);
 
   const handleImportStrategy = useCallback((id: string, file: File) => {
@@ -1043,6 +1057,25 @@ const ScannerDashboardInner: React.FC<
     });
   }, []);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
+
+  // 🔒 同步持久化前台策略专属初筛与审计列表数据，确保策略切换时无缝还原
+  useEffect(() => {
+    if (list1Candidates.length > 0 && selectedStrategyId) {
+      saveState(`SCANNER_LIST1_${selectedStrategyId}`, list1Candidates);
+    }
+  }, [list1Candidates, selectedStrategyId]);
+
+  useEffect(() => {
+    if (list2Results.length > 0 && selectedStrategyId) {
+      saveState(`SCANNER_LIST2_${selectedStrategyId}`, list2Results);
+    }
+  }, [list2Results, selectedStrategyId]);
+
+  useEffect(() => {
+    if (list3Results.length > 0 && selectedStrategyId) {
+      saveState(`SCANNER_LIST3_${selectedStrategyId}`, list3Results);
+    }
+  }, [list3Results, selectedStrategyId]);
 
   // --- AUTOMATIC HISTORY LOGGER & CACHE PRE-LOADER ---
   // Tracks active signals in List 2 and List 3 to auto-log them when they appear
@@ -1838,7 +1871,7 @@ const ScannerDashboardInner: React.FC<
 
   const safeSetChartData = useCallback((newData: any) => {
     // Merge with current list2Config to ensure chart analysis works in all modules
-    setChartData({ ...newData, list2Config: scanConfigRef.current?.list2Config });
+    setChartData({ ...newData, sessionId: Date.now(), list2Config: scanConfigRef.current?.list2Config });
   }, []);
 
   const memoizedBacktestProps = useMemo(
@@ -2071,7 +2104,7 @@ const ScannerDashboardInner: React.FC<
                 onExportStrategy={handleExportStrategy}
                 onImportStrategy={handleImportStrategy}
                 activeStrategyId={isRotationEnabled ? rotationActiveStrategyId : selectedStrategyId}
-                isScanAllowed={!isRotationEnabled || rotationActiveStrategyId === selectedStrategyId}
+                isScanAllowed={true}
                 isRotationEnabled={isRotationEnabled}
                 rotationIntervalMinutes={rotationIntervalMinutes}
                 rotationTimeLeft={rotationTimeLeft}
@@ -2287,8 +2320,10 @@ const ScannerDashboardInner: React.FC<
 
       {chartData && (
         <KlineChartModal
-          key={`${chartData.symbol}-${chartData.tf || chartData.timeframe || '15m'}`}
+          key={chartData.sessionId || 'scanner-chart-modal'}
           symbol={chartData.symbol}
+          symbolList={chartData.symbolList}
+          symbolIndex={chartData.symbolIndex}
           initialTimeframe={chartData.tf || chartData.timeframe || '15m'}
           signals={chartData.signals}
           direction={chartData.direction || chartData.side}
@@ -2307,8 +2342,21 @@ const ScannerDashboardInner: React.FC<
           disappearedTime={chartData.disappearedTime}
           source={chartData.source}
           onClose={() => setChartData(null)}
+          onSymbolChange={(newSymbol, newTf) => {
+            setChartData((prev: any) => prev ? {
+              ...prev,
+              symbol: newSymbol,
+              tf: newTf || prev.tf,
+              timeframe: newTf || prev.timeframe
+            } : null);
+          }}
           lookbackDays={chartData.lookbackDays}
           sidewaysDays={chartData.sidewaysDays}
+          hasPrev={chartData.hasPrev}
+          hasNext={chartData.hasNext}
+          currentIndexLabel={chartData.currentIndexLabel}
+          onPrev={chartData.onPrev}
+          onNext={chartData.onNext}
         />
       )}
 
@@ -2601,6 +2649,78 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     return currentPositions.filter(p => (p.strategyId || 'strat-1') === strategyId);
   }, [currentPositions, strategyId]);
 
+  // 🔒 持久化后台策略专属初筛与审计数据
+  useEffect(() => {
+    if (list1Candidates.length > 0) {
+      saveState(`SCANNER_LIST1_${strategyId}`, list1Candidates);
+    }
+  }, [list1Candidates, strategyId]);
+
+  useEffect(() => {
+    if (list2Results.length > 0) {
+      saveState(`SCANNER_LIST2_${strategyId}`, list2Results);
+    }
+  }, [list2Results, strategyId]);
+
+  useEffect(() => {
+    if (list3Results.length > 0) {
+      saveState(`SCANNER_LIST3_${strategyId}`, list3Results);
+    }
+  }, [list3Results, strategyId]);
+
+  // 后台策略的即时开仓执行
+  const bgOpenedSymbolsRef = useRef<Set<string>>(new Set());
+  const bgLastTriggerTimeRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    const instantOpen = !!scanConfig?.instantOpenEnabled;
+    const instantOpenAfterClose = !!scanConfig?.instantReopenEnabled;
+    const openDirection = scanConfig?.instantOpenDirection || "LONG";
+
+    if (!instantOpen && !instantOpenAfterClose) return;
+
+    const allowedFixedSet = scanConfig?.useCustomOnly
+      ? new Set(
+          (scanConfig.customSymbols || '')
+            .split(/[,，\s]+/)
+            .map(s => normalizeSymbol(s).replace('USDT', ''))
+            .filter(Boolean)
+        )
+      : null;
+
+    if (allowedFixedSet && allowedFixedSet.size === 0) return;
+
+    const now = Date.now();
+    list1Candidates.forEach(item => {
+      const symbol = normalizeSymbol(item.symbol);
+      if (allowedFixedSet && !allowedFixedSet.has(symbol.replace('USDT', ''))) return;
+
+      const hasActivePosition = filteredPositions.some(p => normalizeSymbol(p.symbol) === symbol);
+      if (hasActivePosition) {
+        bgOpenedSymbolsRef.current.add(symbol);
+        return;
+      }
+
+      const lastTrigger = bgLastTriggerTimeRef.current[symbol] || 0;
+      if (now - lastTrigger < 5000) return;
+
+      if (instantOpen && !bgOpenedSymbolsRef.current.has(symbol)) {
+        const price = resolvePrice(item.symbol, currentPrices, item.price);
+        if (price > 0) {
+          const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
+          bgOpenedSymbolsRef.current.add(symbol);
+          bgLastTriggerTimeRef.current[symbol] = now;
+          wrappedExecuteTradeSafe(
+            symbol,
+            side,
+            price,
+            `[List1 Auto - ${strategyId}] InstantOpen`
+          );
+        }
+      }
+    });
+  }, [list1Candidates, scanConfig, filteredPositions, currentPrices, wrappedExecuteTradeSafe, strategyId]);
+
   const isBacktest = mode === "BACKTEST";
 
   return (
@@ -2619,8 +2739,8 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
         isSyncing={false}
         selectedStrategyId={strategyId}
         isBackground={true}
-        isScanAllowed={isRotationEnabled ? rotationActiveStrategyId === strategyId : active}
-        activeStrategyId={isRotationEnabled ? rotationActiveStrategyId : selectedStrategyId}
+        isScanAllowed={active}
+        activeStrategyId={selectedStrategyId}
       />
 
       {/* 2. Crossover */}

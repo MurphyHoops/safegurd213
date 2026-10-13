@@ -72,7 +72,7 @@ interface Props {
     onAddStrategy?: () => void;
     onDeleteStrategy?: (id: string) => void;
     onRenameStrategy?: (id: string, name: string) => void;
-    onExportStrategy?: (id: string) => void;
+    onExportStrategy?: (id: string, customName?: string) => void;
     onImportStrategy?: (id: string, file: File) => void;
     isRotationEnabled?: boolean;
     rotationIntervalMinutes?: number;
@@ -138,6 +138,21 @@ const List1_Selection: React.FC<Props> = ({
         setEditingId(null);
     };
 
+    const [showExportModal, setShowExportModal] = useState(false);
+    const [exportCustomName, setExportCustomName] = useState('');
+
+    const handleOpenExportModal = () => {
+        const curStrat = strategies.find(s => s.id === selectedStrategyId);
+        const defaultName = curStrat ? curStrat.name : (selectedStrategyId || 'Strategy_1');
+        setExportCustomName(defaultName);
+        setShowExportModal(true);
+    };
+
+    const handleConfirmExport = () => {
+        onExportStrategy?.(selectedStrategyId, exportCustomName.trim());
+        setShowExportModal(false);
+    };
+
     // --- 📊 List 1 Smart Multi-Sorting States & Logic ---
     const [activeSorts, setActiveSorts] = useState<number[]>([]); // active sort criteria IDs: 1 (24H涨跌幅), 2 (8H涨跌幅), 3 (24H交易额), 4 (8H交易额)
     const [sortOrders, setSortOrders] = useState<Record<number, 'asc' | 'desc'>>({
@@ -198,6 +213,16 @@ const List1_Selection: React.FC<Props> = ({
         }
     });
 
+    // 🌊 回溯周期过滤底池数据监听 (用于当开启回溯周期过滤时，市场初筛列表展示回溯合格币)
+    const [lookbackPool, setLookbackPool] = useState<any[]>(() => {
+        try {
+            const raw = localStorage.getItem('SCANNER_LOOKBACK_FILTERED_POOL');
+            return raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            return [];
+        }
+    });
+
 
 
     // 🌊 回溯周期大行情候选池数据本地监听 (确保实时极速毫秒级响应，与扫描线程绝对零延迟同步)
@@ -228,6 +253,23 @@ const List1_Selection: React.FC<Props> = ({
         const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
         const runState = localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true';
         setHasRunMajorTrend(runState);
+
+        const key = selectedStrategyId ? `SCANNER_MAJOR_TREND_CANDIDATES_${selectedStrategyId}` : 'SCANNER_MAJOR_TREND_CANDIDATES';
+        const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES') : null);
+        try {
+            const parsed = raw ? JSON.parse(raw) : [];
+            setLocalMajorTrendCandidates(new Set(Array.isArray(parsed) ? parsed : []));
+        } catch (_) {
+            setLocalMajorTrendCandidates(new Set());
+        }
+
+        const sidewaysKey = selectedStrategyId ? `SCANNER_SIDEWAYS_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_SIDEWAYS_FILTERED_POOL';
+        const rawSideways = localStorage.getItem(sidewaysKey) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL') : null);
+        try {
+            setSidewaysPool(rawSideways ? JSON.parse(rawSideways) : []);
+        } catch (_) {
+            setSidewaysPool([]);
+        }
     }, [selectedStrategyId]);
 
     useEffect(() => {
@@ -237,9 +279,25 @@ const List1_Selection: React.FC<Props> = ({
                 setStartTrendPool(raw ? JSON.parse(raw) : []);
             } catch (_) {}
         };
-        const handleSidewaysUpdate = () => {
+        const handleSidewaysUpdate = (e?: any) => {
             try {
-                const raw = localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL');
+                if (e?.detail) {
+                    if (e.detail.strategyId && e.detail.strategyId !== (selectedStrategyId || 'strat-1')) {
+                        return; // 忽略其他策略的横盘底池事件
+                    }
+                    if (Array.isArray(e.detail.pool)) {
+                        setSidewaysPool(e.detail.pool);
+                        return;
+                    }
+                    if (Array.isArray(e.detail)) {
+                        if (!selectedStrategyId || selectedStrategyId === 'strat-1') {
+                            setSidewaysPool(e.detail);
+                            return;
+                        }
+                    }
+                }
+                const key = selectedStrategyId ? `SCANNER_SIDEWAYS_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_SIDEWAYS_FILTERED_POOL';
+                const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL') : null);
                 setSidewaysPool(raw ? JSON.parse(raw) : []);
             } catch (_) {}
         };
@@ -254,15 +312,46 @@ const List1_Selection: React.FC<Props> = ({
             } catch (_) {}
         };
 
+        const handleLookbackPoolUpdate = (e?: any) => {
+            try {
+                if (e?.detail) {
+                    if (e.detail.strategyId && e.detail.strategyId !== (selectedStrategyId || 'strat-1')) return;
+                    if (Array.isArray(e.detail.pool)) {
+                        setLookbackPool(e.detail.pool);
+                        return;
+                    }
+                    if (Array.isArray(e.detail)) {
+                        setLookbackPool(e.detail);
+                        return;
+                    }
+                }
+                const raw = localStorage.getItem('SCANNER_LOOKBACK_FILTERED_POOL');
+                setLookbackPool(raw ? JSON.parse(raw) : []);
+            } catch (_) {}
+        };
+
         const handleMajorTrendUpdate = (e?: any) => {
             try {
-                if (e?.detail && Array.isArray(e.detail)) {
-                    setLocalMajorTrendCandidates(new Set(e.detail));
-                    setHasRunMajorTrend(true);
-                    return;
+                if (e?.detail) {
+                    // 如果事件指定了 strategyId，且与当前选中的策略不一致，严禁跨策略覆盖
+                    if (e.detail.strategyId && e.detail.strategyId !== (selectedStrategyId || 'strat-1')) {
+                        return;
+                    }
+                    if (Array.isArray(e.detail.candidates)) {
+                        setLocalMajorTrendCandidates(new Set(e.detail.candidates));
+                        setHasRunMajorTrend(true);
+                        return;
+                    }
+                    if (Array.isArray(e.detail)) {
+                        if (!selectedStrategyId || selectedStrategyId === 'strat-1') {
+                            setLocalMajorTrendCandidates(new Set(e.detail));
+                            setHasRunMajorTrend(true);
+                            return;
+                        }
+                    }
                 }
                 const key = selectedStrategyId ? `SCANNER_MAJOR_TREND_CANDIDATES_${selectedStrategyId}` : 'SCANNER_MAJOR_TREND_CANDIDATES';
-                const raw = localStorage.getItem(key);
+                const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES') : null);
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     setLocalMajorTrendCandidates(new Set(Array.isArray(parsed) ? parsed : []));
@@ -278,16 +367,18 @@ const List1_Selection: React.FC<Props> = ({
         window.addEventListener('storage', handleSidewaysUpdate);
         window.addEventListener('storage', handleBreakoutUpdate);
         window.addEventListener('storage', handleMajorTrendUpdate);
+        window.addEventListener('storage', handleLookbackPoolUpdate);
         window.addEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
         window.addEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
         window.addEventListener('scanner_breakout_pool_updated', handleBreakoutUpdate);
+        window.addEventListener('scanner_lookback_pool_updated', handleLookbackPoolUpdate);
         window.addEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
-        window.addEventListener('scanner_major_trend_candidates_updated', handleSidewaysUpdate);
         window.addEventListener('scanner_major_trend_completed', handleMajorTrendUpdate);
         const timer = setInterval(() => {
             handleStartTrendUpdate();
             handleSidewaysUpdate();
             handleBreakoutUpdate();
+            handleLookbackPoolUpdate();
             handleMajorTrendUpdate();
         }, 1000);
         return () => {
@@ -295,26 +386,27 @@ const List1_Selection: React.FC<Props> = ({
             window.removeEventListener('storage', handleSidewaysUpdate);
             window.removeEventListener('storage', handleBreakoutUpdate);
             window.removeEventListener('storage', handleMajorTrendUpdate);
+            window.removeEventListener('storage', handleLookbackPoolUpdate);
             window.removeEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
             window.removeEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
             window.removeEventListener('scanner_breakout_pool_updated', handleBreakoutUpdate);
+            window.removeEventListener('scanner_lookback_pool_updated', handleLookbackPoolUpdate);
             window.removeEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
-            window.removeEventListener('scanner_major_trend_candidates_updated', handleSidewaysUpdate);
             window.removeEventListener('scanner_major_trend_completed', handleMajorTrendUpdate);
             clearInterval(timer);
         };
     }, [selectedStrategyId]);
 
-    // 🔒 权威大行情候选集（优先使用父级 Props 传递的最新差量结果，本地状态为初始化降级兜底）
+    // 🔒 权威大行情候选集（优先使用父级 Props 传递的最新差量结果，若为空则降级采用本地监听加载的专属候选集）
     const effectiveMajorCandidates = useMemo(() => {
-        if (majorTrendCandidates !== undefined && majorTrendCandidates !== null) {
+        if (majorTrendCandidates && majorTrendCandidates.size > 0) {
             return majorTrendCandidates;
         }
         return localMajorTrendCandidates;
     }, [majorTrendCandidates, localMajorTrendCandidates]);
 
     useEffect(() => {
-        if (majorTrendCandidates !== undefined && majorTrendCandidates !== null) {
+        if (majorTrendCandidates && majorTrendCandidates.size > 0) {
             setLocalMajorTrendCandidates(majorTrendCandidates);
         }
     }, [majorTrendCandidates]);
@@ -493,10 +585,19 @@ const List1_Selection: React.FC<Props> = ({
             });
         }
 
-
+        // 补齐回溯周期底池中的币种 (仅在非固定选币模式下生效)
+        if (!scanConfig.useCustomOnly && lookbackPool && lookbackPool.length > 0) {
+            lookbackPool.forEach(p => {
+                const sym = typeof p === 'string' ? p : p.symbol || p.fullSymbol;
+                const norm = normalizeSym(sym);
+                if (norm && !poolMap.has(norm)) {
+                    poolMap.set(norm, enrichItem(sym, p));
+                }
+            });
+        }
 
         return Array.from(poolMap.values());
-    }, [startTrendPool, sidewaysPool, breakoutPool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
+    }, [startTrendPool, sidewaysPool, breakoutPool, lookbackPool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
 
     const list1SymbolsStr = baseList.map(item => item.symbol).join(',');
 
@@ -935,14 +1036,16 @@ const List1_Selection: React.FC<Props> = ({
             const enableShort = cfg.enableShort !== false;
             const enableSideways = cfg.enableSideways !== false; // 横盘蓄势开关
             const enableLookbackFilter = cfg.enableLookbackFilter !== false; // 回溯周期开关
+            const enableStartTrend = Boolean(cfg.enableStartTrendLong || cfg.enableStartTrendShort); // 行情启动开关
             const isBreakoutActive = Boolean(
                 scanConfig.breakoutFilter?.enabled || 
                 scanConfig.majorTrend?.breakoutFilter?.enabled
             );
 
-            // 🎯 规则零：若开启了【趋势爆发综合过滤】（最后一项过滤规则为“趋势爆发综合过滤”）
-            // 市场初筛列表的币必须 100% 来自趋势爆发过滤运行完毕后产出的候选结果集！
+            // 🎯【流水闸级联数据流】: 严格遵循每一级过滤规则设立独立底池，下一级从上一级获取数据；
+            // 若某项过滤规则开关未开启，直接向上穿透获取；终点根据所选最后一项开启的过滤规则推送至“市场初筛”！
             if (isBreakoutActive) {
+                // 🌊 闸门 5: 趋势爆发综合过滤 (最后一项开启规则)
                 if (breakoutPool && breakoutPool.length > 0) {
                     const breakoutNormSet = new Set(breakoutPool.map(s => normalizeSym(s)));
                     const matchedList = sortedList1.filter(item => {
@@ -960,58 +1063,45 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    // 🔒 永不清零防呆保障：当趋势爆发过滤底池尚在初次扫描或结果为空时，平滑维持上游基础交易额底池或启动趋势池
-                    finalResult = startTrendFilteredList.length > 0 ? startTrendFilteredList : volumeFilteredList;
-                }
-            } else if (!enableSideways && !enableLookbackFilter) {
-                // 🎯 情况 C: “横盘蓄势过滤”和“回溯周期过滤”都未开启，直接平滑读取基础交易额底池！
-                finalResult = volumeFilteredList;
-            } else if (enableLookbackFilter) {
-                // 🎯 规则一：若开启了【回溯周期过滤】（最后一项过滤规则为“回溯周期过滤”）
-                // 市场初筛列表的币必须 100% 来自回溯周期过滤运行完毕后产出的候选结果集！
-                // 严禁读取/展示“行情启动底池”或全量“横盘蓄势底池”数据！
-                if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
-                    const matchedList = sortedList1.filter(item => {
-                        for (const cand of effectiveMajorCandidates) {
-                            if (isCandidateMatched(cand, item.symbol, enableLong, enableShort)) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    });
-
-                    // 🔒 兜底保障：补齐在候选集中但暂不在 sortedList1 的币
-                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
-                    const remainingCandidates = Array.from(effectiveMajorCandidates).filter(cand => {
-                        const normCand = normalizeSym(cand);
-                        if (matchedNorms.has(normCand)) return false;
-                        const isLongCand = cand.endsWith('_LONG');
-                        const isShortCand = cand.endsWith('_SHORT');
-                        if (isLongCand && !enableLong) return false;
-                        if (isShortCand && !enableShort) return false;
-                        return true;
-                    });
-
-                    if (remainingCandidates.length > 0) {
-                        const additional: any[] = [];
-                        for (const cand of remainingCandidates) {
-                            const normCand = normalizeSym(cand);
-                            const foundInBase = baseList.find(item => normalizeSym(item.symbol) === normCand);
-                            if (foundInBase) {
-                                additional.push(foundInBase);
-                            }
-                        }
-                        finalResult = [...matchedList, ...additional];
-                    } else {
-                        finalResult = matchedList;
-                    }
-                } else {
-                    // 若回溯周期尚未运行产出候选集或结果为 0，初筛列表为 0，绝不跨级抓取行情启动底池
                     finalResult = [];
                 }
-            } else {
-                // 🎯 规则二：若开启了【横盘蓄势过滤】且未开启【回溯周期过滤】（最后一项过滤规则为“横盘蓄势过滤”）
-                // 市场初筛列表必须 100% 仅展示通过横盘蓄势过滤规则的币，绝不读取全量“行情启动底池”！
+            } else if (enableLookbackFilter) {
+                // 🌊 闸门 4: 回溯周期过滤 (最后一项开启规则)
+                // 整合 SCANNER_LOOKBACK_FILTERED_POOL 与 effectiveMajorCandidates
+                const lookbackNormSet = new Set<string>();
+                if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
+                    effectiveMajorCandidates.forEach(cand => {
+                        if (isCandidateMatched(cand, cand.replace(/_LONG$|_SHORT$/i, ''), enableLong, enableShort)) {
+                            lookbackNormSet.add(normalizeSym(cand));
+                        }
+                    });
+                }
+                if (lookbackPool && lookbackPool.length > 0) {
+                    lookbackPool.forEach(item => {
+                        const sym = typeof item === 'string' ? item : item.symbol || item.fullSymbol;
+                        const dir = typeof item === 'object' ? item.direction : undefined;
+                        if (dir === 'LONG' && !enableLong) return;
+                        if (dir === 'SHORT' && !enableShort) return;
+                        if (sym) lookbackNormSet.add(normalizeSym(sym));
+                    });
+                }
+
+                if (lookbackNormSet.size > 0) {
+                    const matchedList = sortedList1.filter(item => lookbackNormSet.has(normalizeSym(item.symbol)));
+                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+                    const additional: any[] = [];
+                    lookbackNormSet.forEach(norm => {
+                        if (!matchedNorms.has(norm)) {
+                            const found = baseList.find(b => normalizeSym(b.symbol) === norm);
+                            if (found) additional.push(found);
+                        }
+                    });
+                    finalResult = [...matchedList, ...additional];
+                } else {
+                    finalResult = [];
+                }
+            } else if (enableSideways) {
+                // 🌊 闸门 3: 横盘蓄势过滤 (最后一项开启规则)
                 if (sidewaysPool && sidewaysPool.length > 0) {
                     const sidewaysNormalizedSet = new Set(sidewaysPool.map(p => normalizeSym(p.symbol)).filter(Boolean));
                     const matchedList = sortedList1.filter(item => 
@@ -1028,16 +1118,36 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    // 若横盘蓄势底池暂无数据，严格仅保留已匹配横盘蓄势指标的币
                     finalResult = sortedList1.filter(item => {
                         const metrics = metricsCache[item.symbol];
                         return metrics && !metrics.loading && metrics.isSidewaysMatch === true;
                     });
                 }
+            } else if (enableStartTrend) {
+                // 🌊 闸门 2: 行情启动趋势过滤 (最后一项开启规则)
+                if (startTrendPool && startTrendPool.length > 0) {
+                    const startTrendNormSet = new Set(startTrendPool.map(p => normalizeSym(p.symbol)).filter(Boolean));
+                    const matchedList = sortedList1.filter(item => 
+                        startTrendNormSet.has(normalizeSym(item.symbol)) || startTrendPool.some(p => p.symbol === item.symbol)
+                    );
+                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+                    const additional: any[] = [];
+                    startTrendPool.forEach(p => {
+                        const normP = normalizeSym(p.symbol);
+                        if (!matchedNorms.has(normP)) {
+                            const found = baseList.find(b => normalizeSym(b.symbol) === normP);
+                            if (found) additional.push(found);
+                        }
+                    });
+                    finalResult = [...matchedList, ...additional];
+                } else {
+                    finalResult = [];
+                }
+            } else {
+                // 🌊 闸门 1: 基础交易额范围过滤 (后置所有规则均未开启，直通交易额底池)
+                finalResult = volumeFilteredList;
             }
         }
-
-
 
         // 🔒 [严格数量限制 (Limit)]: 若设置了数量限制 (limit > 0)，截取前 limit 个初筛币种展示与输出
         const limit = Number(scanConfig.limit);
@@ -1046,7 +1156,7 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return finalResult;
-    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
+    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, lookbackPool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
 
     // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
     const pushConfig = scanConfig.list2PushConfig;
@@ -1242,9 +1352,9 @@ const List1_Selection: React.FC<Props> = ({
                     {/* Export / Import Strategy config */}
                     <div className="flex gap-1.5">
                         <button
-                            onClick={() => onExportStrategy?.(selectedStrategyId)}
+                            onClick={handleOpenExportModal}
                             className="bg-slate-800 hover:bg-slate-700 hover:text-white text-slate-300 rounded px-1.5 py-0.5 text-[9px] font-bold transition-all cursor-pointer flex items-center gap-1 border border-slate-700/50"
-                            title="导出当前选中的自动选币策略配置 (Lists 1-6)"
+                            title="导出当前选中的自动选币策略配置 (可自定义全名，Lists 1-6)"
                         >
                             <Download size={8} /> 导出
                         </button>
@@ -2137,26 +2247,102 @@ const List1_Selection: React.FC<Props> = ({
                         )}
                     </div>
                 ) : (
-                    (viewOnlyPushed ? list2PushCandidates : filteredList).map((item, idx) => (
-                        <List1Item 
-                            key={item.symbol}
-                            item={item}
-                            idx={idx}
-                            scanConfig={scanConfig}
-                            fixedModeView={fixedModeView}
-                            customSymbolSet={customSymbolSet}
-                            onToggleSymbol={onToggleSymbol}
-                            onDeleteSymbol={onDeleteSymbol}
-                            setChartData={setChartData}
-                            mode={scannerMode || mode}
-                            extremeMetrics={metricsCache[item.symbol]}
-                            downloadProgress={downloadProgressMap[item.symbol]}
-                            onDownload={onDownload}
-                            pushRank={pushRankMap.get(item.symbol)}
-                        />
-                    ))
+                    (() => {
+                        const currentItems = viewOnlyPushed ? list2PushCandidates : filteredList;
+                        const currentSymbols = currentItems.map(x => x.symbol);
+                        return currentItems.map((item, idx) => (
+                            <List1Item 
+                                key={item.symbol}
+                                item={item}
+                                idx={idx}
+                                symbolList={currentSymbols}
+                                scanConfig={scanConfig}
+                                fixedModeView={fixedModeView}
+                                customSymbolSet={customSymbolSet}
+                                onToggleSymbol={onToggleSymbol}
+                                onDeleteSymbol={onDeleteSymbol}
+                                setChartData={setChartData}
+                                mode={scannerMode || mode}
+                                extremeMetrics={metricsCache[item.symbol]}
+                                downloadProgress={downloadProgressMap[item.symbol]}
+                                onDownload={onDownload}
+                                pushRank={pushRankMap.get(item.symbol)}
+                            />
+                        ));
+                    })()
                 )}
             </div>
+
+            {/* 🎯 策略导出自定义全名弹窗 (Strategy Export Custom Name Modal) */}
+            {showExportModal && (
+                <div 
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fadeIn"
+                    onClick={() => setShowExportModal(false)}
+                >
+                    <div 
+                        className="bg-slate-900 border border-indigo-500/40 rounded-xl shadow-2xl max-w-sm w-full p-4 space-y-3.5 text-slate-200"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <div className="flex items-center gap-2">
+                                <span className="p-1 rounded bg-indigo-500/20 text-indigo-400">
+                                    <Download size={14} />
+                                </span>
+                                <h3 className="text-xs font-bold text-white tracking-wide">导出策略配置 (自定义全名)</h3>
+                            </div>
+                            <button
+                                onClick={() => setShowExportModal(false)}
+                                className="text-slate-400 hover:text-white transition-colors p-1 rounded hover:bg-slate-800"
+                            >
+                                <XIcon size={14} />
+                            </button>
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] text-slate-400 font-medium block">
+                                自定义文件名 (包含 Lists 1-6 全套流水线规则)：
+                            </label>
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    autoFocus
+                                    value={exportCustomName}
+                                    onChange={(e) => setExportCustomName(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') handleConfirmExport();
+                                        if (e.key === 'Escape') setShowExportModal(false);
+                                    }}
+                                    placeholder="输入自定义名称，如：300天深跌抄底启动模型_v1"
+                                    className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded px-2.5 py-1.5 text-xs text-white placeholder-slate-600 outline-none font-mono"
+                                />
+                                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-500 font-mono select-none pointer-events-none">
+                                    .json
+                                </span>
+                            </div>
+                            <p className="text-[9px] text-slate-500 leading-relaxed">
+                                💡 提示：按回车键或点击下方按钮即可立即导出，导出的 JSON 文件可在任何环境下通过【导入】按钮一键还原。
+                            </p>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-800">
+                            <button
+                                type="button"
+                                onClick={() => setShowExportModal(false)}
+                                className="px-3 py-1.5 rounded text-[10px] font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+                            >
+                                取消
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmExport}
+                                className="px-3.5 py-1.5 rounded text-[10px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors flex items-center gap-1.5 shadow-lg shadow-indigo-900/30"
+                            >
+                                <Download size={11} /> 确认导出
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

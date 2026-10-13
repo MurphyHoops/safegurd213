@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Pause, RotateCw, Globe, Copy, Check, RefreshCw, Activity, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Play, Pause, RotateCw, Globe, Copy, Check, RefreshCw, Activity, AlertTriangle, ShieldCheck, BarChart2 } from 'lucide-react';
 import { binanceWs } from '../../../services/binanceWs';
 import { audioService } from '../../../services/audioService';
 import { NetworkWidget } from '../../../components/NetworkWidget';
@@ -12,10 +12,11 @@ interface Props {
     isSimulating: boolean;
     onToggleSimulation: () => void;
     settings?: AppSettings;
+    onOpenScanner?: () => void;
 }
 
 export const GlobalActionsPanel: React.FC<Props> = ({
-    networkStatus, isOnline, realPricesCount, isSimulating, onToggleSimulation, settings
+    networkStatus, isOnline, realPricesCount, isSimulating, onToggleSimulation, settings, onOpenScanner
 }) => {
     const [serverIp, setServerIp] = useState<string>('');
     const [isFetchingIp, setIsFetchingIp] = useState<boolean>(false);
@@ -131,99 +132,105 @@ export const GlobalActionsPanel: React.FC<Props> = ({
                 </div>
             </div>
 
-            {/* Bottom Bar: Action Buttons & Master Control */}
-            {isRealTrading ? (
-                <div className="flex-1 flex gap-1.5 items-center min-h-0 bg-emerald-950/15 border border-emerald-500/25 rounded px-2 py-0.5">
-                    <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                        <ShieldCheck size={12} className="text-emerald-400 shrink-0" />
-                        <div className="flex flex-col min-w-0">
-                            <span className="text-[8.5px] font-bold text-emerald-300 leading-tight truncate">
-                                币安实盘实时交易中
-                            </span>
-                            <span className="text-[7.5px] text-slate-400 leading-none truncate">
-                                模拟测试已自动禁用保护
-                            </span>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
+            {/* Bottom Bar: 左右并排紧凑布局 (方案 A: 左侧扫描器 + 右侧快捷控制) */}
+            <div className="flex-1 flex gap-1.5 min-h-0 items-center">
+                {/* 左侧：打开智能扫描器 (主功能入口) */}
+                <button 
+                    type="button"
+                    onClick={onOpenScanner}
+                    className="flex-1 h-full min-w-0 bg-gradient-to-r from-cyan-950/70 via-cyan-900/40 to-blue-950/70 hover:from-cyan-900/90 hover:via-cyan-800/50 hover:to-blue-900/90 border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-white rounded py-1 px-2 text-[9px] font-black flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-98 group cursor-pointer"
+                    title="打开智能市场多维扫描器 (快捷入池与行情监控)"
+                >
+                    <BarChart2 size={13} className="text-cyan-400 group-hover:scale-110 transition-transform shrink-0" />
+                    <span className="truncate tracking-wide">打开智能扫描器</span>
+                </button>
+
+                {/* 右侧：紧凑控制区 (抓取/重连 + 模拟/实盘状态) */}
+                {isNetworkError ? (
+                    <div className="flex items-center gap-1 h-full shrink-0">
                         <button 
+                            type="button"
+                            onClick={() => {
+                                binanceWs.forceReconnect();
+                                binanceWs.fetchRestPrices();
+                                fetchServerIp();
+                            }}
+                            className="h-full text-[8.5px] bg-red-600 hover:bg-red-500 text-white px-2 py-0.5 rounded font-black flex items-center gap-1 transition-all shrink-0 animate-pulse active:scale-98"
+                            title="立即修复网络与重连行情"
+                        >
+                            <RefreshCw size={8} className="animate-spin" />
+                            <span>立即重连</span>
+                        </button>
+                    </div>
+                ) : isRealTrading ? (
+                    <div className="flex items-center gap-1 h-full shrink-0">
+                        <div className="flex items-center gap-1 bg-emerald-950/50 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[8px] text-emerald-300 font-bold shrink-0 h-full">
+                            <ShieldCheck size={11} className="text-emerald-400 shrink-0" />
+                            <span className="truncate">实盘保护</span>
+                        </div>
+                        <button 
+                            type="button"
                             onClick={() => binanceWs.fetchRestPrices()}
-                            className="text-[8.5px] bg-slate-800/90 hover:bg-slate-700 text-slate-200 px-1.5 py-1 rounded border border-slate-700 transition-colors flex items-center gap-1 font-bold"
+                            className="text-[8.5px] bg-slate-800/90 hover:bg-slate-700 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700 transition-colors flex items-center justify-center gap-0.5 font-bold h-full active:scale-98"
                             title="从币安 REST API 立即抓取全部最新价格"
                         >
-                            <RotateCw size={9} className="text-cyan-400" />
-                            <span>抓取价格</span>
+                            <RotateCw size={8.5} className="text-cyan-400 shrink-0" />
+                            <span>价格</span>
                         </button>
                         <button 
+                            type="button"
                             onClick={() => {
                                 binanceWs.forceReconnect();
                                 audioService.speak("正在重连行情");
                             }}
-                            className="text-[8.5px] bg-slate-800/90 hover:bg-slate-700 text-slate-200 px-1.5 py-1 rounded border border-slate-700 transition-colors flex items-center gap-1 font-bold"
+                            className="text-[8.5px] bg-slate-800/90 hover:bg-slate-700 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700 transition-colors flex items-center justify-center gap-0.5 font-bold h-full active:scale-98"
                             title="重新建立行情 WebSocket 管道"
                         >
-                            <Activity size={9} className="text-indigo-400" />
+                            <Activity size={8.5} className="text-indigo-400 shrink-0" />
                             <span>重连WS</span>
                         </button>
                     </div>
-                </div>
-            ) : isNetworkError ? (
-                <div className="flex-1 flex gap-1.5 items-center min-h-0 bg-red-950/20 border border-red-500/30 rounded px-2 py-0.5">
-                    <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                        <AlertTriangle size={12} className="text-red-400 shrink-0 animate-bounce" />
-                        <span className="text-[8.5px] font-bold text-red-300 truncate">
-                            {!isOnline ? '本地网络断开' : '币安行情连线受阻，自愈重连中...'}
-                        </span>
-                    </div>
-                    <button 
-                        onClick={() => {
-                            binanceWs.forceReconnect();
-                            binanceWs.fetchRestPrices();
-                            fetchServerIp();
-                        }}
-                        className="text-[8.5px] bg-red-600 hover:bg-red-500 text-white px-2 py-1 rounded font-black flex items-center gap-1 transition-all shrink-0"
-                    >
-                        <RefreshCw size={8} className="animate-spin" />
-                        <span>立即重连</span>
-                    </button>
-                </div>
-            ) : (
-                <div className="flex-1 flex gap-1.5 min-h-0 items-center">
-                    <div className="flex-1 grid grid-cols-2 gap-1 h-full">
+                ) : (
+                    <div className="flex items-center gap-1 h-full shrink-0">
+                        <div className="grid grid-cols-2 gap-0.5 h-full">
+                            <button 
+                                type="button"
+                                onClick={() => binanceWs.fetchRestPrices()}
+                                className="text-[8.5px] bg-slate-800/80 hover:bg-slate-700 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700/80 hover:border-slate-600 transition-all flex items-center justify-center gap-0.5 leading-none font-bold active:scale-98 h-full"
+                                title="从币安 REST API 立即抓取全部最新价格"
+                            >
+                                <RotateCw size={8.5} className="text-cyan-400 shrink-0" />
+                                <span>价格</span>
+                            </button>
+                            <button 
+                                type="button"
+                                onClick={() => {
+                                    binanceWs.forceReconnect();
+                                    audioService.speak("正在重连行情");
+                                }}
+                                className="text-[8.5px] bg-slate-800/80 hover:bg-slate-700 text-slate-200 px-1.5 py-0.5 rounded border border-slate-700/80 hover:border-slate-600 transition-all flex items-center justify-center gap-0.5 leading-none font-bold active:scale-98 h-full"
+                                title="重新建立行情 WebSocket 管道"
+                            >
+                                <Activity size={8.5} className="text-indigo-400 shrink-0" />
+                                <span>重连WS</span>
+                            </button>
+                        </div>
                         <button 
-                            onClick={() => binanceWs.fetchRestPrices()}
-                            className="text-[8.5px] bg-slate-800/80 hover:bg-slate-700 text-slate-200 py-1 px-1 rounded border border-slate-700/80 hover:border-slate-600 transition-all flex items-center justify-center gap-1 leading-none font-bold active:scale-98"
-                            title="从币安 REST API 立即抓取全部最新价格"
+                            type="button"
+                            onClick={onToggleSimulation} 
+                            className={`w-12 h-full rounded text-[8.5px] font-black flex items-center justify-center gap-1 transition-all shadow-sm active:scale-98 border shrink-0 ${
+                                isSimulating 
+                                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400/40' 
+                                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700 hover:text-white'
+                            }`}
+                            title={isSimulating ? "点击暂停模拟撮合调度" : "点击启动模拟撮合调度"}
                         >
-                            <RotateCw size={9} className="text-cyan-400 shrink-0" />
-                            <span className="truncate">抓取价格</span>
-                        </button>
-                        <button 
-                            onClick={() => {
-                                binanceWs.forceReconnect();
-                                audioService.speak("正在重连行情");
-                            }}
-                            className="text-[8.5px] bg-slate-800/80 hover:bg-slate-700 text-slate-200 py-1 px-1 rounded border border-slate-700/80 hover:border-slate-600 transition-all flex items-center justify-center gap-1 leading-none font-bold active:scale-98"
-                            title="重新建立行情 WebSocket 管道"
-                        >
-                            <Activity size={9} className="text-indigo-400 shrink-0" />
-                            <span className="truncate">重连WS</span>
+                            {isSimulating ? <Pause size={9} className="fill-white"/> : <Play size={9} className="fill-slate-300"/>}
+                            <span>{isSimulating ? '暂停' : '启动'}</span>
                         </button>
                     </div>
-                    <button 
-                        onClick={onToggleSimulation} 
-                        className={`w-14 h-full rounded text-[8.5px] font-black flex items-center justify-center gap-1 transition-all shadow-sm active:scale-98 border shrink-0 ${
-                            isSimulating 
-                                ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400/40' 
-                                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700 hover:text-white'
-                        }`}
-                        title={isSimulating ? "点击暂停模拟撮合调度" : "点击启动模拟撮合调度"}
-                    >
-                        {isSimulating ? <Pause size={10} className="fill-white"/> : <Play size={10} className="fill-slate-300"/>}
-                        <span>{isSimulating ? '暂停' : '启动'}</span>
-                    </button>
-                </div>
-            )}
+                )}
+            </div>
         </div>
     );
 };

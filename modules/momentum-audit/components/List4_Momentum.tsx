@@ -12,6 +12,8 @@ import { List4Item } from './Item';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { ScannerHistoryModal } from './ScannerHistoryModal';
 
+import { normalizeSymbol } from '../../../services/symbolUtils';
+
 interface Props {
     config: List4Config;
     setConfig: React.Dispatch<React.SetStateAction<List4Config>>;
@@ -38,8 +40,13 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
         const waiting: ScannerItem[] = [];
         const fuseBlocked: ScannerItem[] = [];
         const dormant: ScannerItem[] = [];
+        const seenKeys = new Set<string>();
         
         list4.forEach(item => {
+            const normKey = `${normalizeSymbol(item.symbol)}-${item.tf}-${item.direction}`;
+            if (seenKeys.has(normKey)) return;
+            seenKeys.add(normKey);
+
             if (item.fuseBlocked) {
                 fuseBlocked.push(item);
             } else if (item.momentum?.status === 'DORMANT') {

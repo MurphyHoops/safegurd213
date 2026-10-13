@@ -15,6 +15,9 @@ export interface WsKlineUpdate {
   isFinal: boolean;
 }
 
+import { klineMultiTfStore } from './klineMultiTfStore';
+import { klineDailyStore } from './klineDailyStore';
+
 type KlineCallback = (update: WsKlineUpdate) => void;
 
 class BinanceKlineWsService {
@@ -210,6 +213,29 @@ class BinanceKlineWsService {
               volume: parseFloat(k.v),
               isFinal: !!k.x,
             };
+
+            // 🏛️ [中央行情数据总线]: 实时推流自动热更新多周期内存缓存
+            try {
+              klineMultiTfStore.updateRealtimeKline(update.symbol, update.tf, {
+                time: update.time,
+                open: update.open,
+                high: update.high,
+                low: update.low,
+                close: update.close,
+                volume: update.volume
+              });
+              if (update.tf === '5m') {
+                const tenMinTime = Math.floor(update.time / (10 * 60 * 1000)) * (10 * 60 * 1000);
+                klineMultiTfStore.updateRealtimeKline(update.symbol, '10m', {
+                  time: tenMinTime,
+                  open: update.open,
+                  high: update.high,
+                  low: update.low,
+                  close: update.close,
+                  volume: update.volume
+                });
+              }
+            } catch (_) {}
 
             this.listeners.forEach((cb) => {
               try {

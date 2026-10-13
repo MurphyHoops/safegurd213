@@ -19,6 +19,7 @@ import { db, auth } from '../../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { useAutoHistoryLogger } from './components/ScannerHistoryModal';
 import { klineMultiTfStore } from '../../services/klineMultiTfStore';
+import { klineDailyStore } from '../../services/klineDailyStore';
 import { KLine } from '../../types';
 import { getLatestEMA } from '../../services/indicators';
 
@@ -122,7 +123,17 @@ export const useMomentumAudit = (
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     if (Array.isArray(parsed)) {
-                        return parsed.map((item: any) => [`${item.symbol}-${item.tf}-${item.direction}`, item]);
+                        const entries: [string, ScannerItem][] = [];
+                        const seen = new Set<string>();
+                        for (const item of parsed) {
+                            if (!item || !item.symbol) continue;
+                            const normKey = `${normalizeSymbol(item.symbol)}-${item.tf}-${item.direction}`;
+                            if (!seen.has(normKey)) {
+                                seen.add(normKey);
+                                entries.push([normKey, item]);
+                            }
+                        }
+                        return entries;
                     }
                 }
             } catch (e) {}
@@ -139,10 +150,12 @@ export const useMomentumAudit = (
         const key = `${cleanSym}-${tf}`;
         const now = Date.now();
 
-        // ⚡ [0-MS RING BUFFER QUERY]: Check global multi-TF ring buffer
-        const persistentKlines = klineMultiTfStore.getKlinesSync(cleanSym, tf, 20);
+        // ⚡ [0-MS RING BUFFER QUERY]: Check global multi-TF ring buffer & Central Bus Shortlist Store
+        const persistentKlines = klineMultiTfStore.getKlinesSync(cleanSym, tf, 20) ||
+                                 klineDailyStore.getShortlistKlineSync(cleanSym, tf, 20) ||
+                                 (tf === '1d' ? klineDailyStore.getCachedKlinesSync(cleanSym, 30) : null);
         if (persistentKlines && persistentKlines.length >= 20) {
-            const allCloses = persistentKlines.map(k => k.close).filter(v => !isNaN(v) && v > 0);
+            const allCloses = persistentKlines.map((k: any) => typeof k.close === 'number' ? k.close : parseFloat(k[4]) || 0).filter(v => !isNaN(v) && v > 0);
             const priorCloses = allCloses.length > 1 ? allCloses.slice(0, -1) : allCloses;
             list4KlinesCacheRef.current.set(key, { closes: priorCloses, timestamp: Date.now() });
             return priorCloses;
@@ -240,12 +253,12 @@ export const useMomentumAudit = (
                     const isLatched = res.latched !== false && (res.latched === true || (list3Config ? checkList3SignalPasses(res, list3Config, item.adjacentStrictTrends) : true));
                     if (!isLatched) return;
                     
-                    const uniqueId = `${item.symbol}-${res.tf}-${res.direction}`;
+                    const cleanSym = normalizeSymbol(item.symbol);
+                    const uniqueId = `${cleanSym}-${res.tf}-${res.direction}`;
                     
                     // If already permanently expired, skip
                     if (expiredSignalCacheRef.current.has(uniqueId)) return;
                     
-                    const cleanSym = normalizeSymbol(item.symbol);
                     const klineKey = `${cleanSym}-${res.tf}`;
 
                     // 🎯 列表4独立K线补全：确保 recentCloses 100% 存在且为该周期真实已收盘K线
@@ -376,6 +389,7 @@ export const useMomentumAudit = (
 
         // 3. Apply Removal Logic
         const finalItems: ScannerItem[] = [];
+        const seenFinalKeys = new Set<string>();
         
         const safeRemoveSignal = (uniqueId: string) => {
             queueMicrotask(() => {
@@ -384,7 +398,8 @@ export const useMomentumAudit = (
         };
 
         analyzedItems.forEach(item => {
-            const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
+            const cleanSym = normalizeSymbol(item.symbol);
+            const uniqueId = `${cleanSym}-${item.tf}-${item.direction}`;
             
             // If already permanently expired, skip
             if (expiredSignalCacheRef.current.has(uniqueId)) {
@@ -577,14 +592,17 @@ export const useMomentumAudit = (
             }
             
             if (shouldKeep) {
-                finalItems.push(item);
+                if (!seenFinalKeys.has(uniqueId)) {
+                    seenFinalKeys.add(uniqueId);
+                    finalItems.push(item);
+                }
             } else {
                 list4CacheRef.current.delete(uniqueId);
             }
         });
 
         // Clean up caches for items that are no longer in the pipeline
-        const currentIds = new Set(analyzedItems.map(item => `${item.symbol}-${item.tf}-${item.direction}`));
+        const currentIds = new Set(analyzedItems.map(item => `${normalizeSymbol(item.symbol)}-${item.tf}-${item.direction}`));
         for (const key of invalidSignalCacheRef.current.keys()) {
             if (!currentIds.has(key)) invalidSignalCacheRef.current.delete(key);
         }
@@ -614,7 +632,7 @@ export const useMomentumAudit = (
                 const prev = prevList[i];
                 const next = finalItems[i];
                 if (
-                    `${prev.symbol}-${prev.tf}-${prev.direction}` !== `${next.symbol}-${next.tf}-${next.direction}` ||
+                    `${normalizeSymbol(prev.symbol)}-${prev.tf}-${prev.direction}` !== `${normalizeSymbol(next.symbol)}-${next.tf}-${next.direction}` ||
                     prev.price !== next.price ||
                     prev.momentum?.status !== next.momentum?.status ||
                     prev.momentum?.entryTrigger !== next.momentum?.entryTrigger ||
@@ -693,9 +711,10 @@ export const useMomentumAudit = (
     const removeSymbol = useCallback((symbol: string) => {
         // Since List 4 is derived from List 3, we tell List 3 to remove this symbol
         // We do this by calling onRemoveSignal for every item in list4 that matches this symbol
-        const itemsToRemove = list4.filter(item => item.symbol === symbol);
+        const normTarget = normalizeSymbol(symbol);
+        const itemsToRemove = list4.filter(item => normalizeSymbol(item.symbol) === normTarget);
         itemsToRemove.forEach(item => {
-            const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
+            const uniqueId = `${normalizeSymbol(item.symbol)}-${item.tf}-${item.direction}`;
             list4CacheRef.current.delete(uniqueId);
             fuseBlockedSignalCacheRef.current.delete(uniqueId);
             tradedSignalCacheRef.current.delete(uniqueId);
@@ -703,7 +722,7 @@ export const useMomentumAudit = (
             expiredSignalCacheRef.current.add(uniqueId);
             onRemoveSignalRef.current?.(uniqueId);
         });
-        setList4(prev => prev.filter(i => i.symbol !== symbol));
+        setList4(prev => prev.filter(i => normalizeSymbol(i.symbol) !== normTarget));
     }, [list4]);
 
     const clearItems = useCallback(() => {
@@ -714,7 +733,7 @@ export const useMomentumAudit = (
         dormantSignalCacheRef.current.clear();
         expiredSignalCacheRef.current.clear();
         list4.forEach(item => {
-            const uniqueId = `${item.symbol}-${item.tf}-${item.direction}`;
+            const uniqueId = `${normalizeSymbol(item.symbol)}-${item.tf}-${item.direction}`;
             onRemoveSignalRef.current?.(uniqueId);
         });
         setList4([]);

@@ -108,6 +108,10 @@ export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfC
                                     </span>
                                 ) : isScanning ? (
                                     <span className="font-mono text-[7px] text-amber-400/80 mt-0.5">扫描中</span>
+                                ) : scanningCoin ? (
+                                    <span className="font-mono text-[7.5px] font-bold text-cyan-300/90 bg-slate-900/90 border border-cyan-500/30 rounded px-1 py-[1px] mt-0.5 truncate max-w-full leading-none">
+                                        {scanningCoin}
+                                    </span>
                                 ) : (
                                     <span className="font-mono text-[7px] opacity-70 scale-90 mt-0.5">{countdowns[tf] || '--:--'}</span>
                                 )}

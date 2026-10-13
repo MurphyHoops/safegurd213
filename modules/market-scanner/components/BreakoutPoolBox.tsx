@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ScanConfig, BreakoutFilterConfig } from '../../../components/Scanner/scannerTypes';
-import { ChevronDown, ChevronUp, Copy, Check, Search, Zap, RefreshCw, Sliders, Activity, Loader2, Timer, ArrowRight, Play, CheckCircle2, ShieldCheck, Flame, Sparkles } from 'lucide-react';
+import { ScanConfig, BreakoutFilterConfig, BreakoutTimeframe } from '../../../components/Scanner/scannerTypes';
+import { ChevronDown, ChevronUp, Copy, Check, Search, Zap, RefreshCw, Sliders, Activity, Loader2, Timer, Clock, ArrowRight, Play, CheckCircle2, ShieldCheck, Flame, Sparkles } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
 import { DEFAULT_BREAKOUT_CONFIG, BreakoutAuditItem, auditSymbolBreakout } from '../../../services/rules/list1_breakout';
@@ -147,7 +147,7 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
         }));
     };
 
-    // 监听本地存储与事件同步
+    // 监听本地存储与事件同步 (同时监听上游底池更新，实现流水闸级联联动)
     useEffect(() => {
         isMountedRef.current = true;
         const handlePoolUpdated = () => {
@@ -162,38 +162,82 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
             } catch (_) {}
         };
 
+        const handleUpstreamPoolUpdated = () => {
+            // 当上游回溯周期底池/横盘底池/行情启动底池更新时，触发刷新目标币种
+            if (isMountedRef.current && config.enabled) {
+                console.log('[BreakoutPoolBox] 上游流水闸底池已更新，自动对齐最新候选币种...');
+            }
+        };
+
         window.addEventListener('scanner_breakout_pool_updated', handlePoolUpdated);
+        window.addEventListener('scanner_lookback_pool_updated', handleUpstreamPoolUpdated);
+        window.addEventListener('scanner_major_trend_candidates_updated', handleUpstreamPoolUpdated);
+        window.addEventListener('scanner_sideways_pool_updated', handleUpstreamPoolUpdated);
+        window.addEventListener('scanner_start_trend_pool_updated', handleUpstreamPoolUpdated);
+        window.addEventListener('scanner_volume_pool_updated', handleUpstreamPoolUpdated);
+
         return () => {
             isMountedRef.current = false;
             window.removeEventListener('scanner_breakout_pool_updated', handlePoolUpdated);
+            window.removeEventListener('scanner_lookback_pool_updated', handleUpstreamPoolUpdated);
+            window.removeEventListener('scanner_major_trend_candidates_updated', handleUpstreamPoolUpdated);
+            window.removeEventListener('scanner_sideways_pool_updated', handleUpstreamPoolUpdated);
+            window.removeEventListener('scanner_start_trend_pool_updated', handleUpstreamPoolUpdated);
+            window.removeEventListener('scanner_volume_pool_updated', handleUpstreamPoolUpdated);
         };
-    }, [setPool]);
+    }, [setPool, config.enabled]);
 
-    // 获取上游输入候选底池
+    // 获取上游输入候选底池 (严格遵循流水闸一级一级向上获取数据，未开启则向上穿透)
     const getTargetSymbols = (): string[] => {
         let targetSymbols: string[] = [];
         try {
-            const rawLookback = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
-            const parsedLookback = rawLookback ? JSON.parse(rawLookback) : [];
-            if (Array.isArray(parsedLookback) && parsedLookback.length > 0) {
-                targetSymbols = parsedLookback.map(s => s.replace(/_LONG$|_SHORT$/i, '').trim());
-            } else {
+            const cfg = (scanConfig.majorTrend || {}) as any;
+            const enableLookback = cfg.enableLookbackFilter !== false;
+            const enableSideways = cfg.enableSideways !== false;
+            const enableStart = Boolean(cfg.enableStartTrendLong || cfg.enableStartTrendShort);
+
+            // 1. 若回溯周期过滤开启：首选从“回溯周期过滤底池”获取
+            if (enableLookback) {
+                const rawLookback = localStorage.getItem('SCANNER_LOOKBACK_FILTERED_POOL');
+                const parsedLookback = rawLookback ? JSON.parse(rawLookback) : [];
+                if (Array.isArray(parsedLookback) && parsedLookback.length > 0) {
+                    targetSymbols = parsedLookback.map((item: any) => 
+                        (typeof item === 'string' ? item : item.symbol || item.fullSymbol || '')
+                    ).map((s: string) => s.replace(/_LONG$|_SHORT$/i, '').trim()).filter(Boolean);
+                } else {
+                    // 兼容旧标识
+                    const rawLegacy = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
+                    const parsedLegacy = rawLegacy ? JSON.parse(rawLegacy) : [];
+                    if (Array.isArray(parsedLegacy) && parsedLegacy.length > 0) {
+                        targetSymbols = parsedLegacy.map((s: string) => s.replace(/_LONG$|_SHORT$/i, '').trim()).filter(Boolean);
+                    }
+                }
+            }
+
+            // 2. 若回溯周期未开启或数据为空，向上追溯至“横盘蓄势过滤底池”
+            if (targetSymbols.length === 0 && enableSideways) {
                 const rawSideways = localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL');
                 const parsedSideways = rawSideways ? JSON.parse(rawSideways) : [];
                 if (Array.isArray(parsedSideways) && parsedSideways.length > 0) {
-                    targetSymbols = parsedSideways.map((p: any) => p.symbol);
-                } else {
-                    const rawStart = localStorage.getItem('SCANNER_START_TREND_POOL');
-                    const parsedStart = rawStart ? JSON.parse(rawStart) : [];
-                    if (Array.isArray(parsedStart) && parsedStart.length > 0) {
-                        targetSymbols = parsedStart.map((p: any) => p.symbol);
-                    } else {
-                        const rawVol = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
-                        const parsedVol = rawVol ? JSON.parse(rawVol) : [];
-                        if (Array.isArray(parsedVol) && parsedVol.length > 0) {
-                            targetSymbols = parsedVol.map((p: any) => p.symbol || p);
-                        }
-                    }
+                    targetSymbols = parsedSideways.map((p: any) => (typeof p === 'string' ? p : p.symbol)).filter(Boolean);
+                }
+            }
+
+            // 3. 若横盘蓄势也未开启，向上追溯至“行情启动底池”
+            if (targetSymbols.length === 0 && enableStart) {
+                const rawStart = localStorage.getItem('SCANNER_START_TREND_POOL');
+                const parsedStart = rawStart ? JSON.parse(rawStart) : [];
+                if (Array.isArray(parsedStart) && parsedStart.length > 0) {
+                    targetSymbols = parsedStart.map((p: any) => (typeof p === 'string' ? p : p.symbol)).filter(Boolean);
+                }
+            }
+
+            // 4. 若以上均未开启，向上追溯至基础“交易额过滤底池”
+            if (targetSymbols.length === 0) {
+                const rawVol = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+                const parsedVol = rawVol ? JSON.parse(rawVol) : [];
+                if (Array.isArray(parsedVol) && parsedVol.length > 0) {
+                    targetSymbols = parsedVol.map((p: any) => (typeof p === 'string' ? p : p.symbol || p)).filter(Boolean);
                 }
             }
         } catch (_) {}
@@ -368,7 +412,8 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
         config.enableMultiTfResonance,
         config.primaryTf,
         config.confirmTf,
-        config.combinationMode
+        config.combinationMode,
+        JSON.stringify(config.selectedTimeframes)
     ]);
 
     const stats = useMemo(() => {
@@ -396,7 +441,10 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                 return {
                     ...it,
                     isPassed,
-                    matchedRules: matched
+                    matchedRules: matched.length > 0 ? matched : (it.matchedRules || []),
+                    matchedTimeframes: it.matchedTimeframes && it.matchedTimeframes.length > 0
+                        ? it.matchedTimeframes
+                        : (it.primaryMatchedTf ? [it.primaryMatchedTf] : ['5m'])
                 };
             })
             .filter(Boolean) as BreakoutAuditItem[];
@@ -586,6 +634,68 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                         <div className="text-[7.5px] text-slate-400 pt-1 border-t border-slate-800/60 flex items-center justify-between">
                             <span>💡 <span className="text-amber-300 font-bold">放宽指南</span>: 三个规则全选时，推荐选 <span className="text-amber-400 font-bold">【符合任一 (OR)】</span>，只要蓄势、放量、共振任一达标即入池，容错率最高！</span>
                             <span className="text-amber-400 font-bold shrink-0 ml-1">放宽首选: OR 模式</span>
+                        </div>
+                    </div>
+
+                    {/* 🎯 多周期爆发并联多选 (5m / 10m / 15m / 30m / 60m 独立入池打标) */}
+                    <div className="bg-slate-900/90 border border-slate-800 rounded p-2 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                                <Clock size={12} className="text-amber-400" />
+                                <span className="text-[10px] font-bold text-slate-200">多周期爆发并联监测 (多选独立入池):</span>
+                                <span className="text-[8.5px] text-slate-400">
+                                    （任一勾选周期满足爆发即放行并打标）
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <button
+                                    onClick={() => updateConfig(p => ({ ...p, selectedTimeframes: ['5m', '10m', '15m', '30m', '60m'] }))}
+                                    className="text-[8px] text-amber-400 hover:text-amber-300 underline font-bold"
+                                >
+                                    全选 (5大周期)
+                                </button>
+                                <span className="text-slate-600 text-[8px]">|</span>
+                                <button
+                                    onClick={() => updateConfig(p => ({ ...p, selectedTimeframes: ['5m', '15m'] }))}
+                                    className="text-[8px] text-slate-400 hover:text-slate-200 underline"
+                                >
+                                    经典 (5m+15m)
+                                </button>
+                            </div>
+                        </div>
+                        {/* 5 个周期独立开关 */}
+                        <div className="grid grid-cols-5 gap-1.5 pt-0.5">
+                            {(['5m', '10m', '15m', '30m', '60m'] as BreakoutTimeframe[]).map(tf => {
+                                const selected = (config.selectedTimeframes || ['5m', '10m', '15m', '30m', '60m']).includes(tf);
+                                return (
+                                    <button
+                                        key={tf}
+                                        onClick={() => {
+                                            const current = config.selectedTimeframes || ['5m', '10m', '15m', '30m', '60m'];
+                                            let next: BreakoutTimeframe[];
+                                            if (selected) {
+                                                if (current.length <= 1) return; // 至少保留一个周期
+                                                next = current.filter(t => t !== tf);
+                                            } else {
+                                                next = [...current, tf];
+                                            }
+                                            updateConfig(p => ({ ...p, selectedTimeframes: next }));
+                                        }}
+                                        className={`py-1 px-1.5 rounded border text-[8.5px] font-bold flex items-center justify-center gap-1 transition-all ${
+                                            selected
+                                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.2)]'
+                                                : 'bg-slate-950 text-slate-500 border-slate-800/80 hover:border-slate-700 hover:text-slate-300'
+                                        }`}
+                                    >
+                                        <span className={`w-1.5 h-1.5 rounded-full ${selected ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
+                                        <span>{tf.toUpperCase()}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        <div className="text-[7.5px] text-slate-400 pt-1 border-t border-slate-800/60 flex items-center justify-between">
+                            <span>当前启用周期: <span className="text-amber-300 font-bold font-mono">{(config.selectedTimeframes || ['5m', '10m', '15m', '30m', '60m']).join(' / ').toUpperCase()}</span></span>
+                            <span className="text-slate-400">独立审计 · 各周期符合单独提取打标</span>
                         </div>
                     </div>
 
@@ -1103,13 +1213,17 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                                         }`}
                                     >
                                         {/* Left: Symbol & Status Tag */}
-                                        <div className="flex items-center gap-1.5 w-28 truncate">
+                                        <div className="flex items-center gap-1.5 w-32 truncate">
                                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${item.isPassed ? 'bg-amber-400 animate-ping' : 'bg-slate-600'}`} />
                                             <span className="font-bold font-mono text-slate-200">{item.symbol.replace('/USDT', '')}</span>
                                             {item.isPassed && (
-                                                <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[7px] px-1 rounded font-bold">
-                                                    爆发
-                                                </span>
+                                                <div className="flex items-center gap-0.5 shrink-0 flex-wrap">
+                                                    {(item.matchedTimeframes && item.matchedTimeframes.length > 0 ? item.matchedTimeframes : ['5m']).map(tf => (
+                                                        <span key={tf} className="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[7px] px-1 rounded font-bold font-mono">
+                                                            {tf}
+                                                        </span>
+                                                    ))}
+                                                </div>
                                             )}
                                         </div>
 

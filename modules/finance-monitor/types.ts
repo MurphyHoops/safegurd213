@@ -13,4 +13,5 @@ export interface FinanceMonitorProps {
     networkStatus: 'healthy' | 'delayed' | 'disconnected';
     isOnline: boolean;
     settings: AppSettings;
+    onOpenScanner?: () => void;
 }

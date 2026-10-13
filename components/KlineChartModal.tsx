@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { X, Loader2, Move, ZoomIn, ZoomOut, RefreshCw, AlertTriangle, WifiOff, Activity, ArrowRight, BarChart2, Ruler, Zap } from 'lucide-react';
+import { X, Loader2, Move, ZoomIn, ZoomOut, RefreshCw, AlertTriangle, WifiOff, Activity, ArrowRight, ArrowUp, ArrowDown, BarChart2, Ruler, Zap, Check, Clock, Layers } from 'lucide-react';
 import { calculateEMA } from '../services/indicators';
 import { fetchWithFallback } from '../services/apiService';
 import { analyzeList2Crossing } from '../services/rules/list2_crossing'; // Import Rule Logic
@@ -74,6 +74,9 @@ interface Props {
   currentIndexLabel?: string;
   onPrev?: () => void;
   onNext?: () => void;
+  symbolList?: string[];
+  symbolIndex?: number;
+  onSymbolChange?: (symbol: string, tf?: string) => void;
 }
 
 interface KlineData {
@@ -384,10 +387,202 @@ async function raceFetchKlines(safeSymbol: string, timeframe: string, limit: num
     throw new Error(`无法获取 ${safeSymbol} 的 K 线数据，请检查网络连接或稍后重试`);
 }
 
-const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', signals = [], direction: propDirection, side: propSide, entryPrice, entryTime, currentPrice, scanWindow = 9, list2Config, list4Config: propList4Config, highlightTime, extraLines, directMode = false, limit = 299, disablePortal = false, highlightTf, showAuditLines = false, tradeLogs = [], appearedTime, disappearedTime, source, viewMode, onClose, onTimeframeChange, lookbackDays: propLookbackDays, sidewaysDays: propSidewaysDays, hasPrev, hasNext, currentIndexLabel, onPrev, onNext }) => {
+const KlineChartModal: React.FC<Props> = ({ 
+  symbol: propSymbol, 
+  initialTimeframe = '15m', 
+  symbolList,
+  symbolIndex,
+  onSymbolChange,
+  signals = [], 
+  direction: propDirection, 
+  side: propSide, 
+  entryPrice, 
+  entryTime, 
+  currentPrice, 
+  scanWindow = 9, 
+  list2Config, 
+  list4Config: propList4Config, 
+  highlightTime, 
+  extraLines, 
+  directMode = false, 
+  limit = 299, 
+  disablePortal = false, 
+  highlightTf, 
+  showAuditLines = false, 
+  tradeLogs = [], 
+  appearedTime, 
+  disappearedTime, 
+  source, 
+  viewMode, 
+  onClose, 
+  onTimeframeChange, 
+  lookbackDays: propLookbackDays, 
+  sidewaysDays: propSidewaysDays, 
+  hasPrev, 
+  hasNext, 
+  currentIndexLabel, 
+  onPrev, 
+  onNext 
+}) => {
   const backtest = useOptionalBacktest();
+
+  // ⚡ 响应式当前活跃币种（支持在弹窗内无缝巡检切换）
+  const [activeSymbol, setActiveSymbol] = useState(propSymbol);
+
+  useEffect(() => {
+    if (propSymbol && propSymbol !== activeSymbol) {
+      setActiveSymbol(propSymbol);
+    }
+  }, [propSymbol]);
+
+  const symbol = activeSymbol;
   const [timeframe, setTimeframe] = useState(() => sanitizeTf(initialTimeframe));
   const serializedConfig = JSON.stringify(list2Config);
+
+  // 🎯 方案 C：多周期巡检选中的周期列表 (支持多选并持久化保存用户习惯)
+  const [inspectionTfs, setInspectionTfs] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('SAVIOR_INSPECTION_TIMEFRAMES_V2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const valid = parsed.filter(t => TIMEFRAMES.includes(t));
+          if (valid.length > 0) return valid;
+        }
+      }
+    } catch (e) {}
+    return ['15m', '1h', '4h', '1d'];
+  });
+
+  // 保存巡检周期偏好
+  const updateInspectionTfs = useCallback((newTfs: string[]) => {
+    const clean = newTfs.filter(t => TIMEFRAMES.includes(t));
+    if (clean.length === 0) return;
+    setInspectionTfs(clean);
+    try {
+      localStorage.setItem('SAVIOR_INSPECTION_TIMEFRAMES_V2', JSON.stringify(clean));
+    } catch (e) {}
+  }, []);
+
+  // 切换单一周期的巡检选中状态
+  const toggleInspectionTf = useCallback((tf: string) => {
+    setInspectionTfs(prev => {
+      let next: string[];
+      if (prev.includes(tf)) {
+        if (prev.length <= 1) return prev; // 至少保留一个周期
+        next = prev.filter(t => t !== tf);
+      } else {
+        next = [...prev, tf].sort((a, b) => TIMEFRAMES.indexOf(a) - TIMEFRAMES.indexOf(b));
+      }
+      try {
+        localStorage.setItem('SAVIOR_INSPECTION_TIMEFRAMES_V2', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  }, []);
+
+  // 币种列表与当前下标
+  const effectiveSymbolList = useMemo(() => {
+    if (Array.isArray(symbolList) && symbolList.length > 0) {
+      return symbolList;
+    }
+    return [activeSymbol];
+  }, [symbolList, activeSymbol]);
+
+  const currentSymIdx = useMemo(() => {
+    const found = effectiveSymbolList.indexOf(activeSymbol);
+    return found >= 0 ? found : (typeof symbolIndex === 'number' ? symbolIndex : 0);
+  }, [effectiveSymbolList, activeSymbol, symbolIndex]);
+
+  // 核心步进函数：下一个 (↓ / ArrowDown)
+  const handleNextStep = useCallback(() => {
+    if (inspectionTfs.length > 1) {
+      const curIdx = inspectionTfs.indexOf(timeframe);
+      if (curIdx >= 0 && curIdx < inspectionTfs.length - 1) {
+        // 1. 同一币种，切换到下一个所选周期！
+        const nextTf = inspectionTfs[curIdx + 1];
+        setTimeframe(nextTf);
+        if (onTimeframeChange) onTimeframeChange(nextTf);
+        return;
+      }
+      
+      // 2. 当前币种的所有所选周期已全部显示完！切换到下一个币种，并重置为所选第1个周期！
+      if (effectiveSymbolList.length > 1) {
+        const nextSymIdx = (currentSymIdx + 1) % effectiveSymbolList.length;
+        const nextSym = effectiveSymbolList[nextSymIdx];
+        const firstTf = inspectionTfs[0] || '1d';
+        setActiveSymbol(nextSym);
+        setTimeframe(firstTf);
+        if (onSymbolChange) onSymbolChange(nextSym, firstTf);
+        if (onTimeframeChange) onTimeframeChange(firstTf);
+        return;
+      }
+    }
+
+    // 单周期巡检或常规模式：直接切换到下一个币种
+    if (effectiveSymbolList.length > 1) {
+      const nextSymIdx = (currentSymIdx + 1) % effectiveSymbolList.length;
+      const nextSym = effectiveSymbolList[nextSymIdx];
+      setActiveSymbol(nextSym);
+      if (onSymbolChange) onSymbolChange(nextSym, timeframe);
+      return;
+    }
+
+    if (onNext) onNext();
+  }, [inspectionTfs, timeframe, effectiveSymbolList, currentSymIdx, onTimeframeChange, onSymbolChange, onNext]);
+
+  // 核心步进函数：上一个 (↑ / ArrowUp)
+  const handlePrevStep = useCallback(() => {
+    if (inspectionTfs.length > 1) {
+      const curIdx = inspectionTfs.indexOf(timeframe);
+      if (curIdx > 0) {
+        // 1. 同一币种，切换到上一个所选周期！
+        const prevTf = inspectionTfs[curIdx - 1];
+        setTimeframe(prevTf);
+        if (onTimeframeChange) onTimeframeChange(prevTf);
+        return;
+      }
+      
+      // 2. 当前在第1个周期，切换到上一个币种，并跳转到上一个币种的所选最后一个周期！
+      if (effectiveSymbolList.length > 1) {
+        const prevSymIdx = (currentSymIdx - 1 + effectiveSymbolList.length) % effectiveSymbolList.length;
+        const prevSym = effectiveSymbolList[prevSymIdx];
+        const lastTf = inspectionTfs[inspectionTfs.length - 1] || '1d';
+        setActiveSymbol(prevSym);
+        setTimeframe(lastTf);
+        if (onSymbolChange) onSymbolChange(prevSym, lastTf);
+        if (onTimeframeChange) onTimeframeChange(lastTf);
+        return;
+      }
+    }
+
+    // 单周期巡检或常规模式：直接切换到上一个币种
+    if (effectiveSymbolList.length > 1) {
+      const prevSymIdx = (currentSymIdx - 1 + effectiveSymbolList.length) % effectiveSymbolList.length;
+      const prevSym = effectiveSymbolList[prevSymIdx];
+      setActiveSymbol(prevSym);
+      if (onSymbolChange) onSymbolChange(prevSym, timeframe);
+      return;
+    }
+
+    if (onPrev) onPrev();
+  }, [inspectionTfs, timeframe, effectiveSymbolList, currentSymIdx, onTimeframeChange, onSymbolChange, onPrev]);
+
+  // 🔒 [SECURITY_LOCK: KLINE_KEYBOARD_NAV] 键盘上下箭头快捷巡检
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        handlePrevStep();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        handleNextStep();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handlePrevStep, handleNextStep]);
 
   // ⚡ 币安自研原生战术标绘 / Lightweight Canvas / TradingView 多引擎模式
   type ChartEngine = 'TRADINGVIEW' | 'LIGHTWEIGHT' | 'TACTICAL';
@@ -430,20 +625,7 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
     return false;
   }, [viewMode, source, signals, list2Config, propList4Config, entryPrice, entryTime, showAuditLines]);
 
-  // 🔒 [SECURITY_LOCK: KLINE_KEYBOARD_NAV]
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowUp' && hasPrev && onPrev) {
-        e.preventDefault();
-        onPrev();
-      } else if (e.key === 'ArrowDown' && hasNext && onNext) {
-        e.preventDefault();
-        onNext();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [hasPrev, hasNext, onPrev, onNext]);
+
   
   // Sync timeframe with initialTimeframe if it changes (e.g. when clicking a different row for same symbol)
   useEffect(() => {
@@ -1264,9 +1446,11 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
         const safeSymbol = cleanSym.replace(/[\(（][^\)）]*[\)）]/g, '').trim();
 
         // 🚀 0ms 瞬间秒开直调本地缓存通道 (Zero-Latency In-Memory Fast-Path)
-        let cachedLocalKlines: any[] | null = klineMultiTfStore.getKlinesSync(safeSymbol, timeframe, 20);
+        let cachedLocalKlines: any[] | null = klineMultiTfStore.getKlinesSync(safeSymbol, timeframe, 20) ||
+                                              klineDailyStore.getShortlistKlineSync(safeSymbol, timeframe, 20);
         if (!cachedLocalKlines && timeframe === '10m') {
-            const cached5m = klineMultiTfStore.getKlinesSync(safeSymbol, '5m', 40);
+            const cached5m = klineMultiTfStore.getKlinesSync(safeSymbol, '5m', 40) ||
+                             klineDailyStore.getShortlistKlineSync(safeSymbol, '5m', 40);
             if (cached5m && cached5m.length >= 40) {
                 const synth = KLineSynthesizer.synthesize(cached5m, 10);
                 if (synth && synth.length >= 20) {
@@ -3113,9 +3297,43 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
       <div className={`bg-[#161A25] border border-slate-700/50 rounded-lg shadow-2xl flex flex-col ${disablePortal ? 'w-full h-full' : 'w-[95vw] h-[85vh]'} overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.8)]`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#1E2329] shrink-0">
-           <div className="flex items-center gap-3">
+           <div className="flex items-center gap-2.5 flex-wrap">
                <div className="flex items-center gap-2">
-                   <h2 className="text-lg font-bold text-slate-100">{symbol}</h2>
+                   <h2 className="text-lg font-bold text-slate-100 flex items-center gap-1.5">
+                       <span>{symbol}</span>
+                   </h2>
+
+                   {/* 🎯 方案 C：上下箭头巡检导航控制组件 */}
+                   <div className="flex items-center gap-1 bg-slate-900/95 px-1.5 py-0.5 rounded border border-slate-700/80 shadow-inner">
+                       <button 
+                           onClick={handlePrevStep}
+                           className="flex items-center gap-0.5 px-2 py-1 bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white rounded text-[11px] font-bold border border-slate-700 hover:border-indigo-400 transition-all shadow-sm active:scale-95"
+                           title="上一个 (可按键盘 ↑ 上箭头)：同一币前一周期 / 前一个币最后周期"
+                       >
+                           <ArrowUp size={13} className="text-cyan-400 stroke-[2.5]" />
+                           <span>上一看 (↑)</span>
+                       </button>
+                       
+                       <button 
+                           onClick={handleNextStep}
+                           className="flex items-center gap-0.5 px-2 py-1 bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white rounded text-[11px] font-bold border border-slate-700 hover:border-indigo-400 transition-all shadow-sm active:scale-95"
+                           title="下一个 (可按键盘 ↓ 下箭头)：同一币下一周期 / 下一个币首个周期"
+                       >
+                           <ArrowDown size={13} className="text-amber-400 stroke-[2.5]" />
+                           <span>下一看 (↓)</span>
+                       </button>
+
+                       {/* 进度计数器 */}
+                       <div className="flex items-center gap-1.5 text-[10px] font-mono px-2 py-0.5 bg-slate-950/80 rounded border border-slate-800 text-slate-300">
+                           <span className="text-indigo-400 font-bold">{symbol}</span>
+                           <span className="text-slate-500">[{effectiveSymbolList.length > 0 ? `${currentSymIdx + 1}/${effectiveSymbolList.length}` : '1/1'}]</span>
+                           <span className="text-slate-600">·</span>
+                           <span className="text-amber-300 font-bold">{timeframe}</span>
+                           {inspectionTfs.length > 0 && (
+                               <span className="text-emerald-400 font-semibold">[{inspectionTfs.indexOf(timeframe) >= 0 ? inspectionTfs.indexOf(timeframe) + 1 : 1}/{inspectionTfs.length} 周期]</span>
+                           )}
+                       </div>
+                   </div>
 
                     {/* ⚡ 系统原生战术标绘与多引擎极速切换 */}
                     <div className="flex items-center bg-slate-900/90 p-0.5 rounded-lg border border-slate-700/80 shadow-inner">
@@ -3203,35 +3421,9 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                        {lastUpdated > Date.now() - 10000 ? '⚡ WS实时推流' : '连接中...'}
                    </span>
                </div>
-               <div className="h-4 w-px bg-slate-700"></div>
-               <div className="flex gap-1">
-                   {TIMEFRAMES.map(tf => {
-                       const isTriggered = highlightTf === tf;
-                       return (
-                           <button 
-                               key={tf} 
-                               onClick={() => {
-                                   setTimeframe(tf);
-                                   if (onTimeframeChange) onTimeframeChange(tf);
-                               }} 
-                               className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all relative ${
-                                   timeframe === tf 
-                                       ? 'bg-slate-700 text-white shadow-sm ring-1 ring-slate-600' 
-                                       : isTriggered 
-                                           ? 'text-indigo-400 bg-indigo-500/10' 
-                                           : 'text-slate-500 hover:text-slate-300'
-                               }`}
-                           >
-                               {tf}
-                               {isTriggered && (
-                                   <span className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse shadow-[0_0_5px_rgba(99,102,241,0.5)]" title="规则触发周期" />
-                               )}
-                           </button>
-                       );
-                   })}
-               </div>
            </div>
-           <div className="flex items-center gap-3">
+
+           <div className="flex items-center gap-2">
                {!isAutoScroll && (
                    <button 
                        onClick={handleResetToLatest}
@@ -3247,14 +3439,118 @@ const KlineChartModal: React.FC<Props> = ({ symbol, initialTimeframe = '15m', si
                    <RefreshCw size={10} /> 刷新
                </button>
                <button 
-    onClick={() => (window as any).setManualSymbol(symbol)}
-    className="flex items-center gap-1 bg-amber-600 hover:bg-amber-500 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors mr-2"
-    title="币名转移到手动开仓"
->
-    <ArrowRight size={10} /> 币名转移
-</button>
-<button onClick={() => { onClose(); }} className="p-1.5 hover:bg-slate-700 rounded text-slate-400 hover:text-white"><X size={18} /></button>
+                   onClick={() => (window as any).setManualSymbol(symbol)}
+                   className="flex items-center gap-1 bg-amber-600 hover:bg-amber-500 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors"
+                   title="币名转移到手动开仓"
+               >
+                   <ArrowRight size={10} /> 币名转移
+               </button>
+               <button onClick={() => { onClose(); }} className="p-1.5 hover:bg-slate-700 rounded text-slate-400 hover:text-white"><X size={18} /></button>
            </div>
+        </div>
+
+        {/* 🎯 方案 C：多周期巡检选择工具栏 (Multi-Timeframe Inspection Toolbar) */}
+        <div className="flex flex-wrap items-center justify-between px-3 py-1 bg-[#141820] border-b border-slate-800 text-[11px] gap-2 shrink-0">
+            {/* 快速直切当前周期 */}
+            <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] text-slate-400 font-bold flex items-center gap-1">
+                    <Clock size={11} className="text-amber-400" />
+                    <span>查看周期:</span>
+                </span>
+                <div className="flex items-center gap-1 flex-wrap">
+                    {TIMEFRAMES.map(tf => {
+                        const isActive = timeframe === tf;
+                        const isChecked = inspectionTfs.includes(tf);
+                        const isTriggered = highlightTf === tf;
+                        return (
+                            <button
+                                key={tf}
+                                onClick={() => {
+                                    setTimeframe(tf);
+                                    if (onTimeframeChange) onTimeframeChange(tf);
+                                }}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all relative flex items-center gap-0.5 ${
+                                    isActive
+                                        ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-400'
+                                        : isChecked
+                                            ? 'bg-slate-800 text-amber-300 border border-amber-500/40 hover:bg-slate-700'
+                                            : isTriggered
+                                                ? 'text-indigo-400 bg-indigo-500/10'
+                                                : 'text-slate-400 hover:text-slate-200 bg-slate-900/60'
+                                }`}
+                                title={`点击切换到 ${tf} 周期`}
+                            >
+                                <span>{tf}</span>
+                                {isChecked && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block ml-0.5" title="已加入上下箭头巡检" />
+                                )}
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* 方案C 核心：巡检周期多选与预设 */}
+            <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 bg-slate-900/90 px-2 py-0.5 rounded border border-indigo-500/30">
+                    <span className="text-[10px] text-indigo-300 font-bold flex items-center gap-1">
+                        <Layers size={11} className="text-indigo-400" />
+                        <span>上下箭头巡检周期多选:</span>
+                    </span>
+
+                    <div className="flex items-center gap-1">
+                        {['15s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'].map(tf => {
+                            const isChecked = inspectionTfs.includes(tf);
+                            return (
+                                <button
+                                    key={tf}
+                                    onClick={() => toggleInspectionTf(tf)}
+                                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition-all flex items-center gap-0.5 border ${
+                                        isChecked
+                                            ? 'bg-emerald-950/80 border-emerald-500/60 text-emerald-300 shadow-[0_0_6px_rgba(16,185,129,0.2)]'
+                                            : 'bg-slate-950/40 border-slate-800 text-slate-500 hover:text-slate-300 hover:border-slate-700'
+                                    }`}
+                                    title={`点击将 ${tf} 勾选入上下键巡检序列`}
+                                >
+                                    {isChecked ? <Check size={8} className="text-emerald-400 stroke-[3]" /> : <span className="w-2 inline-block" />}
+                                    <span>{tf}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    <div className="flex items-center gap-1 ml-1 border-l border-slate-700/80 pl-1.5">
+                        <button
+                            onClick={() => updateInspectionTfs(['15m', '1h', '4h'])}
+                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[9px] transition-colors border border-slate-700"
+                            title="设置巡检周期：15m + 1h + 4h"
+                        >
+                            短线
+                        </button>
+                        <button
+                            onClick={() => updateInspectionTfs(['1h', '4h', '1d'])}
+                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[9px] transition-colors border border-slate-700"
+                            title="设置巡检周期：1h + 4h + 1d"
+                        >
+                            趋势
+                        </button>
+                        <button
+                            onClick={() => updateInspectionTfs(['15m', '1h', '4h', '1d', '1w'])}
+                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[9px] transition-colors border border-slate-700"
+                            title="设置巡检周期：全波段"
+                        >
+                            全波段
+                        </button>
+                        <button
+                            onClick={() => updateInspectionTfs([timeframe || '1d'])}
+                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[9px] transition-colors border border-slate-700"
+                            title="仅巡检当前周期"
+                        >
+                            单周期
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         {/* Chart Area */}

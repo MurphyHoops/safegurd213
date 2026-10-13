@@ -12,6 +12,7 @@ import { VolumePoolBox } from './VolumePoolBox';
 import { StartTrendSection } from './StartTrendSection';
 import { StartTrendPoolBox } from './StartTrendPoolBox';
 import { SidewaysPoolBox } from './SidewaysPoolBox';
+import { LookbackPoolBox } from './LookbackPoolBox';
 import { BreakoutPoolBox } from './BreakoutPoolBox';
 
 interface Props {
@@ -408,6 +409,13 @@ export const FilterSection: React.FC<Props> = ({
                         onRunDiscovery={runMajorTrendDiscovery}
                         onCancelDiscovery={cancelMajorScan}
                         isPrimaryMode={true}
+                    />
+
+                    {/* Lookback Filter Pool Box - Holds Stage 2 passed coins */}
+                    <LookbackPoolBox 
+                        scanConfig={scanConfig} 
+                        onRunDiscovery={runMajorTrendDiscovery} 
+                        isMajorScanning={isMajorScanning} 
                     />
 
                     {/* 🚀 趋势爆发综合过滤大卡片 (Breakout Filter Pool Box - 融合龙抬头防伪进阶) - 位于防恐慌熔断上方 */}

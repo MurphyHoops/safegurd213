@@ -8,7 +8,7 @@ import { useFinanceMonitorLogic } from './useFinanceMonitorLogic';
 export const FinanceMonitorModule: React.FC<FinanceMonitorProps> = ({ 
     account, positions, realPrices, isSimulating, 
     onToggleSimulation, onBatchClose, onOpenTradeModal, onResetBalance, networkStatus, isOnline,
-    settings
+    settings, onOpenScanner
 }) => {
     const {
         totalPnL,
@@ -47,6 +47,7 @@ export const FinanceMonitorModule: React.FC<FinanceMonitorProps> = ({
                     isSimulating={isSimulating}
                     onToggleSimulation={onToggleSimulation}
                     settings={settings}
+                    onOpenScanner={onOpenScanner}
                 />
             </div>
         </div>

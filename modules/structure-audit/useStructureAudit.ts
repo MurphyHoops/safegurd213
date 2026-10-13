@@ -17,6 +17,8 @@ import { KLine } from "../../types";
 import { saveState } from "../../utils/persistence";
 import { normalizeSymbol } from "../../services/symbolUtils";
 import { priceRegistry } from "../../services/priceRegistry";
+import { klineMultiTfStore } from "../../services/klineMultiTfStore";
+import { klineDailyStore } from "../../services/klineDailyStore";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -773,6 +775,31 @@ export const useStructureAudit = (
                     const safeSymbol = item.symbol.endsWith("USDT")
                       ? item.symbol
                       : `${item.symbol}USDT`;
+
+                    // ⚡ [中央行情数据总线 0ms 直读通道]: 优先从本地中央总线获取该周期数据
+                    const busCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 20) ||
+                                      klineDailyStore.getShortlistKlineSync(safeSymbol, tf, 20) ||
+                                      (tf === '1d' ? klineDailyStore.getCachedKlinesSync(safeSymbol, 30) : null);
+                    if (busCached && Array.isArray(busCached) && busCached.length >= 20) {
+                      const klines: KLine[] = busCached.map((k: any) => ({
+                        time: Number(k.time || k[0]),
+                        open: parseFloat(k.open || k[1]) || 0,
+                        high: parseFloat(k.high || k[2]) || 0,
+                        low: parseFloat(k.low || k[3]) || 0,
+                        close: parseFloat(k.close || k[4]) || 0,
+                        volume: parseFloat(k.volume || k[5]) || 0,
+                      }));
+                      processStructureForTf(
+                        item,
+                        tf,
+                        klines,
+                        livePrice,
+                        historyExtremes,
+                      );
+                      hasChanges = true;
+                      return;
+                    }
+
                     const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=500&_t=${Date.now()}`;
                     const res = await fetchWithFallback(
                       url,
@@ -790,6 +817,7 @@ export const useStructureAudit = (
                         close: parseFloat(k[4]),
                         volume: parseFloat(k[5]),
                       }));
+                      klineMultiTfStore.saveKlines(safeSymbol, tf, klines);
                       processStructureForTf(
                         item,
                         tf,
@@ -1078,6 +1106,31 @@ export const useStructureAudit = (
                   const safeSymbol = item.symbol.endsWith("USDT")
                     ? item.symbol
                     : `${item.symbol}USDT`;
+
+                  // ⚡ [中央行情数据总线 0ms 直读通道]: 优先从本地中央总线获取该周期数据
+                  const busCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 20) ||
+                                    klineDailyStore.getShortlistKlineSync(safeSymbol, tf, 20) ||
+                                    (tf === '1d' ? klineDailyStore.getCachedKlinesSync(safeSymbol, 30) : null);
+                  if (busCached && Array.isArray(busCached) && busCached.length >= 20) {
+                    const klines: KLine[] = busCached.map((k: any) => ({
+                      time: Number(k.time || k[0]),
+                      open: parseFloat(k.open || k[1]) || 0,
+                      high: parseFloat(k.high || k[2]) || 0,
+                      low: parseFloat(k.low || k[3]) || 0,
+                      close: parseFloat(k.close || k[4]) || 0,
+                      volume: parseFloat(k.volume || k[5]) || 0,
+                    }));
+                    processStructureForTf(
+                      item,
+                      tf,
+                      klines,
+                      livePrice,
+                      historyExtremes,
+                    );
+                    hasChanges = true;
+                    continue;
+                  }
+
                   const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${tf}&limit=500&_t=${Date.now()}`;
                   const res = await fetchWithFallback(
                     url,
@@ -1095,6 +1148,7 @@ export const useStructureAudit = (
                       close: parseFloat(k[4]),
                       volume: parseFloat(k[5]),
                     }));
+                    klineMultiTfStore.saveKlines(safeSymbol, tf, klines);
                     processStructureForTf(
                       item,
                       tf,

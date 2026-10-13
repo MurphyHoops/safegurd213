@@ -52,6 +52,7 @@ export const useScannerLogic = (
     const list1CacheKey = `SCANNER_LIST1${suffix}`;
     const blacklistKey = `SCANNER_BLACKLIST${suffix}`;
     const majorTrendCandidatesKey = `SCANNER_MAJOR_TREND_CANDIDATES${suffix}`;
+    const majorTrendLimitsKey = `SCANNER_MAJOR_TREND_LIMITS${suffix}`;
 
     // --- ROTATION / SCANNABILITY GUARD ---
     const isScanAllowedRef = useRef(isScanAllowed);
@@ -103,23 +104,81 @@ export const useScannerLogic = (
         }
     });
     
-    // Persist List 1
-    useEffect(() => {
-        try {
-            localStorage.setItem(list1CacheKey, JSON.stringify(list1));
-        } catch (e) {
-            console.warn("Failed to persist List 1 cache");
-        }
-    }, [list1, list1CacheKey]);
+    const activeStrategyRef = useRef(strategyId);
 
-    // Persist Blacklist
+    // 🔒 策略切换时同步安全加载专属状态，严禁旧策略在切换瞬间将自身缓存覆盖至新策略
     useEffect(() => {
-        try {
-            localStorage.setItem(blacklistKey, JSON.stringify(Array.from(blacklist)));
-        } catch (e) {
-            console.warn("Failed to persist Blacklist");
+        if (activeStrategyRef.current !== strategyId) {
+            activeStrategyRef.current = strategyId;
+
+            // 1. 同步加载专属 list1 缓存
+            try {
+                const savedList1 = localStorage.getItem(list1CacheKey);
+                const parsedList1 = savedList1 ? JSON.parse(savedList1) : [];
+                setList1(Array.isArray(parsedList1) ? parsedList1 : []);
+            } catch (_) {
+                setList1([]);
+            }
+
+            // 2. 同步加载专属 blacklist
+            try {
+                const savedBl = localStorage.getItem(blacklistKey);
+                setBlacklist(new Set(savedBl ? JSON.parse(savedBl) : []));
+            } catch (_) {
+                setBlacklist(new Set());
+            }
+
+            // 3. 同步加载专属 hasRunMajorTrend
+            try {
+                setHasRunMajorTrend(localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true');
+            } catch (_) {
+                setHasRunMajorTrend(false);
+            }
+
+            // 4. 同步加载专属 majorTrendCandidates
+            try {
+                const savedCands = localStorage.getItem(majorTrendCandidatesKey);
+                const parsed = savedCands ? JSON.parse(savedCands) : [];
+                const s = new Set<string>(Array.isArray(parsed) ? parsed : []);
+                majorTrendCandidatesRef.current = s;
+                setMajorTrendCandidates(s);
+            } catch (_) {
+                const s = new Set<string>();
+                majorTrendCandidatesRef.current = s;
+                setMajorTrendCandidates(s);
+            }
+
+            // 5. 同步加载专属 majorTrendLimits
+            try {
+                const savedLimits = localStorage.getItem(majorTrendLimitsKey);
+                setMajorTrendLimits(savedLimits ? JSON.parse(savedLimits) : {});
+            } catch (_) {
+                setMajorTrendLimits({});
+            }
         }
-    }, [blacklist, blacklistKey]);
+    }, [strategyId, list1CacheKey, blacklistKey, suffix, majorTrendCandidatesKey, majorTrendLimitsKey]);
+
+    // Persist List 1 (仅在当前状态确属于该 strategyId 时持久化)
+    useEffect(() => {
+        if (activeStrategyRef.current === strategyId) {
+            try {
+                localStorage.setItem(list1CacheKey, JSON.stringify(list1));
+            } catch (e) {
+                console.warn("Failed to persist List 1 cache");
+            }
+        }
+    }, [list1, list1CacheKey, strategyId]);
+
+    // Persist Blacklist (仅在当前状态确属于该 strategyId 时持久化)
+    useEffect(() => {
+        if (activeStrategyRef.current === strategyId) {
+            try {
+                localStorage.setItem(blacklistKey, JSON.stringify(Array.from(blacklist)));
+            } catch (e) {
+                console.warn("Failed to persist Blacklist");
+            }
+        }
+    }, [blacklist, blacklistKey, strategyId]);
 
     const [isScanning, setIsScanning] = useState(false);
     const [scanStatusText, setScanStatusText] = useState('系统就绪');
@@ -165,20 +224,59 @@ export const useScannerLogic = (
         } catch (e) { return new Set(); }
     });
 
-    // Persist Major Trend Candidates
+    // Persist Major Trend Candidates (仅在当前状态确属于该 strategyId 时持久化)
     useEffect(() => {
-        try {
-            majorTrendCandidatesRef.current = majorTrendCandidates;
-            localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(majorTrendCandidates)));
-        } catch (e) {
-            console.warn("Failed to persist Major Trend Candidates");
+        if (activeStrategyRef.current === strategyId) {
+            try {
+                majorTrendCandidatesRef.current = majorTrendCandidates;
+                localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(majorTrendCandidates)));
+            } catch (e) {
+                console.warn("Failed to persist Major Trend Candidates");
+            }
         }
-    }, [majorTrendCandidates, majorTrendCandidatesKey]);
+    }, [majorTrendCandidates, majorTrendCandidatesKey, strategyId]);
+
+    // 🔒 实时事件与跨实例候选集同步：当后台巡检或任何扫描实例更新了该策略的大行情候选集时，实时响应同步
+    useEffect(() => {
+        const handleUpdate = (e: any) => {
+            const targetStrat = strategyId || 'strat-1';
+            if (e?.detail) {
+                if (e.detail.strategyId && e.detail.strategyId !== targetStrat) {
+                    return; // 忽略其他策略的候选集
+                }
+                if (Array.isArray(e.detail.candidates)) {
+                    const s = new Set<string>(e.detail.candidates);
+                    majorTrendCandidatesRef.current = s;
+                    setMajorTrendCandidates(s);
+                    setHasRunMajorTrend(true);
+                    return;
+                }
+            }
+            try {
+                const saved = localStorage.getItem(majorTrendCandidatesKey);
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    const s = new Set<string>(Array.isArray(parsed) ? parsed : []);
+                    majorTrendCandidatesRef.current = s;
+                    setMajorTrendCandidates(s);
+                }
+                if (localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true') {
+                    setHasRunMajorTrend(true);
+                }
+            } catch (_) {}
+        };
+
+        window.addEventListener('scanner_major_trend_candidates_updated', handleUpdate);
+        window.addEventListener('storage', handleUpdate);
+        return () => {
+            window.removeEventListener('scanner_major_trend_candidates_updated', handleUpdate);
+            window.removeEventListener('storage', handleUpdate);
+        };
+    }, [strategyId, majorTrendCandidatesKey, suffix]);
 
     const [isMajorScanning, setIsMajorScanning] = useState(false);
     const [majorProgress, setMajorProgress] = useState({ current: 0, total: 0 });
 
-    const majorTrendLimitsKey = `SCANNER_MAJOR_TREND_LIMITS${suffix}`;
     const [majorTrendLimits, setMajorTrendLimits] = useState<Record<string, { maxZ: number, minZ: number }>>(() => {
         try {
             const saved = localStorage.getItem(majorTrendLimitsKey);
@@ -187,8 +285,10 @@ export const useScannerLogic = (
     });
 
     useEffect(() => {
-        localStorage.setItem(majorTrendLimitsKey, JSON.stringify(majorTrendLimits));
-    }, [majorTrendLimits, majorTrendLimitsKey]);
+        if (activeStrategyRef.current === strategyId) {
+            localStorage.setItem(majorTrendLimitsKey, JSON.stringify(majorTrendLimits));
+        }
+    }, [majorTrendLimits, majorTrendLimitsKey, strategyId]);
 
     // 🔒【交易额过滤底池再次重筛·逐币删减铁律】:
     // 绝不突然批量减少！当发现不再符合条件的币时，严格以设定的时间间隔(1000ms)，一个一个地从市场初筛候选池中删减！
@@ -212,11 +312,19 @@ export const useScannerLogic = (
                 const nextSet = new Set(majorTrendCandidatesRef.current);
                 setMajorTrendCandidates(nextSet);
                 localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(nextSet)));
-                window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated', { detail: Array.from(nextSet) }));
+                if (!strategyId || strategyId === 'strat-1') {
+                    localStorage.setItem('SCANNER_MAJOR_TREND_CANDIDATES', JSON.stringify(Array.from(nextSet)));
+                }
+                window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated', {
+                    detail: {
+                        strategyId: strategyId || 'strat-1',
+                        candidates: Array.from(nextSet)
+                    }
+                }));
                 console.log(`[交易额底池再次重筛] 已删减不符合交易额币种: ${sym} (${i + 1}/${disqualified.length})`);
             }
         }
-    }, [majorTrendCandidatesKey]);
+    }, [majorTrendCandidatesKey, strategyId]);
 
     // 🔒【源头过滤与底池稳定性铁律】:
     // 回溯周期过滤扫描出的候选币种，其上游100%已由交易额过滤底池与启动趋势底池严格把关；
@@ -567,47 +675,59 @@ export const useScannerLogic = (
         lastFetchStartTimeRef.current = Date.now(); // SET WATCHDOG START TIME
 
         try {
-            const baseUrl = 'https://fapi.binance.com/fapi/v1/ticker';
-            const endpoint = `${baseUrl}/24hr?_t=${Date.now()}`;
-            
-            const res = await fetchWithFallback(
-                endpoint, 
-                { cache: 'no-store', timeout: 45000 }, 
-                (d) => Array.isArray(d) && d.length > 0, 
-                directModeRef.current
-            );
-            
-            if (!isMountedRef.current) return; 
-
-            if (scanSessionIdRef.current !== sessionId) return;
-            
-            const rawParsed = await res.json();
-            lastFetchFinishedTimeRef.current = Date.now();
-            
-            // Defensive guard: Ensure data is an array
+            // 🏛️ [中央行情数据总线]: 优先从本地内存/数据库直接秒级读取全量 24H 实时行情数据
+            const localTickers = klineDailyStore.get24hTickersSync();
             let data: any[] = [];
-            if (Array.isArray(rawParsed)) {
-                data = rawParsed;
-            } else if (rawParsed && typeof rawParsed === 'object') {
-                // If API returned an error object or wrapped data
-                if (Array.isArray((rawParsed as any).data)) {
-                    data = (rawParsed as any).data;
-                } else {
-                    console.warn("[Scanner] Received non-array data response from upstream:", rawParsed);
-                    // Attempt fallback to cached raw data
-                    if (Array.isArray(rawDataRef.current) && rawDataRef.current.length > 0) {
-                        data = rawDataRef.current;
-                    } else {
-                        try {
-                            const cached = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
-                            if (cached) {
-                                const parsed = JSON.parse(cached);
-                                if (Array.isArray(parsed) && parsed.length > 0) {
-                                    data = parsed;
-                                }
-                            }
-                        } catch (_) {}
+
+            if (Array.isArray(localTickers) && localTickers.length >= 50 && !forceFull) {
+                data = localTickers;
+                lastFetchFinishedTimeRef.current = Date.now();
+            } else {
+                const baseUrl = 'https://fapi.binance.com/fapi/v1/ticker';
+                const endpoint = `${baseUrl}/24hr?_t=${Date.now()}`;
+                
+                const res = await fetchWithFallback(
+                    endpoint, 
+                    { cache: 'no-store', timeout: 45000 }, 
+                    (d) => Array.isArray(d) && d.length > 0, 
+                    directModeRef.current
+                );
+                
+                if (!isMountedRef.current) return; 
+
+                if (scanSessionIdRef.current !== sessionId) return;
+                
+                const rawParsed = await res.json();
+                lastFetchFinishedTimeRef.current = Date.now();
+
+                if (Array.isArray(rawParsed)) {
+                    data = rawParsed;
+                } else if (rawParsed && typeof rawParsed === 'object') {
+                    if (Array.isArray((rawParsed as any).data)) {
+                        data = (rawParsed as any).data;
                     }
+                }
+
+                // 同步喂入中央数据总线
+                if (data.length > 0) {
+                    klineDailyStore.save24hTickers(data);
+                }
+            }
+
+            // Defensive guard: Ensure data is an array
+            if (!Array.isArray(data) || data.length === 0) {
+                if (Array.isArray(rawDataRef.current) && rawDataRef.current.length > 0) {
+                    data = rawDataRef.current;
+                } else {
+                    try {
+                        const cached = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
+                        if (cached) {
+                            const parsed = JSON.parse(cached);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                data = parsed;
+                            }
+                        }
+                    } catch (_) {}
                 }
             }
 
@@ -621,6 +741,18 @@ export const useScannerLogic = (
             try {
                 localStorage.setItem('SCANNER_RAW_DATA_CACHE', JSON.stringify(data));
                 window.dispatchEvent(new CustomEvent('scanner_raw_data_updated', { detail: data }));
+
+                // 🚀 [中央行情数据总线]: 若内存常驻日K数量不足（如冷启动），平滑触发中央日K预热同步
+                if (!klineDailyStore.getStoreStatus().isSyncing && klineDailyStore.getLoadedSymbolsCount() < 50) {
+                    const usdtSymbols = data
+                        .filter((t: any) => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
+                        .map((t: any) => t.symbol);
+                    if (usdtSymbols.length > 0) {
+                        setTimeout(() => {
+                            klineDailyStore.syncAllDailyKlines(usdtSymbols);
+                        }, 500);
+                    }
+                }
             } catch (e) {
                 console.warn("Failed to persist raw data cache");
             }
@@ -1232,8 +1364,17 @@ export const useScannerLogic = (
             currentPrice: item.currentPrice,
             timestamp: Date.now()
         }));
-        localStorage.setItem('SCANNER_SIDEWAYS_FILTERED_POOL', JSON.stringify(poolData));
-        window.dispatchEvent(new CustomEvent('scanner_sideways_pool_updated', { detail: poolData }));
+        const sidewaysPoolKey = `SCANNER_SIDEWAYS_FILTERED_POOL${suffix}`;
+        localStorage.setItem(sidewaysPoolKey, JSON.stringify(poolData));
+        if (!strategyId || strategyId === 'strat-1') {
+            localStorage.setItem('SCANNER_SIDEWAYS_FILTERED_POOL', JSON.stringify(poolData));
+        }
+        window.dispatchEvent(new CustomEvent('scanner_sideways_pool_updated', {
+            detail: {
+                strategyId: strategyId || 'strat-1',
+                pool: poolData
+            }
+        }));
 
         // =========================================================================
         // 🔒【第二阶段: 判定最后一项过滤规则并执行差量比对】
@@ -1409,8 +1550,49 @@ export const useScannerLogic = (
             } as any);
 
             // 仅在整轮完成后对外派发初筛更新事件
-            window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated', { detail: Array.from(finalSet) }));
-            localStorage.setItem('SCANNER_MAJOR_TREND_CANDIDATES', JSON.stringify(Array.from(finalSet)));
+            window.dispatchEvent(new CustomEvent('scanner_major_trend_candidates_updated', {
+                detail: {
+                    strategyId: strategyId || 'strat-1',
+                    candidates: Array.from(finalSet)
+                }
+            }));
+            if (!strategyId || strategyId === 'strat-1') {
+                localStorage.setItem('SCANNER_MAJOR_TREND_CANDIDATES', JSON.stringify(Array.from(finalSet)));
+            }
+
+            // 🌊【回溯周期过滤底池标准化存储与事件派发】
+            const lookbackPoolItems = Array.from(finalSet).map(cand => {
+                const isLong = cand.endsWith('_LONG');
+                const isShort = cand.endsWith('_SHORT');
+                const sym = cand.replace(/_LONG$|_SHORT$/i, '').trim();
+                const limits = (stage2LimitsMap[sym] || {}) as { maxZ?: number; minZ?: number };
+                const origItem = stage1PassedItems.find(p => p.symbol === sym);
+                return {
+                    symbol: sym,
+                    direction: isLong ? 'LONG' : (isShort ? 'SHORT' : 'BOTH'),
+                    fullSymbol: cand,
+                    maxZ: limits.maxZ ?? origItem?.maxZ ?? 0,
+                    minZ: limits.minZ ?? origItem?.minZ ?? 0,
+                    currentPrice: origItem?.currentPrice ?? 0,
+                    timestamp: Date.now()
+                };
+            });
+            localStorage.setItem('SCANNER_LOOKBACK_FILTERED_POOL', JSON.stringify(lookbackPoolItems));
+            window.dispatchEvent(new CustomEvent('scanner_lookback_pool_updated', {
+                detail: {
+                    strategyId: strategyId || 'strat-1',
+                    pool: lookbackPoolItems
+                }
+            }));
+
+            // 🏛️ [中央行情数据总线]: 为进入初筛的币种自动保留并存储 12 个周期各 300 根基线 K 线
+            const newShortlistSymbols = Array.from(finalSet).map(s => s.replace(/_LONG$|_SHORT$/i, ''));
+            if (newShortlistSymbols.length > 0) {
+                setTimeout(() => {
+                    klineDailyStore.syncShortlistMultiTfKlines(newShortlistSymbols);
+                }, 100);
+            }
+
             audioService.speak("大行情发现任务完成");
         }
         } catch (err) {
@@ -1422,7 +1604,11 @@ export const useScannerLogic = (
                 setIsMajorScanning(false);
             }
             // 🔒 [闭环接力]: 回溯周期过滤完毕后，派发 scanner_major_trend_completed，将接力棒交回【行情启动趋势】
-            window.dispatchEvent(new CustomEvent('scanner_major_trend_completed'));
+            window.dispatchEvent(new CustomEvent('scanner_major_trend_completed', {
+                detail: {
+                    strategyId: strategyId || 'strat-1'
+                }
+            }));
         }
     }, []);
 
@@ -1489,14 +1675,14 @@ export const useScannerLogic = (
             
             // Debounce for 800ms
             const delay = setTimeout(() => {
-                console.log("[useScannerLogic] Config parameter change detected. Auto-executing discovery...");
-                pipelineCoordinator.enqueue('major_trend', async () => {
+                console.log(`[useScannerLogic] Config parameter change detected for ${strategyId || 'default'}. Auto-executing discovery...`);
+                pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
                     await runMajorTrendDiscovery(true);
                 });
             }, 800);
             return () => clearTimeout(delay);
         }
-    }, [initialConfig.majorTrend, runMajorTrendDiscovery]);
+    }, [initialConfig.majorTrend, runMajorTrendDiscovery, strategyId]);
     // 🔒 [END_SECURITY_LOCK]
 
     // --- 🔒 [时间先后·接力赛]: 行情启动底池整轮扫描完毕后，接力唤醒大行情发现扫描 (横盘蓄势过滤 -> 回溯周期过滤) ---
@@ -1514,21 +1700,35 @@ export const useScannerLogic = (
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
                 if (!isMountedRef.current || isMajorScanning) return;
-                console.log("[useScannerLogic] 行情启动底池全量扫描完成！接力棒传递给【横盘蓄势过滤】与【回溯周期过滤】...");
-                pipelineCoordinator.enqueue('major_trend', async () => {
+                console.log(`[useScannerLogic] 行情启动底池扫描完成！接力唤醒【${strategyId || '默认策略'}】横盘与回溯周期过滤...`);
+                pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
                     await runMajorTrendDiscovery(false);
                 });
             }, 200);
         };
 
-        // 仅在整轮扫描完成时触发接力，避免单币更新中途早熟执行
+        const handleCentralDailyKlinesUpdated = () => {
+            if (!isMountedRef.current || isMajorScanning) return;
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                if (!isMountedRef.current || isMajorScanning) return;
+                console.log(`[useScannerLogic] 中央行情数据总线更新，唤醒【${strategyId || '默认策略'}】进行纯内存差量初筛...`);
+                pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
+                    await runMajorTrendDiscovery(false);
+                });
+            }, 300);
+        };
+
+        // 仅在整轮扫描完成或中央日K数据总线更新时触发接力
         window.addEventListener('scanner_start_trend_pool_completed', handleStartTrendBaton);
+        window.addEventListener('CENTRAL_DAILY_KLINES_UPDATED', handleCentralDailyKlinesUpdated);
 
         return () => {
             if (debounceTimer) clearTimeout(debounceTimer);
             window.removeEventListener('scanner_start_trend_pool_completed', handleStartTrendBaton);
+            window.removeEventListener('CENTRAL_DAILY_KLINES_UPDATED', handleCentralDailyKlinesUpdated);
         };
-    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, isMajorScanning, runMajorTrendDiscovery]);
+    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, isMajorScanning, runMajorTrendDiscovery, strategyId]);
 
 
     return {

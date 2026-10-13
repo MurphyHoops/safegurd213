@@ -641,7 +641,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                         {/* Header Row */}
                         <div className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
                             <div className="flex items-center gap-2">
-                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Stage 2: 回溯周期过滤 (读取横盘蓄势底池 -&gt; 市场初筛)</span>
+                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Stage 2: 回溯周期过滤 (读取横盘蓄势底池 -&gt; 回溯周期底池)</span>
                                 <button 
                                     type="button"
                                     onClick={() => updateField('enableLookbackFilter', activeConfig.enableLookbackFilter !== false ? false : true)}

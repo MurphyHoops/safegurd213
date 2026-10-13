@@ -418,11 +418,16 @@ export interface MajorTrendConfig {
     breakoutFilter?: BreakoutFilterConfig;
 }
 
+export type BreakoutTimeframe = '5m' | '10m' | '15m' | '30m' | '60m';
+
 export interface BreakoutFilterConfig {
     enabled: boolean; // 趋势爆发综合过滤总开关
     combinationMode?: 'OR' | 'AND'; // 组合判定模式: 'OR' (满足任一开启规则即放行) | 'AND' (必须全部满足)，默认 'OR'
     scanDelayMs?: number; // 扫描步进节奏延时(毫秒)，例如 1000 代表 1秒1币 (防止超频并平稳展示)
     
+    // 🎯 多周期爆发多选并联 (5m, 10m, 15m, 30m, 60m 并联独立入池)
+    selectedTimeframes?: BreakoutTimeframe[]; // 勾选的爆发审计周期列表，默认 ['5m', '10m', '15m', '30m', '60m']
+
     // 1. 空间极致蓄势 (Squeeze 波动率压缩)
     enableSqueeze: boolean; // 空间蓄势子开关
     maxBbwPercent: number; // 布林带带宽 (BBW %) 上限阈值，默认 3.0%
