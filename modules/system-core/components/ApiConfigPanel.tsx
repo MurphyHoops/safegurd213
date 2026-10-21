@@ -267,37 +267,44 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
                 </div>
             </div>
 
-            {/* Outbound IP Whitelist Display */}
-            <div className="mt-3 bg-slate-950/40 border border-slate-800/80 rounded p-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-slate-400">
-                    <Globe size={12} className="text-indigo-400 shrink-0" />
-                    <div className="flex flex-col">
-                        <span className="text-[9px] text-slate-500 font-medium">服务器出口 IP (用于币安 API 白名单)</span>
-                        <span className="text-[11px] font-mono font-bold text-slate-300">
-                            {isLoadingIp ? '获取中...' : serverIp || '未知'}
-                        </span>
+            {/* Outbound IP Whitelist Display & Cloud Tip */}
+            <div className="mt-3 bg-slate-950/60 border border-slate-800/80 rounded p-2.5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                        <Globe size={13} className="text-indigo-400 shrink-0" />
+                        <div className="flex flex-col">
+                            <span className="text-[9px] text-slate-400 font-medium">服务器出口 IP (云端当前节点)</span>
+                            <span className="text-[11px] font-mono font-bold text-amber-300">
+                                {isLoadingIp ? '获取中...' : serverIp || '未知'}
+                            </span>
+                        </div>
                     </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                    <button
-                        type="button"
-                        onClick={fetchServerIp}
-                        disabled={isLoadingIp}
-                        className="p-1 text-slate-500 hover:text-indigo-400 hover:bg-slate-800 rounded transition-colors"
-                        title="重新获取"
-                    >
-                        <RefreshCw size={11} className={isLoadingIp ? "animate-spin" : ""} />
-                    </button>
-                    {serverIp && serverIp !== '获取失败' && serverIp !== '获取异常' && (
+                    <div className="flex items-center gap-1 shrink-0">
                         <button
                             type="button"
-                            onClick={handleCopyIp}
-                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-indigo-300 hover:text-white rounded text-[9px] font-bold flex items-center gap-1 transition-all"
+                            onClick={fetchServerIp}
+                            disabled={isLoadingIp}
+                            className="p-1 text-slate-500 hover:text-indigo-400 hover:bg-slate-800 rounded transition-colors"
+                            title="重新获取"
                         >
-                            <Copy size={9} />
-                            <span>{copied ? '已复制' : '复制 IP'}</span>
+                            <RefreshCw size={11} className={isLoadingIp ? "animate-spin" : ""} />
                         </button>
-                    )}
+                        {serverIp && serverIp !== '获取失败' && serverIp !== '获取异常' && (
+                            <button
+                                type="button"
+                                onClick={handleCopyIp}
+                                className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-indigo-300 hover:text-white rounded text-[9px] font-bold flex items-center gap-1 transition-all"
+                            >
+                                <Copy size={9} />
+                                <span>{copied ? '已复制' : '复制 IP'}</span>
+                            </button>
+                        )}
+                    </div>
+                </div>
+                <div className="text-[9px] text-slate-400 leading-normal bg-indigo-950/20 p-1.5 rounded border border-indigo-900/30">
+                    💡 <span className="font-bold text-indigo-300">防 -2015 报错建议：</span>云端环境出口 IP 属于动态网段（当前为 <span className="font-mono text-amber-300 font-bold">{serverIp || '34.34.226.189'}</span>）。建议登录币安 API 管理中心：<br/>
+                    1. 将 IP 访问限制设置为 <span className="font-bold text-emerald-400">【无 IP 限制 (Unrestricted)】</span>（最稳定推荐）；<br/>
+                    2. 务必勾选 <span className="font-bold text-emerald-400">【允许合约 (Enable Futures)】</span> 交易权限。
                 </div>
             </div>
 

@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { ProfitSettings } from '../../../types';
-import { Target, Activity } from 'lucide-react';
+import { Target, Activity, Timer } from 'lucide-react';
 
 interface Props {
     settings: ProfitSettings;
@@ -111,6 +111,179 @@ export const AtrTrendMode: React.FC<Props> = ({ settings, updateNested }) => {
                                     <option value="1d">1天</option>
                                 </select>
                             </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Momentum Stall / Time-based Exit */}
+            <div className={`p-2 rounded border transition-colors ${config.stallExitEnabled ? 'bg-amber-900/10 border-amber-500/30' : 'bg-slate-800/20 border-slate-700'}`}>
+                <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-1.5">
+                        <Timer size={12} className={config.stallExitEnabled ? 'text-amber-400' : 'text-slate-500'} />
+                        <span className={`text-[10px] font-bold ${config.stallExitEnabled ? 'text-amber-300' : 'text-slate-500'}`}>动能超时滞涨平仓</span>
+                    </div>
+                    <div 
+                        onClick={() => updateAtr('stallExitEnabled', !config.stallExitEnabled)}
+                        className={`w-7 h-3.5 rounded-full p-0.5 cursor-pointer transition-colors ${config.stallExitEnabled ? 'bg-amber-600' : 'bg-slate-700'}`}
+                    >
+                        <div className={`w-2.5 h-2.5 bg-white rounded-full transition-transform ${config.stallExitEnabled ? 'translate-x-3.5' : 'translate-x-0'}`} />
+                    </div>
+                </div>
+
+                {config.stallExitEnabled && (
+                    <div className="space-y-3 pb-1 text-slate-300">
+                        {/* 模式选择 */}
+                        <div className="grid grid-cols-2 gap-2 bg-slate-900/50 p-1 rounded border border-slate-800">
+                            <button
+                                type="button"
+                                onClick={() => updateAtr('stallMode', 'CANDLE')}
+                                className={`py-1 text-[9px] font-medium rounded transition-colors ${
+                                    (config.stallMode || 'CANDLE') === 'CANDLE'
+                                        ? 'bg-amber-600/30 text-amber-300 border border-amber-500/40 font-bold'
+                                        : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                K 线根数模式
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => updateAtr('stallMode', 'TIME')}
+                                className={`py-1 text-[9px] font-medium rounded transition-colors ${
+                                    config.stallMode === 'TIME'
+                                        ? 'bg-amber-600/30 text-amber-300 border border-amber-500/40 font-bold'
+                                        : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                绝对时长模式
+                            </button>
+                        </div>
+
+                        {/* 参数调整格 */}
+                        <div className="grid grid-cols-2 gap-3">
+                            {(config.stallMode || 'CANDLE') === 'CANDLE' ? (
+                                <div className="space-y-1">
+                                    <label className="text-[9px] text-slate-400">超时 K 线根数</label>
+                                    <div className="flex items-center bg-slate-900/60 rounded px-1.5 py-0.5 border border-slate-700">
+                                        <input 
+                                            type="number" 
+                                            min="1"
+                                            max="100"
+                                            value={config.stallCandleCount ?? 3} 
+                                            onChange={(e) => updateAtr('stallCandleCount', Math.max(1, Number(e.target.value)))}
+                                            className="w-full bg-transparent text-[11px] font-mono focus:outline-none text-amber-200"
+                                        />
+                                        <span className="text-[9px] text-slate-500 ml-1">根</span>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="space-y-1">
+                                    <label className="text-[9px] text-slate-400">超时时间 (分钟)</label>
+                                    <div className="flex items-center bg-slate-900/60 rounded px-1.5 py-0.5 border border-slate-700">
+                                        <input 
+                                            type="number" 
+                                            min="1"
+                                            max="1440"
+                                            value={config.stallTimeframeMinutes ?? 15} 
+                                            onChange={(e) => updateAtr('stallTimeframeMinutes', Math.max(1, Number(e.target.value)))}
+                                            className="w-full bg-transparent text-[11px] font-mono focus:outline-none text-amber-200"
+                                        />
+                                        <span className="text-[9px] text-slate-500 ml-1">分钟</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="space-y-1">
+                                <label className="text-[9px] text-slate-400">爆发目标盈亏 (%)</label>
+                                <div className="flex items-center bg-slate-900/60 rounded px-1.5 py-0.5 border border-slate-700">
+                                    <input 
+                                        type="number" 
+                                        step="0.1"
+                                        value={config.stallTargetProfitPercent ?? 1.0} 
+                                        onChange={(e) => updateAtr('stallTargetProfitPercent', Number(e.target.value))}
+                                        className="w-full bg-transparent text-[11px] font-mono focus:outline-none text-amber-200"
+                                    />
+                                    <span className="text-[9px] text-slate-500 ml-1">%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 波动率自适应选项 */}
+                        <div className="bg-slate-900/40 p-1.5 rounded border border-slate-800 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                                <span className="text-[9px] font-semibold text-amber-300/90 flex items-center gap-1">
+                                    <span>⚡ 自适应波动率目标</span>
+                                    <span className="text-[8px] text-slate-500 font-normal">(最近 5 根 K 线平均振幅 × 倍数)</span>
+                                </span>
+                                <div 
+                                    onClick={() => updateAtr('stallAdaptiveVolatilityEnabled', !(config.stallAdaptiveVolatilityEnabled ?? true))}
+                                    className={`w-6 h-3 rounded-full p-0.5 cursor-pointer transition-colors ${(config.stallAdaptiveVolatilityEnabled ?? true) ? 'bg-amber-600' : 'bg-slate-700'}`}
+                                >
+                                    <div className={`w-2 h-2 bg-white rounded-full transition-transform ${(config.stallAdaptiveVolatilityEnabled ?? true) ? 'translate-x-3' : 'translate-x-0'}`} />
+                                </div>
+                            </div>
+                            
+                            {(config.stallAdaptiveVolatilityEnabled ?? true) && (
+                                <div className="grid grid-cols-2 gap-2 pt-0.5">
+                                    <div className="space-y-0.5">
+                                        <label className="text-[8px] text-slate-400">振幅自适应倍数</label>
+                                        <div className="flex items-center bg-slate-900/60 rounded px-1.5 py-0.5 border border-slate-700">
+                                            <input 
+                                                type="number" 
+                                                step="0.1"
+                                                min="0.5"
+                                                max="5"
+                                                value={config.stallAdaptiveMultiplier ?? 1.2} 
+                                                onChange={(e) => updateAtr('stallAdaptiveMultiplier', Number(e.target.value))}
+                                                className="w-full bg-transparent text-[10px] font-mono focus:outline-none text-amber-300"
+                                            />
+                                            <span className="text-[8px] text-slate-500 ml-1">倍</span>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center text-[8px] text-slate-400 leading-tight pt-3">
+                                        目标 = Max({config.stallTargetProfitPercent ?? 1.0}%, 5K均振 × {config.stallAdaptiveMultiplier ?? 1.2})
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 安全退场区间 */}
+                        <div className="space-y-1 pt-1">
+                            <label className="text-[9px] text-slate-400 flex items-center justify-between">
+                                <span>安全退场盈亏区间 (避免强割/误平)</span>
+                                <span className="text-amber-400/80 font-mono text-[9px]">
+                                    [{config.stallSafeLowerPercent ?? -0.5}%, +{config.stallSafeUpperPercent ?? 0.5}%]
+                                </span>
+                            </label>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="flex items-center bg-slate-900/60 rounded px-1.5 py-0.5 border border-slate-700">
+                                    <span className="text-[9px] text-slate-500 mr-1">下限</span>
+                                    <input 
+                                        type="number" 
+                                        step="0.1"
+                                        value={config.stallSafeLowerPercent ?? -0.5} 
+                                        onChange={(e) => updateAtr('stallSafeLowerPercent', Number(e.target.value))}
+                                        className="w-full bg-transparent text-[11px] font-mono focus:outline-none text-rose-300"
+                                    />
+                                    <span className="text-[9px] text-slate-500 ml-1">%</span>
+                                </div>
+                                <div className="flex items-center bg-slate-900/60 rounded px-1.5 py-0.5 border border-slate-700">
+                                    <span className="text-[9px] text-slate-500 mr-1">上限</span>
+                                    <input 
+                                        type="number" 
+                                        step="0.1"
+                                        value={config.stallSafeUpperPercent ?? 0.5} 
+                                        onChange={(e) => updateAtr('stallSafeUpperPercent', Number(e.target.value))}
+                                        className="w-full bg-transparent text-[11px] font-mono focus:outline-none text-emerald-300"
+                                    />
+                                    <span className="text-[9px] text-slate-500 ml-1">%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 说明提示条 */}
+                        <div className="bg-amber-950/30 border border-amber-800/30 rounded p-1.5 text-[9px] text-amber-300/80 leading-relaxed">
+                            💡 开仓后若在 <span className="font-bold text-amber-200">{(config.stallMode || 'CANDLE') === 'CANDLE' ? `${config.stallCandleCount ?? 3} 根 K 线` : `${config.stallTimeframeMinutes ?? 15} 分钟`}</span> 内最高浮盈未达 <span className="font-bold text-amber-200">{(config.stallAdaptiveVolatilityEnabled ?? true) ? `Max(${config.stallTargetProfitPercent ?? 1.0}%, 5K均振×${config.stallAdaptiveMultiplier ?? 1.2})` : `${config.stallTargetProfitPercent ?? 1.0}%`}</span>，且当前盈亏在 <span className="font-bold text-amber-200">[{config.stallSafeLowerPercent ?? -0.5}%, {config.stallSafeUpperPercent ?? 0.5}%]</span> 内，立即平仓腾出资金配额。
                         </div>
                     </div>
                 )}

@@ -397,9 +397,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 return isCacheHit;
             };
 
-            // 🚀【智能双态极速扫描】:
-            // 1. 命中日K持久化缓存：5ms 微步进让出 UI 渲染主线程，瞬间全量完成；
-            // 2. 未命中缓存 (冷启动拉取)：保留 100ms 安全流控，杜绝币安 IP 限频风险
+            // 🚀【精确 1 秒/组 律动扫描 - 行情启动趋势】:
+            // 纯内存 300+ 币种毫秒级批处理计算，并在组末平滑补齐至刚好 1.0 秒（1000ms），满足一秒一组的视觉节奏
+            const scanStageStart = Date.now();
             for (let i = 0; i < candidates.length; i++) {
                 if (!isMountedRef.current || !isScanningRef.current) break;
 
@@ -410,24 +410,21 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 if (!isMountedRef.current || !isScanningRef.current) break;
 
                 const currentSym = candidates[i];
-                const stepStart = Date.now();
                 const wasHit = await processCoin(currentSym);
-                
-                const dynamicDelayMs = wasHit ? 5 : 100;
-                const elapsed = Date.now() - stepStart;
-                const remaining = Math.max(0, dynamicDelayMs - elapsed);
-                if (remaining > 0 && i < candidates.length - 1 && isMountedRef.current && isScanningRef.current) {
-                    const delayStart = Date.now();
-                    while (Date.now() - delayStart < remaining && isMountedRef.current && isScanningRef.current) {
-                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
-                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && isScanningRef.current) {
-                                await new Promise(resolve => setTimeout(resolve, 200));
-                            }
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
+
+                if (wasHit) {
+                    if (i % 30 === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 0));
                     }
+                } else {
+                    await new Promise(resolve => setTimeout(resolve, 50));
                 }
+            }
+
+            // ⏱️ 严格保证行情启动组平滑占满 1.0 秒（1000ms），精确满足 1秒/组 节奏
+            const stageElapsed = Date.now() - scanStageStart;
+            if (stageElapsed < 1000 && isMountedRef.current && isScanningRef.current) {
+                await new Promise(resolve => setTimeout(resolve, 1000 - stageElapsed));
             }
 
             if (isMountedRef.current) {

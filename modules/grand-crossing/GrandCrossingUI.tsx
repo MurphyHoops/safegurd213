@@ -20,6 +20,7 @@ interface Props {
     onRemoveSignalReady?: (fn: (uniqueId: string) => void) => void;
     strategyId?: string;
     isBackground?: boolean;
+    activePositions?: any[]; // Active positions for standby buffer
 }
 
 const DEFAULT_CONFIG: List2Config = {
@@ -43,17 +44,21 @@ const DEFAULT_CONFIG: List2Config = {
     enableSignalDeviationFilter: false,
     maxSignalDeviationPercent: 50,
     strictFiltering: true,
+    strictVolWindow: 3,
+    strictMinQuoteVolume: 100000,
+    enableConsecutiveVolRise: true,
+    consecutiveVolBars: 2,
     viewMode: 'ALL',
     syncDirectionFilterToList3: false
 };
 
 export const GrandCrossingModule: React.FC<Props> = ({ 
-    networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady, strategyId, isBackground = false
+    networkStatus, candidates, onResultsUpdate, scanConfig, setScanConfig, setChartData, initialConfig, directMode = false, onLog, onRemoveSignalReady, strategyId, isBackground = false, activePositions
 }) => {
     
     // 🔒 [DATA INTEGRITY]: 列表2直接无缝承接列表1（市场初筛）推送的全部候选币种进行全周期多维穿透扫描
     const { 
-        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, scanningSymbols, lastScanTime, diagnostics, removeItem, clearItems, removeSignal
+        config, setConfig, list2, status, scanText, countdowns, tfCounts, activeScanTfs, scanningSymbols, lastScanTime, diagnostics, totalScanCount, removeItem, clearItems, removeSignal
     } = useGrandCrossing(candidates || [], initialConfig || DEFAULT_CONFIG, directMode, onLog, strategyId);
 
     const onRemoveSignalReadyRef = React.useRef(onRemoveSignalReady);
@@ -68,6 +73,22 @@ export const GrandCrossingModule: React.FC<Props> = ({
             onRemoveSignalReadyRef.current(removeSignal);
         }
     }, [removeSignal]);
+
+    // Active open position symbols for position standby buffer
+    const openPositionSymbols = React.useMemo(() => {
+        const set = new Set<string>();
+        (activePositions || []).forEach(p => {
+            if (p && p.symbol) {
+                const isHolding = (typeof p.amount === 'number' && p.amount > 0) ||
+                                  (typeof p.contracts === 'number' && Math.abs(p.contracts) > 0) ||
+                                  (typeof p.positionAmt === 'number' && Math.abs(p.positionAmt) > 0);
+                if (isHolding) {
+                    set.add(normalizeSymbol(p.symbol));
+                }
+            }
+        });
+        return set;
+    }, [activePositions]);
 
     // 🔒 [USER MANDATORY RULE - 列表2独立生命周期与信号存续]:
     // 只要进入列表2的币种与信号，其存续期完全由“信号存续/寿命根数”(newModeRetention)独立控制。
@@ -104,10 +125,16 @@ export const GrandCrossingModule: React.FC<Props> = ({
             .filter(Boolean) as ScannerItem[];
     }, [list2, config?.newModeRetention]);
 
-    // --- SYNC OUTPUT (All non-pending signals pass to List 3) ---
+    // --- SYNC OUTPUT (All non-pending signals pass to List 3, EXCLUDING open position symbols) ---
     const lastListStrRef = React.useRef<string>('');
     useEffect(() => {
         let outputList = sanitizedList2 || [];
+
+        // 🔒 [持仓避让门禁]：已开仓持仓的币种暂不向列表3推送下发，避让至列表2底部临时存放表，防止重复开仓
+        outputList = outputList.filter(item => {
+            const norm = normalizeSymbol(item.symbol);
+            return !openPositionSymbols.has(norm);
+        });
 
         // 🔒 [USER MANDATORY RULE] 列表3承接列表2所有“非待定”数据 (非灰色待定态 !isPendingGray)
         outputList = outputList.map(item => {
@@ -146,7 +173,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
                 onResultsUpdateRef.current?.(outputList);
             }, 0);
         }
-    }, [sanitizedList2, config?.syncDirectionFilterToList3, config?.viewMode]);
+    }, [sanitizedList2, config?.syncDirectionFilterToList3, config?.viewMode, openPositionSymbols]);
 
     // --- LOCAL UI STATE ---
     const [activeFilterTf, setActiveFilterTf] = useState<string | null>(null);
@@ -219,8 +246,10 @@ export const GrandCrossingModule: React.FC<Props> = ({
             activeScanTfs={activeScanTfs}
             scanningSymbols={scanningSymbols}
             diagnostics={diagnostics}
+            totalScanCount={totalScanCount}
             onRemoveItem={removeItem}
             onClearItems={clearItems}
+            activePositions={activePositions}
         />
     );
 };

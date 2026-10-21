@@ -3,13 +3,17 @@ import { AccountData, Position, AppSettings, TradeLog, LogEntry, SystemEvent, Po
 import { checkIndividualPositionRules, checkGlobalRules } from './rules/profit_loss_rules';
 import { checkHedgingRules, checkSafeClearRules } from './rules/hedging_rules';
 import { checkRescueRules } from './rules/rescue_rules';
+import { checkDcaRules } from './rules/dca_rules';
 import { checkStrategy5_OscillationGuard } from './rules/rescue/strategy5_oscillationGuard';
 import { fetchWithFallback } from './apiService';
 import { getLatestEMA, calculateRSI, calculateATR } from './indicators';
 import { db, auth } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
-import { normalizeSymbol, isMajorCoin } from './symbolUtils';
+import { normalizeSymbol, isMajorCoin, resolvePrice } from './symbolUtils';
+import { klineMultiTfStore } from './klineMultiTfStore';
 import { audioService } from './audioService';
+import { checkAutoReopenRules } from './rules/reopen_rules';
+import { ActionConfig } from '../components/Scanner/scannerTypes';
 import { debtManager } from './debtManager';
 
 export class MarketSimulator {
@@ -498,7 +502,7 @@ export class MarketSimulator {
                 
                 if (isAmputatedState) {
                     this.amputatedSymbolsInCycle.add(cleanSym);
-                } else if (isOpposingEqual) {
+                } else if (isOpposingEqual || !opposingInNew) {
                     this.amputatedSymbolsInCycle.delete(cleanSym);
                 }
 
@@ -547,7 +551,16 @@ export class MarketSimulator {
                     isAmputated: isAmputatedState,
                     amputatedAmount: finalAmpAmount,
                     maxPnLPercent: primaryOldPos.maxPnLPercent,
-                    customProfitSettings: 'customProfitSettings' in newPos ? newPos.customProfitSettings : primaryOldPos.customProfitSettings
+                    customProfitSettings: 'customProfitSettings' in newPos ? newPos.customProfitSettings : primaryOldPos.customProfitSettings,
+                    // ⚡【智能补仓 DCA 状态持久化继承】：防止每秒实盘轮询同步时重置极值与次数
+                    dcaExtremePrice: primaryOldPos.dcaExtremePrice,
+                    dcaCount: primaryOldPos.dcaCount,
+                    initialAmount: primaryOldPos.initialAmount,
+                    initialEntryPrice: primaryOldPos.initialEntryPrice,
+                    initialAmountUsdt: primaryOldPos.initialAmountUsdt,
+                    lastDcaAt: primaryOldPos.lastDcaAt,
+                    lastDcaPrice: primaryOldPos.lastDcaPrice,
+                    dcaRecords: primaryOldPos.dcaRecords
                  };
                 updatedPositions.push(mergedPos);
             } else {
@@ -898,6 +911,13 @@ export class MarketSimulator {
             seenLogKeys.add(logKey);
             return true;
         });
+
+        // 🛡️ [JS 堆硬上限 Ring Buffer 防护]: 保留全部 OPEN 活跃仓位日志，历史 CLOSED 日志封顶在 400 条，杜绝长期运行 V8 内存爆堆
+        if (this.tradeLogs.length > 500) {
+            const openTrades = this.tradeLogs.filter(l => l.status === 'OPEN');
+            const closedTrades = this.tradeLogs.filter(l => l.status === 'CLOSED').slice(0, 400);
+            this.tradeLogs = [...openTrades, ...closedTrades];
+        }
 
         // 🔒 严格去重与清理：确保每个交易对+方向在持仓列表中唯一，严禁重复堆积零持仓/对冲仓位
         const uniquePosMap = new Map<string, Position>();
@@ -1564,15 +1584,11 @@ export class MarketSimulator {
                     this.sealSymbolCycle(pos.symbol);
                 }
 
+                this.checkAndTriggerAutoReopen(pos, reason);
+
                 this.emitUpdate(true);
                 return;
             }
-
-            // Do not reset the main position's isHedged flag when closing the hedge position
-            // so that the main position remains marked as 'Original position' and can still trigger rescues.
-
-            // Do not automatically close the hedge position when the main position is closed,
-            // so that the remaining hedge position stays active and continues callback/profit take rules.
 
             // Record trade log and filter out the closed position
             this.recordTradeLog(pos, reason);
@@ -1597,7 +1613,104 @@ export class MarketSimulator {
             this.cooldowns[`${pos.symbol}_${pos.side}`] = Date.now() + 60000;
             this.saveCooldowns();
             this.addLog('INFO', `Closed Position on ${pos.symbol}: ${reason}`);
+
+            this.checkAndTriggerAutoReopen(pos, reason);
+
             this.emitUpdate(true);
+        }
+    }
+
+    private getActionConfig(pos?: Position): ActionConfig | null {
+        if (typeof window === 'undefined' || !window.localStorage) return null;
+        try {
+            if (pos?.strategyId) {
+                const stratRaw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${pos.strategyId}`);
+                if (stratRaw) return JSON.parse(stratRaw);
+            }
+            const raw = localStorage.getItem("SCANNER_ACTION_CONFIG");
+            if (raw) return JSON.parse(raw);
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith("SCANNER_ACTION_CONFIG")) {
+                    const val = localStorage.getItem(key);
+                    if (val) {
+                        const parsed = JSON.parse(val);
+                        if (parsed && parsed.autoReopenEnabled) return parsed;
+                    }
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    private checkAndTriggerAutoReopen(closedPos: Position, closeReason: string) {
+        // 🔒 对冲单与从仓位不触发平仓后自动复开
+        if (closedPos.isHedge || closedPos.mainPositionId) {
+            return;
+        }
+
+        const actionConfig = this.getActionConfig(closedPos);
+        if (!actionConfig || !actionConfig.autoReopenEnabled) {
+            this.addLog('INFO', `ℹ️ [平仓复开检查] ${closedPos.symbol} 已平仓 (${closeReason})。当前【终极战术终端 -> 平仓后自动复开 (Reopen)】开关处于【未开启】状态，跳过自动复开。`);
+            return;
+        }
+
+        const realPrice = (closedPos.markPrice && closedPos.markPrice > 0) ? closedPos.markPrice : (closedPos.entryPrice || 0);
+        if (realPrice <= 0) {
+            this.addLog('WARNING', `⚠️ [平仓复开检查] ${closedPos.symbol} 当前价格异常 ($${realPrice})，跳过自动复开。`);
+            return;
+        }
+
+        if (!closedPos.triggerReason) {
+            closedPos.triggerReason = closeReason;
+        }
+
+        let consecutiveLosses = 0;
+        const normTarget = normalizeSymbol(closedPos.symbol);
+        const symLogs = this.tradeLogs.filter(l => normalizeSymbol(l.symbol) === normTarget && l.status === 'CLOSED');
+        for (const log of symLogs) {
+            if ((log.profit_usdt || 0) < 0 || (log.profit_percent || 0) < 0) {
+                consecutiveLosses++;
+            } else {
+                break;
+            }
+        }
+
+        const getEmaVal = (symbol: string, tf: string, period: number): number => {
+            const klines = klineMultiTfStore.getKlinesSync(symbol, tf, 250);
+            if (!klines || klines.length < period) return 0;
+            const closes = klines.map(k => k.close);
+            return getLatestEMA(closes, period);
+        };
+
+        const klines1h = klineMultiTfStore.getKlinesSync(closedPos.symbol, '1h', 30) || klineMultiTfStore.getKlinesSync(closedPos.symbol, '15m', 30);
+        const peakHigh = klines1h && klines1h.length > 0 ? Math.max(...klines1h.map(k => k.high), realPrice) : realPrice;
+        const valleyLow = klines1h && klines1h.length > 0 ? Math.min(...klines1h.map(k => k.low), realPrice) : realPrice;
+
+        const klineDetails = {
+            peakHigh,
+            valleyLow,
+            ema80_15m: getEmaVal(closedPos.symbol, '15m', 80),
+            ema80_1h: getEmaVal(closedPos.symbol, '1h', 80),
+            ema200_1h: getEmaVal(closedPos.symbol, '1h', 200),
+            ema80_4h: getEmaVal(closedPos.symbol, '4h', 80) || getEmaVal(closedPos.symbol, '1h', 80)
+        };
+
+        const reopenResult = checkAutoReopenRules(
+            closedPos,
+            actionConfig,
+            this.settings,
+            realPrice,
+            klineDetails,
+            consecutiveLosses
+        );
+
+        if (reopenResult.eligible) {
+            this.addLog('SUCCESS', `🔄 [平仓后自动复开放行] ${closedPos.symbol} ${closedPos.side} | 原因: ${reopenResult.reason} | 启动即时复开！`);
+            audioService.speak(`${closedPos.symbol.replace('USDT', '')}平仓后自动复开`, true);
+            this.reopenPosition(closedPos, `平仓后自动复开 [${closeReason}]`);
+        } else {
+            this.addLog('WARNING', `🛡️ [平仓后自动复开拦截] ${closedPos.symbol} ${closedPos.side} | 拦截原因: ${reopenResult.reason}`);
         }
     }
 
@@ -2541,6 +2654,7 @@ export class MarketSimulator {
 
                 // Do not reset isHedged to false, keep it marked as 'Original position'
                 main.isHedged = true;
+                main.isUnshackled = true; // 标记为主仓已解套并放行，全面允许标准止盈止损平仓
                 
                 // 标记对冲单平仓时间戳，启动 30 秒强制冷却
                 main.lastHedgeClosedAt = Date.now();
@@ -3646,11 +3760,8 @@ export class MarketSimulator {
     private async updateIndicators() {
         if (this.positions.length === 0 || this.isUpdatingIndicators) return;
         
-        // 只有当开启了 AI 止盈模式时，才需要更新这些高级指标
-        const isAiActive = this.settings.profit.enabled && (
-            this.settings.profit.profitMode === 'AI' || 
-            (this.settings.profit.oEnabledMap && this.settings.profit.oEnabledMap['AI'])
-        );
+        // 只有当开启了 AI 止盈模式的总开关时，才需要更新这些高级指标
+        const isAiActive = this.settings.profit.enabled && !!(this.settings.profit.oEnabledMap && this.settings.profit.oEnabledMap['AI']);
         if (!isAiActive) return;
 
         this.isUpdatingIndicators = true;
@@ -3721,8 +3832,8 @@ export class MarketSimulator {
         const profitSettings = this.settings.profit;
         if (!profitSettings.enabled) return;
 
-        // Check if ATR mode is active (either as main mode or parallel mode)
-        const isAtrActive = profitSettings.profitMode === 'ATR' || (profitSettings.oEnabledMap && profitSettings.oEnabledMap['ATR']);
+        // Check if ATR mode is active (必须且仅当【趋势】总开关开启时)
+        const isAtrActive = profitSettings.enabled && !!(profitSettings.oEnabledMap && profitSettings.oEnabledMap['ATR']);
         if (!isAtrActive) return;
 
         const atrSettings = profitSettings.atr;
@@ -3814,9 +3925,9 @@ export class MarketSimulator {
         const positionsReady = this.positions.every(p => this.symbolsWithFreshPrice.has(normalizeSymbol(p.symbol)));
         
         // 1. Check Global Rules (Priority)
-        // Only if Global Mode is enabled in settings (either as main mode or parallel mode)
+        // Only if Global Mode master switch is enabled (oEnabledMap['GLOBAL'] === true)
         const profitSettings = this.settings.profit;
-        const isGlobalEnabled = profitSettings.enabled && (profitSettings.profitMode === 'GLOBAL' || (profitSettings.oEnabledMap && profitSettings.oEnabledMap['GLOBAL']));
+        const isGlobalEnabled = profitSettings.enabled && !!(profitSettings.oEnabledMap && profitSettings.oEnabledMap['GLOBAL']);
         
         if (isGlobalEnabled && positionsReady) {
             const triggered = checkGlobalRules(
@@ -3877,11 +3988,11 @@ export class MarketSimulator {
                 p.amount > 0.0001
             );
             const isUnderHedgeOrAmp = hasActiveOpposing || 
-                position.isHedged || 
+                (position.isHedged && hasActiveOpposing) || 
                 !!position.mainPositionId || 
                 position.isAmputated || 
                 (position.amputatedAmount || 0) > 0 ||
-                this.amputatedSymbolsInCycle.has(symbolKey);
+                (this.amputatedSymbolsInCycle.has(symbolKey) && hasActiveOpposing);
 
             if (isUnderHedgeOrAmp && !position.isUnshackled) {
                 // 处于对冲或断臂求生周期中，严禁单边止盈止损与单边清仓！
@@ -3973,9 +4084,112 @@ export class MarketSimulator {
                 continue;
             }
 
-            // 🔒 [单主仓单次对冲开仓信号终极锁] 如果在途或已触发对冲信号，坚决不重开
-            if (position.hedgeSignalTriggered || position.hedgeOrderInFlight) {
-                continue;
+            // ⚡ [智能补仓 / DCA 策略] 触发判定与加仓拉低均价
+            if (this.settings.martingale?.enabled && !position.isHedge && !position.isHedged) {
+                // 1. 使用精准的 0 延迟实时价格解析器 (自动处理 1000倍 币种与规范化符号)
+                const currentPrice = resolvePrice(position.symbol, this.realPrices, position.markPrice || position.entryPrice);
+                
+                // 2. 从共享内存池中提取最新多周期 K线与 EMA 均线数据（多周期降级适配，防止单一周期缺失）
+                const targetTf = position.signalTf || '15m';
+                const searchTfs = [targetTf, '1m', '5m', '15m'];
+                let klines: any[] = [];
+                for (const tf of searchTfs) {
+                    const list = klineMultiTfStore.getKlinesSync(position.symbol, tf, 10);
+                    if (list && list.length >= 5) {
+                        klines = list;
+                        break;
+                    }
+                }
+                let klineData: any = undefined;
+
+                if (klines && klines.length >= 5) {
+                    const lastCandle = klines[klines.length - 1];
+                    const closes = klines.map(k => k.close);
+                    if (closes.length > 0) closes[closes.length - 1] = currentPrice;
+
+                    // 计算开仓以来的真实历史最低/最高价（用于回调/反弹绝对极值校准）
+                    const relevantTime = Math.max(position.entryTime || 0, position.lastDcaAt || 0, position.lastRefillTime || 0);
+                    const recentCandles = klines.filter(k => (k.time || 0) >= (relevantTime - 60000));
+                    const extremeLow = recentCandles.length > 0 ? Math.min(...recentCandles.map(k => k.low), currentPrice) : currentPrice;
+                    const extremeHigh = recentCandles.length > 0 ? Math.max(...recentCandles.map(k => k.high), currentPrice) : currentPrice;
+
+                    klineData = {
+                        open: lastCandle.open,
+                        high: Math.max(lastCandle.high, currentPrice),
+                        low: Math.min(lastCandle.low, currentPrice),
+                        close: currentPrice,
+                        extremeLow,
+                        extremeHigh,
+                        emaDetails: {
+                            ema10: getLatestEMA(closes, 10),
+                            ema20: getLatestEMA(closes, 20),
+                            ema30: getLatestEMA(closes, 30),
+                            ema40: getLatestEMA(closes, 40),
+                            ema80: getLatestEMA(closes, 80)
+                        }
+                    };
+                } else {
+                    // ⚡【极速补仓增强】：K线未就绪时构建基础 klineData，保证实时 Tick 出现亏损时毫秒级秒下补仓单！
+                    klineData = {
+                        open: currentPrice,
+                        high: currentPrice,
+                        low: currentPrice,
+                        close: currentPrice,
+                        extremeLow: currentPrice,
+                        extremeHigh: currentPrice
+                    };
+                }
+
+                const dcaResult = checkDcaRules(position, this.settings, currentPrice, klineData);
+                
+                if (dcaResult.triggered && dcaResult.addAmountUsdt > 0) {
+                    const oldQty = position.amount;
+                    const oldPrice = position.entryPrice;
+                    const addQty = dcaResult.addAmountUsdt / currentPrice;
+                    const newAmount = oldQty + addQty;
+                    const newEntryPrice = dcaResult.newEntryPrice || ((oldQty * oldPrice + dcaResult.addAmountUsdt) / newAmount);
+
+                    const initialQty = position.initialAmount !== undefined ? position.initialAmount : oldQty;
+                    const initialPrice = position.initialEntryPrice || oldPrice;
+                    position.initialAmount = initialQty;
+                    position.initialEntryPrice = initialPrice;
+                    position.initialAmountUsdt = initialQty * initialPrice;
+                    const newDcaCount = (position.dcaCount || 0) + 1;
+                    position.amount = newAmount;
+                    position.entryPrice = newEntryPrice;
+                    position.dcaCount = newDcaCount;
+                    position.lastDcaAt = Date.now();
+                    position.lastDcaPrice = currentPrice;
+
+                    // 📜 记录本次补仓的详细物理信号、原因与资金变动
+                    const newRecord = {
+                        id: `dca_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                        timestamp: Date.now(),
+                        count: newDcaCount,
+                        triggerMode: dcaResult.triggerMode || 'LOSS_PCT',
+                        triggerModeLabel: dcaResult.triggerModeLabel || '智能补仓',
+                        reason: dcaResult.reason,
+                        signalDetail: dcaResult.signalDetail || dcaResult.reason,
+                        addAmountUsdt: dcaResult.addAmountUsdt,
+                        price: currentPrice,
+                        oldEntryPrice: oldPrice,
+                        newEntryPrice: newEntryPrice,
+                        oldAmountTokens: oldQty,
+                        newAmountTokens: newAmount
+                    };
+
+                    position.dcaRecords = [...(position.dcaRecords || []), newRecord];
+
+                    // 实盘加仓动作分发
+                    if (this.settings.system?.realTrading && this.onRealOpen) {
+                        const qty = dcaResult.addAmountUsdt / currentPrice;
+                        this.onRealOpen(position, qty, `⚡ DCA 智能补仓 (第 ${newDcaCount} 次 | ${newRecord.triggerModeLabel})`);
+                    }
+
+                    this.addLog('SUCCESS', `⚡ 智能补仓触发 [第 ${newDcaCount}/${this.settings.martingale?.maxCount ?? 2} 次 | ${newRecord.triggerModeLabel}]: ${position.symbol} | 信号: ${newRecord.signalDetail} | 加仓 $${dcaResult.addAmountUsdt.toFixed(1)} USDT @ $${currentPrice.toFixed(4)} | 均价: $${oldPrice.toFixed(4)} ➔ $${newEntryPrice.toFixed(4)}`);
+                    audioService.speak('智能补仓触发');
+                    actionTaken = true;
+                }
             }
 
             const triggered = checkHedgingRules(
@@ -4518,6 +4732,40 @@ export class MarketSimulator {
               if (p.unrealizedPnLPercentage > 0) {
                   if (p.maxPnLPercent === undefined || p.unrealizedPnLPercentage > p.maxPnLPercent) {
                       p.maxPnLPercent = p.unrealizedPnLPercentage;
+                  }
+              }
+
+              // 🔒 K-line Ground Truth: 依次从 1m, 5m, 15m K 线同步校准历史真实极值，节流至每3秒最多巡检一次，杜绝每100ms密集数组过滤与Max运算
+              if (p.entryPrice > 0 && (now - ((p as any)._lastKlinePeakCheck || 0) > 3000)) {
+                  (p as any)._lastKlinePeakCheck = now;
+                  const relevantTime = Math.max(p.entryTime || 0, p.lastRefillTime || 0, p.lastDcaAt || 0);
+                  const tfs = ['1m', '5m', '15m'];
+                  for (const tf of tfs) {
+                      const klines = klineMultiTfStore.getKlinesSync(p.symbol, tf);
+                      if (klines && klines.length > 0) {
+                          // 🔒【开仓后真实极值过滤】：仅包含在持仓发生 (relevantTime) 之后开盘的 K 线，杜绝开仓前历史影线/高点污染最高收益
+                          const candlesSinceEntry = klines.filter(k => k.time >= relevantTime);
+                          if (candlesSinceEntry.length > 0) {
+                              if (p.side === PositionSide.LONG) {
+                                  const peakHigh = Math.max(...candlesSinceEntry.map(k => k.high));
+                                  if (peakHigh > 0) {
+                                      const klineMaxPnl = ((peakHigh - p.entryPrice) / p.entryPrice) * 100;
+                                      if (klineMaxPnl > (p.maxPnLPercent || 0)) {
+                                          p.maxPnLPercent = klineMaxPnl;
+                                      }
+                                  }
+                              } else if (p.side === PositionSide.SHORT) {
+                                  const lowestLow = Math.min(...candlesSinceEntry.map(k => k.low));
+                                  if (lowestLow > 0) {
+                                      const klineMaxPnl = ((p.entryPrice - lowestLow) / p.entryPrice) * 100;
+                                      if (klineMaxPnl > (p.maxPnLPercent || 0)) {
+                                          p.maxPnLPercent = klineMaxPnl;
+                                      }
+                                  }
+                              }
+                              break;
+                          }
+                      }
                   }
               }
 

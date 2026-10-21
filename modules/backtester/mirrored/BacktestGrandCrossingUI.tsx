@@ -35,6 +35,10 @@ const DEFAULT_CONFIG: List2Config = {
   enableDivergenceCrossCheck: true,
   divergenceLookbackBars: 20,
   strictFiltering: false,
+  strictVolWindow: 3,
+  strictMinQuoteVolume: 100000,
+  enableConsecutiveVolRise: true,
+  consecutiveVolBars: 2,
   viewMode: 'ALL',
   syncDirectionFilterToList3: false
 };

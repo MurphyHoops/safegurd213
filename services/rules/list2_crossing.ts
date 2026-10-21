@@ -9,6 +9,16 @@
 import { calculateEMA } from '../indicators';
 import { List2Config, List2GroupedResult } from '../../components/Scanner/scannerTypes';
 
+/**
+ * 🔒 [收盘确立时刻计算]：计算已收盘信号K线的真实收盘时间（而非开盘时间），
+ * 确保在K线收盘确立信号的瞬间进入列表时，信号发生时间与进入列表时间精准对齐。
+ */
+export function getCandleCloseTime(targetIdx: number, timestamps: number[], tf?: string): number {
+    if (!timestamps || timestamps.length === 0 || targetIdx < 0) return Date.now();
+    // 🔒 确立信号K线起始时间戳，确保在全系统各列表及K线图弹窗中100%严丝合缝对齐到该K线（杜绝后移一根）
+    return timestamps[targetIdx] || Date.now();
+}
+
 export function analyzeList2Crossing(
     symbol: string,
     tf: string,
@@ -27,6 +37,10 @@ export function analyzeList2Crossing(
     const squeezeThreshold = config.squeezeThreshold !== undefined ? config.squeezeThreshold : 0.5;
     const maxAmplitude = config.maxAmplitude !== undefined ? config.maxAmplitude : 50;
     const minBodyRatio = config.minBodyRatio !== undefined ? config.minBodyRatio : 60;
+    const strictVolWindow = (config.strictVolWindow !== undefined && !Number.isNaN(config.strictVolWindow)) ? Math.max(1, config.strictVolWindow) : 3;
+    const strictMinQuoteVolume = (config.strictMinQuoteVolume !== undefined && !Number.isNaN(config.strictMinQuoteVolume)) ? Math.max(0, config.strictMinQuoteVolume) : 0;
+    const enableConsecutiveVolRise = config.enableConsecutiveVolRise !== undefined ? !!config.enableConsecutiveVolRise : true;
+    const consecutiveVolBars = (config.consecutiveVolBars !== undefined && !Number.isNaN(config.consecutiveVolBars)) ? Math.max(2, config.consecutiveVolBars) : 2;
     const checkEma80Conflict = !!config.checkEma80Conflict;
     const enableFlatFilter = !!config.enableFlatFilter;
     const flatLookback = config.flatLookback !== undefined ? config.flatLookback : 50;
@@ -123,6 +137,9 @@ export function analyzeList2Crossing(
         isAligned: boolean;
         ampValid: boolean;
         volValid: boolean;
+        maxVolRatio?: number;
+        maxQuoteVol?: number;
+        isConsecutiveRising?: boolean;
         bodyValid: boolean;
         isClosed: boolean;
         isPendingGray: boolean;
@@ -143,6 +160,9 @@ export function analyzeList2Crossing(
         isAligned: boolean;
         ampValid: boolean;
         volValid: boolean;
+        maxVolRatio?: number;
+        maxQuoteVol?: number;
+        isConsecutiveRising?: boolean;
         bodyValid: boolean;
         isClosed: boolean;
         isPendingGray: boolean;
@@ -254,57 +274,83 @@ export function analyzeList2Crossing(
 
                 const genesisAgeL = idx - genesisIdxL;
 
-                // 2. 龙头寿命与准入门禁：起爆原点必须在寿命期内；若为冷启动新准入，必须在访问过去设定根数之内
-                // 坚决只抓龙头，老旧趋势 (超出寿命或冷启动超访问过去) 坚决淘汰！
-                const isGenesisEligibleL = genesisAgeL <= scanLookbackLimit || (genesisAgeL <= retentionThreshold && maxNewLag >= retentionThreshold);
+                // 2. 龙头寿命门禁：发散起爆原点距今 K 线根数 (genesisAgeL) 必须 <= 寿命根数 (retentionThreshold)
+                // 坚决只抓龙头，超出寿命根数 (> retentionThreshold) 的老旧发散趋势坚决淘汰下线！
+                const isGenesisEligibleL = genesisAgeL <= retentionThreshold;
 
                 if (isGenesisEligibleL) {
-                    // 3. 发散回溯穿越校验：从起爆原点向前回溯 divergenceLookbackBars 根K线内，EMA10必须完成对EMA20/30/40的完整方向性穿越
+                    // 3. 🔒 [USER MANDATORY RULE - 发散回溯穿越硬门禁]
+                    // 以【当前K线 (idx)】起算，向前追溯 EMA10 向上金叉穿越 EMA20/30/40 第一根EMA均线的确切K线 (firstCrossIdxL)。
+                    // 门禁铁律：当前K线距离第一根穿越均线的根数 (idx - firstCrossIdxL) 不得大于 divergenceLookbackBars (如35根)。
+                    // 若大于了，直接过滤淘汰 (crossedAllL = false)，绝对不进入列表2！
                     crossedAllL = true;
                     if (enableDivergenceCrossCheck) {
-                        let crossed20L = false;
-                        let crossed30L = false;
-                        let crossed40L = false;
-                        let was10Below20 = false;
-                        let was10Below30 = false;
-                        let was10Below40 = false;
+                        let cross20IdxL: number | null = null;
+                        let cross30IdxL: number | null = null;
+                        let cross40IdxL: number | null = null;
 
-                        for (let b = 0; b < divergenceLookbackBars; b++) {
-                            const bIdx = genesisIdxL - b;
-                            if (bIdx - 1 < minHistoryNeeded) break;
-
+                        // 从起爆原点向历史深处追溯穿越点
+                        const searchLimitL = Math.max(minHistoryNeeded, idx - divergenceLookbackBars - 60);
+                        for (let bIdx = genesisIdxL; bIdx >= searchLimitL; bIdx--) {
                             const cur10 = getEmaVal(ema10, bIdx, 10);
-                            const cur20 = getEmaVal(ema20, bIdx, 20);
-                            const cur30 = getEmaVal(ema30, bIdx, 30);
-                            const cur40 = getEmaVal(ema40, bIdx, 40);
-
                             const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+                            if (cur10 === null || prev10 === null) continue;
 
-                            if (cur10 !== null) {
-                                if (cur20 !== null && cur10 <= cur20) was10Below20 = true;
-                                if (cur30 !== null && cur10 <= cur30) was10Below30 = true;
-                                if (cur40 !== null && cur10 <= cur40) was10Below40 = true;
+                            // EMA10 向上金叉穿越 EMA20
+                            if (cross20IdxL === null) {
+                                const cur20 = getEmaVal(ema20, bIdx, 20);
+                                const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                                if (cur20 !== null && prev20 !== null) {
+                                    if ((prev10 <= prev20 && cur10 > cur20) || (prev10 < prev20 && cur10 >= cur20)) {
+                                        cross20IdxL = bIdx;
+                                    }
+                                }
                             }
 
-                            if (cur10 !== null && prev10 !== null) {
-                                if (cur20 !== null && prev20 !== null && ((prev10 <= prev20 && cur10 >= cur20) || (prev10 < prev20 && cur10 > cur20))) crossed20L = true;
-                                if (cur30 !== null && prev30 !== null && ((prev10 <= prev30 && cur10 >= cur30) || (prev10 < prev30 && cur10 > cur30))) crossed30L = true;
-                                if (cur40 !== null && prev40 !== null && ((prev10 <= prev40 && cur10 >= cur40) || (prev10 < prev40 && cur10 > cur40))) crossed40L = true;
+                            // EMA10 向上金叉穿越 EMA30
+                            if (cross30IdxL === null) {
+                                const cur30 = getEmaVal(ema30, bIdx, 30);
+                                const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                                if (cur30 !== null && prev30 !== null) {
+                                    if ((prev10 <= prev30 && cur10 > cur30) || (prev10 < prev30 && cur10 >= cur30)) {
+                                        cross30IdxL = bIdx;
+                                    }
+                                }
+                            }
+
+                            // EMA10 向上金叉穿越 EMA40
+                            if (cross40IdxL === null) {
+                                const cur40 = getEmaVal(ema40, bIdx, 40);
+                                const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+                                if (cur40 !== null && prev40 !== null) {
+                                    if ((prev10 <= prev40 && cur10 > cur40) || (prev10 < prev40 && cur10 >= cur40)) {
+                                        cross40IdxL = bIdx;
+                                    }
+                                }
+                            }
+
+                            // 若三根均线的金叉穿越均已锁定，提前退出搜索
+                            if (cross20IdxL !== null && cross30IdxL !== null && cross40IdxL !== null) {
+                                break;
                             }
                         }
 
-                        const genE10 = getEmaVal(ema10, genesisIdxL, 10);
-                        const genE20 = getEmaVal(ema20, genesisIdxL, 20);
-                        const genE30 = getEmaVal(ema30, genesisIdxL, 30);
-                        const genE40 = getEmaVal(ema40, genesisIdxL, 40);
-                        if (genE10 !== null && genE20 !== null && genE10 > genE20 && was10Below20) crossed20L = true;
-                        if (genE10 !== null && genE30 !== null && genE10 > genE30 && was10Below30) crossed30L = true;
-                        if (genE10 !== null && genE40 !== null && genE10 > genE40 && was10Below40) crossed40L = true;
+                        // 必须全部完成对 EMA20/30/40 的方向性穿越
+                        if (cross20IdxL !== null && cross30IdxL !== null && cross40IdxL !== null) {
+                            // 第一根被穿越的EMA均线（即三根均线金叉穿越中发生最早的那根K线）
+                            const firstCrossIdxL = Math.min(cross20IdxL, cross30IdxL, cross40IdxL);
+                            const distFromCurrentL = idx - firstCrossIdxL;
 
-                        crossedAllL = crossed20L && crossed30L && crossed40L;
+                            // 🔒 铁律门禁：当前K线距离第一根穿越均线不得大于 divergenceLookbackBars 根K线
+                            if (distFromCurrentL <= divergenceLookbackBars) {
+                                crossedAllL = true;
+                            } else {
+                                crossedAllL = false; // 距离大于设定值，直接过滤掉，不进列表2！
+                            }
+                        } else {
+                            // 规定搜索窗口内未找到完整金叉穿越，直接淘汰！
+                            crossedAllL = false;
+                        }
                     }
 
                     if (crossedAllL) {
@@ -379,56 +425,83 @@ export function analyzeList2Crossing(
 
                 const genesisAgeS = idx - genesisIdxS;
 
-                // 2. 龙头寿命与准入门禁：起爆原点必须在寿命期内；若为冷启动新准入，必须在访问过去设定根数之内
-                const isGenesisEligibleS = genesisAgeS <= scanLookbackLimit || (genesisAgeS <= retentionThreshold && maxNewLag >= retentionThreshold);
+                // 2. 龙头寿命门禁：发散起爆原点距今 K 线根数 (genesisAgeS) 必须 <= 寿命根数 (retentionThreshold)
+                // 坚决只抓龙头，超出寿命根数 (> retentionThreshold) 的老旧发散趋势坚决淘汰下线！
+                const isGenesisEligibleS = genesisAgeS <= retentionThreshold;
 
                 if (isGenesisEligibleS) {
-                    // 3. 发散回溯穿越校验：从起爆原点向前回溯 divergenceLookbackBars 根K线内，EMA10必须完成对EMA20/30/40的完整方向性穿越
+                    // 3. 🔒 [USER MANDATORY RULE - 发散回溯穿越硬门禁]
+                    // 以【当前K线 (idx)】起算，向前追溯 EMA10 向下死叉穿越 EMA20/30/40 第一根EMA均线的确切K线 (firstCrossIdxS)。
+                    // 门禁铁律：当前K线距离第一根穿越均线的根数 (idx - firstCrossIdxS) 不得大于 divergenceLookbackBars (如35根)。
+                    // 若大于了，直接过滤淘汰 (crossedAllS = false)，绝对不进入列表2！
                     crossedAllS = true;
                     if (enableDivergenceCrossCheck) {
-                        let crossed20S = false;
-                        let crossed30S = false;
-                        let crossed40S = false;
-                        let was10Above20 = false;
-                        let was10Above30 = false;
-                        let was10Above40 = false;
+                        let cross20IdxS: number | null = null;
+                        let cross30IdxS: number | null = null;
+                        let cross40IdxS: number | null = null;
 
-                        for (let b = 0; b < divergenceLookbackBars; b++) {
-                            const bIdx = genesisIdxS - b;
-                            if (bIdx - 1 < minHistoryNeeded) break;
-
+                        // 从起爆原点向历史深处追溯穿越点
+                        const searchLimitS = Math.max(minHistoryNeeded, idx - divergenceLookbackBars - 60);
+                        for (let bIdx = genesisIdxS; bIdx >= searchLimitS; bIdx--) {
                             const cur10 = getEmaVal(ema10, bIdx, 10);
-                            const cur20 = getEmaVal(ema20, bIdx, 20);
-                            const cur30 = getEmaVal(ema30, bIdx, 30);
-                            const cur40 = getEmaVal(ema40, bIdx, 40);
-
                             const prev10 = getEmaVal(ema10, bIdx - 1, 10);
-                            const prev20 = getEmaVal(ema20, bIdx - 1, 20);
-                            const prev30 = getEmaVal(ema30, bIdx - 1, 30);
-                            const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+                            if (cur10 === null || prev10 === null) continue;
 
-                            if (cur10 !== null) {
-                                if (cur20 !== null && cur10 >= cur20) was10Above20 = true;
-                                if (cur30 !== null && cur10 >= cur30) was10Above30 = true;
-                                if (cur40 !== null && cur10 >= cur40) was10Above40 = true;
+                            // EMA10 向下死叉穿越 EMA20
+                            if (cross20IdxS === null) {
+                                const cur20 = getEmaVal(ema20, bIdx, 20);
+                                const prev20 = getEmaVal(ema20, bIdx - 1, 20);
+                                if (cur20 !== null && prev20 !== null) {
+                                    if ((prev10 >= prev20 && cur10 < cur20) || (prev10 > prev20 && cur10 <= cur20)) {
+                                        cross20IdxS = bIdx;
+                                    }
+                                }
                             }
 
-                            if (cur10 !== null && prev10 !== null) {
-                                if (cur20 !== null && prev20 !== null && ((prev10 >= prev20 && cur10 <= cur20) || (prev10 > prev20 && cur10 < cur20))) crossed20S = true;
-                                if (cur30 !== null && prev30 !== null && ((prev10 >= prev30 && cur10 <= cur30) || (prev10 > prev30 && cur10 < cur30))) crossed30S = true;
-                                if (cur40 !== null && prev40 !== null && ((prev10 >= prev40 && cur10 <= cur40) || (prev10 > prev40 && cur10 < cur40))) crossed40S = true;
+                            // EMA10 向下死叉穿越 EMA30
+                            if (cross30IdxS === null) {
+                                const cur30 = getEmaVal(ema30, bIdx, 30);
+                                const prev30 = getEmaVal(ema30, bIdx - 1, 30);
+                                if (cur30 !== null && prev30 !== null) {
+                                    if ((prev10 >= prev30 && cur10 < cur30) || (prev10 > prev30 && cur10 <= cur30)) {
+                                        cross30IdxS = bIdx;
+                                    }
+                                }
+                            }
+
+                            // EMA10 向下死叉穿越 EMA40
+                            if (cross40IdxS === null) {
+                                const cur40 = getEmaVal(ema40, bIdx, 40);
+                                const prev40 = getEmaVal(ema40, bIdx - 1, 40);
+                                if (cur40 !== null && prev40 !== null) {
+                                    if ((prev10 >= prev40 && cur10 < cur40) || (prev10 > prev40 && cur10 <= cur40)) {
+                                        cross40IdxS = bIdx;
+                                    }
+                                }
+                            }
+
+                            // 若三根均线的死叉穿越均已锁定，提前退出搜索
+                            if (cross20IdxS !== null && cross30IdxS !== null && cross40IdxS !== null) {
+                                break;
                             }
                         }
 
-                        const genE10 = getEmaVal(ema10, genesisIdxS, 10);
-                        const genE20 = getEmaVal(ema20, genesisIdxS, 20);
-                        const genE30 = getEmaVal(ema30, genesisIdxS, 30);
-                        const genE40 = getEmaVal(ema40, genesisIdxS, 40);
-                        if (genE10 !== null && genE20 !== null && genE10 < genE20 && was10Above20) crossed20S = true;
-                        if (genE10 !== null && genE30 !== null && genE10 < genE30 && was10Above30) crossed30S = true;
-                        if (genE10 !== null && genE40 !== null && genE10 < genE40 && was10Above40) crossed40S = true;
+                        // 必须全部完成对 EMA20/30/40 的方向性穿越
+                        if (cross20IdxS !== null && cross30IdxS !== null && cross40IdxS !== null) {
+                            // 第一根被穿越的EMA均线（即三根均线死叉穿越中发生最早的那根K线）
+                            const firstCrossIdxS = Math.min(cross20IdxS, cross30IdxS, cross40IdxS);
+                            const distFromCurrentS = idx - firstCrossIdxS;
 
-                        crossedAllS = crossed20S && crossed30S && crossed40S;
+                            // 🔒 铁律门禁：当前K线距离第一根穿越均线不得大于 divergenceLookbackBars 根K线
+                            if (distFromCurrentS <= divergenceLookbackBars) {
+                                crossedAllS = true;
+                            } else {
+                                crossedAllS = false; // 距离大于设定值，直接过滤掉，不进列表2！
+                            }
+                        } else {
+                            // 规定搜索窗口内未找到完整死叉穿越，直接淘汰！
+                            crossedAllS = false;
+                        }
                     }
 
                     if (crossedAllS) {
@@ -499,21 +572,114 @@ export function analyzeList2Crossing(
                 targetIdxS = checkIdx;
             }
 
-            // Amplitude and Volume for LONG signal candle
+            // 🔒 [STRICT RULES - 严格过滤升级：形态振幅与周期点火放量双轮驱动]
+            // 1. 振幅 (Amplitude) 针对信号K线 (targetIdxL / targetIdxS)
             const candleRangeL = highs[targetIdxL] - lows[targetIdxL];
             const ampL = opens[targetIdxL] > 0 ? (candleRangeL / opens[targetIdxL]) * 100 : 0;
-            const volSliceL = volumes.slice(Math.max(0, targetIdxL - 20), targetIdxL);
-            const avgVolL = volSliceL.length > 0 ? volSliceL.reduce((a, b) => a + b, 0) / volSliceL.length : 0;
-            const volValidL = volumes[targetIdxL] >= (avgVolL * Math.max(0.1, volMultiplier));
             const ampValidL = ampL >= squeezeThreshold && ampL <= maxAmplitude;
 
-            // Amplitude and Volume for SHORT signal candle
             const candleRangeS = highs[targetIdxS] - lows[targetIdxS];
             const ampS = opens[targetIdxS] > 0 ? (candleRangeS / opens[targetIdxS]) * 100 : 0;
-            const volSliceS = volumes.slice(Math.max(0, targetIdxS - 20), targetIdxS);
-            const avgVolS = volSliceS.length > 0 ? volSliceS.reduce((a, b) => a + b, 0) / volSliceS.length : 0;
-            const volValidS = volumes[targetIdxS] >= (avgVolS * Math.max(0.1, volMultiplier));
             const ampValidS = ampS >= squeezeThreshold && ampS <= maxAmplitude;
+
+            // 2. 周期点火放量 (Volume Ignition): 考察窗口最新K线及前 strictVolWindow 根K线
+            const winBars = Math.max(1, strictVolWindow);
+            const winStart = Math.max(0, idx - winBars + 1);
+            const baseVolStart = Math.max(0, winStart - 20);
+            const baseVolSlice = volumes.slice(baseVolStart, winStart);
+            const avgBaseVol = baseVolSlice.length > 0 ? (baseVolSlice.reduce((a, b) => a + b, 0) / baseVolSlice.length) : (volumes[winStart] || 1);
+
+            // 做多：考察窗口 [winStart, idx] 以及信号K线 targetIdxL 的最大放量倍数与最大单根成交额(USDT)
+            let maxVolRatioL = 0;
+            let maxQuoteVolL = 0;
+            for (let w = winStart; w <= idx; w++) {
+                const cVol = volumes[w] || 0;
+                const cQuote = (closes[w] || 0) * cVol;
+                const r = avgBaseVol > 0 ? cVol / avgBaseVol : 0;
+                if (r > maxVolRatioL) maxVolRatioL = r;
+                if (cQuote > maxQuoteVolL) maxQuoteVolL = cQuote;
+            }
+            if (targetIdxL < winStart) {
+                const tVolL = volumes[targetIdxL] || 0;
+                const tQuoteL = (closes[targetIdxL] || 0) * tVolL;
+                const trL = avgBaseVol > 0 ? tVolL / avgBaseVol : 0;
+                if (trL > maxVolRatioL) maxVolRatioL = trL;
+                if (tQuoteL > maxQuoteVolL) maxQuoteVolL = tQuoteL;
+            }
+
+            // 🐉【龙抬头防伪双轨制 - 做多】
+            // 轨 1：单根爆发放量 (>= volMultiplier)
+            const isSingleExplosionL = maxVolRatioL >= Math.max(0.1, volMultiplier);
+            // 轨 2：连续 N 根温和阶梯递增放量 (龙抬头)
+            let isConsecutiveRisingL = false;
+            if (enableConsecutiveVolRise) {
+                const checkVolStartL = Math.max(consecutiveVolBars - 1, Math.min(winStart, targetIdxL));
+                for (let w = checkVolStartL; w <= idx; w++) {
+                    let isStepOk = true;
+                    for (let step = 0; step < consecutiveVolBars - 1; step++) {
+                        const curBar = w - step;
+                        const prevBar = curBar - 1;
+                        const curV = volumes[curBar] || 0;
+                        const prevV = volumes[prevBar] || 0;
+                        if (!(curV > prevV * 1.02 && curV >= avgBaseVol * 1.2 && prevV >= avgBaseVol * 0.9)) {
+                            isStepOk = false;
+                            break;
+                        }
+                    }
+                    if (isStepOk) {
+                        isConsecutiveRisingL = true;
+                        break;
+                    }
+                }
+            }
+            const isVolIgnitedL = isSingleExplosionL || isConsecutiveRisingL;
+            const volValidL = isVolIgnitedL && (strictMinQuoteVolume <= 0 || maxQuoteVolL >= strictMinQuoteVolume);
+
+            // 做空：考察窗口 [winStart, idx] 以及信号K线 targetIdxS 的最大放量倍数与最大单根成交额(USDT)
+            let maxVolRatioS = 0;
+            let maxQuoteVolS = 0;
+            for (let w = winStart; w <= idx; w++) {
+                const cVol = volumes[w] || 0;
+                const cQuote = (closes[w] || 0) * cVol;
+                const r = avgBaseVol > 0 ? cVol / avgBaseVol : 0;
+                if (r > maxVolRatioS) maxVolRatioS = r;
+                if (cQuote > maxQuoteVolS) maxQuoteVolS = cQuote;
+            }
+            if (targetIdxS < winStart) {
+                const tVolS = volumes[targetIdxS] || 0;
+                const tQuoteS = (closes[targetIdxS] || 0) * tVolS;
+                const trS = avgBaseVol > 0 ? tVolS / avgBaseVol : 0;
+                if (trS > maxVolRatioS) maxVolRatioS = trS;
+                if (tQuoteS > maxQuoteVolS) maxQuoteVolS = tQuoteS;
+            }
+
+            // 🐉【龙抬头防伪双轨制 - 做空】
+            // 轨 1：单根爆发放量 (>= volMultiplier)
+            const isSingleExplosionS = maxVolRatioS >= Math.max(0.1, volMultiplier);
+            // 轨 2：连续 N 根温和阶梯递增放量 (龙抬头)
+            let isConsecutiveRisingS = false;
+            if (enableConsecutiveVolRise) {
+                const checkVolStartS = Math.max(consecutiveVolBars - 1, Math.min(winStart, targetIdxS));
+                for (let w = checkVolStartS; w <= idx; w++) {
+                    let isStepOk = true;
+                    for (let step = 0; step < consecutiveVolBars - 1; step++) {
+                        const curBar = w - step;
+                        const prevBar = curBar - 1;
+                        const curV = volumes[curBar] || 0;
+                        const prevV = volumes[prevBar] || 0;
+                        if (!(curV > prevV * 1.02 && curV >= avgBaseVol * 1.2 && prevV >= avgBaseVol * 0.9)) {
+                            isStepOk = false;
+                            break;
+                        }
+                    }
+                    if (isStepOk) {
+                        isConsecutiveRisingS = true;
+                        break;
+                    }
+                }
+            }
+            const isVolIgnitedS = isSingleExplosionS || isConsecutiveRisingS;
+            const volValidS = isVolIgnitedS && (strictMinQuoteVolume <= 0 || maxQuoteVolS >= strictMinQuoteVolume);
 
             // Calculate body ratio for targetIdxL and targetIdxS
             const cHighL = highs[targetIdxL];
@@ -792,11 +958,12 @@ export function analyzeList2Crossing(
                 const finalBodyValidL = finalBodyRatioL >= minBodyRatio;
                 const finalAmpValidL = finalAmpL >= squeezeThreshold && finalAmpL <= maxAmplitude;
 
-                if (strictFiltering && (!finalBodyValidL || !finalAmpValidL)) {
+                if (strictFiltering && (!finalBodyValidL || !finalAmpValidL || !volValidL)) {
                     isValidL = false;
                 } else {
                     const signalLagL = idx - targetIdxL;
-                    const signalTimeL = timestamps[targetIdxL];
+                    // 🔒 [收盘确立时刻]：记录K线收盘闭合的瞬间，杜绝在开盘时就记录老旧时间戳
+                    const signalTimeL = getCandleCloseTime(targetIdxL, timestamps, tf);
                     longSignals.push({ 
                         lag: signalLagL, 
                         direction: 'LONG', 
@@ -806,6 +973,9 @@ export function analyzeList2Crossing(
                         isAligned: isAlignedLong,
                         ampValid: finalAmpValidL,
                         volValid: volValidL,
+                        maxVolRatio: maxVolRatioL,
+                        maxQuoteVol: maxQuoteVolL,
+                        isConsecutiveRising: isConsecutiveRisingL,
                         bodyValid: finalBodyValidL,
                         isClosed: true,
                         isPendingGray: false,
@@ -832,11 +1002,12 @@ export function analyzeList2Crossing(
                 const finalBodyValidS = finalBodyRatioS >= minBodyRatio;
                 const finalAmpValidS = finalAmpS >= squeezeThreshold && finalAmpS <= maxAmplitude;
 
-                if (strictFiltering && (!finalBodyValidS || !finalAmpValidS)) {
+                if (strictFiltering && (!finalBodyValidS || !finalAmpValidS || !volValidS)) {
                     isValidS = false;
                 } else {
                     const signalLagS = idx - targetIdxS;
-                    const signalTimeS = timestamps[targetIdxS];
+                    // 🔒 [收盘确立时刻]：记录K线收盘闭合的瞬间，杜绝在开盘时就记录老旧时间戳
+                    const signalTimeS = getCandleCloseTime(targetIdxS, timestamps, tf);
                     shortSignals.push({ 
                         lag: signalLagS, 
                         direction: 'SHORT', 
@@ -846,6 +1017,9 @@ export function analyzeList2Crossing(
                         isAligned: isAlignedShort,
                         ampValid: finalAmpValidS,
                         volValid: volValidS,
+                        maxVolRatio: maxVolRatioS,
+                        maxQuoteVol: maxQuoteVolS,
+                        isConsecutiveRising: isConsecutiveRisingS,
                         bodyValid: finalBodyValidS,
                         isClosed: true,
                         isPendingGray: false,
@@ -966,6 +1140,9 @@ export function analyzeList2Crossing(
                     bodyRatio: signalMember.bodyRatio,
                     ampValid: signalMember.ampValid,
                     volValid: signalMember.volValid,
+                    maxVolRatio: signalMember.maxVolRatio,
+                    maxQuoteVol: signalMember.maxQuoteVol,
+                    isConsecutiveRising: signalMember.isConsecutiveRising,
                     bodyValid: signalMember.bodyValid,
                     isAligned: signalMember.isAligned,
                     isClosed: signalMember.isClosed,
@@ -1034,6 +1211,9 @@ export function analyzeList2Crossing(
                     bodyRatio: signalMember.bodyRatio,
                     ampValid: signalMember.ampValid,
                     volValid: signalMember.volValid,
+                    maxVolRatio: signalMember.maxVolRatio,
+                    maxQuoteVol: signalMember.maxQuoteVol,
+                    isConsecutiveRising: signalMember.isConsecutiveRising,
                     bodyValid: signalMember.bodyValid,
                     isAligned: signalMember.isAligned,
                     isClosed: signalMember.isClosed,

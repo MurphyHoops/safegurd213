@@ -61,10 +61,17 @@ const reportPanic = (message: string, source?: string, lineno?: number) => {
 // --- 3. REGISTER LISTENERS IMMEDIATELY (ZERO INTERRUPTION TO APP) ---
 try {
     const rawBox = localStorage.getItem('SAVIOR_CRASH_BLACKBOX');
-    if (rawBox && rawBox.includes('isAnyFuseEnabled')) {
+    if (rawBox) {
         const parsed = JSON.parse(rawBox);
-        const filtered = parsed.filter((x: any) => !String(x?.message || '').includes('isAnyFuseEnabled'));
-        localStorage.setItem('SAVIOR_CRASH_BLACKBOX', JSON.stringify(filtered));
+        if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((x: any) => 
+                x && 
+                !String(x?.message || '').includes('isAnyFuseEnabled') &&
+                !String(x?.message || '').includes('handleDragonHeadUpdate') &&
+                !(x?.type === 'BROWSER_TAB_KILL' && (!x?.memory || x?.memory?.percent < 80))
+            );
+            localStorage.setItem('SAVIOR_CRASH_BLACKBOX', JSON.stringify(filtered.slice(0, 15)));
+        }
     }
 } catch (_) {}
 

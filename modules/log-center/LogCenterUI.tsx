@@ -13,11 +13,30 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
   const [endTime, setEndTime] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showCacheModal, setShowCacheModal] = useState(false);
+  const [showDiskAuditModal, setShowDiskAuditModal] = useState(false);
+  const [diskAuditLogs, setDiskAuditLogs] = useState<string[]>([]);
+  const [isLoadingDiskAudit, setIsLoadingDiskAudit] = useState(false);
   const [storageInfo, setStorageInfo] = useState<StorageEstimateInfo | null>(null);
   const [isCleaning, setIsCleaning] = useState(false);
   const [cleanFeedback, setCleanFeedback] = useState<{ message: string; type: 'SUCCESS' | 'INFO' } | null>(null);
   const [autoCleanInterval, setAutoCleanInterval] = useState<number>(() => cacheManager.getAutoCleanInterval());
   const [showHelpAdvice, setShowHelpAdvice] = useState(false);
+
+  const handleOpenDiskAudit = async () => {
+    setShowDiskAuditModal(true);
+    setIsLoadingDiskAudit(true);
+    try {
+      const res = await fetch('/api/logger/audit?limit=200');
+      const data = await res.json();
+      if (data && data.success && Array.isArray(data.logs)) {
+        setDiskAuditLogs(data.logs);
+      }
+    } catch (_) {
+      setDiskAuditLogs(['读取磁盘审计日志失败']);
+    } finally {
+      setIsLoadingDiskAudit(false);
+    }
+  };
 
   // 监听存储状态
   useEffect(() => {
@@ -128,6 +147,25 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
       return logTime >= startMs && logTime <= endMs;
     });
   }, [logs, searchTerm, selectedCategory, selectedChainId, startTime, endTime]);
+
+  // 🛡️ [DOM 节点防爆截流保护]: 默认最多渲染最近 80 条日志到 DOM 树，向下滚动时增量扩充，彻底杜绝 11,000+ 节点导致渲染瓦解
+  const [displayLimit, setDisplayLimit] = useState(80);
+
+  // 当搜索条件或分类 Tab 切换时重置显示条数
+  useEffect(() => {
+    setDisplayLimit(80);
+  }, [selectedCategory, selectedChainId, searchTerm, startTime, endTime]);
+
+  const visibleLogs = useMemo(() => {
+    return filteredLogs.slice(0, displayLimit);
+  }, [filteredLogs, displayLimit]);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    if (scrollHeight - scrollTop - clientHeight < 60 && displayLimit < filteredLogs.length) {
+      setDisplayLimit(prev => Math.min(prev + 50, filteredLogs.length));
+    }
+  };
 
   const formatLastCleanText = (timestamp: number) => {
     if (!timestamp) return '尚未执行';
@@ -252,6 +290,16 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
             <Trash2 size={9} className="text-slate-400 hover:text-red-400 ml-0.5" />
           </button>
 
+          {/* Disk Audit Button */}
+          <button
+            onClick={handleOpenDiskAudit}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/80 text-[10px] transition-all hover:border-emerald-500/50 flex-shrink-0"
+            title="查看追加落盘在本地磁盘 trading_audit.log 的全量对冲与风控日志"
+          >
+            <Download size={10} className="text-emerald-400" />
+            <span>磁盘审计</span>
+          </button>
+
           {/* Divider */}
           <div className="h-3 w-px bg-slate-800 flex-shrink-0" />
 
@@ -301,6 +349,11 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
 
         {/* Right side controls (Export, Search, Clear) */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
+          {filteredLogs.length > 0 && (
+            <span className="text-[10px] text-slate-500 font-normal mr-1 hidden sm:inline-block">
+              {`显示: ${visibleLogs.length} / ${filteredLogs.length}`}
+            </span>
+          )}
           {/* Export CSV Button */}
           <button
             onClick={handleExportCsv}
@@ -373,13 +426,16 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
       </div>
 
       {/* Log Stream Output */}
-      <div className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs pr-1">
-        {filteredLogs.length === 0 && (
+      <div 
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs pr-1"
+      >
+        {visibleLogs.length === 0 && (
           <p className="text-slate-600 italic py-4 text-center">
             {logs.length === 0 ? '系统待机中... (日志将在此实时显示)' : '无匹配当前条件的日志'}
           </p>
         )}
-        {filteredLogs.map((log) => {
+        {visibleLogs.map((log) => {
           const isSelectedChain = selectedChainId && log.chainId === selectedChainId;
           return (
             <div
@@ -483,6 +539,19 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
             </div>
           );
         })}
+        {displayLimit < filteredLogs.length && (
+          <div className="py-2.5 flex items-center justify-center gap-2">
+            <span className="text-slate-500 text-[10px]">
+              已显示 {visibleLogs.length} 条 / 共 {filteredLogs.length} 条 (防爆渲染截流保护已生效)
+            </span>
+            <button
+              onClick={() => setDisplayLimit(prev => Math.min(prev + 100, filteredLogs.length))}
+              className="px-2.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[10px] transition-colors border border-slate-700"
+            >
+              加载更多 (+100条)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ========================================================================= */}
@@ -644,6 +713,72 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
                 className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-white border border-slate-700 transition-colors font-medium"
               >
                 关闭面板
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Disk Audit Logs Modal */}
+      {showDiskAuditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-3xl w-full p-4 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2 text-sm font-bold text-white">
+                <Download size={16} className="text-emerald-400" />
+                <span>本地磁盘审计全量日志 (File Stream / trading_audit.log)</span>
+              </div>
+              <button
+                onClick={() => setShowDiskAuditModal(false)}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="text-[11px] text-slate-400 py-2 border-b border-slate-800/60 flex items-center justify-between">
+              <span>💡 所有实盘开平仓、对冲触发、风控与行情异常均由后台进程实时写入磁盘，绝不常驻渲染内存。</span>
+              <button
+                onClick={handleOpenDiskAudit}
+                disabled={isLoadingDiskAudit}
+                className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 text-[10px]"
+              >
+                <RefreshCw size={10} className={isLoadingDiskAudit ? 'animate-spin text-emerald-400' : 'text-emerald-400'} />
+                <span>刷新</span>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto font-mono text-xs p-2 bg-black/60 rounded-lg border border-slate-800/80 my-3 space-y-1">
+              {isLoadingDiskAudit && (
+                <div className="text-center py-8 text-slate-400">正在从磁盘读取最新审计日志...</div>
+              )}
+              {!isLoadingDiskAudit && diskAuditLogs.length === 0 && (
+                <div className="text-center py-8 text-slate-500">暂无磁盘审计日志记录</div>
+              )}
+              {!isLoadingDiskAudit && diskAuditLogs.map((line, idx) => (
+                <div
+                  key={idx}
+                  className={`p-1 rounded text-[11px] leading-relaxed break-all ${
+                    line.includes('[DANGER]') || line.includes('[ERROR]') || line.includes('异常')
+                      ? 'text-red-400 bg-red-950/20'
+                      : line.includes('[HEDGE]') || line.includes('对冲')
+                      ? 'text-purple-300 bg-purple-950/20'
+                      : line.includes('[SUCCESS]') || line.includes('成交')
+                      ? 'text-emerald-300 bg-emerald-950/20'
+                      : 'text-slate-300'
+                  }`}
+                >
+                  {line}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-800">
+              <button
+                onClick={() => setShowDiskAuditModal(false)}
+                className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-white border border-slate-700 transition-colors font-medium"
+              >
+                关闭
               </button>
             </div>
           </div>

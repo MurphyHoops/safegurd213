@@ -102,7 +102,7 @@ self.onmessage = async (e) => {
                 pos.minPnLPercent = Math.min(pos.minPnLPercent || 0, pos.unrealizedPnLPercentage);
 
                 // Update EMA Baseline for Rule 3 (Auto-sensing next timeframe)
-                if (settings.profit?.enabled && (settings.profit.profitMode === 'ATR' || settings.profit.oEnabledMap?.['ATR'])) {
+                if (settings.profit?.enabled && settings.profit.oEnabledMap?.['ATR']) {
                     const atrSettings = settings.profit.atr;
                     if (atrSettings?.emaEnabled) {
                         let tf = atrSettings.emaTimeframe;

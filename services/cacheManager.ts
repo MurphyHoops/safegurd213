@@ -23,7 +23,7 @@ export interface StorageEstimateInfo {
     lastCleanTime: number;
 }
 
-// 核心保护白名单（绝对不可删除的用户关键数据与扫描器活跃底池）
+// 核心保护白名单（绝对不可删除的用户关键数据、策略参数配置与持仓）
 const PROTECTED_KEY_PREFIXES = [
     'SAVIOR_SETTINGS',
     'BINANCE_API_KEY',
@@ -34,18 +34,13 @@ const PROTECTED_KEY_PREFIXES = [
     'SCANNER_ACTIVE_MODE',
     'SCANNER_ROTATION',
     'SCANNER_CONFIG_',
-    'SCANNER_LIST1_',
+    'SCANNER_LIST1_CONFIG_',
     'SCANNER_LIST2_CONFIG_',
     'SCANNER_LIST3_CONFIG_',
     'SCANNER_LIST4_CONFIG_',
     'SCANNER_ACTION_CONFIG_',
-    'SCANNER_RAW_DATA',
-    'SCANNER_LIST2_CACHE',
-    'SCANNER_LIST3_CACHE',
-    'SCANNER_LIST4_RESULTS',
-    'SCANNER_SIDEWAYS_FILTERED_POOL',
-    'SCANNER_MAJOR_TREND_CANDIDATES',
     'SAVIOR_TRADE_LOGS',
+    'SAVIOR_POSITIONS',
     'SAVIOR_IS_SIMULATING',
     'SAVIOR_AUTO_CLEAN_INTERVAL',
     'SAVIOR_LAST_AUTO_CLEAN_TIME',
@@ -201,6 +196,11 @@ class CacheManagerService {
                         key.startsWith('scanner_history_') ||
                         key.startsWith('SAVIOR_COOLDOWNS') ||
                         key.startsWith('TEMP_') ||
+                        key === 'SAVIOR_CRASH_BLACKBOX' ||
+                        key === 'SAVIOR_FLIGHT_RECORDER' ||
+                        key === 'SAVIOR_CLEAN_EXIT' ||
+                        key === 'SAVIOR_CRASH_COUNT' ||
+                        key === 'SAVIOR_LAST_CRASH_TIME' ||
                         key.includes('cache') ||
                         mode === 'DEEP'
                     ) {
@@ -249,6 +249,12 @@ class CacheManagerService {
                     delete (window as any).__KLINE_CACHE__;
                     delete (window as any).__PRICE_HISTORY_CACHE__;
                     delete (window as any).__TEMP_CHART_TICKS__;
+                } catch (_) {}
+            }
+
+            if (mode === 'DEEP' && typeof fetch !== 'undefined') {
+                try {
+                    fetch('/api/monitor/crash-report', { method: 'DELETE' }).catch(() => {});
                 } catch (_) {}
             }
 

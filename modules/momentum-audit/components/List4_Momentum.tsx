@@ -120,6 +120,8 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                             return {
                                 symbol: i.symbol,
                                 timeframe: i.tf || '15m',
+                                direction: i.direction,
+                                side: i.direction,
                                 signals: i.structure?.signalTime ? [{ time: i.structure.signalTime, type: i.direction as any }] : [],
                                 entryPrice: i.structure?.signalPrice,
                                 entryTime: i.structure?.signalTime,

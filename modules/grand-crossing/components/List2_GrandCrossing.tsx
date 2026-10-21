@@ -3,7 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { List2Config, ScannerItem, ScanConfig, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { List2Control } from './Control';
 import { List2Item } from './Item';
-import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History, ArrowUpDown } from 'lucide-react';
+import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History, ArrowUpDown, Lock } from 'lucide-react';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { ScannerHistoryModal, useAutoHistoryLogger } from '../../momentum-audit/components/ScannerHistoryModal';
 import { TimeframeDiagnosticRecord } from '../types';
@@ -27,8 +27,10 @@ interface Props {
     activeScanTfs?: Set<string>; // New prop
     scanningSymbols?: Record<string, string>;
     diagnostics?: Record<string, TimeframeDiagnosticRecord>;
+    totalScanCount?: number;
     onRemoveItem: (symbol: string) => void;
     onClearItems: () => void;
+    activePositions?: any[];
 }
 
 const TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
@@ -37,7 +39,7 @@ const getTfWeight = (tf: string) => {
     return idx !== -1 ? idx : 99;
 };
 
-const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, allList2, setChartData, pollingStatus, activeScanTfs, scanningSymbols, diagnostics, onRemoveItem, onClearItems }) => {
+const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, filteredList2, allList2, setChartData, pollingStatus, activeScanTfs, scanningSymbols, diagnostics, totalScanCount = 0, onRemoveItem, onClearItems, activePositions }) => {
     
     // Auto History Logger for List 2 (Grand Crossing) - track all active signals across all timeframes
     useAutoHistoryLogger('LIST2', allList2 || filteredList2 || []);
@@ -49,6 +51,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     };
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
+    const [isHoldingStandbyExpanded, setIsHoldingStandbyExpanded] = useState(true);
 
     // Separate Lists and filter groupedResults by direction for strict separation with 100% deduplication
     const { longs, shorts } = useMemo(() => {
@@ -134,6 +137,38 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
         return list;
     }, [rawDisplayList, config?.sortMode, config?.tfSortOrder]);
 
+    // Active open position symbols for position standby buffer
+    const openPositionSymbols = useMemo(() => {
+        const set = new Set<string>();
+        (activePositions || []).forEach(p => {
+            if (p && p.symbol) {
+                const isHolding = (typeof p.amount === 'number' && p.amount > 0) ||
+                                  (typeof p.contracts === 'number' && Math.abs(p.contracts) > 0) ||
+                                  (typeof p.positionAmt === 'number' && Math.abs(p.positionAmt) > 0);
+                if (isHolding) {
+                    set.add(normalizeSymbol(p.symbol));
+                }
+            }
+        });
+        return set;
+    }, [activePositions]);
+
+    // Separate displayList into normalList and holdingStandbyList
+    const { normalList, holdingStandbyList } = useMemo(() => {
+        const norm: ScannerItem[] = [];
+        const hold: ScannerItem[] = [];
+        (displayList || []).forEach(item => {
+            if (!item || !item.symbol) return;
+            const normSym = normalizeSymbol(item.symbol);
+            if (openPositionSymbols.has(normSym)) {
+                hold.push(item);
+            } else {
+                norm.push(item);
+            }
+        });
+        return { normalList: norm, holdingStandbyList: hold };
+    }, [displayList, openPositionSymbols]);
+
     // Defensive: Handle missing config
     if (!config) return <div className="p-4 text-xs text-red-500">List 2 Config Error</div>;
 
@@ -158,6 +193,8 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                 scanningSymbols={scanningSymbols}
                 pollingStatus={pollingStatus}
                 diagnostics={diagnostics}
+                totalScanCount={totalScanCount}
+                list2Items={allList2 || filteredList2}
                 setChartData={setChartData}
             />
             
@@ -367,7 +404,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar bg-slate-950/20">
-                {displayList.map((item, idx) => (
+                {normalList.map((item, idx) => (
                     item ? (
                         <List2Item 
                             key={`${item.symbol}-${item.direction || 'ALL'}-${idx}`} 
@@ -380,9 +417,60 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         />
                     ) : null
                 ))}
-                {displayList.length === 0 && (
+                {normalList.length === 0 && holdingStandbyList.length === 0 && (
                     <div className="flex flex-col items-center justify-center h-24 text-slate-600 opacity-50">
                         <span className="text-[10px]">该方向暂无信号</span>
+                    </div>
+                )}
+
+                {/* 🔒 [持仓中形态避让 - 临时存放表格]: 已开仓币种避让暂停下发列表3/4，遵从列表2同款存续与死叉规则 */}
+                {holdingStandbyList.length > 0 && (
+                    <div className="mt-3 border-t border-amber-500/30 pt-2 animate-in fade-in">
+                        <button
+                            type="button"
+                            onClick={() => setIsHoldingStandbyExpanded(p => !p)}
+                            className="w-full bg-amber-950/40 hover:bg-amber-900/50 border border-amber-500/40 p-2 rounded-lg flex items-center justify-between transition-all cursor-pointer shadow-inner mb-2"
+                        >
+                            <div className="flex items-center gap-1.5 text-[10px] font-bold text-amber-300">
+                                <Lock size={12} className="text-amber-400 animate-pulse" />
+                                <span>🔒 持仓中形态避让 (临时存放)</span>
+                                <span className="px-1.5 py-0.2 bg-amber-500/30 text-amber-200 rounded text-[9px] font-mono font-bold border border-amber-400/30">
+                                    {holdingStandbyList.length}
+                                </span>
+                            </div>
+                            <span className="text-[9px] text-amber-400/80 font-mono">
+                                {isHoldingStandbyExpanded ? '点击折叠 ▲' : '点击展开 ▼'}
+                            </span>
+                        </button>
+
+                        {isHoldingStandbyExpanded && (
+                            <div className="space-y-1.5 pl-1 border-l-2 border-amber-500/30">
+                                <div className="text-[8.5px] text-amber-400/70 px-1 mb-1 font-mono">
+                                    ※ 已开仓币种避让暂停下发列表3/4，遵从列表2同款寿命根数与反向死叉清理规则
+                                </div>
+                                {holdingStandbyList.map((item, idx) => (
+                                    item ? (
+                                        <div key={`standby-${item.symbol}-${idx}`} className="relative rounded-lg border border-amber-500/40 bg-amber-950/20 p-1 shadow-sm">
+                                            <div className="flex items-center justify-between text-[8.5px] font-bold text-amber-300 bg-amber-900/40 px-2 py-0.5 rounded mb-1 border border-amber-500/30">
+                                                <span className="flex items-center gap-1">
+                                                    <Lock size={9} />
+                                                    <span>持仓避让中 (已建仓)</span>
+                                                </span>
+                                                <span className="opacity-80">多周期发散观察中</span>
+                                            </div>
+                                            <List2Item 
+                                                item={item}
+                                                config={config}
+                                                activeFilterTf={activeFilterTf}
+                                                setChartData={setChartData}
+                                                onRemove={() => onRemoveItem(item.symbol)}
+                                                idx={idx}
+                                            />
+                                        </div>
+                                    ) : null
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

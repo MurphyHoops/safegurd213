@@ -21,7 +21,12 @@ const DEFAULT_CONFIG: ActionConfig = {
         minDropPercent: 3,
         minCoinsPercent: 50,
         autoRecoverMinutes: 30
-    }
+    },
+    autoReopenEnabled: false,
+    reopenBullBearFilter: '1h_ema80',
+    reopenPullbackLimitPct: 3.0,
+    reopenTakeProfitOnly: true,
+    reopenMaxConsecutiveLosses: 2
 };
 
 export const useTacticalCommand = (strategyId?: string) => {

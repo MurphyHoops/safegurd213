@@ -3,7 +3,8 @@
 > **STRICT COMPLIANCE FOR ALL FUTURE TURNS**:
 > 1. **未授权绝不触碰**：没有用户下达明确指令要修改或增加的地方，绝对不触碰、不篡改、不优化、不重构。
 > 2. **跨模块/联动修改先请示确认**：如果因为代码或业务逻辑需要涉及其它地方增加或修改内容的，**必须先明确向用户提示说明原因与影响，待用户明确确认后，方可进行修改**。严禁擅自做主！
-> 3. All functional modules are decoupled into atomic units. 
+> 3. **杠杆倍数计算铁律**：整个系统在计算关于杠杆倍数时，除了几条统计栏里可用余额要接入杠杆倍数计算，其它任何盈亏比例，止盈止损算法，按实际比例（价格真实变动百分比）计算，一律不接入杠杆倍数计算。
+> 4. All functional modules are decoupled into atomic units. 
 > DO NOT touch, refactor, reorganize, or alter any module, service, rule, or UI unless explicitly instructed by the user in the prompt.
 > Unrequested modifications are strictly prohibited.
 > 

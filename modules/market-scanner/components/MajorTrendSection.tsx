@@ -895,12 +895,12 @@ export const MajorTrendSection: React.FC<Props> = ({
                                 <div className="flex items-center gap-1">
                                     {isMajorScanning && majorProgress.stage === 'group2' ? (
                                         <Loader2 size={10} className="text-indigo-400 animate-spin shrink-0" />
-                                    ) : (majorProgress.stage === 'completed' || majorProgress.group2Total !== undefined) ? (
+                                    ) : (majorProgress.stage === 'completed' || majorProgress.stage === 'group3' || majorProgress.group2Total !== undefined) ? (
                                         <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
                                     ) : (
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
                                     )}
-                                    <span className={isMajorScanning && majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'completed' || majorProgress.group2Total !== undefined) ? 'text-slate-300 font-medium' : 'text-slate-500'}>
+                                    <span className={isMajorScanning && majorProgress.stage === 'group2' ? 'text-indigo-300 font-bold' : (majorProgress.stage === 'completed' || majorProgress.stage === 'group3' || majorProgress.group2Total !== undefined) ? 'text-slate-300 font-medium' : 'text-slate-500'}>
                                         第二组: 回溯周期过滤 (横盘蓄势底池)
                                     </span>
                                 </div>
@@ -913,7 +913,7 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             <span className="text-slate-600 mx-1">/</span>
                                             <span className="text-emerald-400 font-bold" title="已符合回溯周期规则个数">{majorProgress.group2Passed || 0}</span>
                                         </span>
-                                    ) : (majorProgress.stage === 'completed' || majorProgress.group2Total !== undefined) ? (
+                                    ) : (majorProgress.stage === 'completed' || majorProgress.stage === 'group3' || majorProgress.group2Total !== undefined) ? (
                                         <span className="text-emerald-400 font-bold">
                                             <span className="text-slate-400" title="横盘蓄势底池总数">{majorProgress.group2Total ?? majorProgress.group1Passed ?? 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
@@ -924,6 +924,51 @@ export const MajorTrendSection: React.FC<Props> = ({
                                     ) : majorProgress.stage === 'group1' ? (
                                         <span className="text-slate-500 font-mono text-[8.5px]">
                                             <span>{majorProgress.group1Passed || 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-slate-600">0</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-slate-600">0</span>
+                                        </span>
+                                    ) : (
+                                        <span className="text-slate-600">⏳ 等待中</span>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Step 3: Anti-Chase Fuse Filter (第三组: 防追高熔断 - 扫描回溯周期底池) */}
+                            <div className="flex items-center justify-between py-0.5 border-t border-slate-900/40 pt-1 text-[9px]">
+                                <div className="flex items-center gap-1">
+                                    {isMajorScanning && majorProgress.stage === 'group3' ? (
+                                        <Loader2 size={10} className="text-red-400 animate-spin shrink-0" />
+                                    ) : (majorProgress.stage === 'completed' || (majorProgress as any).group3Total !== undefined) ? (
+                                        <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
+                                    ) : (
+                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-800 shrink-0 inline-block ml-[2px]" />
+                                    )}
+                                    <span className={isMajorScanning && majorProgress.stage === 'group3' ? 'text-red-300 font-bold' : (majorProgress.stage === 'completed' || (majorProgress as any).group3Total !== undefined) ? 'text-slate-300 font-medium' : 'text-slate-500'}>
+                                        第三组: 初筛极值拦截 (回溯周期底池)
+                                    </span>
+                                </div>
+                                <div className="font-mono text-right shrink-0">
+                                    {isMajorScanning && majorProgress.stage === 'group3' ? (
+                                        <span className="text-red-300 font-bold">
+                                            <span className="text-slate-400" title="回溯周期底池总数">{(majorProgress as any).group3Total ?? majorProgress.group2Passed ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-red-300 font-bold" title="当前极值拦截筛选进度">{(majorProgress as any).group3Current ?? majorProgress.current ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-emerald-400 font-bold" title="已符合极值拦截规则个数">{(majorProgress as any).group3Passed || 0}</span>
+                                        </span>
+                                    ) : (majorProgress.stage === 'completed' || (majorProgress as any).group3Total !== undefined) ? (
+                                        <span className="text-emerald-400 font-bold">
+                                            <span className="text-slate-400" title="回溯周期底池总数">{(majorProgress as any).group3Total ?? majorProgress.group2Passed ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-slate-400" title="全部已筛选完成">{(majorProgress as any).group3Total ?? majorProgress.group2Passed ?? 0}</span>
+                                            <span className="text-slate-600 mx-1">/</span>
+                                            <span className="text-emerald-400 font-bold" title="已符合极值拦截规则个数">{(majorProgress as any).group3Passed ?? (majorProgress.group2Passed || 0)}</span>
+                                        </span>
+                                    ) : (majorProgress.stage === 'group1' || majorProgress.stage === 'group2') ? (
+                                        <span className="text-slate-500 font-mono text-[8.5px]">
+                                            <span>{majorProgress.group2Passed || 0}</span>
                                             <span className="text-slate-600 mx-1">/</span>
                                             <span className="text-slate-600">0</span>
                                             <span className="text-slate-600 mx-1">/</span>

@@ -165,8 +165,8 @@ const resolveItemFuseInfo = (item: ScannerItem, config?: List4Config): ParsedFus
         };
     }
 
-    // E. Breakout Over-Deviation: 超出进攻突破线 0.5% 缓冲区 [现价 0.160100 > 上限 0.159300]
-    const devMatch = reason.match(/(?:超出|跌破)进攻突破线\s*([\d\.]+)%\s*缓冲区\s*\[现价\s*([\d\.]+)\s*(?:>|<)\s*(?:上限|下限)\s*([\d\.]+)\]/);
+    // E. Breakout Over-Deviation: 超出进攻突破线 100% 振幅缓冲区 [现价 0.160100 > 上限 0.159300]
+    const devMatch = reason.match(/(?:超出|跌破)进攻突破线\s*([\d\.]+)%\s*(?:振幅)?缓冲区\s*\[现价\s*([\d\.]+)\s*(?:>|<)\s*(?:上限|下限)\s*([\d\.]+)\]/);
     if (devMatch) {
         const devPct = parseFloat(devMatch[1]);
         const curPrice = parseFloat(devMatch[2]);
@@ -176,7 +176,7 @@ const resolveItemFuseInfo = (item: ScannerItem, config?: List4Config): ParsedFus
             ruleName: '突破偏离过大拦截',
             paramName: '进攻突破线偏离上限',
             period: item.tf || '30m',
-            threshold: `${devPct}% (上限 ${limitPrice})`,
+            threshold: `${devPct}% 振幅 (限制 ${limitPrice})`,
             actual: `现价 ${curPrice}`,
             diff: `超出 +${priceDiffPct}%`,
             diffType: 'excess',
@@ -459,6 +459,8 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
         setChartData({ 
             symbol: item.symbol, 
             tf: tf, 
+            direction: item.direction,
+            side: item.direction,
             signals: item.structure?.signalTime ? [{ time: item.structure.signalTime, type: item.direction as any }] : [],
             entryPrice: item.structure?.signalPrice,
             entryTime: item.structure?.signalTime,

@@ -163,13 +163,27 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
         };
 
         const handleUpstreamPoolUpdated = () => {
-            // 当上游回溯周期底池/横盘底池/行情启动底池更新时，触发刷新目标币种
-            if (isMountedRef.current && config.enabled) {
-                console.log('[BreakoutPoolBox] 上游流水闸底池已更新，自动对齐最新候选币种...');
+            // 当上游流水闸底池更新时，严格对齐当前候选币种
+            if (isMountedRef.current) {
+                const targetSymbols = getTargetSymbols();
+                const targetSet = new Set(targetSymbols.map(s => s.toUpperCase()));
+                setPool(prev => {
+                    const filtered = prev.filter(s => targetSet.has(s.toUpperCase()));
+                    if (filtered.length !== prev.length) {
+                        try {
+                            localStorage.setItem('SCANNER_BREAKOUT_FILTERED_POOL', JSON.stringify(filtered));
+                        } catch (_) {}
+                        queueMicrotask(() => {
+                            window.dispatchEvent(new CustomEvent('scanner_breakout_pool_updated', { detail: filtered }));
+                        });
+                    }
+                    return filtered;
+                });
             }
         };
 
         window.addEventListener('scanner_breakout_pool_updated', handlePoolUpdated);
+        window.addEventListener('scanner_anti_chase_pool_updated', handleUpstreamPoolUpdated);
         window.addEventListener('scanner_lookback_pool_updated', handleUpstreamPoolUpdated);
         window.addEventListener('scanner_major_trend_candidates_updated', handleUpstreamPoolUpdated);
         window.addEventListener('scanner_sideways_pool_updated', handleUpstreamPoolUpdated);
@@ -179,6 +193,7 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
         return () => {
             isMountedRef.current = false;
             window.removeEventListener('scanner_breakout_pool_updated', handlePoolUpdated);
+            window.removeEventListener('scanner_anti_chase_pool_updated', handleUpstreamPoolUpdated);
             window.removeEventListener('scanner_lookback_pool_updated', handleUpstreamPoolUpdated);
             window.removeEventListener('scanner_major_trend_candidates_updated', handleUpstreamPoolUpdated);
             window.removeEventListener('scanner_sideways_pool_updated', handleUpstreamPoolUpdated);
@@ -189,65 +204,100 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
 
     // 获取上游输入候选底池 (严格遵循流水闸一级一级向上获取数据，未开启则向上穿透)
     const getTargetSymbols = (): string[] => {
-        let targetSymbols: string[] = [];
         try {
             const cfg = (scanConfig.majorTrend || {}) as any;
+            let enableAntiChase = scanConfig.antiChaseFilter?.enabled !== undefined
+                ? Boolean(scanConfig.antiChaseFilter.enabled)
+                : scanConfig.majorTrend?.antiChaseFilter?.enabled !== undefined
+                    ? Boolean(scanConfig.majorTrend.antiChaseFilter.enabled)
+                    : true;
+            try {
+                const storedAntiChase = localStorage.getItem('SCANNER_ANTI_CHASE_CONFIG');
+                if (storedAntiChase) {
+                    const parsed = JSON.parse(storedAntiChase);
+                    if (parsed && typeof parsed.enabled === 'boolean') {
+                        // 优先响应当前父组件与面板开关传递的状态
+                        if (scanConfig.antiChaseFilter?.enabled === undefined && scanConfig.majorTrend?.antiChaseFilter?.enabled === undefined) {
+                            enableAntiChase = parsed.enabled;
+                        }
+                    }
+                }
+            } catch (_) {}
+
             const enableLookback = cfg.enableLookbackFilter !== false;
             const enableSideways = cfg.enableSideways !== false;
             const enableStart = Boolean(cfg.enableStartTrendLong || cfg.enableStartTrendShort);
 
-            // 1. 若回溯周期过滤开启：首选从“回溯周期过滤底池”获取
+            // 1. 🛡️ 若防追高熔断开启：上游必须且仅能从“防追高熔断底池”获取 (第三组)！
+            // 核心铁律：只要防追高开启，绝不可跳过或穿透回溯周期，只有通过防追高的币种才能进入趋势爆发过滤！
+            if (enableAntiChase) {
+                const rawAntiChase = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                const parsedAntiChase = rawAntiChase ? JSON.parse(rawAntiChase) : [];
+                if (Array.isArray(parsedAntiChase)) {
+                    const syms = parsedAntiChase.map((item: any) => 
+                        (typeof item === 'string' ? item : item.symbol || item.fullSymbol || '')
+                    ).map((s: string) => s.replace(/_LONG$|_SHORT$/i, '').trim()).filter(Boolean);
+                    return Array.from(new Set(syms));
+                }
+                return [];
+            }
+
+            // 2. 🌊 仅当防追高熔断【未开启】时，向上穿透至“回溯周期过滤底池” (第二组)
             if (enableLookback) {
                 const rawLookback = localStorage.getItem('SCANNER_LOOKBACK_FILTERED_POOL');
                 const parsedLookback = rawLookback ? JSON.parse(rawLookback) : [];
                 if (Array.isArray(parsedLookback) && parsedLookback.length > 0) {
-                    targetSymbols = parsedLookback.map((item: any) => 
+                    const syms = parsedLookback.map((item: any) => 
                         (typeof item === 'string' ? item : item.symbol || item.fullSymbol || '')
                     ).map((s: string) => s.replace(/_LONG$|_SHORT$/i, '').trim()).filter(Boolean);
+                    return Array.from(new Set(syms));
                 } else {
-                    // 兼容旧标识
                     const rawLegacy = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
                     const parsedLegacy = rawLegacy ? JSON.parse(rawLegacy) : [];
                     if (Array.isArray(parsedLegacy) && parsedLegacy.length > 0) {
-                        targetSymbols = parsedLegacy.map((s: string) => s.replace(/_LONG$|_SHORT$/i, '').trim()).filter(Boolean);
+                        const syms = parsedLegacy.map((s: string) => s.replace(/_LONG$|_SHORT$/i, '').trim()).filter(Boolean);
+                        return Array.from(new Set(syms));
                     }
                 }
+                return [];
             }
 
-            // 2. 若回溯周期未开启或数据为空，向上追溯至“横盘蓄势过滤底池”
-            if (targetSymbols.length === 0 && enableSideways) {
+            // 3. 🌊 仅当回溯周期也【未开启】时，向上穿透至“横盘蓄势过滤底池”
+            if (enableSideways) {
                 const rawSideways = localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL');
                 const parsedSideways = rawSideways ? JSON.parse(rawSideways) : [];
-                if (Array.isArray(parsedSideways) && parsedSideways.length > 0) {
-                    targetSymbols = parsedSideways.map((p: any) => (typeof p === 'string' ? p : p.symbol)).filter(Boolean);
+                if (Array.isArray(parsedSideways)) {
+                    const syms = parsedSideways.map((p: any) => (typeof p === 'string' ? p : p.symbol)).filter(Boolean);
+                    return Array.from(new Set(syms));
                 }
+                return [];
             }
 
-            // 3. 若横盘蓄势也未开启，向上追溯至“行情启动底池”
-            if (targetSymbols.length === 0 && enableStart) {
+            // 4. 🌊 仅当横盘蓄势也【未开启】时，向上穿透至“行情启动底池”
+            if (enableStart) {
                 const rawStart = localStorage.getItem('SCANNER_START_TREND_POOL');
                 const parsedStart = rawStart ? JSON.parse(rawStart) : [];
-                if (Array.isArray(parsedStart) && parsedStart.length > 0) {
-                    targetSymbols = parsedStart.map((p: any) => (typeof p === 'string' ? p : p.symbol)).filter(Boolean);
+                if (Array.isArray(parsedStart)) {
+                    const syms = parsedStart.map((p: any) => (typeof p === 'string' ? p : p.symbol)).filter(Boolean);
+                    return Array.from(new Set(syms));
                 }
+                return [];
             }
 
-            // 4. 若以上均未开启，向上追溯至基础“交易额过滤底池”
-            if (targetSymbols.length === 0) {
-                const rawVol = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
-                const parsedVol = rawVol ? JSON.parse(rawVol) : [];
-                if (Array.isArray(parsedVol) && parsedVol.length > 0) {
-                    targetSymbols = parsedVol.map((p: any) => (typeof p === 'string' ? p : p.symbol || p)).filter(Boolean);
-                }
+            // 5. 🌊 仅当以上均【未开启】时，向上穿透至基础“交易额过滤底池”
+            const rawVol = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+            const parsedVol = rawVol ? JSON.parse(rawVol) : [];
+            if (Array.isArray(parsedVol)) {
+                const syms = parsedVol.map((p: any) => (typeof p === 'string' ? p : p.symbol || p)).filter(Boolean);
+                return Array.from(new Set(syms));
             }
         } catch (_) {}
 
-        if (targetSymbols.length === 0 && candidateSymbols && candidateSymbols.length > 0) {
-            targetSymbols = candidateSymbols;
+        if (candidateSymbols && candidateSymbols.length > 0) {
+            return Array.from(new Set(candidateSymbols));
         }
 
-        // 去重并确保格式标准
-        return Array.from(new Set(targetSymbols.filter(Boolean)));
+        return [];
     };
 
     // 🔄 核心：单币三项并发 · 1秒1币稳健巡检 · 满足任一即入池 · 批次完成后原子差量更新
@@ -375,10 +425,12 @@ export const BreakoutPoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, ca
                     setStep2Passed(batchStep2Passed);
                     setStep3Passed(batchStep3Passed);
 
-                    const deduplicatedPool = Array.from(new Set(batchFinalPool));
+                    const deduplicatedPool = Array.from(new Set(batchFinalPool)).filter(s => targetSymbols.includes(s));
                     setPool(deduplicatedPool);
                     localStorage.setItem('SCANNER_BREAKOUT_FILTERED_POOL', JSON.stringify(deduplicatedPool));
-                    window.dispatchEvent(new CustomEvent('scanner_breakout_pool_updated', { detail: deduplicatedPool }));
+                    queueMicrotask(() => {
+                        window.dispatchEvent(new CustomEvent('scanner_breakout_pool_updated', { detail: deduplicatedPool }));
+                    });
 
                     // 一轮完成后平稳等待 1.5 秒，无缝开启下一轮稳健巡检
                     await sleep(1500);

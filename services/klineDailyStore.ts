@@ -9,6 +9,8 @@
  */
 
 import { klineMultiTfStore } from './klineMultiTfStore';
+import { fetchWithFallback } from './apiService';
+import { KLineSynthesizer } from './klineSynthesizer';
 
 export interface CachedKlineEntry {
     symbol: string;
@@ -324,15 +326,31 @@ class KlineDailyStore {
         tickers.forEach(t => {
             if (!t || !t.symbol) return;
             const norm = this.normalizeSym(t.symbol);
+            const existing = this.tickerMemoryMap.get(t.symbol) || this.tickerMemoryMap.get(norm);
+
+            const incomingLastPrice = String(t.lastPrice || t.price || t.close || '0');
+            const incomingOpenPrice = String(t.openPrice || t.open || '0');
+            const incomingHighPrice = String(t.highPrice || t.high || '0');
+            const incomingLowPrice = String(t.lowPrice || t.low || '0');
+            const incomingVol = String(t.volume || '0');
+            const incomingQuoteVol = String(t.quoteVolume || t.quoteAssetVolume || '0');
+            const incomingChange = String(t.priceChangePercent || '0');
+
+            // 🔒 [防暴跌归零防护]: 若推送的数据没有成交额或为0，但内存已存有真实成交额，坚决继承既有真实成交额，绝不篡改归零！
+            const safeQuoteVol = (parseFloat(incomingQuoteVol) > 0 || !existing) ? incomingQuoteVol : existing.quoteVolume;
+            const safeVol = (parseFloat(incomingVol) > 0 || !existing) ? incomingVol : existing.volume;
+            const safeChange = (incomingChange !== '0' || !existing) ? incomingChange : existing.priceChangePercent;
+            const safeLastPrice = (parseFloat(incomingLastPrice) > 0 || !existing) ? incomingLastPrice : existing.lastPrice;
+
             const entry: CachedTickerEntry = {
                 symbol: t.symbol,
-                lastPrice: String(t.lastPrice || t.price || t.close || '0'),
-                openPrice: String(t.openPrice || t.open || '0'),
-                highPrice: String(t.highPrice || t.high || '0'),
-                lowPrice: String(t.lowPrice || t.low || '0'),
-                volume: String(t.volume || '0'),
-                quoteVolume: String(t.quoteVolume || t.quoteAssetVolume || '0'),
-                priceChangePercent: String(t.priceChangePercent || '0'),
+                lastPrice: safeLastPrice,
+                openPrice: incomingOpenPrice !== '0' ? incomingOpenPrice : (existing?.openPrice || safeLastPrice),
+                highPrice: incomingHighPrice !== '0' ? incomingHighPrice : (existing?.highPrice || safeLastPrice),
+                lowPrice: incomingLowPrice !== '0' ? incomingLowPrice : (existing?.lowPrice || safeLastPrice),
+                volume: safeVol,
+                quoteVolume: safeQuoteVol,
+                priceChangePercent: safeChange,
                 timestamp: now
             };
 
@@ -342,7 +360,16 @@ class KlineDailyStore {
             rawList.push(entry);
         });
 
-        this.rawTickersList = rawList;
+        // 🔒 [全量增量无缝防蒸发铁律]: 
+        // 增量更新内存 Map 中已存在的币种；当传入的是局部/分片 WS 推送时，
+        // rawTickersList 必须基于 tickerMemoryMap 保留全量约 350+ 币种，绝不因局部增量推送而覆盖清空全量池！
+        const uniqueEntries = new Map<string, CachedTickerEntry>();
+        this.tickerMemoryMap.forEach(v => {
+            if (v && v.symbol) {
+                uniqueEntries.set(v.symbol, v);
+            }
+        });
+        this.rawTickersList = Array.from(uniqueEntries.values());
 
         // 防抖异步批量持久化至 IndexedDB (5秒防抖批处理，绝不阻塞主线程)
         if (this.db && !this.tickerSaveTimer) {
@@ -454,8 +481,8 @@ class KlineDailyStore {
         const tasks: { sym: string; tf: string }[] = [];
         for (const sym of uniqueSymbols) {
             for (const tf of timeframes) {
-                const existing = this.getShortlistKlineSync(sym, tf, 50);
-                if (!existing || existing.length < 50) {
+                const existing = this.getShortlistKlineSync(sym, tf, 200);
+                if (!existing || existing.length < 200) {
                     tasks.push({ sym, tf });
                 }
             }
@@ -470,17 +497,64 @@ class KlineDailyStore {
             await Promise.all(batch.map(async ({ sym, tf }) => {
                 try {
                     const safeSym = sym.endsWith('USDT') ? sym : `${sym}USDT`;
-                    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=${tf}&limit=${limit}&isScanner=true`;
-                    const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}&priority=normal`);
-                    if (res.ok) {
-                        const data = await res.json();
+                    let data: any = null;
+
+                    if (tf === '10m') {
+                        // 基于 5m K线合成 10m
+                        const klines5m = this.getShortlistKlineSync(safeSym, '5m', 100);
+                        let source5m = klines5m;
+                        if (!source5m || source5m.length < 100) {
+                            const url5m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=5m&limit=${limit * 2}&isScanner=true`;
+                            try {
+                                const res = await fetch(`/api/proxy?url=${encodeURIComponent(url5m)}&priority=normal`);
+                                if (res.ok) source5m = await res.json();
+                            } catch (_) {}
+                            if (!Array.isArray(source5m) || source5m.length === 0) {
+                                try {
+                                    const res2 = await fetchWithFallback(url5m, { cache: "no-store", timeout: 4000, priority: 'NORMAL' }, (d) => Array.isArray(d));
+                                    if (res2.ok) source5m = await res2.json();
+                                } catch (_) {}
+                            }
+                            if (Array.isArray(source5m) && source5m.length > 0) {
+                                this.saveShortlistMultiTfKlines(safeSym, '5m', source5m);
+                            }
+                        }
+
+                        if (Array.isArray(source5m) && source5m.length > 0) {
+                            const formatted5m = source5m.map((k: any) => ({
+                                time: Number(k.time || k[0]),
+                                open: parseFloat(k.open || k[1]) || 0,
+                                high: parseFloat(k.high || k[2]) || 0,
+                                low: parseFloat(k.low || k[3]) || 0,
+                                close: parseFloat(k.close || k[4]) || 0,
+                                volume: parseFloat(k.volume || k[5]) || 0,
+                            }));
+                            const synth10m = KLineSynthesizer.synthesize(formatted5m, 10);
+                            if (synth10m.length > 0) {
+                                this.saveShortlistMultiTfKlines(safeSym, '10m', synth10m);
+                            }
+                        }
+                    } else {
+                        const targetUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=${tf}&limit=${limit}&isScanner=true`;
+                        try {
+                            const res = await fetch(`/api/proxy?url=${encodeURIComponent(targetUrl)}&priority=normal`);
+                            if (res.ok) data = await res.json();
+                        } catch (_) {}
+
+                        if (!Array.isArray(data) || data.length === 0) {
+                            try {
+                                const res2 = await fetchWithFallback(targetUrl, { cache: "no-store", timeout: 4000, priority: 'NORMAL' }, (d) => Array.isArray(d));
+                                if (res2.ok) data = await res2.json();
+                            } catch (_) {}
+                        }
+
                         if (Array.isArray(data) && data.length > 0) {
                             this.saveShortlistMultiTfKlines(safeSym, tf, data);
                         }
                     }
                 } catch (_) {}
             }));
-            await new Promise(r => setTimeout(r, 50));
+            await new Promise(r => setTimeout(r, 40));
         }
     }
 
@@ -618,3 +692,6 @@ class KlineDailyStore {
 }
 
 export const klineDailyStore = new KlineDailyStore();
+if (typeof window !== 'undefined') {
+    (window as any).klineDailyStore = klineDailyStore;
+}

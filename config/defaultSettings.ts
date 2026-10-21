@@ -4,6 +4,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     profit: {
         enabled: true,
         profitMode: 'SMART',
+        oEnabledMap: {
+            SMART: true
+        },
         conventional: { 
             minPosition: 0, 
             profitPercent: 5, 
@@ -114,7 +117,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
         fuseFailStopPercent: 30,
         advisor: { enabled: true, autoSwitch: false, minConfidence: 70 }
     },
-    martingale: { enabled: false },
+    martingale: {
+        enabled: false,
+        triggerMode: 'LOSS_PCT',
+        triggerLossPercent: 2.0,
+        emaPeriod: 30,
+        callbackPercent: 0.3,
+        baseRef: 'INITIAL_QTY',
+        ratioPercent: 100,
+        maxCount: 2,
+        maxTotalUsdt: 500,
+        cooldownSeconds: 30,
+        hedgeSafeDistancePercent: 1.0,
+        circuitBreakerVolPercent: 3.0,
+        breakevenTakeProfitPercent: 0.5,
+        dynamicHedgeShiftEnabled: true
+    },
     system: { binanceApiKey: '', binanceApiSecret: '', directMode: true, realTrading: false, symbolBlacklist: ['XMR', 'LIT'], voiceBroadcast: true, enableAutoTransfer: false, autoTransferThreshold: 1000, autoTransferAmount: 200, autoSyncEnabled: true, autoSyncIntervalMinutes: 60, syncHistoryLookbackHours: 1 },
     scanner: {
         minVolume: 1, 

@@ -207,39 +207,86 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
             </div>
 
             {/* STRICT RULES */}
-            <div>
-                <div className="flex items-center justify-between mb-1.5 grayscale-0">
-                    <div className="text-[9px] text-amber-500 flex gap-1 items-center font-bold">
+            <div className={`transition-opacity ${config.strictFiltering ? 'opacity-100' : 'opacity-60'}`}>
+                <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-[9px] text-amber-400 flex gap-1 items-center font-bold">
                         <Filter size={10}/> 严格过滤条件 (STRICT RULES)
                     </div>
-                    <div className="flex items-center gap-1.5" title="开启后严格遵守参数条件（即使满足穿越）">
-                        <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">严格过滤开关</span>
+                    <div className="flex items-center gap-1.5" title="开启后严格执行形态振幅与周期点火放量过滤">
+                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">严格过滤开关</span>
                         <div onClick={() => setConfig(p => ({...p, strictFiltering: !p.strictFiltering}))} className={`w-8 h-4 rounded-full p-0.5 cursor-pointer transition-colors ${config.strictFiltering ? 'bg-emerald-600' : 'bg-slate-700'}`}>
                             <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${config.strictFiltering ? 'translate-x-4' : ''}`} />
                         </div>
                     </div>
                 </div>
-                <div className="grid grid-cols-4 gap-1">
-                    <div className="space-y-1 relative group">
+                {/* 第一排：形态结构 (SHAPE) */}
+                <div className="grid grid-cols-3 gap-1 mb-1.5">
+                    <div className="space-y-1 relative group" title="最小振幅门槛：过滤死水横盘币">
                         <div className="absolute -top-1 -right-1 text-[6px] bg-amber-500 text-black px-0.5 rounded font-bold">MIN</div>
-                        <label className="text-[8px] text-slate-500 block text-center">振幅 &ge;</label>
+                        <label className="text-[8px] text-slate-400 block text-center font-medium">振幅 &ge; (%)</label>
                         <input type="number" step="0.1" value={Number.isNaN(config.squeezeThreshold) ? '' : config.squeezeThreshold} onChange={e => setConfig(p => ({...p, squeezeThreshold: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-amber-500/50 rounded text-center text-[10px] text-amber-400 outline-none py-1 font-bold shadow-[0_0_5px_rgba(245,158,11,0.2)]" />
                     </div>
-                    <div className="space-y-1 relative group">
+                    <div className="space-y-1 relative group" title="最大振幅限制：拦截插针过激币">
                         <div className="absolute -top-1 -right-1 text-[6px] bg-amber-500 text-black px-0.5 rounded font-bold">MAX</div>
-                        <label className="text-[8px] text-slate-500 block text-center">振幅 &le;</label>
+                        <label className="text-[8px] text-slate-400 block text-center font-medium">振幅 &le; (%)</label>
                         <input type="number" step="0.1" value={Number.isNaN(config.maxAmplitude) ? '' : config.maxAmplitude} onChange={e => setConfig(p => ({...p, maxAmplitude: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-amber-500/50 rounded text-center text-[10px] text-amber-400 outline-none py-1 font-bold shadow-[0_0_5px_rgba(245,158,11,0.2)]" />
                     </div>
-                    <div className="space-y-1 relative">
-                        <div className="absolute -top-1 -right-1 text-[6px] bg-blue-500 text-white px-0.5 rounded font-bold">VOL</div>
-                        <label className="text-[8px] text-slate-500 block text-center">放量(x)</label>
-                        <input type="number" step="0.1" value={Number.isNaN(config.volMultiplier) ? '' : config.volMultiplier} onChange={e => setConfig(p => ({...p, volMultiplier: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-blue-500/50 rounded text-center text-[10px] text-white outline-none py-1 font-bold shadow-[0_0_5px_rgba(59,130,246,0.2)]" />
-                    </div>
-                    <div className="space-y-1 relative">
+                    <div className="space-y-1 relative group" title="K线实体占比：确保推升坚决，剔除影线过长震荡K线">
                         <div className="absolute -top-1 -right-1 text-[6px] bg-emerald-500 text-white px-0.5 rounded font-bold">BODY</div>
-                        <label className="text-[8px] text-slate-500 block text-center">实体(%)</label>
+                        <label className="text-[8px] text-slate-400 block text-center font-medium">实体 &ge; (%)</label>
                         <input type="number" value={Number.isNaN(config.minBodyRatio) ? '' : config.minBodyRatio} onChange={e => setConfig(p => ({...p, minBodyRatio: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-emerald-500/50 rounded text-center text-[10px] text-white outline-none py-1 font-bold shadow-[0_0_5px_rgba(16,185,129,0.2)]" />
                     </div>
+                </div>
+                {/* 第二排：周期点火放量 (VOLUME IGNITION) - 移植列表1动能精髓 */}
+                <div className="grid grid-cols-3 gap-1">
+                    <div className="space-y-1 relative group" title="点火放量考察窗口：考察最新K线及前N-1根K线内是否存在放量点火">
+                        <div className="absolute -top-1 -right-1 text-[6px] bg-blue-500 text-white px-0.5 rounded font-bold">WIN</div>
+                        <label className="text-[8px] text-slate-400 block text-center font-medium">考察K线(根)</label>
+                        <input type="number" min="1" max="20" value={config.strictVolWindow ?? 3} onChange={e => setConfig(p => ({...p, strictVolWindow: Math.max(1, parseInt(e.target.value) || 1)}))} className="w-full bg-slate-800 border border-blue-500/50 rounded text-center text-[10px] text-blue-400 outline-none py-1 font-bold shadow-[0_0_5px_rgba(59,130,246,0.2)]" />
+                    </div>
+                    <div className="space-y-1 relative group" title="放量倍数：考察窗口内单根成交量相对于基准均量的放大倍数">
+                        <div className="absolute -top-1 -right-1 text-[6px] bg-blue-500 text-white px-0.5 rounded font-bold">VOL</div>
+                        <label className="text-[8px] text-slate-400 block text-center font-medium">放量倍数(x)</label>
+                        <input type="number" step="0.1" value={Number.isNaN(config.volMultiplier) ? '' : config.volMultiplier} onChange={e => setConfig(p => ({...p, volMultiplier: parseFloat(e.target.value)}))} className="w-full bg-slate-800 border border-blue-500/50 rounded text-center text-[10px] text-white outline-none py-1 font-bold shadow-[0_0_5px_rgba(59,130,246,0.2)]" />
+                    </div>
+                    <div className="space-y-1 relative group" title="周期成交额门槛(USDT)：窗口内单根成交额必须达到该门槛，0为不限制">
+                        <div className="absolute -top-1 -right-1 text-[6px] bg-purple-500 text-white px-0.5 rounded font-bold">USDT</div>
+                        <label className="text-[8px] text-slate-400 block text-center font-medium">周期额&ge;(U)</label>
+                        <input type="number" step="10000" value={config.strictMinQuoteVolume ?? 100000} onChange={e => setConfig(p => ({...p, strictMinQuoteVolume: Math.max(0, parseFloat(e.target.value) || 0)}))} className="w-full bg-slate-800 border border-purple-500/50 rounded text-center text-[10px] text-purple-300 outline-none py-1 font-bold shadow-[0_0_5px_rgba(168,85,247,0.2)]" />
+                    </div>
+                </div>
+
+                {/* 🐉 龙抬头防伪双轨制：单根爆发 或 连续阶梯递增放量 */}
+                <div className="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[9px]">
+                    <div className="flex items-center gap-1.5" title="双轨放量机制：单根爆发放量 (≥VOL) 或 连续阶梯放量 (龙抬头) 均可激活放量点火">
+                        <span className="text-amber-400 font-bold flex items-center gap-1">
+                            <span>🐉</span> 龙抬头递增放量:
+                        </span>
+                        <div className="flex items-center gap-1 bg-slate-900 border border-slate-700/60 rounded px-1.5 py-0.5">
+                            <span className="text-slate-400 text-[8px]">连续</span>
+                            <input 
+                                type="number" 
+                                min="2" 
+                                max="5" 
+                                value={config.consecutiveVolBars ?? 2} 
+                                onChange={e => setConfig(p => ({...p, consecutiveVolBars: Math.max(2, parseInt(e.target.value) || 2)}))} 
+                                className="w-5 bg-slate-800 text-amber-300 text-center font-bold outline-none rounded text-[9px] py-0.2"
+                            />
+                            <span className="text-slate-400 text-[8px]">根递增(≥1.2x)</span>
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => setConfig(p => ({...p, enableConsecutiveVolRise: p.enableConsecutiveVolRise !== undefined ? !p.enableConsecutiveVolRise : false}))}
+                        className={`px-2 py-0.5 rounded text-[8px] font-bold transition-all ${
+                            (config.enableConsecutiveVolRise ?? true)
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-[0_0_6px_rgba(245,158,11,0.2)]'
+                                : 'bg-slate-800 text-slate-500 border border-slate-700'
+                        }`}
+                        title={(config.enableConsecutiveVolRise ?? true) ? '已开启双轨制：单根爆发或连续递增均可触发' : '已关闭龙抬头：仅严格限制单根爆发'}
+                    >
+                        {(config.enableConsecutiveVolRise ?? true) ? '双轨开启' : '仅单根'}
+                    </button>
                 </div>
             </div>
         </div>

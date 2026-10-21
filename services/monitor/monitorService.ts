@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { priceRegistry } from '../priceRegistry';
 
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR' | 'PERF';
 
@@ -60,7 +61,14 @@ export const getCrashBlackbox = (): CrashBlackboxEntry[] => {
         if (raw) {
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) {
-                const sanitized = parsed.filter(item => item && !String(item.message || '').includes('isAnyFuseEnabled'));
+                // Filter out invalid items or corrupt logs
+                const sanitized = parsed.filter(item => {
+                    if (!item) return false;
+                    const msg = String(item.message || '');
+                    if (msg.includes('isAnyFuseEnabled')) return false;
+                    if (msg.includes('handleDragonHeadUpdate')) return false;
+                    return true;
+                });
                 if (sanitized.length !== parsed.length) {
                     localStorage.setItem(CRASH_BLACKBOX_KEY, JSON.stringify(sanitized));
                 }
@@ -75,7 +83,94 @@ export const clearCrashBlackbox = (): void => {
     if (typeof window === 'undefined') return;
     try {
         localStorage.removeItem(CRASH_BLACKBOX_KEY);
+        localStorage.removeItem(FLIGHT_RECORDER_KEY);
+        localStorage.removeItem('SAVIOR_CRASH_COUNT');
+        localStorage.removeItem('SAVIOR_LAST_CRASH_TIME');
     } catch (_) {}
+};
+
+/**
+ * 🧹 [DEEP SYSTEM CLEANUP & ANTI-EXPLOSION RESET]
+ * Thoroughly purges crash blackbox, redundant flight data, bloated logs, and temporary caches
+ * WITHOUT touching user trading settings, API keys, active positions, or strategy configs!
+ */
+export const deepCleanAndResetSystem = (): { freedItems: number; details: string[] } => {
+    if (typeof window === 'undefined') return { freedItems: 0, details: [] };
+    const details: string[] = [];
+    let freedItems = 0;
+
+    // 1. Clear Crash Blackbox and flight telemetry
+    try {
+        localStorage.removeItem(CRASH_BLACKBOX_KEY);
+        localStorage.removeItem(FLIGHT_RECORDER_KEY);
+        localStorage.removeItem(CLEAN_EXIT_KEY);
+        localStorage.removeItem('SAVIOR_CRASH_COUNT');
+        localStorage.removeItem('SAVIOR_LAST_CRASH_TIME');
+        details.push('清空崩溃黑匣子与飞行监控记录 (5 项)');
+        freedItems += 5;
+    } catch (_) {}
+
+    // 2. Truncate heavy monitor logs to last 20
+    try {
+        const raw = localStorage.getItem('SAVIOR_SYSTEM_MONITOR_LOGS');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 20) {
+                localStorage.setItem('SAVIOR_SYSTEM_MONITOR_LOGS', JSON.stringify(parsed.slice(0, 20)));
+                details.push(`截断系统监控日志 (${parsed.length} -> 20 条)`);
+                freedItems += (parsed.length - 20);
+            }
+        }
+    } catch (_) {}
+
+    // 3. Clear temporary scanner caches & pools (strictly safe, no user settings touched)
+    const tempKeys = [
+        'SCANNER_LIST2_CACHE_MAP',
+        'SCANNER_LIST3_CACHE_MAP',
+        'SCANNER_LIST4_CACHE_MAP',
+        'SCANNER_RAW_DATA',
+        'SCANNER_LIST2_RESULTS',
+        'SCANNER_LIST3_RESULTS',
+        'SCANNER_LIST4_RESULTS',
+        'SCANNER_SIDEWAYS_FILTERED_POOL',
+        'SCANNER_MAJOR_TREND_CANDIDATES'
+    ];
+    let tempCleanCount = 0;
+    tempKeys.forEach(k => {
+        try {
+            if (localStorage.getItem(k) !== null) {
+                localStorage.removeItem(k);
+                tempCleanCount++;
+                freedItems++;
+            }
+        } catch (_) {}
+    });
+    if (tempCleanCount > 0) {
+        details.push(`清理扫描器临时计算缓存与底池 (${tempCleanCount} 项)`);
+    }
+
+    // 4. Clean window memory objects
+    try {
+        delete (window as any).__KLINE_CACHE__;
+        delete (window as any).__PRICE_HISTORY_CACHE__;
+        delete (window as any).__TEMP_CHART_TICKS__;
+        details.push('重置内存中临时 K 线与图表对象池');
+    } catch (_) {}
+
+    // 5. Sweep DOM Registry zombie elements
+    try {
+        const swept = priceRegistry.sweepZombieElements();
+        if (swept.cleanedPrice > 0 || swept.cleanedPnl > 0) {
+            details.push(`清理 DOM Bypass 游离死节点 (价格: ${swept.cleanedPrice}, 盈亏: ${swept.cleanedPnl})`);
+        }
+    } catch (_) {}
+
+    // 6. Broadcast event
+    try {
+        window.dispatchEvent(new CustomEvent('SAVIOR_CRASH_UPDATED', { detail: null }));
+    } catch (_) {}
+
+    return { freedItems, details };
 };
 
 export const recordCrashToBlackbox = (params: {
@@ -339,28 +434,31 @@ export const initCrashWatchdog = () => {
                 const prev = JSON.parse(rawRecorder);
                 const timeDiff = now - (prev.timestamp || 0);
 
-                // If previous session died unexpectedly without clean exit within recent hours
-                if (timeDiff > 3000 && timeDiff < 24 * 3600 * 1000) {
+                // 只要前后会话时间差合理，且属于非正常退出，100% 完整录入死因黑匣子
+                if (timeDiff > 2000 && timeDiff < 48 * 3600 * 1000) {
                     const usedMB = prev.memory?.usedMB || 0;
                     const limitMB = prev.memory?.limitMB || 4096;
                     const memPct = prev.memory?.percent || 0;
                     const lastAction = prev.lastAction || 'UNKNOWN';
                     const domNodes = prev.domNodes || 0;
 
-                    let inferredReason = '浏览器标签页异常闪退/强退 (Aw, Snap! 渲染进程崩溃或被操作系统强杀)';
+                    let inferredReason = '系统强杀/显卡驱动重置/进程异常终止 (Abnormal Process Exit)';
                     let crashType: CrashBlackboxEntry['type'] = 'BROWSER_TAB_KILL';
 
-                    if (memPct > 80 || usedMB > 1800) {
+                    if (memPct > 75 || usedMB > 1400) {
                         inferredReason = `V8 堆内存溢出 (OOM) 崩溃 - 崩溃前已使用: ${usedMB}MB / ${limitMB}MB (${memPct}%)`;
                         crashType = 'OOM_ALERT';
                     } else if (prev.isEventLoopBlocked) {
-                        inferredReason = `主线程事件循环无限死循环阻塞 (Event Loop Freeze) - 最后动作: ${lastAction}`;
+                        inferredReason = '主线程事件循环无限死循环阻塞 (Event Loop Freeze)';
                         crashType = 'EVENT_LOOP_FREEZE';
+                    } else if (domNodes > 3000) {
+                        inferredReason = `DOM 节点过度堆积导致渲染瓦解 (DOM Leaked: ${domNodes} 节点)`;
+                        crashType = 'RENDER_CRASH';
                     }
 
                     recordCrashToBlackbox({
                         module: 'BROWSER_AUTOPSY',
-                        message: `${inferredReason} [最后记录时间: ${new Date(prev.timestamp).toLocaleTimeString()}, 最后执行动作: ${lastAction}, DOM节点: ${domNodes}]`,
+                        message: `${inferredReason} [最后心跳时间: ${new Date(prev.timestamp).toLocaleTimeString()}, 最后执行动作: ${lastAction}, 内存: ${usedMB}MB(${memPct}%), DOM节点: ${domNodes}]`,
                         type: crashType,
                         memory: prev.memory,
                         domNodes,
@@ -387,7 +485,9 @@ export const initCrashWatchdog = () => {
             localStorage.setItem(CLEAN_EXIT_KEY, 'true');
         });
 
-        // 3. START 1-SECOND TELEMETRY FLIGHT RECORDER
+        // 3. START 4-SECOND TELEMETRY FLIGHT RECORDER (Lightweight, non-blocking disk sync)
+        let cachedDomNodes = 0;
+        let lastDomSample = 0;
         setInterval(() => {
             try {
                 let memInfo = { usedMB: 0, limitMB: 4096, percent: 0 };
@@ -402,18 +502,24 @@ export const initCrashWatchdog = () => {
                     };
                 }
 
+                const nowTs = Date.now();
+                if (nowTs - lastDomSample > 15000 && typeof document !== 'undefined') {
+                    cachedDomNodes = document.getElementsByTagName('*').length;
+                    lastDomSample = nowTs;
+                }
+
                 const flightData = {
-                    timestamp: Date.now(),
+                    timestamp: nowTs,
                     timeStr: new Date().toLocaleTimeString(),
                     memory: memInfo,
-                    domNodes: typeof document !== 'undefined' ? document.getElementsByTagName('*').length : 0,
+                    domNodes: cachedDomNodes,
                     lastAction: recentBreadcrumbs.length > 0 ? recentBreadcrumbs[recentBreadcrumbs.length - 1].action : 'IDLE',
                     recentBreadcrumbs: recentBreadcrumbs.slice(-5)
                 };
 
                 localStorage.setItem(FLIGHT_RECORDER_KEY, JSON.stringify(flightData));
             } catch (_) {}
-        }, 1000);
+        }, 4000);
 
         // Sync local crash reports to server backup
         syncCrashesToBackend();

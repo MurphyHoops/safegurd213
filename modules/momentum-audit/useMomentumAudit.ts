@@ -22,6 +22,7 @@ import { klineMultiTfStore } from '../../services/klineMultiTfStore';
 import { klineDailyStore } from '../../services/klineDailyStore';
 import { KLine } from '../../types';
 import { getLatestEMA } from '../../services/indicators';
+import { eventBus } from '../../core/EventBus';
 
 // Helper to get minutes from tf string
 const getTfMinutes = (tf: string) => {
@@ -243,6 +244,26 @@ export const useMomentumAudit = (
 
         const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
 
+        // 🔒 [上游淘汰联动同步]: 收集上游列表3/列表2当前放行的合法 uniqueId。若上游（如列表2寿命根数到期）剔除，列表4缓存必须零延迟同步彻底删除！
+        const validIncomingIds = new Set<string>();
+        currentCandidates.forEach(item => {
+            if (item.list3Results) {
+                item.list3Results.forEach(res => {
+                    const isLatched = res.latched !== false && (res.latched === true || (list3Config ? checkList3SignalPasses(res, list3Config, item.adjacentStrictTrends) : true));
+                    if (isLatched) {
+                        const cleanSym = normalizeSymbol(item.symbol);
+                        validIncomingIds.add(`${cleanSym}-${res.tf}-${res.direction}`);
+                    }
+                });
+            }
+        });
+
+        for (const key of Array.from(list4CacheRef.current.keys())) {
+            if (!validIncomingIds.has(key)) {
+                list4CacheRef.current.delete(key);
+            }
+        }
+
         // 1. Maintain & Ingest Candidates into list4CacheRef
         currentCandidates.forEach(item => {
             const livePrice = resolvePrice(item.symbol, currentPrices, item.price);
@@ -411,17 +432,17 @@ export const useMomentumAudit = (
             const tfMinutes = getTfMinutes(item.tf || '15m');
             
             // Check "Structure Broken" (INVALID) - 均线瓦解与偏离过大拦截
-            // 🎯 核心铁律：破中轴且EMA10穿越EMA30、或达到寿命根数，必须立即彻底清除！
+            // 🎯 核心铁律：破中轴且EMA10穿越EMA30、达到寿命根数、或突破偏离过大超出上限，当机立断直接彻底清除！
             if (item.momentum?.status === 'INVALID') {
                 const reason = item.momentum.invalidReason || '';
                 const isTerminalClear = reason.includes('中轴防守瓦解') || 
                                         reason.includes('信号寿命耗尽') || 
                                         reason.includes('彻底清除') || 
-                                        !reason.includes('突破偏离过大拦截');
+                                        reason.includes('突破偏离过大拦截');
 
                 if (isTerminalClear) {
                     shouldKeep = false;
-                    item.removalReason = reason || '中轴防守瓦解或信号寿命耗尽彻底清除';
+                    item.removalReason = reason || '中轴防守瓦解或突破偏离过大彻底清除';
                     expiredSignalCacheRef.current.add(uniqueId);
                     try {
                         localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
@@ -429,6 +450,20 @@ export const useMomentumAudit = (
                     list4CacheRef.current.delete(uniqueId);
                     safeRemoveSignal(uniqueId);
                     logToHistory(item, item.removalReason);
+
+                    // 🔒 联动清除与本轮终结：若属于突破偏离过大拦截，向全域广播联动清除与周期锁定指令
+                    if (reason.includes('突破偏离过大拦截')) {
+                        const sigTime = item.structure?.signalTime || item.structure?.timestamp || 0;
+                        eventBus.emit('SIGNAL_OVERDEVIATED_PURGE', {
+                            symbol: item.symbol,
+                            cleanSym,
+                            tf: item.tf,
+                            direction: item.direction,
+                            signalTime: sigTime,
+                            uniqueId
+                        });
+                    }
+
                     return; // 立即剔除，绝不存入 finalItems
                 } else {
                     item.fuseBlocked = true;
@@ -552,40 +587,21 @@ export const useMomentumAudit = (
                 advancedFilterBlockedSignalCacheRef.current.delete(uniqueId);
             }
 
-            // Check "Position Opened" (TRADED)
-            const hasPosition = currentPositions.some(p => p.symbol === item.symbol && p.side === item.direction);
+            // Check "Position Opened" (TRADED) - 🎯 核心铁律：一旦开仓建立仓位，立即彻底清除！同时三级联动彻底清除列表3与列表2的数据！
+            const normItemSym = normalizeSymbol(item.symbol);
+            const hasPosition = currentPositions.some(p => normalizeSymbol(p.symbol) === normItemSym && p.side === item.direction);
             if (hasPosition) {
-                if (!tradedSignalCacheRef.current.has(uniqueId)) {
-                    tradedSignalCacheRef.current.set(uniqueId, now);
-                }
-                
-                const tradedTime = tradedSignalCacheRef.current.get(uniqueId) || now;
-                const elapsedMs = now - tradedTime;
-                
-                item.isTraded = true;
-                item.tradedAt = tradedTime;
-
-                // 达到开仓条件开仓后，标记为已开仓，（？）分钟/秒后清除这个币
-                const tradeRetentionMinutes = (currentConfig.removeTradedCandles && currentConfig.removeTradedCandles > 0)
-                    ? currentConfig.removeTradedCandles * tfMinutes
-                    : (currentConfig.removeTriggeredMinutes && currentConfig.removeTriggeredMinutes > 0)
-                        ? currentConfig.removeTriggeredMinutes
-                        : 15;
-                const maxMs = tradeRetentionMinutes * 60 * 1000;
-                item.tradedTotalMs = maxMs;
-                item.tradedCountdownMs = Math.max(0, maxMs - elapsedMs);
-
-                if (elapsedMs >= maxMs) {
-                    expiredSignalCacheRef.current.add(uniqueId);
-                    shouldKeep = false;
-                    item.removalReason = `满足动能突破开仓成功，建立仓位后移出 [持仓持续: ${Math.round(elapsedMs / 60000)}分钟]`;
-                    tradedSignalCacheRef.current.delete(uniqueId);
-                    list4CacheRef.current.delete(uniqueId);
-                    safeRemoveSignal(uniqueId);
-                    logToHistory(item, item.removalReason);
-                } else {
-                    shouldKeep = true;
-                }
+                shouldKeep = false;
+                item.removalReason = `满足动能突破开仓成功，已建立仓位，立即彻底清除 [已联动移出列表4、3、2]`;
+                expiredSignalCacheRef.current.add(uniqueId);
+                try {
+                    localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
+                } catch(e) {}
+                tradedSignalCacheRef.current.delete(uniqueId);
+                list4CacheRef.current.delete(uniqueId);
+                safeRemoveSignal(uniqueId);
+                logToHistory(item, item.removalReason);
+                return; // 零延迟立即移出，绝不存入 finalItems
             } else {
                 // Reset if position is closed
                 tradedSignalCacheRef.current.delete(uniqueId);

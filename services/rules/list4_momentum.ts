@@ -158,13 +158,13 @@ export function analyzeList4Momentum(
 
         const maxDevPct = (config && typeof config.maxBreakoutDeviation === 'number' && !isNaN(config.maxBreakoutDeviation))
             ? config.maxBreakoutDeviation
-            : 0.5;
+            : 100;
 
         if (config.enableThresholds === true) {
             if (item.direction === 'LONG') {
                 const isDefenseBroken = currentPrice < midPoint || extreme < midPoint;
                 const isEmaTrendDead = hasEmas && ema10 < ema30;
-                const maxAllowedLongPrice = entryTrigger * (1 + maxDevPct / 100);
+                const maxAllowedLongPrice = entryTrigger + (price_range * (maxDevPct / 100));
                 const isLongOverDeviated = currentPrice > maxAllowedLongPrice;
 
                 if (isDefenseBroken) {
@@ -178,7 +178,7 @@ export function analyzeList4Momentum(
                         if (isLongOverDeviated) {
                             if (config.enableAntiChase === true) {
                                 momentumStatus = 'INVALID';
-                                invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，禁止追高买入`;
+                                invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，当机立断直接清除淘汰`;
                             } else {
                                 momentumStatus = 'TRIGGERED';
                                 invalidReason = '破中轴后蓄势反攻：已达突破线 (TRIGGERED)';
@@ -211,7 +211,7 @@ export function analyzeList4Momentum(
                     if (isLongOverDeviated) {
                         if (config.enableAntiChase === true) {
                             momentumStatus = 'INVALID';
-                            invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，禁止追高买入`;
+                            invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，当机立断直接清除淘汰`;
                         } else {
                             momentumStatus = 'TRIGGERED';
                         }
@@ -241,7 +241,7 @@ export function analyzeList4Momentum(
             } else {
                 const isDefenseBroken = currentPrice > midPoint || extreme > midPoint;
                 const isEmaTrendDead = hasEmas && ema10 > ema30;
-                const minAllowedShortPrice = entryTrigger * (1 - maxDevPct / 100);
+                const minAllowedShortPrice = entryTrigger - (price_range * (maxDevPct / 100));
                 const isShortOverDeviated = currentPrice < minAllowedShortPrice;
 
                 if (isDefenseBroken) {
@@ -255,7 +255,7 @@ export function analyzeList4Momentum(
                         if (isShortOverDeviated) {
                             if (config.enableAntiChase === true) {
                                 momentumStatus = 'INVALID';
-                                invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，禁止追低卖出`;
+                                invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，当机立断直接清除淘汰`;
                             } else {
                                 momentumStatus = 'TRIGGERED';
                                 invalidReason = '破中轴后蓄势反攻：已达突破线 (TRIGGERED)';
@@ -288,7 +288,7 @@ export function analyzeList4Momentum(
                     if (isShortOverDeviated) {
                         if (config.enableAntiChase === true) {
                             momentumStatus = 'INVALID';
-                            invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，禁止追低卖出`;
+                            invalidReason = `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，当机立断直接清除淘汰`;
                         } else {
                             momentumStatus = 'TRIGGERED';
                         }
@@ -327,8 +327,8 @@ export function analyzeList4Momentum(
                     : (currentPrice <= (entryTrigger + triggerEpsilon));
 
                 if (isBreakout) {
-                    const maxAllowedLongPrice = entryTrigger * (1 + maxDevPct / 100);
-                    const minAllowedShortPrice = entryTrigger * (1 - maxDevPct / 100);
+                    const maxAllowedLongPrice = entryTrigger + (price_range * (maxDevPct / 100));
+                    const minAllowedShortPrice = entryTrigger - (price_range * (maxDevPct / 100));
                     const isOverDeviated = item.direction === 'LONG'
                         ? currentPrice > maxAllowedLongPrice
                         : currentPrice < minAllowedShortPrice;
@@ -337,8 +337,8 @@ export function analyzeList4Momentum(
                         if (config.enableAntiChase === true) {
                             momentumStatus = 'INVALID';
                             invalidReason = item.direction === 'LONG'
-                                ? `【突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，禁止追高买入`
-                                : `【突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，禁止追低卖出`;
+                                ? `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，当机立断直接清除淘汰`
+                                : `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，当机立断直接清除淘汰`;
                         } else {
                             momentumStatus = 'TRIGGERED';
                         }
@@ -350,9 +350,23 @@ export function analyzeList4Momentum(
                     } else {
                         momentumStatus = 'TRIGGERED';
                     }
-                } else {
-                    momentumStatus = 'PENDING';
                 }
+            }
+        }
+
+        // 🎯 [5K爆发推进门禁]: 启用时，若推进振幅未达到阈值(默认1.0%)，保持为 PENDING (等待开仓) 状态，不触发熔断与清除，彻底解决卡片闪烁问题
+        if (config.enableThrust === true && item.structure && momentumStatus === 'TRIGGERED') {
+            const threshold = (typeof config.thrustThreshold === 'number' && !isNaN(config.thrustThreshold) && config.thrustThreshold > 0)
+                ? config.thrustThreshold
+                : 1.0;
+            const thrustPass = typeof item.structure.maxThrust === 'number'
+                ? (item.structure.maxThrust >= threshold)
+                : !!item.structure.thrustValid;
+
+            if (!thrustPass) {
+                momentumStatus = 'PENDING';
+                const actualThrustNum = typeof item.structure.maxThrust === 'number' ? parseFloat(item.structure.maxThrust.toFixed(2)) : 0;
+                invalidReason = `【5K爆发推进等待】包含信号K(K3)的组合净振幅未达标 (${actualThrustNum}% < ${threshold}%)，等待开仓中`;
             }
         }
 
@@ -420,90 +434,67 @@ export function analyzeList4Momentum(
         
         const antiChase = config.antiChaseConfig;
 
-        if (!item.fuseLatched && config.enableAntiChase === true && item.historyExtremes && antiChase) {
-            const { highs1h, lows1h } = item.historyExtremes;
+        if (!item.fuseLatched && config.enableAntiChase === true && antiChase) {
+            const tfMins = antiChase.timeframeMinutes ?? 5;
+            const longLimit = Number(antiChase.longThresholds?.[String(tfMins)] ?? antiChase.longThresholds?.['5'] ?? antiChase.longThresholds?.['5m'] ?? 0);
+            const shortLimit = Number(antiChase.shortThresholds?.[String(tfMins)] ?? antiChase.shortThresholds?.['5'] ?? antiChase.shortThresholds?.['5m'] ?? 0);
 
-            if (item.direction === 'LONG' && antiChase.longThresholds) {
-                for (const [hoursStr, thresholdVal] of Object.entries(antiChase.longThresholds)) {
-                    const threshold = Number(thresholdVal);
-                    if (!threshold || threshold <= 0) continue;
-                    const hours = parseInt(hoursStr);
-                    if (isNaN(hours) || hours <= 0) continue;
-                    const lows = lows1h ? lows1h.slice(-hours) : [];
-                    const minPrice = lows.length > 0 ? Math.min(...lows) : currentPrice;
-                    const pump = minPrice > 0 ? ((currentPrice - minPrice) / minPrice) * 100 : 0;
-                    
-                    if (pump > threshold) {
-                        const actualVal = parseFloat(pump.toFixed(1));
-                        const diffVal = parseFloat((actualVal - threshold).toFixed(1));
-                        fuseBlocked = true;
-                        fuseReason = `【规则 4 - 防追高熔断拦截】由列表4防追高过滤规则删除 [${hours}小时内涨幅 ${pump.toFixed(1)}% > 阈值 ${threshold}%]`;
-                        fuseDetails = {
-                            ruleName: '防追高熔断',
-                            paramName: `${hours}小时做多涨幅限制`,
-                            period: `${hours}小时`,
-                            threshold: threshold,
-                            actual: actualVal,
-                            diff: diffVal,
-                            unit: '%'
-                        };
-                        break;
-                    }
+            // 获取最近 tfMins 分钟极值
+            let minPrice = currentPrice;
+            let maxPrice = currentPrice;
+
+            if (item.historyExtremes) {
+                const { highs1m, lows1m, scalars } = item.historyExtremes;
+                if (tfMins === 5 && scalars?.low_5m && scalars?.high_5m) {
+                    minPrice = scalars.low_5m;
+                    maxPrice = scalars.high_5m;
+                } else if (lows1m && lows1m.length > 0 && highs1m && highs1m.length > 0) {
+                    const lSlice = lows1m.slice(-tfMins);
+                    const hSlice = highs1m.slice(-tfMins);
+                    minPrice = lSlice.length > 0 ? Math.min(...lSlice) : currentPrice;
+                    maxPrice = hSlice.length > 0 ? Math.max(...hSlice) : currentPrice;
                 }
-            } else if (item.direction === 'SHORT' && antiChase.shortThresholds) {
-                for (const [hoursStr, thresholdVal] of Object.entries(antiChase.shortThresholds)) {
-                    const threshold = Number(thresholdVal);
-                    if (!threshold || threshold <= 0) continue;
-                    const hours = parseInt(hoursStr);
-                    if (isNaN(hours) || hours <= 0) continue;
-                    const highs = highs1h ? highs1h.slice(-hours) : [];
-                    const maxPrice = highs.length > 0 ? Math.max(...highs) : currentPrice;
-                    const drop = maxPrice > 0 ? ((maxPrice - currentPrice) / maxPrice) * 100 : 0;
-                    
-                    if (drop > threshold) {
-                        const actualVal = parseFloat(drop.toFixed(1));
-                        const diffVal = parseFloat((actualVal - threshold).toFixed(1));
-                        fuseBlocked = true;
-                        fuseReason = `【规则 4 - 防追高熔断拦截】由列表4防追高过滤规则删除 [${hours}小时内跌幅 ${drop.toFixed(1)}% > 阈值 ${threshold}%]`;
-                        fuseDetails = {
-                            ruleName: '防追高熔断',
-                            paramName: `${hours}小时做空跌幅限制`,
-                            period: `${hours}小时`,
-                            threshold: threshold,
-                            actual: actualVal,
-                            diff: diffVal,
-                            unit: '%'
-                        };
-                        break;
-                    }
+            }
+
+            if (item.direction === 'LONG' && longLimit > 0) {
+                const pump = minPrice > 0 ? ((currentPrice - minPrice) / minPrice) * 100 : 0;
+                if (pump > longLimit) {
+                    const actualVal = parseFloat(pump.toFixed(1));
+                    const diffVal = parseFloat((actualVal - longLimit).toFixed(1));
+                    fuseBlocked = true;
+                    fuseReason = `【规则 4 - 防追高熔断拦截】由列表4防追高过滤规则删除 [${tfMins}分钟内涨幅 ${actualVal}% > 阈值 ${longLimit}%]`;
+                    fuseDetails = {
+                        ruleName: '防追高熔断',
+                        paramName: `${tfMins}分钟做多涨幅限制`,
+                        period: `${tfMins}分钟`,
+                        threshold: longLimit,
+                        actual: actualVal,
+                        diff: diffVal,
+                        unit: '%'
+                    };
+                }
+            } else if (item.direction === 'SHORT' && shortLimit > 0) {
+                const drop = maxPrice > 0 ? ((maxPrice - currentPrice) / maxPrice) * 100 : 0;
+                if (drop > shortLimit) {
+                    const actualVal = parseFloat(drop.toFixed(1));
+                    const diffVal = parseFloat((actualVal - shortLimit).toFixed(1));
+                    fuseBlocked = true;
+                    fuseReason = `【规则 4 - 防追高熔断拦截】由列表4防追高过滤规则删除 [${tfMins}分钟内跌幅 ${actualVal}% > 阈值 ${shortLimit}%]`;
+                    fuseDetails = {
+                        ruleName: '防追高熔断',
+                        paramName: `${tfMins}分钟做空跌幅限制`,
+                        period: `${tfMins}分钟`,
+                        threshold: shortLimit,
+                        actual: actualVal,
+                        diff: diffVal,
+                        unit: '%'
+                    };
                 }
             }
         }
 
         if (config.enableThrust === true && item.structure) {
-            const threshold = (typeof config.thrustThreshold === 'number' && !isNaN(config.thrustThreshold) && config.thrustThreshold > 0)
-                ? config.thrustThreshold
-                : 1.0;
-            const thrustPass = typeof item.structure.maxThrust === 'number'
-                ? (item.structure.maxThrust >= threshold)
-                : !!item.structure.thrustValid;
-
-            if (!thrustPass) {
-                fuseBlocked = true;
-                const actualThrustNum = typeof item.structure.maxThrust === 'number' ? parseFloat(item.structure.maxThrust.toFixed(2)) : 0;
-                const actualThrustStr = typeof item.structure.maxThrust === 'number' ? `${actualThrustNum}%` : '<1%';
-                const diffVal = parseFloat((actualThrustNum - threshold).toFixed(2));
-                fuseReason = `【规则 4 - 5K爆发推进熔断】由列表4推进力过滤规则删除 [5根K线爆发推进不足 (${actualThrustStr} < ${threshold}%)]`;
-                fuseDetails = {
-                    ruleName: '5K爆发推进',
-                    paramName: '连续3根K线爆发推进净振幅',
-                    period: '5K窗口',
-                    threshold: threshold,
-                    actual: actualThrustNum,
-                    diff: diffVal,
-                    unit: '%'
-                };
-            }
+            // 🎯 [5K爆发推进]: 未达标时已在上层处理为 PENDING (等待开仓)，在此不标记 fuseBlocked，杜绝信号移入熔断区导致列表闪烁
         }
 
         if (!item.fuseLatched && config.enableAutoDirGuard === true && item.historyExtremes && config.autoDirConfig) {
@@ -569,7 +560,8 @@ export function analyzeList4Momentum(
             }
         }
 
-        if (!item.fuseLatched && config.enableAdvancedFilter === true && item.historyExtremes) {
+        // 🎯 [高级过滤]: 已完全升级并迁移至列表3 (结构深度审计)，列表4不重复拦截，避免双重惩罚与列表闪烁
+        if (false && !item.fuseLatched && config.enableAdvancedFilter === true && item.historyExtremes) {
             const { highs1h, lows1h } = item.historyExtremes;
             
             // Build groups array

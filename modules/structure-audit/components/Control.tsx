@@ -148,6 +148,65 @@ export const List3Control: React.FC<List3PanelProps> = ({ config, setConfig, cou
                             </div>
                         </div>
                     </div>
+
+                    {/* 3. 高级过滤 (EMA80 震荡结构审计) */}
+                    <div>
+                        <div className="flex items-center justify-between mb-1">
+                            <div className="text-[9px] text-purple-300 font-bold flex items-center gap-1 uppercase" title="根据EMA80相交次数与回溯周期根数，过滤频繁相交的死水震荡币，保留强趋势/长期回调后初次启动币">
+                                <Activity size={10} className="text-purple-400"/>
+                                3. 高级过滤 (EMA80震荡审计)
+                            </div>
+                            <div onClick={() => setConfig(p => ({...p, enableAdvancedFilter: !p.enableAdvancedFilter}))} className={`w-7 h-3.5 rounded-full p-0.5 cursor-pointer transition-colors ${config.enableAdvancedFilter ? 'bg-purple-600' : 'bg-slate-700'}`}>
+                                <div className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${config.enableAdvancedFilter ? 'translate-x-3.5' : ''}`} />
+                            </div>
+                        </div>
+
+                        <div className={`space-y-1 transition-opacity ${config.enableAdvancedFilter ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                            <div className="grid grid-cols-2 gap-1">
+                                <button
+                                    onClick={() => setConfig(p => ({...p, filterPeriodMode: 'AUTO_LIST2'}))}
+                                    className={`text-[8px] py-1 px-1 rounded border font-bold transition-all ${config.filterPeriodMode !== 'CUSTOM' ? 'bg-purple-900/60 border-purple-500 text-purple-200' : 'bg-slate-800 border-slate-700 text-slate-500'}`}
+                                >
+                                    跟随列表2周期
+                                </button>
+                                <button
+                                    onClick={() => setConfig(p => ({...p, filterPeriodMode: 'CUSTOM'}))}
+                                    className={`text-[8px] py-1 px-1 rounded border font-bold transition-all ${config.filterPeriodMode === 'CUSTOM' ? 'bg-purple-900/60 border-purple-500 text-purple-200' : 'bg-slate-800 border-slate-700 text-slate-500'}`}
+                                >
+                                    固定周期 ({config.filterKLinePeriod || '1h'})
+                                </button>
+                            </div>
+
+                            {config.filterPeriodMode === 'CUSTOM' && (
+                                <div className="grid grid-cols-4 gap-1">
+                                    {(['15m', '1h', '4h', '1d'] as const).map(p => (
+                                        <button
+                                            key={p}
+                                            onClick={() => setConfig(prev => ({...prev, filterKLinePeriod: p}))}
+                                            className={`text-[8px] py-0.5 rounded border font-bold ${config.filterKLinePeriod === p ? 'bg-purple-600 text-white border-purple-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
+                                        >
+                                            {p}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+
+                            <div className="grid grid-cols-3 gap-1">
+                                <div className="bg-slate-800/80 rounded border border-slate-700 px-1.5 py-1 flex items-center justify-between">
+                                    <span className="text-[9px] text-slate-500">EMA</span>
+                                    <input type="number" value={config.filterEmaPeriod ?? 80} onChange={(e) => setConfig(p => ({...p, filterEmaPeriod: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-purple-300 outline-none"/>
+                                </div>
+                                <div className="bg-slate-800/80 rounded border border-slate-700 px-1.5 py-1 flex items-center justify-between">
+                                    <span className="text-[9px] text-slate-500">回溯</span>
+                                    <input type="number" value={config.filterTimeParam ?? 100} onChange={(e) => setConfig(p => ({...p, filterTimeParam: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-white outline-none"/>
+                                </div>
+                                <div className="bg-slate-800/80 rounded border border-slate-700 px-1.5 py-1 flex items-center justify-between">
+                                    <span className="text-[9px] text-slate-500">相交上限</span>
+                                    <input type="number" value={config.filterCrossingCount ?? 2} onChange={(e) => setConfig(p => ({...p, filterCrossingCount: parseFloat(e.target.value)}))} className="w-8 bg-transparent text-right text-[10px] font-bold text-orange-400 outline-none"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </>
             )}
         </div>

@@ -32,15 +32,32 @@ const Logs: React.FC<Props> = ({ logs }) => {
     );
   };
 
+  const [displayCount, setDisplayCount] = React.useState(80);
+  const visibleLogs = React.useMemo(() => logs.slice(0, displayCount), [logs, displayCount]);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    if (scrollHeight - scrollTop - clientHeight < 60 && displayCount < logs.length) {
+      setDisplayCount(prev => Math.min(prev + 50, logs.length));
+    }
+  };
+
   return (
     <div className="bg-black/50 rounded-lg border border-slate-700 p-4 h-full overflow-hidden flex flex-col">
-        <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
-            <Terminal size={14} />
-            系统日志 / System Logs
+        <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <Terminal size={14} />
+              系统日志 / System Logs
+            </span>
+            {logs.length > 0 && (
+              <span className="text-[10px] text-slate-500 font-normal">
+                显示: {visibleLogs.length} / 共 {logs.length} 条
+              </span>
+            )}
         </h3>
-        <div className="flex-1 overflow-y-auto space-y-1 font-mono text-xs">
-            {logs.length === 0 && <p className="text-slate-600 italic">系统待机中...</p>}
-            {logs.map((log) => {
+        <div onScroll={handleScroll} className="flex-1 overflow-y-auto space-y-1 font-mono text-xs">
+            {visibleLogs.length === 0 && <p className="text-slate-600 italic">系统待机中...</p>}
+            {visibleLogs.map((log) => {
                 const timeStr = log.timestamp instanceof Date ? log.timestamp.toLocaleTimeString() : new Date(log.timestamp || Date.now()).toLocaleTimeString();
                 return (
                     <div key={log.id} className="flex gap-2">
@@ -56,6 +73,16 @@ const Logs: React.FC<Props> = ({ logs }) => {
                     </div>
                 );
             })}
+            {displayCount < logs.length && (
+              <div className="pt-2 text-center">
+                <button
+                  onClick={() => setDisplayCount(prev => Math.min(prev + 100, logs.length))}
+                  className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded text-[10px] transition-colors border border-slate-700"
+                >
+                  向下滚动或点击加载更多 (+100条)
+                </button>
+              </div>
+            )}
         </div>
     </div>
   );

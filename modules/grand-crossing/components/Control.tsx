@@ -22,10 +22,12 @@ interface List2PanelProps {
     scanningSymbols?: Record<string, string>;
     pollingStatus?: string;
     diagnostics?: Record<string, TimeframeDiagnosticRecord>;
+    totalScanCount?: number;
+    list2Items?: any[];
     setChartData?: (data: any) => void;
 }
 
-export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, scanningSymbols, pollingStatus, diagnostics = {}, setChartData }) => {
+export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, scanConfig, setScanConfig, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, scanningSymbols, pollingStatus, diagnostics = {}, totalScanCount = 0, list2Items = [], setChartData }) => {
     const [showHistory, setShowHistory] = useState(false);
     const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
     const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('list2_control_collapsed') === 'true');
@@ -122,6 +124,11 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
                         activeScanTfs={activeScanTfs}
                         scanningSymbols={scanningSymbols}
                         pollingStatus={pollingStatus}
+                        totalScanCount={totalScanCount}
+                        diagnostics={diagnostics}
+                        list2Items={list2Items}
+                        setChartData={setChartData}
+                        config={config}
                     />
 
                     {/* 🔍 放大图与周期数据透视看板按钮 (位于周期列表下方) */}

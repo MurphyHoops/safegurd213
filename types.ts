@@ -83,6 +83,8 @@ export interface Position {
         emaDistance: number;
         volumeSwell: number;
     };
+    recentCandles?: KLine[];
+    recentAvgAmplitude?: number;
     customProfitSettings?: ProfitSettings;
     isUnshackled?: boolean;
     isReopened?: boolean;
@@ -104,6 +106,29 @@ export interface Position {
     amputationEntryPrice?: number; // 砍仓时的基准入场均价（用于回踩补仓精确判定）
     originalEntryPrice?: number; // 原始开仓基准价格
     chainId?: string; // 🔗 主从对冲关联合约链编号 (Lifecycle Chain ID)
+    dcaCount?: number; // 智能补仓已执行次数
+    lastDcaAt?: number; // 上次智能补仓时间戳
+    lastDcaPrice?: number; // 上次智能补仓成交价格点 (用于连续阶梯追补)
+    initialAmountUsdt?: number; // 初始开仓金额(USDT)
+    initialEntryPrice?: number; // 初始开仓基准价
+    dcaExtremePrice?: number; // 📉 智能补仓专用的极值追踪（用于计算回调/反弹确认）
+    dcaRecords?: DcaRecord[]; // 📜 智能补仓历史记录与信号详情
+}
+
+export interface DcaRecord {
+    id: string;
+    timestamp: number;
+    count: number; // 第几次补仓 (1, 2, 3...)
+    triggerMode: string;
+    triggerModeLabel: string; // 补仓触发模式简称
+    reason: string; // 补仓触发总结
+    signalDetail: string; // 补仓触发物理信号明细
+    addAmountUsdt: number; // 本次补仓金额 USDT
+    price: number; // 补仓价格
+    oldEntryPrice: number; // 补仓前均价
+    newEntryPrice: number; // 补仓后新均价
+    oldAmountTokens?: number;
+    newAmountTokens?: number;
 }
 
 export type LogCategory = 'ALL' | 'AUTO' | 'MANUAL' | 'HEDGE' | 'PNL' | 'ERROR';
@@ -173,6 +198,7 @@ export interface TradeLog {
     binance_order_id?: string; // Binance Official Trade/Order ID for reconciliation
     commission?: number; // Binance Trading Fee
     events?: TradeEvent[]; // Collection of all actions during the trade lifecycle
+    dcaRecords?: DcaRecord[]; // 📜 智能补仓历史明细与信号依据
     cycle_sealed?: boolean; // 🔒 周期已封存标记：解套盈利清仓或盈利平仓后设为 true，严禁与新一轮开仓负债关联
 }
 
@@ -236,6 +262,15 @@ export interface AtrSettings {
     emaEnabled: boolean;
     emaPeriod: number;
     emaTimeframe: string;
+    stallExitEnabled?: boolean;
+    stallMode?: 'CANDLE' | 'TIME';
+    stallCandleCount?: number;
+    stallTimeframeMinutes?: number;
+    stallTargetProfitPercent?: number;
+    stallSafeLowerPercent?: number;
+    stallSafeUpperPercent?: number;
+    stallAdaptiveVolatilityEnabled?: boolean;
+    stallAdaptiveMultiplier?: number;
 }
 
 export interface SmartProfitTier {
@@ -363,6 +398,28 @@ export interface StopLossSettings {
 
 export interface MartingaleSettings {
     enabled: boolean;
+    // 1. 补仓触发模式
+    triggerMode?: 'LOSS_PCT' | 'EMA_CROSS' | 'DIVERGENCE' | 'MIXED_OR' | 'MIXED_AND';
+    triggerLossPercent?: number; // 亏损值达到 % (如 2.0%)
+    emaPeriod?: number; // 趋势补仓与均线相交周期 (20, 30, 40, 80)
+    callbackPercent?: number; // 回调/反弹确认 % (如 0.3%)
+    enableStepDca?: boolean; // 连续阶梯反弹追补开关 (深跌/深涨沿途无新低时，从上次补仓价再反弹达标追加补仓)
+    enableFallingKnifeGuard?: boolean; // 防接飞刀极值确认开关 (开启时需低点反弹确认，关闭时只要满足亏损与回调门槛立即补仓)
+
+    // 2. 数量与额度限制
+    baseRef?: 'INITIAL_QTY' | 'TOTAL_QTY'; // 补仓参考: 原开仓数量 / 合计持仓数量
+    ratioPercent?: number; // 补仓比例 % (如 100%)
+    maxCount?: number; // 补仓次数限制 (如 1次, 2次)
+    maxTotalUsdt?: number; // 持仓总数量限制 USDT (如 500 USDT)
+
+    // 3. 风控护城河
+    cooldownSeconds?: number; // 补仓最小时间间隔(秒, 如 30秒)
+    hedgeSafeDistancePercent?: number; // 离防爆对冲线最小安全距离 % (如 1.0%)
+    circuitBreakerVolPercent?: number; // 极端大阴/大阳波幅熔断 % (如 3.0%)
+
+    // 4. 出局与联动
+    breakevenTakeProfitPercent?: number; // 补仓后新均价微利解套止盈 % (如 0.5%)
+    dynamicHedgeShiftEnabled?: boolean; // 补仓后按新均价重算防爆对冲点
 }
 
 export interface SystemSettings {

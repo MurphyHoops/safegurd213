@@ -41,7 +41,13 @@ const DEFAULT_CONFIG: List3Config = {
     rsiShortMin: 10, 
     rsiShortMax: 60, 
     enableRsi: false,
-    autoSimOpen: false
+    autoSimOpen: false,
+    enableAdvancedFilter: true,
+    filterPeriodMode: 'AUTO_LIST2',
+    filterKLinePeriod: '1h',
+    filterEmaPeriod: 80,
+    filterTimeParam: 100,
+    filterCrossingCount: 2
 };
 
 export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, directMode = false, actionConfig, strategyId, isBackground = false }) => {

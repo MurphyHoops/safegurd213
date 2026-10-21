@@ -25,17 +25,17 @@ const parseVolumePoolItem = (d: any): VolumePoolItem | null => {
     if (!d || !d.symbol || typeof d.symbol !== 'string' || !d.symbol.endsWith('USDT')) return null;
 
     let volM = 0;
-    if (d.quoteVolume !== undefined && d.quoteVolume !== null && d.quoteVolume !== '') {
+    if (d.volume24h !== undefined && d.volume24h !== null && !isNaN(Number(d.volume24h))) {
+        volM = Number(d.volume24h);
+    } else if (d.quoteVolume !== undefined && d.quoteVolume !== null && d.quoteVolume !== '') {
         const raw = parseFloat(String(d.quoteVolume));
-        volM = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? +raw.toFixed(2) : 0);
-    } else if (d.volume24h !== undefined && d.volume24h !== null) {
-        volM = parseFloat(String(d.volume24h)) || 0;
-    } else if (d.q !== undefined && d.q !== null) {
+        volM = !isNaN(raw) ? +(raw / 1000000).toFixed(2) : 0;
+    } else if (d.q !== undefined && d.q !== null && d.q !== '') {
         const raw = parseFloat(String(d.q));
-        volM = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? +raw.toFixed(2) : 0);
-    } else if (d.volume !== undefined && d.volume !== null) {
+        volM = !isNaN(raw) ? +(raw / 1000000).toFixed(2) : 0;
+    } else if (d.volume !== undefined && d.volume !== null && d.volume !== '') {
         const raw = parseFloat(String(d.volume));
-        volM = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? +raw.toFixed(2) : 0);
+        volM = !isNaN(raw) ? +(raw / 1000000).toFixed(2) : 0;
     }
 
     const price = parseFloat(String(d.lastPrice || d.close || d.c || d.price || '0')) || 0;
@@ -122,7 +122,12 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                         .map(parseVolumePoolItem)
                         .filter((item): item is VolumePoolItem => item !== null);
                     if (items.length > 0) {
-                        setRawPool(items);
+                        setRawPool(prev => {
+                            if (prev.length === 0) return items;
+                            const map = new Map(prev.map(i => [i.symbol, i]));
+                            items.forEach(it => map.set(it.symbol, it));
+                            return Array.from(map.values());
+                        });
                         return;
                     }
                 }
@@ -149,7 +154,13 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                     .map(parseVolumePoolItem)
                     .filter((item): item is VolumePoolItem => item !== null);
                 if (items.length > 0) {
-                    setRawPool(items);
+                    setRawPool(prev => {
+                        if (prev.length === 0) return items;
+                        // 🔒 增量合并无缝防掉包：若新数据包含局部币种，融合合并至已有全量底池中，杜绝突然丢包或骤减
+                        const map = new Map(prev.map(i => [i.symbol, i]));
+                        items.forEach(it => map.set(it.symbol, it));
+                        return Array.from(map.values());
+                    });
                 }
             } else {
                 loadFromCache();

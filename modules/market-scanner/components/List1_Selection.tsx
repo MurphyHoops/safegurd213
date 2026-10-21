@@ -9,6 +9,7 @@ import { List1Control } from './Control';
 import { List1Item } from './Item';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../../services/volume8amService';
+import { klineDailyStore } from '../../../services/klineDailyStore';
 import { SymbolFilterDiagnosticBar } from '../../../components/SymbolFilterDiagnosticBar';
 
 
@@ -223,6 +224,16 @@ const List1_Selection: React.FC<Props> = ({
         }
     });
 
+    // 🛡️ 防追高熔断过滤底池数据监听 (第三组：用于当开启防追高熔断时，市场初筛列表展示合格币)
+    const [antiChasePool, setAntiChasePool] = useState<any[]>(() => {
+        try {
+            const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+            return raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            return [];
+        }
+    });
+
 
 
     // 🌊 回溯周期大行情候选池数据本地监听 (确保实时极速毫秒级响应，与扫描线程绝对零延迟同步)
@@ -330,6 +341,23 @@ const List1_Selection: React.FC<Props> = ({
             } catch (_) {}
         };
 
+        const handleAntiChasePoolUpdate = (e?: any) => {
+            try {
+                if (e?.detail) {
+                    if (Array.isArray(e.detail.pool)) {
+                        setAntiChasePool(e.detail.pool);
+                        return;
+                    }
+                    if (Array.isArray(e.detail)) {
+                        setAntiChasePool(e.detail);
+                        return;
+                    }
+                }
+                const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                setAntiChasePool(raw ? JSON.parse(raw) : []);
+            } catch (_) {}
+        };
+
         const handleMajorTrendUpdate = (e?: any) => {
             try {
                 if (e?.detail) {
@@ -366,10 +394,12 @@ const List1_Selection: React.FC<Props> = ({
         window.addEventListener('storage', handleStartTrendUpdate);
         window.addEventListener('storage', handleSidewaysUpdate);
         window.addEventListener('storage', handleBreakoutUpdate);
+        window.addEventListener('storage', handleAntiChasePoolUpdate);
         window.addEventListener('storage', handleMajorTrendUpdate);
         window.addEventListener('storage', handleLookbackPoolUpdate);
         window.addEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
         window.addEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
+        window.addEventListener('scanner_anti_chase_pool_updated', handleAntiChasePoolUpdate);
         window.addEventListener('scanner_breakout_pool_updated', handleBreakoutUpdate);
         window.addEventListener('scanner_lookback_pool_updated', handleLookbackPoolUpdate);
         window.addEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
@@ -377,18 +407,21 @@ const List1_Selection: React.FC<Props> = ({
         const timer = setInterval(() => {
             handleStartTrendUpdate();
             handleSidewaysUpdate();
-            handleBreakoutUpdate();
             handleLookbackPoolUpdate();
+            handleAntiChasePoolUpdate();
+            handleBreakoutUpdate();
             handleMajorTrendUpdate();
         }, 1000);
         return () => {
             window.removeEventListener('storage', handleStartTrendUpdate);
             window.removeEventListener('storage', handleSidewaysUpdate);
             window.removeEventListener('storage', handleBreakoutUpdate);
+            window.removeEventListener('storage', handleAntiChasePoolUpdate);
             window.removeEventListener('storage', handleMajorTrendUpdate);
             window.removeEventListener('storage', handleLookbackPoolUpdate);
             window.removeEventListener('scanner_start_trend_pool_updated', handleStartTrendUpdate);
             window.removeEventListener('scanner_sideways_pool_updated', handleSidewaysUpdate);
+            window.removeEventListener('scanner_anti_chase_pool_updated', handleAntiChasePoolUpdate);
             window.removeEventListener('scanner_breakout_pool_updated', handleBreakoutUpdate);
             window.removeEventListener('scanner_lookback_pool_updated', handleLookbackPoolUpdate);
             window.removeEventListener('scanner_major_trend_candidates_updated', handleMajorTrendUpdate);
@@ -483,7 +516,7 @@ const List1_Selection: React.FC<Props> = ({
     const baseList = useMemo(() => {
         // 🔒 无论是否开启大行情发现，列表1的基础底池均由行情启动底池（startTrendPool）支撑
         const poolMap = new Map<string, any>();
-        const startTrendSymbolSet = startTrendPool && startTrendPool.length > 0 ? new Set(startTrendPool.map(p => p.symbol)) : null;
+        const startTrendSymbolSet = startTrendPool && startTrendPool.length > 0 ? new Set(startTrendPool.map(p => typeof p === 'string' ? p : p?.symbol).filter(Boolean)) : null;
 
         // 辅助读取 24H 原始数据缓存以补齐价格与 24H 交易额
         const rawCacheMap = new Map<string, { volM: number, price: number, change: number }>();
@@ -997,14 +1030,14 @@ const List1_Selection: React.FC<Props> = ({
             (scanConfig.majorTrend?.enableStartTrendLong || scanConfig.majorTrend?.enableStartTrendShort)
         );
         const startTrendNormalizedSet = (isStartTrendActive && startTrendPool && startTrendPool.length > 0)
-            ? new Set(startTrendPool.map(p => normalizeSym(p.symbol)).filter(Boolean))
+            ? new Set(startTrendPool.map(p => normalizeSym(typeof p === 'string' ? p : p?.symbol)).filter(Boolean))
             : null;
 
         // 🔒【行情启动趋势底池前置过滤】：
         // 1. 若大行情发现模式下行情启动趋势多/空开启且启动底池有数据，凡不在启动趋势底池中的币种过滤剔除；
         // 2. 若“大行情发现”未开启、或“行情启动趋势”关闭或底池为空，则不进行强制过滤拦截，保证常规模式初筛底池完整可用！
         const startTrendFilteredList = startTrendNormalizedSet
-            ? volumeFilteredList.filter(item => startTrendNormalizedSet.has(normalizeSym(item.symbol)) || (startTrendPool && startTrendPool.some(p => p.symbol === item.symbol)))
+            ? volumeFilteredList.filter(item => startTrendNormalizedSet.has(normalizeSym(item.symbol)) || (startTrendPool && startTrendPool.some(p => (typeof p === 'string' ? p : p?.symbol) === item.symbol)))
             : volumeFilteredList;
 
         // =========================================================================
@@ -1041,20 +1074,51 @@ const List1_Selection: React.FC<Props> = ({
                 scanConfig.breakoutFilter?.enabled || 
                 scanConfig.majorTrend?.breakoutFilter?.enabled
             );
+            let isAntiChaseActive = (scanConfig.antiChaseFilter?.enabled ?? scanConfig.majorTrend?.antiChaseFilter?.enabled) !== false;
+            try {
+                const storedAntiChase = localStorage.getItem('SCANNER_ANTI_CHASE_CONFIG');
+                if (storedAntiChase) {
+                    const parsed = JSON.parse(storedAntiChase);
+                    if (parsed && typeof parsed.enabled === 'boolean') {
+                        isAntiChaseActive = parsed.enabled;
+                    }
+                }
+            } catch (_) {}
 
             // 🎯【流水闸级联数据流】: 严格遵循每一级过滤规则设立独立底池，下一级从上一级获取数据；
             // 若某项过滤规则开关未开启，直接向上穿透获取；终点根据所选最后一项开启的过滤规则推送至“市场初筛”！
             if (isBreakoutActive) {
                 // 🌊 闸门 5: 趋势爆发综合过滤 (最后一项开启规则)
-                if (breakoutPool && breakoutPool.length > 0) {
-                    const breakoutNormSet = new Set(breakoutPool.map(s => normalizeSym(s)));
+                // 🛡️ 核心铁律：若前级“防追高熔断”开启，趋势爆发合格币种必须严格受限于防追高熔断底池！绝不可跳过防追高熔断！
+                let effectiveBreakoutPool = breakoutPool || [];
+                if (isAntiChaseActive) {
+                    if (antiChasePool && antiChasePool.length > 0) {
+                        const antiChaseValidSet = new Set<string>();
+                        antiChasePool.forEach(item => {
+                            const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
+                            const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
+                            const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
+                            const isShort = sym?.endsWith('_SHORT') || dir === 'SHORT';
+                            if (isLong && !enableLong) return;
+                            if (isShort && !enableShort) return;
+                            const norm = normalizeSym(sym);
+                            if (norm) antiChaseValidSet.add(norm);
+                        });
+                        effectiveBreakoutPool = effectiveBreakoutPool.filter(sym => antiChaseValidSet.has(normalizeSym(sym)));
+                    } else {
+                        effectiveBreakoutPool = [];
+                    }
+                }
+
+                if (effectiveBreakoutPool.length > 0) {
+                    const breakoutNormSet = new Set(effectiveBreakoutPool.map(s => normalizeSym(s)));
                     const matchedList = sortedList1.filter(item => {
                         const norm = normalizeSym(item.symbol);
                         return breakoutNormSet.has(norm);
                     });
                     const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
                     const additional: any[] = [];
-                    breakoutPool.forEach(sym => {
+                    effectiveBreakoutPool.forEach(sym => {
                         const norm = normalizeSym(sym);
                         if (!matchedNorms.has(norm)) {
                             const found = baseList.find(b => normalizeSym(b.symbol) === norm);
@@ -1065,8 +1129,42 @@ const List1_Selection: React.FC<Props> = ({
                 } else {
                     finalResult = [];
                 }
+            } else if (isAntiChaseActive) {
+                // 🛡️ 闸门 4: 第三组 防追高熔断过滤 (最后一项开启规则)
+                if (antiChasePool && antiChasePool.length > 0) {
+                    const antiChaseValidSet = new Set<string>();
+                    antiChasePool.forEach(item => {
+                        const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
+                        const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
+                        const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
+                        const isShort = sym?.endsWith('_SHORT') || dir === 'SHORT';
+                        if (isLong && !enableLong) return;
+                        if (isShort && !enableShort) return;
+                        const norm = normalizeSym(sym);
+                        if (norm) antiChaseValidSet.add(norm);
+                    });
+                    const matchedList = sortedList1.filter(item => antiChaseValidSet.has(normalizeSym(item.symbol)));
+                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+                    const additional: any[] = [];
+                    antiChasePool.forEach(item => {
+                        const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
+                        const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
+                        const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
+                        const isShort = sym?.endsWith('_SHORT') || dir === 'SHORT';
+                        if (isLong && !enableLong) return;
+                        if (isShort && !enableShort) return;
+                        const norm = normalizeSym(sym);
+                        if (norm && !matchedNorms.has(norm)) {
+                            const found = baseList.find(b => normalizeSym(b.symbol) === norm);
+                            if (found) additional.push(found);
+                        }
+                    });
+                    finalResult = [...matchedList, ...additional];
+                } else {
+                    finalResult = [];
+                }
             } else if (enableLookbackFilter) {
-                // 🌊 闸门 4: 回溯周期过滤 (最后一项开启规则)
+                // 🌊 闸门 3: 回溯周期过滤 (最后一项开启规则)
                 // 整合 SCANNER_LOOKBACK_FILTERED_POOL 与 effectiveMajorCandidates
                 const lookbackNormSet = new Set<string>();
                 if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
@@ -1103,14 +1201,14 @@ const List1_Selection: React.FC<Props> = ({
             } else if (enableSideways) {
                 // 🌊 闸门 3: 横盘蓄势过滤 (最后一项开启规则)
                 if (sidewaysPool && sidewaysPool.length > 0) {
-                    const sidewaysNormalizedSet = new Set(sidewaysPool.map(p => normalizeSym(p.symbol)).filter(Boolean));
+                    const sidewaysNormalizedSet = new Set(sidewaysPool.map(p => normalizeSym(typeof p === 'string' ? p : p?.symbol)).filter(Boolean));
                     const matchedList = sortedList1.filter(item => 
-                        sidewaysNormalizedSet.has(normalizeSym(item.symbol)) || sidewaysPool.some(p => p.symbol === item.symbol)
+                        sidewaysNormalizedSet.has(normalizeSym(item.symbol)) || sidewaysPool.some(p => (typeof p === 'string' ? p : p?.symbol) === item.symbol)
                     );
                     const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
                     const additional: any[] = [];
                     sidewaysPool.forEach(p => {
-                        const normP = normalizeSym(p.symbol);
+                        const normP = normalizeSym(typeof p === 'string' ? p : p?.symbol);
                         if (!matchedNorms.has(normP)) {
                             const found = baseList.find(b => normalizeSym(b.symbol) === normP);
                             if (found) additional.push(found);
@@ -1126,14 +1224,14 @@ const List1_Selection: React.FC<Props> = ({
             } else if (enableStartTrend) {
                 // 🌊 闸门 2: 行情启动趋势过滤 (最后一项开启规则)
                 if (startTrendPool && startTrendPool.length > 0) {
-                    const startTrendNormSet = new Set(startTrendPool.map(p => normalizeSym(p.symbol)).filter(Boolean));
+                    const startTrendNormSet = new Set(startTrendPool.map(p => normalizeSym(typeof p === 'string' ? p : p?.symbol)).filter(Boolean));
                     const matchedList = sortedList1.filter(item => 
-                        startTrendNormSet.has(normalizeSym(item.symbol)) || startTrendPool.some(p => p.symbol === item.symbol)
+                        startTrendNormSet.has(normalizeSym(item.symbol)) || startTrendPool.some(p => (typeof p === 'string' ? p : p?.symbol) === item.symbol)
                     );
                     const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
                     const additional: any[] = [];
                     startTrendPool.forEach(p => {
-                        const normP = normalizeSym(p.symbol);
+                        const normP = normalizeSym(typeof p === 'string' ? p : p?.symbol);
                         if (!matchedNorms.has(normP)) {
                             const found = baseList.find(b => normalizeSym(b.symbol) === normP);
                             if (found) additional.push(found);
@@ -1156,7 +1254,20 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return finalResult;
-    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, lookbackPool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
+    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, scanConfig.antiChaseFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, lookbackPool, antiChasePool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
+
+    // 🏛️ [中央行情数据总线]: 只要列表1 (市场初筛列表) 发生变动，自动同步预热全量币种 12 个周期 (各 200~300 根) 基线 K 线
+    useEffect(() => {
+        if (filteredList && filteredList.length > 0) {
+            const symbols = filteredList.map(item => item.symbol).filter(Boolean);
+            if (symbols.length > 0) {
+                const timer = setTimeout(() => {
+                    klineDailyStore.syncShortlistMultiTfKlines(symbols);
+                }, 150);
+                return () => clearTimeout(timer);
+            }
+        }
+    }, [filteredList]);
 
     // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
     const pushConfig = scanConfig.list2PushConfig;
@@ -1180,11 +1291,11 @@ const List1_Selection: React.FC<Props> = ({
             }
             if (item.quoteVolume !== undefined && item.quoteVolume !== null && !isNaN(Number(item.quoteVolume))) {
                 const qv = Number(item.quoteVolume);
-                return qv > 10000 ? qv / 1_000_000 : qv;
+                return !isNaN(qv) ? qv / 1_000_000 : 0;
             }
             if (item.price && item.volume) {
                 const pv = Number(item.price) * Number(item.volume);
-                return pv > 10000 ? pv / 1_000_000 : pv;
+                return !isNaN(pv) ? pv / 1_000_000 : 0;
             }
             return 0;
         };
@@ -1655,6 +1766,18 @@ const List1_Selection: React.FC<Props> = ({
                                 className={`pointer-events-none inline-block h-2.5 w-2.5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out mt-[2px] ${scanConfig.instantReopenEnabled ? 'translate-x-3.5' : 'translate-x-0.5'}`}
                             />
                         </button>
+                    </div>
+
+                    {/* 🎯 按定向推送至列表2的规则条件精筛开仓 */}
+                    <div 
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer transition-all ${scanConfig.instantOpenUsePushFilter ? 'bg-indigo-950/60 border-indigo-500/50 text-indigo-300' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                        onClick={() => setScanConfig(p => ({ ...p, instantOpenUsePushFilter: !p.instantOpenUsePushFilter }))}
+                        title="开启后，“立即开”与“平仓后续开”将严格经过‘定向推送至列表2’漏斗（如交易额、涨跌幅、Top N 截取等）规则精筛过滤后再触发开仓"
+                    >
+                        <span className="text-[8px] font-bold">🎯 按定向推送精筛开仓</span>
+                        <span className={`text-[8px] font-mono px-1 rounded ${scanConfig.instantOpenUsePushFilter ? 'bg-indigo-500 text-white font-bold' : 'bg-slate-800 text-slate-500'}`}>
+                            {scanConfig.instantOpenUsePushFilter ? '开启' : '关闭'}
+                        </span>
                     </div>
 
                     {/* 数量提示 */}

@@ -23,10 +23,9 @@ export class BinanceWebSocket {
     private statusCallbacks: Set<StatusCallback> = new Set();
     private isIntentionalClose = false;
     private urls = [
-        'wss://fstream.binance.com/ws/!miniTicker@arr',
         'wss://fstream.binance.com/ws/!ticker@arr',
-        'wss://stream.binance.com:443/ws/!miniTicker@arr',
-        'wss://fstream.binance.com/ws/!markPrice@arr@1s'
+        'wss://fstream.binance.com/ws/!miniTicker@arr',
+        'wss://stream.binance.com:443/ws/!miniTicker@arr'
     ];
     private currentUrlIndex = 0;
     public lastMessageTime = Date.now();
@@ -63,9 +62,31 @@ export class BinanceWebSocket {
         this.statusCheckTimer = setInterval(() => {
             this.notifyStatus();
         }, 1000);
+
+        // 🛡️ [CLOUD RUN & PROXY KEEPALIVE]: Ping local server every 20s to keep both WS & HTTP containers alive
+        setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                try {
+                    this.ws.send(JSON.stringify({ type: 'PING' }));
+                } catch (_) {}
+            }
+            // Keep Cloud Run container warm via lightweight HTTP health probe
+            if (typeof window !== 'undefined') {
+                try {
+                    fetch('/api/health', { cache: 'no-store' }).then(() => {
+                        // If socket got disconnected, revive it once health is verified
+                        if (!this.isConnected && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
+                            this.currentUrlIndex = 0;
+                            this.connect();
+                        }
+                    }).catch(() => {});
+                } catch (_) {}
+            }
+        }, 20000);
     }
 
     private rotateUrl() {
+        // If localUrl exists (index 0), prioritize it; only try others transiently
         this.currentUrlIndex = (this.currentUrlIndex + 1) % this.urls.length;
     }
 
@@ -110,6 +131,9 @@ export class BinanceWebSocket {
 
                 try {
                     const json = JSON.parse(event.data);
+                    if (json && (json.type === 'HEARTBEAT' || json.type === 'PONG')) {
+                        return;
+                    }
                     const data = json.data || json;
                     const newPrices: Record<string, number> = {};
                     const rawTickers: any[] = [];
@@ -138,15 +162,17 @@ export class BinanceWebSocket {
                             newPrices[symbol] = priceVal;
                         }
 
-                        if (shouldEmitTickers && rawSymbol && rawSymbol.endsWith('USDT') && (item.c || item.lastPrice || item.p)) {
+                        const rawQuoteVol = item.q || item.quoteVolume;
+                        const hasVolumeData = rawQuoteVol !== undefined && parseFloat(rawQuoteVol) > 0;
+                        if (shouldEmitTickers && rawSymbol && rawSymbol.endsWith('USDT') && (item.c || item.lastPrice) && hasVolumeData) {
                             rawTickers.push({
                                 symbol: rawSymbol,
-                                lastPrice: item.c || item.lastPrice || item.p || '0',
+                                lastPrice: item.c || item.lastPrice || '0',
                                 openPrice: item.o || item.openPrice || item.c || '0',
                                 highPrice: item.h || item.highPrice || item.c || '0',
                                 lowPrice: item.l || item.lowPrice || item.c || '0',
                                 volume: item.v || item.volume || '0',
-                                quoteVolume: item.q || item.quoteVolume || '0',
+                                quoteVolume: rawQuoteVol,
                                 priceChangePercent: item.P || item.priceChangePercent || '0',
                             });
                         }

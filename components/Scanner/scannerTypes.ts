@@ -1,5 +1,8 @@
 
 import { Position } from '../../types';
+import { AntiChaseFilterConfig } from '../../services/rules/list1_anti_chase';
+
+export type { AntiChaseFilterConfig };
 
 export interface List2GroupedResult {
     tf: string;
@@ -12,6 +15,9 @@ export interface List2GroupedResult {
     crossingTimes?: number[]; 
     bodyRatio?: number; 
     volValid?: boolean;
+    maxVolRatio?: number; // 严格过滤：考察窗口内最大放量倍数
+    maxQuoteVol?: number; // 严格过滤：考察窗口内最大单根成交额(USDT)
+    isConsecutiveRising?: boolean; // 严格过滤：是否触发连续温和递增放量（龙抬头）
     ampValid?: boolean;
     bodyValid?: boolean;
     isAligned?: boolean;
@@ -26,6 +32,7 @@ export interface List2GroupedResult {
     kHigh?: number; // 信号K线最高价
     kLow?: number; // 信号K线最低价
     signalTime?: number; // 信号K线时间戳
+    genesisAge?: number; // 发散起爆原点距今K线根数
 }
 
 export interface List3SignalResult {
@@ -64,6 +71,8 @@ export interface List3SignalResult {
         maxClose3?: number;
         minClose3?: number;
         recentCloses?: number[];
+        ema80Intersections?: number;
+        isAdvancedFilterPassed?: boolean;
     };
 }
 
@@ -137,6 +146,8 @@ export interface ScannerItem {
         maxClose3?: number;
         minClose3?: number;
         recentCloses?: number[];
+        ema80Intersections?: number;
+        isAdvancedFilterPassed?: boolean;
     };
     list3Results?: List3SignalResult[]; 
     momentum?: {
@@ -221,6 +232,10 @@ export interface List2Config {
     enableSignalDeviationFilter?: boolean; // 新增：信号K线振幅偏离限制开关
     maxSignalDeviationPercent?: number;    // 新增：允许偏离信号K线振幅的百分比（%）
     strictFiltering: boolean;
+    strictVolWindow?: number;             // 新增：严格过滤点火放量考察K线根数（默认3根）
+    strictMinQuoteVolume?: number;        // 新增：严格过滤周期成交额门槛USDT（默认100000 U）
+    enableConsecutiveVolRise?: boolean;   // 新增：龙抬头双轨制开关（默认true）
+    consecutiveVolBars?: number;          // 新增：龙抬头连续放量递增根数（默认2根）
     viewMode?: 'ALL' | 'LONG' | 'SHORT';
     syncDirectionFilterToList3?: boolean;
 }
@@ -244,13 +259,20 @@ export interface List3Config {
     maxBBW: number;
     validityPeriod: number;
     sameColorCross: boolean;
+    // --- 高级过滤 (EMA80 震荡结构审计) ---
+    enableAdvancedFilter?: boolean;
+    filterPeriodMode?: 'AUTO_LIST2' | 'CUSTOM';
+    filterKLinePeriod?: '15m' | '1h' | '4h' | '1d' | '1w' | '1M' | '1Q';
+    filterEmaPeriod?: number;
+    filterTimeParam?: number;
+    filterCrossingCount?: number;
 }
 
 export interface List4Config {
     autoExecute: boolean; 
     midlineThreshold: number; 
     breakoutThreshold: number;
-    maxBreakoutDeviation?: number; // 进攻突破偏离上限阈值 % (默认 0.5%)
+    maxBreakoutDeviation?: number; // 进攻突破偏离上限阈值 (以信号K线振幅为基准的百分比 %, 默认 100%)
     directionFilter: 'BOTH' | 'LONG' | 'SHORT';
     enableThresholds: boolean;
     enableAntiChase: boolean;
@@ -266,6 +288,7 @@ export interface List4Config {
     removeTradedCandles?: number;  // 已开仓后多少根K线消除 (0 = 不消除)
     dormantRetentionCandles?: number; // 破中轴休眠期最大保留K线根数 (默认20根)
     antiChaseConfig: {
+        timeframeMinutes?: number; // 默认 5 分钟
         longThresholds: { [key: string]: number };
         shortThresholds: { [key: string]: number };
     };
@@ -326,6 +349,13 @@ export interface ActionConfig {
         minCoinsPercent: number; // 多少百分比币种下跌满足触发 (例如 50%)
         autoRecoverMinutes: number; // 自动锁死分钟数
     };
+
+    // 单币平仓后循环复开配置 (Continuous Auto-Reopen Cycling)
+    autoReopenEnabled?: boolean;
+    reopenBullBearFilter?: string; // e.g. '1h_ema80', '1h_ema200', '4h_ema80', '15m_ema80', 'OFF'
+    reopenPullbackLimitPct?: number; // e.g. 3.0 %
+    reopenTakeProfitOnly?: boolean; // e.g. true
+    reopenMaxConsecutiveLosses?: number; // e.g. 2
 }
 
 export interface SmartScanConfig {
@@ -416,6 +446,8 @@ export interface MajorTrendConfig {
 
     // 🚀 趋势爆发综合过滤 (Breakout Filter Config)
     breakoutFilter?: BreakoutFilterConfig;
+    // 🛡️ 第三组: 防追高熔断过滤 (Anti-Chase Filter Config)
+    antiChaseFilter?: AntiChaseFilterConfig;
 }
 
 export type BreakoutTimeframe = '5m' | '10m' | '15m' | '30m' | '60m';
@@ -500,6 +532,7 @@ export interface ScanConfig {
     smartMode?: SmartScanConfig;
     majorTrend?: MajorTrendConfig;
     breakoutFilter?: BreakoutFilterConfig;
+    antiChaseFilter?: AntiChaseFilterConfig;
     dragonHeadFilter?: DragonHeadFilterConfig;
     enableAlphabeticalFilter?: boolean; // 币安排序 A~Z 分片开关
     alphabeticalRangeStart?: number;    // 起始币种序号 (如 1)
@@ -514,6 +547,7 @@ export interface ScanConfig {
     instantOpenEnabled?: boolean; // 立即开仓开关
     instantReopenEnabled?: boolean; // 平仓后立即开仓开关
     instantOpenDirection?: 'LONG' | 'SHORT'; // 开仓方向：'LONG' (多) 或 'SHORT' (空)
+    instantOpenUsePushFilter?: boolean; // 立即开仓是否仅限定向推送至列表2的规则精筛币种
     list2PushConfig?: {
         enabled: boolean; // 是否启用定向推送至列表2 (若关闭则全部初筛币进入列表2)
         mode: 'OR' | 'AND'; // 复合条件模式: 'OR' (满足任意一项) | 'AND' (必须全部满足)

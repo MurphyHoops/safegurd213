@@ -107,6 +107,10 @@ const DEFAULT_LIST2_CONFIG: List2Config = {
     enableSignalDeviationFilter: false,
     maxSignalDeviationPercent: 50,
     strictFiltering: true,
+    strictVolWindow: 3,
+    strictMinQuoteVolume: 100000,
+    enableConsecutiveVolRise: true,
+    consecutiveVolBars: 2,
     viewMode: 'ALL',
     syncDirectionFilterToList3: false
 };
@@ -136,7 +140,7 @@ const DEFAULT_LIST4_CONFIG: List4Config = {
     autoExecute: true,
     midlineThreshold: 80,
     breakoutThreshold: 10,
-    maxBreakoutDeviation: 0.5,
+    maxBreakoutDeviation: 100,
     directionFilter: 'BOTH',
     enableThresholds: true,
     enableAntiChase: false,
@@ -842,39 +846,62 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                         }
 
                         if (genesisIdx !== -1) {
-                            let crossed20 = false, crossed30 = false, crossed40 = false;
-                            let wasOpposite20 = false, wasOpposite30 = false, wasOpposite40 = false;
-                            for (let b = 0; b < divBars; b++) {
-                                const bIdx = genesisIdx - b;
+                            let cross20Idx: number | null = null;
+                            let cross30Idx: number | null = null;
+                            let cross40Idx: number | null = null;
+
+                            const sLimit = Math.max(0, curIdx - divBars - 60);
+                            for (let bIdx = genesisIdx; bIdx >= sLimit; bIdx--) {
                                 if (bIdx - 1 < 0) break;
                                 const c10 = getE(ema10Arr, 10, bIdx);
-                                const c20 = getE(ema20Arr, 20, bIdx);
-                                const c30 = getE(ema30Arr, 30, bIdx);
-                                const c40 = getE(ema40Arr, 40, bIdx);
                                 const p10 = getE(ema10Arr, 10, bIdx - 1);
-                                const p20 = getE(ema20Arr, 20, bIdx - 1);
-                                const p30 = getE(ema30Arr, 30, bIdx - 1);
-                                const p40 = getE(ema40Arr, 40, bIdx - 1);
-                                if (c10 !== null && c20 !== null && c30 !== null && c40 !== null) {
-                                    if (primaryDirection === 'LONG') {
-                                        if (c10 <= c20) wasOpposite20 = true;
-                                        if (c10 <= c30) wasOpposite30 = true;
-                                        if (c10 <= c40) wasOpposite40 = true;
-                                        if (p10 !== null && p20 !== null && p10 <= p20 && c10 >= c20) crossed20 = true;
-                                        if (p10 !== null && p30 !== null && p10 <= p30 && c10 >= c30) crossed30 = true;
-                                        if (p10 !== null && p40 !== null && p10 <= p40 && c10 >= c40) crossed40 = true;
-                                    } else {
-                                        if (c10 >= c20) wasOpposite20 = true;
-                                        if (c10 >= c30) wasOpposite30 = true;
-                                        if (c10 >= c40) wasOpposite40 = true;
-                                        if (p10 !== null && p20 !== null && p10 >= p20 && c10 <= c20) crossed20 = true;
-                                        if (p10 !== null && p30 !== null && p10 >= p30 && c10 <= c30) crossed30 = true;
-                                        if (p10 !== null && p40 !== null && p10 >= p40 && c10 <= c40) crossed40 = true;
+                                if (c10 === null || p10 === null) continue;
+
+                                if (cross20Idx === null) {
+                                    const c20 = getE(ema20Arr, 20, bIdx);
+                                    const p20 = getE(ema20Arr, 20, bIdx - 1);
+                                    if (c20 !== null && p20 !== null) {
+                                        if (primaryDirection === 'LONG') {
+                                            if ((p10 <= p20 && c10 > c20) || (p10 < p20 && c10 >= c20)) cross20Idx = bIdx;
+                                        } else {
+                                            if ((p10 >= p20 && c10 < c20) || (p10 > p20 && c10 <= c20)) cross20Idx = bIdx;
+                                        }
                                     }
                                 }
+
+                                if (cross30Idx === null) {
+                                    const c30 = getE(ema30Arr, 30, bIdx);
+                                    const p30 = getE(ema30Arr, 30, bIdx - 1);
+                                    if (c30 !== null && p30 !== null) {
+                                        if (primaryDirection === 'LONG') {
+                                            if ((p10 <= p30 && c10 > c30) || (p10 < p30 && c10 >= c30)) cross30Idx = bIdx;
+                                        } else {
+                                            if ((p10 >= p30 && c10 < c30) || (p10 > p30 && c10 <= c30)) cross30Idx = bIdx;
+                                        }
+                                    }
+                                }
+
+                                if (cross40Idx === null) {
+                                    const c40 = getE(ema40Arr, 40, bIdx);
+                                    const p40 = getE(ema40Arr, 40, bIdx - 1);
+                                    if (c40 !== null && p40 !== null) {
+                                        if (primaryDirection === 'LONG') {
+                                            if ((p10 <= p40 && c10 > p40) || (p10 < p40 && c10 >= c40)) cross40Idx = bIdx;
+                                        } else {
+                                            if ((p10 >= p40 && c10 < c40) || (p10 > p40 && c10 <= c40)) cross40Idx = bIdx;
+                                        }
+                                    }
+                                }
+
+                                if (cross20Idx !== null && cross30Idx !== null && cross40Idx !== null) break;
                             }
-                            if ((crossed20 || wasOpposite20) && (crossed30 || wasOpposite30) && (crossed40 || wasOpposite40)) {
-                                divergenceCrossBacktrackOk = true;
+
+                            if (cross20Idx !== null && cross30Idx !== null && cross40Idx !== null) {
+                                const firstCrossIdx = Math.min(cross20Idx, cross30Idx, cross40Idx);
+                                const distFromCur = curIdx - firstCrossIdx;
+                                if (distFromCur <= divBars) {
+                                    divergenceCrossBacktrackOk = true;
+                                }
                             }
                         }
                     }
@@ -1104,13 +1131,44 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                 });
                 if (!ampMaxPassed) l2BlockReasons.push(`最大振幅超标(${signalAmpActual.toFixed(2)}%)`);
 
+                const volWin = effectiveList2Config.strictVolWindow ?? 3;
+                const minQuoteVol = effectiveList2Config.strictMinQuoteVolume ?? 100000;
+
+                const isConsecutive = !!primaryL2?.isConsecutiveRising;
+                let volStatusText = '❌ 放量不足';
+                if (primaryL2?.volValid !== false) {
+                    volStatusText = isConsecutive 
+                        ? '✅ 连续递增放量达标 (龙抬头)' 
+                        : (primaryL2?.maxVolRatio !== undefined ? `✅ 单根爆发放量达标 (${primaryL2.maxVolRatio.toFixed(1)}x)` : '✅ 点火放量达标');
+                } else {
+                    volStatusText = `❌ 放量不足 (< ${volMul}x 且未连续递增)`;
+                }
+
                 l2Rows.push({
-                    name: '严格过滤 - 放量倍数 (VOL)',
-                    targetRange: `放量 ≥ ${volMul}x 均量`,
-                    actualValue: primaryL2?.volValid !== false ? '放量达标' : '放量不足',
+                    name: '严格过滤 - 点火放量 (双轨制)',
+                    targetRange: `最新${volWin}根内 ≥ ${volMul}x 均量 或 连续递增放量`,
+                    actualValue: isConsecutive 
+                        ? `连续递增(龙抬头) / 最大 ${primaryL2?.maxVolRatio?.toFixed(2) ?? '-'}x` 
+                        : (primaryL2?.maxVolRatio !== undefined ? `实测最大 ${primaryL2.maxVolRatio.toFixed(2)}x` : (primaryL2?.volValid !== false ? '放量达标' : '放量不足')),
                     passed: primaryL2?.volValid !== false,
-                    statusText: primaryL2?.volValid !== false ? '✅ 放量达标' : '❌ 成交量不足'
+                    statusText: volStatusText
                 });
+                if (primaryL2?.volValid === false) l2BlockReasons.push(`放量不足(< ${volMul}x 且未连续递增)`);
+
+                if (minQuoteVol > 0) {
+                    const formattedMinQuote = minQuoteVol >= 1000 ? `${(minQuoteVol / 1000).toFixed(0)}K U` : `${minQuoteVol} U`;
+                    const actualQuoteStr = primaryL2?.maxQuoteVol !== undefined 
+                        ? (primaryL2.maxQuoteVol >= 1000 ? `${(primaryL2.maxQuoteVol / 1000).toFixed(1)}K U` : `${primaryL2.maxQuoteVol.toFixed(0)} U`)
+                        : '已核验';
+                    const quotePassed = primaryL2?.volValid !== false;
+                    l2Rows.push({
+                        name: '严格过滤 - 周期成交额 (USDT)',
+                        targetRange: `单根成交额 ≥ ${formattedMinQuote}`,
+                        actualValue: `实测最大 ${actualQuoteStr}`,
+                        passed: quotePassed,
+                        statusText: quotePassed ? '✅ 成交额达标' : `❌ 成交额不足 (< ${formattedMinQuote})`
+                    });
+                }
 
                 l2Rows.push({
                     name: '严格过滤 - 实体比例 (BODY)',
@@ -1447,7 +1505,7 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
 
             const defense_pct = (effectiveList4Config.midlineThreshold ?? 80) / 100;
             const breakout_pct = (effectiveList4Config.breakoutThreshold ?? 10) / 100;
-            const maxDevPct = effectiveList4Config.maxBreakoutDeviation ?? 0.5;
+            const maxDevPct = effectiveList4Config.maxBreakoutDeviation ?? 100;
 
             const long_breakout = bHigh + price_range * breakout_pct;
             const short_breakout = bLow - price_range * breakout_pct;
@@ -1456,8 +1514,8 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
 
             const entryTrigger = sigDir === 'LONG' ? long_breakout : short_breakout;
             const midPoint = sigDir === 'LONG' ? long_defense : short_defense;
-            const maxAllowedLongPrice = entryTrigger * (1 + maxDevPct / 100);
-            const minAllowedShortPrice = entryTrigger * (1 - maxDevPct / 100);
+            const maxAllowedLongPrice = entryTrigger + (price_range * (maxDevPct / 100));
+            const minAllowedShortPrice = entryTrigger - (price_range * (maxDevPct / 100));
 
             // 1. 进攻突破线 (开仓线) & 中轴防守线 (清除线)
             if (effectiveList4Config.enableThresholds !== false) {
@@ -1479,21 +1537,26 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                     statusText: breakoutStatus
                 });
 
-                // 突破偏离上限 (防追高)
+                // 突破偏离上限 (振幅% / 防追高)
                 if (isBreakoutReached) {
-                    const isOverDeviated = sigDir === 'LONG' ? (lastPrice > maxAllowedLongPrice) : (lastPrice < minAllowedShortPrice);
+                    const actualDevPrice = sigDir === 'LONG' ? (lastPrice - entryTrigger) : (entryTrigger - lastPrice);
+                    const actualDevPctOfRange = price_range > 0 ? (actualDevPrice / price_range * 100) : 0;
+                    const isOverDeviated = actualDevPctOfRange > maxDevPct;
+
                     l4Rows.push({
-                        name: '突破偏离上限 (防追高)',
-                        targetRange: `突破偏离缓冲区 ≤ ±${maxDevPct}%`,
-                        actualValue: `现价 ${formatPrice(lastPrice)}`,
+                        name: '突破偏离上限 (振幅% / 防追高)',
+                        targetRange: `突破偏离 ≤ ${maxDevPct}% 振幅 (上限 ${formatPrice(sigDir === 'LONG' ? maxAllowedLongPrice : minAllowedShortPrice)})`,
+                        actualValue: `实测偏离 ${actualDevPctOfRange >= 0 ? '+' : ''}${actualDevPctOfRange.toFixed(1)}% 振幅 (现价 ${formatPrice(lastPrice)})`,
                         passed: !isOverDeviated,
-                        statusText: !isOverDeviated ? `✅ 处于 ±${maxDevPct}% 缓冲区内` : `❌ 偏离跑飞拦截 (禁止追高)`
+                        statusText: !isOverDeviated 
+                            ? `✅ 处于 ${maxDevPct}% 振幅限制内` 
+                            : `❌ 超出 ${maxDevPct}% 振幅上限 (直接清除淘汰)`
                     });
-                    if (isOverDeviated) l4BlockReasons.push('突破偏离过大拦截');
+                    if (isOverDeviated) l4BlockReasons.push(`突破偏离过大拦截(${actualDevPctOfRange.toFixed(1)}% > ${maxDevPct}%)`);
                 } else {
                     l4Rows.push({
-                        name: '突破偏离上限 (防追高)',
-                        targetRange: `偏离上限 ≤ ±${maxDevPct}%`,
+                        name: '突破偏离上限 (振幅% / 防追高)',
+                        targetRange: `突破偏离 ≤ ${maxDevPct}% 振幅 (基准: 信号K振幅 ${formatPrice(price_range)})`,
                         actualValue: '尚未触及突破线',
                         passed: 'NEUTRAL',
                         statusText: '⚪ 待突破后核验'

@@ -5,7 +5,12 @@ export const useProfitManager = ({ settings, onChange, updateNested }: ProfitMan
     
     const toggleOForMode = (mode: string) => {
         const currentMap = settings.oEnabledMap || {};
-        onChange('oEnabledMap', { ...currentMap, [mode]: !currentMap[mode] });
+        const nextVal = !currentMap[mode];
+        const newMap = { ...currentMap, [mode]: nextVal };
+        onChange('oEnabledMap', newMap);
+        if (mode === 'SMART') {
+            updateNested('smart', 'enabled', nextVal);
+        }
     };
 
     return {

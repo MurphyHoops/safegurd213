@@ -19,6 +19,7 @@ import { normalizeSymbol } from "../../services/symbolUtils";
 import { priceRegistry } from "../../services/priceRegistry";
 import { klineMultiTfStore } from "../../services/klineMultiTfStore";
 import { klineDailyStore } from "../../services/klineDailyStore";
+import { eventBus } from "../../core/EventBus";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -151,6 +152,8 @@ export const useStructureAudit = (
       })(),
     ),
   ); // Track permanently removed signals
+  // 🔒 [突破偏离过大·本轮周期锁]: 记录下游列表4广播的偏离跑飞淘汰信号
+  const overDeviatedLockRef = useRef<Map<string, number>>(new Map());
   const structureHashRef = useRef<Map<string, string>>(
     new Map(
       (() => {
@@ -302,7 +305,25 @@ export const useStructureAudit = (
             structure: defaultStructure,
             latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, config),
           };
-        }).filter(r => !expiredSignalCacheRef.current.has(`${c.symbol}-${r.tf}-${r.direction}`) && !expiredSignalCacheRef.current.has(`${normSym}-${r.tf}-${r.direction}`));
+        }).filter(r => {
+          const k1 = `${c.symbol}-${r.tf}-${r.direction}`;
+          const k2 = `${normSym}-${r.tf}-${r.direction}`;
+          const lockedTime = overDeviatedLockRef.current.get(k2) ?? overDeviatedLockRef.current.get(k1);
+          if (lockedTime !== undefined) {
+            const sigT = r.structure?.signalTime || 0;
+            if (sigT <= lockedTime) {
+              return false; // 本轮同一信号被锁定，绝不重新放行
+            } else {
+              // EMA10 产生新一轮穿越，解除锁定
+              overDeviatedLockRef.current.delete(k1);
+              overDeviatedLockRef.current.delete(k2);
+              expiredSignalCacheRef.current.delete(k1);
+              expiredSignalCacheRef.current.delete(k2);
+            }
+          }
+          return !expiredSignalCacheRef.current.has(k1) && 
+                 !expiredSignalCacheRef.current.has(k2);
+        });
 
         if (mappedResults.length > 0) {
           cacheRef.current.set(normSym, {
@@ -1108,10 +1129,10 @@ export const useStructureAudit = (
                     : `${item.symbol}USDT`;
 
                   // ⚡ [中央行情数据总线 0ms 直读通道]: 优先从本地中央总线获取该周期数据
-                  const busCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 20) ||
-                                    klineDailyStore.getShortlistKlineSync(safeSymbol, tf, 20) ||
-                                    (tf === '1d' ? klineDailyStore.getCachedKlinesSync(safeSymbol, 30) : null);
-                  if (busCached && Array.isArray(busCached) && busCached.length >= 20) {
+                  const busCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 100) ||
+                                    klineDailyStore.getShortlistKlineSync(safeSymbol, tf, 100) ||
+                                    (tf === '1d' ? klineDailyStore.getCachedKlinesSync(safeSymbol, 60) : null);
+                  if (busCached && Array.isArray(busCached) && busCached.length >= 60) {
                     const klines: KLine[] = busCached.map((k: any) => ({
                       time: Number(k.time || k[0]),
                       open: parseFloat(k.open || k[1]) || 0,
@@ -1337,7 +1358,7 @@ export const useStructureAudit = (
     });
 
     for (const uniqueId of Array.from(expiredSignalCacheRef.current)) {
-      if (!validUniqueIds.has(uniqueId)) {
+      if (!validUniqueIds.has(uniqueId) && !overDeviatedLockRef.current.has(uniqueId)) {
         expiredSignalCacheRef.current.delete(uniqueId);
       }
     }
@@ -1399,7 +1420,21 @@ export const useStructureAudit = (
         }).filter((r) => {
           const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;
           const normUniqueId = `${normSym}-${r.tf}-${r.direction}`;
-          return !expiredSignalCacheRef.current.has(uniqueId) && !expiredSignalCacheRef.current.has(normUniqueId);
+          const lockedTime = overDeviatedLockRef.current.get(normUniqueId) ?? overDeviatedLockRef.current.get(uniqueId);
+          if (lockedTime !== undefined) {
+            const sigT = r.structure?.signalTime || 0;
+            if (sigT <= lockedTime) {
+              return false; // 本轮同一信号被锁定，绝不放行
+            } else {
+              // EMA10 产生新一轮穿越，解除锁定
+              overDeviatedLockRef.current.delete(uniqueId);
+              overDeviatedLockRef.current.delete(normUniqueId);
+              expiredSignalCacheRef.current.delete(uniqueId);
+              expiredSignalCacheRef.current.delete(normUniqueId);
+            }
+          }
+          return !expiredSignalCacheRef.current.has(uniqueId) && 
+                 !expiredSignalCacheRef.current.has(normUniqueId);
         });
 
         if (results.length > 0) {
@@ -1422,7 +1457,24 @@ export const useStructureAudit = (
           if (!exists) {
             const uniqueId = `${c.symbol}-${r.tf}-${rDir}`;
             const normUniqueId = `${normSym}-${r.tf}-${rDir}`;
-            if (!expiredSignalCacheRef.current.has(uniqueId) && !expiredSignalCacheRef.current.has(normUniqueId)) {
+            const lockedTime = overDeviatedLockRef.current.get(normUniqueId) ?? overDeviatedLockRef.current.get(uniqueId);
+            let isLocked = false;
+            if (lockedTime !== undefined) {
+              const sigT = (r.crossingTimes && r.crossingTimes.length > 0) ? Math.max(...r.crossingTimes) : (r.signalTime ?? 0);
+              if (sigT <= lockedTime) {
+                isLocked = true;
+              } else {
+                overDeviatedLockRef.current.delete(uniqueId);
+                overDeviatedLockRef.current.delete(normUniqueId);
+                expiredSignalCacheRef.current.delete(uniqueId);
+                expiredSignalCacheRef.current.delete(normUniqueId);
+              }
+            }
+            if (
+              !isLocked &&
+              !expiredSignalCacheRef.current.has(uniqueId) && 
+              !expiredSignalCacheRef.current.has(normUniqueId)
+            ) {
               const defaultStructure = {
                 rsi: 50,
                 bbw: 0.1,
@@ -1603,14 +1655,16 @@ export const useStructureAudit = (
       const parts = uniqueId.split("-");
       if (parts.length < 3) return;
 
-      // Add to expired cache so it doesn't get re-added on next scan
-      expiredSignalCacheRef.current.add(uniqueId);
-
       const symbol = parts[0];
       const tf = parts[1];
       const direction = parts[2];
+      const normSym = normalizeSymbol(symbol);
 
-      const cached = cacheRef.current.get(symbol);
+      const normUniqueId = `${normSym}-${tf}-${direction}`;
+      expiredSignalCacheRef.current.add(uniqueId);
+      expiredSignalCacheRef.current.add(normUniqueId);
+
+      const cached = cacheRef.current.get(normSym) || cacheRef.current.get(symbol);
       if (cached && cached.list3Results) {
         // Filter out the specific signal
         cached.list3Results = cached.list3Results.filter(
@@ -1619,9 +1673,10 @@ export const useStructureAudit = (
 
         // If no signals left for this symbol, remove it entirely
         if (cached.list3Results.length === 0) {
+          cacheRef.current.delete(normSym);
           cacheRef.current.delete(symbol);
         } else {
-          cacheRef.current.set(symbol, cached);
+          cacheRef.current.set(normSym, cached);
         }
 
         // Update UI
@@ -1630,6 +1685,27 @@ export const useStructureAudit = (
     },
     [updateList3FromCache],
   );
+
+  // 🔒 [突破偏离过大联动清除与本轮锁]: 接收下游列表4的联动指令，立即清除列表3并上锁
+  useEffect(() => {
+    const unsub = eventBus.subscribe('SIGNAL_OVERDEVIATED_PURGE', (payload: any) => {
+      if (!payload || !payload.cleanSym) return;
+      const normSym = normalizeSymbol(payload.cleanSym);
+      const rawSym = payload.symbol ? payload.symbol : normSym;
+      const key1 = `${rawSym}-${payload.tf}-${payload.direction}`;
+      const key2 = `${normSym}-${payload.tf}-${payload.direction}`;
+      const sigTime = payload.signalTime || Date.now();
+
+      overDeviatedLockRef.current.set(key1, sigTime);
+      overDeviatedLockRef.current.set(key2, sigTime);
+
+      expiredSignalCacheRef.current.add(key1);
+      expiredSignalCacheRef.current.add(key2);
+
+      removeSignal(payload.uniqueId || key2);
+    });
+    return () => unsub();
+  }, [removeSignal]);
 
   return {
     config,

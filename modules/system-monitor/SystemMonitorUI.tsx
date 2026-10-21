@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { Terminal, Trash2, Settings, Activity, Clock, ShieldAlert, Cpu, AlertOctagon, Copy, Check, ChevronDown, ChevronRight, Zap } from 'lucide-react';
-import { useMonitorStore, getCrashBlackbox, clearCrashBlackbox, CrashBlackboxEntry } from '../../services/monitor/monitorService';
+import { useMonitorStore, getCrashBlackbox, clearCrashBlackbox, deepCleanAndResetSystem, CrashBlackboxEntry } from '../../services/monitor/monitorService';
 import { cacheManager } from '../../services/cacheManager';
 
 const safeFormatTime = (timestamp: any) => {
@@ -282,7 +282,11 @@ export const SystemMonitorModule: React.FC = () => {
                     const local = getCrashBlackbox();
                     const map = new Map<string, CrashBlackboxEntry>();
                     [...local, ...data.reports].forEach(r => {
-                        if (r && r.id) map.set(r.id, r);
+                        if (r && r.id) {
+                            const msg = String(r.message || '');
+                            if (msg.includes('isAnyFuseEnabled') || msg.includes('handleDragonHeadUpdate')) return;
+                            map.set(r.id, r);
+                        }
                     });
                     const merged = Array.from(map.values()).sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);
                     setCrashEntries(merged);
@@ -364,6 +368,21 @@ export const SystemMonitorModule: React.FC = () => {
                             <Trash2 size={10} /> 清空黑匣子
                         </button>
                     )}
+                    <button
+                        onClick={() => {
+                            if (confirm('确认执行全域深度清理？\n\n将清理冗余临时缓存、清空崩溃黑匣子与释放游离DOM节点，保留所有关键设置、API与持仓。')) {
+                                const res = deepCleanAndResetSystem();
+                                setCrashEntries([]);
+                                useMonitorStore.getState().addLog('INFO', 'KERNEL', `🧹 深度清理与防爆重置完成，已释放 ${res.freedItems} 项冗余数据`);
+                                runDiagnostic();
+                            }
+                        }}
+                        className="px-2 py-0.5 rounded text-[9px] font-bold uppercase transition-all flex items-center gap-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/20"
+                        title="深度清理系统冗余缓存、黑匣子与防爆机制重置"
+                    >
+                        <Zap size={10} className="text-amber-400" />
+                        清理与重置防爆
+                    </button>
                     <button 
                         onClick={runDiagnostic}
                         disabled={isDiagnosing}

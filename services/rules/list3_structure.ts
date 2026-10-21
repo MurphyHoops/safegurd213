@@ -88,6 +88,17 @@ export function getList3SignalRejectReason(
         }
     }
 
+    // 7. Advanced Filter (高级过滤 - EMA80 震荡结构审计)
+    if (config.enableAdvancedFilter === true && s) {
+        const maxIntersections = typeof config.filterCrossingCount === 'number' ? config.filterCrossingCount : 2;
+        const klineCount = config.filterTimeParam || 100;
+        const tfLabel = (config.filterPeriodMode === 'CUSTOM' && config.filterKLinePeriod) ? config.filterKLinePeriod : signal.tf;
+        
+        if (typeof s.ema80Intersections === 'number' && s.ema80Intersections > maxIntersections) {
+            return `由列表3高级过滤规则删除 [最近 ${klineCount} 根 ${tfLabel} K线与EMA${config.filterEmaPeriod || 80}相交 ${s.ema80Intersections} 次 > 上限 ${maxIntersections} 次(震荡整理中)]`;
+        }
+    }
+
     return null;
 }
 
@@ -163,35 +174,28 @@ export function analyzeList3Structure(
     };
 
     const checkFan = (index: number) => {
-        // Relaxed requirement: Need at least 40 candles for a valid trend (EMA10-40)
-        // If index < 39, we definitely don't have enough for EMA40
+        // Need at least 40 candles for a valid trend (EMA10-40)
         if (index < 39) return false; 
         
         const c10 = getVal(ema10, index, 10);
         const c20 = getVal(ema20, index, 20);
         const c30 = getVal(ema30, index, 30);
         const c40 = getVal(ema40, index, 40);
-        const c80 = getVal(ema80, index, 80);
 
         // Required: at least EMAs 10, 20, 30, 40 must be available
         if (c10 === -1 || c20 === -1 || c30 === -1 || c40 === -1) return false;
 
         if (task.direction === 'LONG') {
-            const basic = (c10 > c20 && c20 > c30 && c30 > c40);
-            if (!basic) return false;
-            // 80 is optional if history is too short. If exists, it must be below 40.
-            return (c80 === -1 || c40 > c80);
+            return (c10 > c20 && c20 > c30 && c30 > c40);
         } else {
-            const basic = (c10 < c20 && c20 < c30 && c30 < c40);
-            if (!basic) return false;
-            // 80 is optional if history is too short. If exists, it must be above 40.
-            return (c80 === -1 || c40 < c80);
+            return (c10 < c20 && c20 < c30 && c30 < c40);
         }
     };
 
     isSignalTrendValid = checkFan(signalIdx);
     isCurrentTrendValid = checkFan(idx);
-    const isStrictTrend = isSignalTrendValid && isCurrentTrendValid;
+    // 方案A：只要当前最新 K 线（isCurrentTrendValid）满足严格趋势即可进入列表3
+    const isStrictTrend = isCurrentTrendValid;
 
     // --- METRIC 2: Candle Color Check ---
     const sClose = closes[signalIdx];
@@ -239,14 +243,17 @@ export function analyzeList3Structure(
         postSignalMinLow = Infinity;
     }
 
-    // --- METRIC 4: 5K 爆发推进 (5-Candle Window & 3-Candle Combos 234, 345, 456) ---
-    // 规则：以信号K线(S)为中心，覆盖左侧2根 + 信号K自身 + 右侧2根 (总计5根K线)。
-    // 必须包含信号K线的3根连续组合：
-    // - 组合 234: [S-2, S-1, S] (信号K前第2根到信号K自身)
-    // - 组合 345: [S-1, S, S+1] (信号K前第1根到信号K后第1根)
-    // - 组合 456: [S, S+1, S+2] (信号K自身到信号K后第2根)
+    // --- METRIC 4: 5K 爆发推进 (5-Candle Window & 6 Combos containing K3: 123, 23, 234, 3, 34, 345) ---
+    // 规则：以信号K线为第3根(K3, 即 signalIdx)，前面两根为1(S-2)和2(S-1)，后面两根为4(S+1)和5(S+2)。
+    // 必须包含信号K线K3在内的6种组合：
+    // - 组合 123: [K1, K2, K3] (S-2 至 S)
+    // - 组合 23:  [K2, K3]     (S-1 至 S)
+    // - 组合 234: [K2, K3, K4] (S-1 至 S+1)
+    // - 组合 3:   [K3]         (S 单根信号K)
+    // - 组合 34:  [K3, K4]     (S 至 S+1)
+    // - 组合 345: [K3, K4, K5] (S 至 S+2)
     // 判定：做多涨幅 (Close - Open) / Open，做空跌幅 (Open - Close) / Open。
-    // 只要任意已形成的组合涨/跌幅达到设定阈值 (默认 1.0%) 即算达标通过。
+    // 只要包含第3根K线在内的任意组合涨/跌幅达到设定阈值 (默认 1.0%) 即算达标通过。
     let thrustThreshold = 1.0;
     try {
         const activeId = typeof window !== 'undefined' ? localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID") : null;
@@ -267,9 +274,12 @@ export function analyzeList3Structure(
     let maxThrust = -Infinity;
 
     const combos = [
-        { name: '234', s: signalIdx - 2, e: signalIdx },
-        { name: '345', s: signalIdx - 1, e: signalIdx + 1 },
-        { name: '456', s: signalIdx,     e: signalIdx + 2 }
+        { name: '123', s: signalIdx - 2, e: signalIdx },
+        { name: '23',  s: signalIdx - 1, e: signalIdx },
+        { name: '234', s: signalIdx - 1, e: signalIdx + 1 },
+        { name: '3',   s: signalIdx,     e: signalIdx },
+        { name: '34',  s: signalIdx,     e: signalIdx + 1 },
+        { name: '345', s: signalIdx,     e: signalIdx + 2 }
     ];
 
     for (const c of combos) {
@@ -370,6 +380,63 @@ export function analyzeList3Structure(
     }
     const isReverse3K = !isBreakout3K;
 
+    // --- METRIC 8: Advanced Filter (高级过滤 - EMA80 震荡结构审计) ---
+    let ema80Intersections = 0;
+    const filterEmaPeriod = config.filterEmaPeriod || 80;
+    const filterKlineCount = config.filterTimeParam || 100;
+    const filterMaxIntersections = typeof config.filterCrossingCount === 'number' ? config.filterCrossingCount : 2;
+
+    let targetHighs = highs;
+    let targetLows = lows;
+    let targetCloses = closes;
+
+    // CUSTOM mode: If user chooses a fixed timeframe and historyExtremes is present
+    if (config.filterPeriodMode === 'CUSTOM' && config.filterKLinePeriod && (task as any).historyExtremes) {
+        const { highs1h, lows1h } = (task as any).historyExtremes;
+        let hoursPerPeriod = 1;
+        switch (config.filterKLinePeriod) {
+            case '15m': hoursPerPeriod = 0.25; break;
+            case '1h': hoursPerPeriod = 1; break;
+            case '4h': hoursPerPeriod = 4; break;
+            case '1d': hoursPerPeriod = 24; break;
+            case '1w': hoursPerPeriod = 168; break;
+            case '1M': hoursPerPeriod = 720; break;
+            case '1Q': hoursPerPeriod = 2160; break;
+        }
+        if (highs1h && lows1h && highs1h.length > 0 && hoursPerPeriod >= 1) {
+            const hT: number[] = [];
+            const lT: number[] = [];
+            for (let i = 0; i < highs1h.length; i += hoursPerPeriod) {
+                const chunkH = highs1h.slice(i, Math.min(highs1h.length, i + hoursPerPeriod));
+                const chunkL = lows1h.slice(i, Math.min(lows1h.length, i + hoursPerPeriod));
+                if (chunkH.length > 0) {
+                    hT.push(Math.max(...chunkH));
+                    lT.push(Math.min(...chunkL));
+                }
+            }
+            targetHighs = hT;
+            targetLows = lT;
+            targetCloses = hT.map((h, i2) => (h + lT[i2]) / 2);
+        }
+    }
+
+    if (targetCloses.length >= filterEmaPeriod) {
+        const fullEma = calculateEMA(targetCloses, filterEmaPeriod);
+        const slicedHighs = targetHighs.slice(-filterKlineCount);
+        const slicedLows = targetLows.slice(-filterKlineCount);
+        const slicedCloses = targetCloses.slice(-filterKlineCount);
+        const slicedEma = fullEma.slice(-filterKlineCount);
+
+        for (let i = 0; i < slicedCloses.length; i++) {
+            const low = slicedLows[i];
+            const high = slicedHighs[i];
+            const emaVal = slicedEma[i];
+            if (emaVal !== undefined && low < emaVal && high > emaVal) {
+                ema80Intersections++;
+            }
+        }
+    }
+
     // 8. Return Constructed Item with ALL Audit Data
     // We do NOT return null here. We return the full profile.
     return {
@@ -404,7 +471,9 @@ export function analyzeList3Structure(
             ema20: getVal(ema20, idx, 20),
             ema30: getVal(ema30, idx, 30),
             ema40: getVal(ema40, idx, 40),
-            ema80: getVal(ema80, idx, 80)
+            ema80: getVal(ema80, idx, 80),
+            ema80Intersections,
+            isAdvancedFilterPassed: !(config.enableAdvancedFilter === true && ema80Intersections > filterMaxIntersections)
         }
     };
 }

@@ -427,7 +427,34 @@ export const PositionSettingsModal: React.FC<Props> = ({
                                 {/* ATR TREND MODE */}
                                 {localSettings.profitMode === 'ATR' && <AtrTrendMode settings={localSettings} updateNested={updateNested} />}
                                 {/* SMART */}
-                                {localSettings.profitMode === 'SMART' && <SmartMode settings={localSettings} updateNested={updateNested} />}
+                                {localSettings.profitMode === 'SMART' && (
+                                    <SmartMode 
+                                        settings={localSettings} 
+                                        updateNested={updateNested} 
+                                        onToggleMaster={() => {
+                                            setLocalSettings(prev => {
+                                                const currentMap = prev.oEnabledMap || {};
+                                                const nextVal = !currentMap['SMART'];
+                                                const baseSmart = prev.smart || {
+                                                    enabled: false,
+                                                    decayEnabled: true,
+                                                    minPosition: 0,
+                                                    activationProfit: 5,
+                                                    conventionalEnabled: true,
+                                                    tiers: []
+                                                };
+                                                return {
+                                                    ...prev,
+                                                    oEnabledMap: { ...currentMap, SMART: nextVal },
+                                                    smart: {
+                                                        ...baseSmart,
+                                                        enabled: nextVal
+                                                    }
+                                                };
+                                            });
+                                        }}
+                                    />
+                                )}
                                 {/* GLOBAL MODE */}
                                 {localSettings.profitMode === 'GLOBAL' && <GlobalMode settings={localSettings} updateNested={updateNested} />}
                                 {/* AI MODE */}

@@ -22,6 +22,7 @@ import { binanceWs } from './services/binanceWs';
 import { normalizeSymbol, resolvePrice, isMajorCoin, isMemeScaledCoin } from './services/symbolUtils';
 import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
+import { IpChangeAlertModal, IpChangeAlertData } from './components/IpChangeAlertModal';
 import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock, AlertTriangle, Trash2 } from 'lucide-react'; 
 import { 
     setBinanceLogSink, 
@@ -137,8 +138,8 @@ const AppContent: React.FC = () => {
         try {
             console.log("[Boot] Loading logs...");
             const saved = loadState<LogEntry[]>('SAVIOR_LOGS', []);
-            // Revive dates safely
-            return saved.map(l => {
+            // Revive dates safely (capped to 500 Ring Buffer)
+            return (saved.slice(0, 500) as LogEntry[]).map(l => {
                 if (!l || typeof l !== 'object') return null;
                 return { ...l, timestamp: new Date(l.timestamp || Date.now()) };
             }).filter(Boolean) as LogEntry[];
@@ -193,6 +194,26 @@ const AppContent: React.FC = () => {
 
     const logsPendingRef = useRef<LogEntry[]>([]);
     const lastLogUpdateRef = useRef<number>(0);
+    const logBufferTimerRef = useRef<any>(null);
+
+    // 🛡️ [STREAM LOG TO DISK]: 异步流式持久化到后台磁盘 trading_audit.log，解除渲染进程常驻内存负担
+    const streamLogToDisk = useCallback((entry: LogEntry) => {
+        try {
+            if (typeof fetch !== 'undefined') {
+                fetch('/api/logger/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        timestamp: entry.timestamp instanceof Date ? entry.timestamp.getTime() : Date.now(),
+                        type: entry.type,
+                        message: entry.message,
+                        category: entry.category,
+                        chainId: entry.chainId
+                    })
+                }).catch(() => {});
+            }
+        } catch (_) {}
+    }, []);
 
     const updateLogsFromBuffer = useCallback(() => {
         if (logsPendingRef.current.length === 0) return;
@@ -201,7 +222,8 @@ const AppContent: React.FC = () => {
         logsPendingRef.current = [];
         lastLogUpdateRef.current = Date.now();
 
-        setLogs(prev => [...batch, ...prev].slice(0, 2000));
+        // 🔒 [500条硬上限 Ring Buffer]: 内存中仅保留最近 500 条日志，大幅度削减内存开销与虚拟DOM调和压力
+        setLogs(prev => [...batch, ...prev].slice(0, 500));
     }, []);
 
     const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string, immediate = false, extraMeta?: Partial<LogEntry>) => {
@@ -240,11 +262,17 @@ const AppContent: React.FC = () => {
             ...extraMeta
         };
 
-        // 🔒 [开仓/平仓/对冲/砍仓/清仓/币安反馈 核心流水必达穿透]
-        const isCriticalTradeEvent = immediate || 
+        // 1. 同步流式落盘到本地持久化文件 trading_audit.log
+        streamLogToDisk(newEntry);
+
+        // 2. 区分【真正成交/开平仓动作】与【高频未触发/常规巡检日志】
+        // 排除“对冲未触发”等高频巡检提示，避免每秒密集同步调用 setLogs 打死主线程
+        const isRoutineCheck = message.includes('未触发') || message.includes('巡检') || message.includes('心跳');
+        const isRealTradeExecution = !isRoutineCheck && (
+            immediate || 
             message.includes('开仓') || 
             message.includes('平仓') || 
-            message.includes('对冲') || 
+            message.includes('已触发') || 
             message.includes('补仓') || 
             message.includes('砍仓') || 
             message.includes('清仓') || 
@@ -252,25 +280,31 @@ const AppContent: React.FC = () => {
             message.includes('救赎') || 
             message.includes('币安') || 
             message.includes('成交') || 
-            message.includes('订单');
+            message.includes('订单')
+        );
 
-        if (isCriticalTradeEvent) {
-            // 🔒 [毫秒级即时日志穿透] 对开平仓、向币安发送交易等高优先级关键事件立即直推 UI，零缓冲延迟
-            setLogs(prev => [newEntry, ...prev].slice(0, 2000));
+        if (isRealTradeExecution) {
+            // 🔒 [真实交易穿透] 关键成交动作直推 UI，限制在 500 条 Ring Buffer
+            setLogs(prev => [newEntry, ...prev].slice(0, 500));
             lastLogUpdateRef.current = Date.now();
             return;
         }
 
+        // 常规审计日志进入微批次缓冲队列，250ms 批量合并更新一次
         logsPendingRef.current.unshift(newEntry);
+        // 🔒 [硬上限内存队列]: 防止短时间内大量日志瞬间挤占 V8 堆内存
+        if (logsPendingRef.current.length > 500) {
+            logsPendingRef.current.length = 500;
+        }
         
         const now = Date.now();
-        // 如果距离上次更新不足 500ms，则缓冲（List 2 高频扫描时非常有用）
-        if (now - lastLogUpdateRef.current > 500) {
-            setTimeout(() => {
+        if (now - lastLogUpdateRef.current > 250) {
+            if (logBufferTimerRef.current) clearTimeout(logBufferTimerRef.current);
+            logBufferTimerRef.current = setTimeout(() => {
                 updateLogsFromBuffer();
-            }, 0);
+            }, 50);
         }
-    }, [updateLogsFromBuffer]);
+    }, [updateLogsFromBuffer, streamLogToDisk]);
 
     // 🔒 @LOCKED: 币安全域请求与响应中文日志审计注册（零遗漏即时推送到系统日志）
     useEffect(() => {
@@ -335,6 +369,7 @@ const AppContent: React.FC = () => {
     const [showTradeLogModal, setShowTradeLogModal] = useState(false);
     const [tradeLogSearchSymbol, setTradeLogSearchSymbol] = useState<string>('');
     const [fuseAlertData, setFuseAlertData] = useState<FuseAlertData | null>(null);
+    const [ipChangeAlertData, setIpChangeAlertData] = useState<IpChangeAlertData | null>(null);
 
     // --- FUSE ALERT EVENT LISTENER ---
     useEffect(() => {
@@ -346,6 +381,65 @@ const AppContent: React.FC = () => {
         window.addEventListener('savior_fuse_alert', handleFuseAlert);
         return () => {
             window.removeEventListener('savior_fuse_alert', handleFuseAlert);
+        };
+    }, []);
+
+    // --- IP CHANGE MONITOR & ALERTS ---
+    useEffect(() => {
+        const LAST_CONFIRMED_IP_KEY = 'SAVIOR_LAST_CONFIRMED_IP';
+
+        const checkServerIp = async () => {
+            try {
+                const res = await fetch('/api/server-ip');
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data && data.success && data.ip) {
+                    const currentIp = String(data.ip).trim();
+                    const lastConfirmedIp = localStorage.getItem(LAST_CONFIRMED_IP_KEY);
+
+                    if (!lastConfirmedIp) {
+                        // 首次运行初始化记忆基准
+                        localStorage.setItem(LAST_CONFIRMED_IP_KEY, currentIp);
+                    } else if (lastConfirmedIp !== currentIp) {
+                        // 发现出口 IP 发生变动！
+                        setIpChangeAlertData({
+                            oldIp: lastConfirmedIp,
+                            newIp: currentIp
+                        });
+                        // 触发高优先级语音强提醒与日志警报
+                        audioService.speak('警告！服务器出口 IP 已发生变动，请尽快更新币安白名单！', true);
+                        handleLog('DANGER', `🚨 【服务器出口 IP 变动警报】原出口 IP [${lastConfirmedIp}] 已漂移变为 [${currentIp}]！请立即在币安 API 管理中心更新白名单，避免实盘下单被拒！`);
+                    }
+                }
+            } catch (e) {
+                // 静默容错
+            }
+        };
+
+        // 立即执行一次
+        checkServerIp();
+
+        // 每 30 秒轮询一次出口 IP 状态
+        const ipCheckInterval = setInterval(checkServerIp, 30000);
+
+        // 监听全局币安 API -2015 错误事件（如有即时捕获透传）
+        const handleIpEvent = (e: any) => {
+            if (e.detail?.newIp) {
+                const currentConfirmed = localStorage.getItem(LAST_CONFIRMED_IP_KEY) || '';
+                if (e.detail.newIp !== currentConfirmed) {
+                    setIpChangeAlertData({
+                        oldIp: currentConfirmed,
+                        newIp: e.detail.newIp
+                    });
+                    audioService.speak('警告！服务器出口 IP 已发生变动，请尽快更新币安白名单！', true);
+                }
+            }
+        };
+        window.addEventListener('savior_ip_change_alert', handleIpEvent);
+
+        return () => {
+            clearInterval(ipCheckInterval);
+            window.removeEventListener('savior_ip_change_alert', handleIpEvent);
         };
     }, []);
     
@@ -755,10 +849,10 @@ const AppContent: React.FC = () => {
             if (simulatorRef.current) {
                 simulatorRef.current.updateRealPrices(normalized);
                 
-                // CRITICAL INSTANT-TICK (Throttled to 100ms max to prevent CPU thread starvation when holding 20+ positions):
+                // CRITICAL INSTANT-TICK (Throttled to 120ms max to prevent CPU thread starvation when holding 20+ positions):
                 const simPositionsCount = simulatorRef.current.getPositions().length;
                 const nowTick = Date.now();
-                if ((simPositionsCount > 0 || activePositionsRef.current.length > 0) && (nowTick - lastInstantTickRef.current >= 100)) {
+                if ((simPositionsCount > 0 || activePositionsRef.current.length > 0) && (nowTick - lastInstantTickRef.current >= 120)) {
                     lastInstantTickRef.current = nowTick;
                     try {
                         simulatorRef.current.tick(true);
@@ -768,15 +862,30 @@ const AppContent: React.FC = () => {
                 }
             }
 
-            // 4. THROTTLE UI UPDATE: Max ~3 times per second (300ms)
-            // Provides extremely fluid, hyper-responsive visual momentum feedback without choking the UI thread
+            // 4. THROTTLE UI UPDATE: Max 4 times per second (250ms) when visible, 3000ms when hidden
+            // rAF 帧率对齐与批量合并，彻底杜绝高频行情频繁触发 React Reconciliation 占满渲染主线程
             const now = Date.now();
-            if (now - lastUiUpdateRef.current > 300) {
-                const snapshot = { ...priceBufferRef.current };
-                setRealPrices(snapshot);
+            const isTabHidden = typeof document !== 'undefined' && document.hidden;
+            const throttleLimit = isTabHidden ? 3000 : 250;
+            if (now - lastUiUpdateRef.current > throttleLimit) {
                 lastUiUpdateRef.current = now;
+                const schedule = typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame : (fn: () => void) => setTimeout(fn, 0);
+                schedule(() => {
+                    setRealPrices({ ...priceBufferRef.current });
+                });
             }
         });
+
+        // Instant refresh when returning from background tab
+        const handleVisibilityChange = () => {
+            if (typeof document !== 'undefined' && !document.hidden && (Date.now() - lastUiUpdateRef.current > 350)) {
+                setRealPrices({ ...priceBufferRef.current });
+                lastUiUpdateRef.current = Date.now();
+            }
+        };
+        if (typeof document !== 'undefined') {
+            document.addEventListener('visibilitychange', handleVisibilityChange);
+        }
 
         let networkHealthDebounceTimer: any = null;
         let lastReportedHealthState: boolean | null = null;
@@ -822,6 +931,9 @@ const AppContent: React.FC = () => {
         });
 
         return () => {
+            if (typeof document !== 'undefined') {
+                document.removeEventListener('visibilitychange', handleVisibilityChange);
+            }
             if (networkHealthDebounceTimer) clearTimeout(networkHealthDebounceTimer);
             unsubscribePrices();
             unsubscribeStatus();
@@ -1652,6 +1764,10 @@ const AppContent: React.FC = () => {
                             }
                             if (data && (data.code === -2015 || (typeof data.error === 'string' && (data.error.includes('-2015') || data.error.includes('权限不足'))))) {
                                 handleLog('DANGER', '⚠️ 币安 API 密钥无效或权限不足！请检查是否已正确开启“期货交易 (Enable Futures)”权限，并检查 IP 白名单设置。');
+                                const ipMatch = String(data.error || '').match(/request ip:\s*([\d\.]+)/i) || String(data.msg || '').match(/request ip:\s*([\d\.]+)/i);
+                                if (ipMatch && ipMatch[1]) {
+                                    window.dispatchEvent(new CustomEvent('savior_ip_change_alert', { detail: { newIp: ipMatch[1] } }));
+                                }
                             }
                         }
                         return data || { success: false };
@@ -2103,7 +2219,9 @@ const AppContent: React.FC = () => {
                         leverage: selectedLeverage,
                         isManual: isManualOpen,
                         isHedge: false,
-                        reason: stratName
+                        reason: stratName,
+                        isReopened: !!extraProps?.isReopened,
+                        allowExisting: !!extraProps?.isReopened || !!(extraProps as any)?.allowExisting || !!(extraProps as any)?.isRefill
                     })
                 });
 
@@ -3321,15 +3439,19 @@ const AppContent: React.FC = () => {
             return;
         }
 
-        if (simulatorRef.current) {
-            simulatorRef.current.addLog("INFO", `⚡ [自动复开延迟起步] 延迟 1.5 秒以确保币安平仓完全成交且完成同步...`);
+        // 🔒 [平仓确认硬门禁 (Await-Close Barrier)]: 严禁盲目使用 setTimeout(1500)！
+        // 挂起并等待币安平仓订单回执 (FILLED) 与持仓移除完成，确认平仓尘埃落定后瞬间无缝复开
+        const lockKey = `${cleanSymbol}_${side}`;
+        let waitCount = 0;
+        while (pendingClosesRef.current.has(lockKey) && waitCount < 30) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            waitCount++;
         }
-        
-        // 1.5 second delay to let Binance finish processing the previous close/amputation market orders
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        // 给予 150ms 微秒级终极缓冲让数据对账彻底就续
+        await new Promise(resolve => setTimeout(resolve, 150));
 
         if (simulatorRef.current) {
-            simulatorRef.current.addLog("INFO", `⚡ [自动复开触发] 正在向币安发送开仓指令以完全复开原仓位: ${cleanSymbol} ${side} | 原始金额: ${amountUsdt.toFixed(2)} USDT | 原因: ${reason}`);
+            simulatorRef.current.addLog("INFO", `⚡ [自动复开触发] 平仓已硬核确认，正在向币安发送开仓指令以完全复开原仓位: ${cleanSymbol} ${side} | 原始金额: ${amountUsdt.toFixed(2)} USDT | 原因: ${reason}`);
         }
 
         try {
@@ -4675,6 +4797,19 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     onResetAndResume={(sym) => {
                         simulatorRef.current?.resetOscillationLock(sym);
                         handleLog('SUCCESS', `已重置 ${sym} 震荡磨损熔断计数并恢复自动策略监控`);
+                    }}
+                />
+            )}
+
+            {ipChangeAlertData && (
+                <IpChangeAlertModal 
+                    data={ipChangeAlertData}
+                    onClose={() => setIpChangeAlertData(null)}
+                    onAcknowledge={(newIp) => {
+                        localStorage.setItem('SAVIOR_LAST_CONFIRMED_IP', newIp);
+                        setIpChangeAlertData(null);
+                        handleLog('SUCCESS', `已确认并保存最新服务器出口 IP [${newIp}] 为基准`);
+                        audioService.speak('已确认更新出口IP', true);
                     }}
                 />
             )}

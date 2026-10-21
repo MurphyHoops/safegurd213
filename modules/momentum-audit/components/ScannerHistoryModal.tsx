@@ -391,7 +391,7 @@ export const useAutoHistoryLogger = (
                 const grouped = item.groupedResults || [];
                 grouped.forEach((res: any) => {
                     const times = res.crossingTimes || [];
-                    const crossTime = times.length > 0 ? times[times.length - 1] : (item.lastUpdated || Date.now());
+                    const crossTime = res.signalTime || (times.length > 0 ? times[times.length - 1] : (item.lastUpdated || Date.now()));
                     flatSignals.push({
                         symbol: item.symbol,
                         tf: res.tf || '15m',

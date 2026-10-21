@@ -28,7 +28,7 @@ export function checkIndividualPositionRules(
         p.amount > 0.0001
     );
 
-    if ((position.isHedged && !position.isUnshackled) || hasOpposingInAll || position.mainPositionId || position.isAmputated || (position.amputatedAmount || 0) > 0) {
+    if (((position.isHedged && hasOpposingInAll) && !position.isUnshackled) || hasOpposingInAll || position.mainPositionId || position.isAmputated || (position.amputatedAmount || 0) > 0) {
         return false;
     }
 
@@ -93,43 +93,33 @@ export function checkIndividualPositionRules(
     // --- 核心优化：确保“常规、趋势、智能、AI”完全并联运行，只要处于开启状态，达到任意一个条件立即平仓 ---
     const oEnabledMap = profitSettings.oEnabledMap || {};
 
-    // 1. 常规止盈检测 (常规止盈/托底平仓：开启托底、设置收益率、主选常规或并联开启)
+    // 1. 常规止盈检测 (必须且仅当【常规】标题旁边的总开关开启时运行)
     const conventionalCfg = profitSettings.conventional || settings.profit.conventional;
-    const isConventionalActive = profitSettings.profitMode === 'CONVENTIONAL' || 
-        !!oEnabledMap['CONVENTIONAL'] || 
-        conventionalCfg?.trailingEnabled === true ||
-        (conventionalCfg?.profitPercent !== undefined && conventionalCfg.profitPercent > 0);
+    const isConventionalActive = !!oEnabledMap['CONVENTIONAL'];
 
     if (isConventionalActive && conventionalCfg) {
         if (checkConventionalProfit(position, conventionalCfg, closePosition)) return true;
     }
 
-    // 2. 趋势 (ATR/均线) 止盈检测 (开启吊灯止盈、开启EMA平仓、主选趋势或并联开启)
+    // 2. 趋势 (ATR/均线) 止盈检测 (必须且仅当【趋势】标题旁边的总开关开启时运行)
     const atrCfg = profitSettings.atr || settings.profit.atr;
-    const isAtrActive = profitSettings.profitMode === 'ATR' || 
-        !!oEnabledMap['ATR'] || 
-        atrCfg?.chandelierEnabled === true || 
-        atrCfg?.emaEnabled === true;
+    const isAtrActive = !!oEnabledMap['ATR'];
 
     if (isAtrActive && atrCfg) {
         if (checkAtrProfit(position, atrCfg, closePosition)) return true;
     }
 
-    // 3. 智能止盈检测 (智能止盈总开关开启、主选智能或并联开启)
+    // 3. 智能止盈检测 (必须且仅当【智能】标题旁边的总开关开启时运行)
     const smartCfg = profitSettings.smart || settings.profit.smart;
-    const isSmartActive = profitSettings.profitMode === 'SMART' || 
-        !!oEnabledMap['SMART'] || 
-        smartCfg?.enabled === true;
+    const isSmartActive = !!(oEnabledMap['SMART'] || smartCfg?.enabled);
 
     if (isSmartActive && smartCfg) {
         if (checkSmartProfit(position, smartCfg, closePosition)) return true;
     }
 
-    // 4. AI 智能逃顶检测 (AI总开关开启、主选AI或并联开启)
+    // 4. AI 智能逃顶检测 (必须且仅当【AI】标题旁边的总开关开启时运行)
     const aiCfg = profitSettings.ai || settings.profit.ai;
-    const isAiActive = profitSettings.profitMode === 'AI' || 
-        !!oEnabledMap['AI'] || 
-        (aiCfg?.aiSmartModeEnabled === true);
+    const isAiActive = !!oEnabledMap['AI'];
 
     if (isAiActive && aiCfg) {
         if (checkAiProfit(position, profitSettings, closePosition, settings?.profit?.aiSmartMasterEnabled ?? true)) return true;

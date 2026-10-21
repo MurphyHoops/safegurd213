@@ -5,7 +5,6 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
-import { binanceRealtimeService } from "../services/realtime/BinanceRealtimeService";
 import { ScannerSettings, PositionSide, Position, KLine, StrategyItem, TradeLog } from "../types";
 import {
   X,
@@ -66,6 +65,7 @@ const MemoizedMarketScannerModule = React.memo(MarketScannerModule, (prev, next)
 const MemoizedGrandCrossingModule = React.memo(GrandCrossingModule, (prev, next) => {
   return prev.networkStatus === next.networkStatus && 
          prev.candidates === next.candidates && 
+         prev.activePositions === next.activePositions &&
          prev.directMode === next.directMode &&
          prev.strategyId === next.strategyId &&
          prev.isBackground === next.isBackground &&
@@ -218,15 +218,6 @@ const ScannerDashboardInner: React.FC<
 
   // --- UI STATE ---
   const [isMinimized, setIsMinimized] = useState(false);
-  const [realPrices, setRealPrices] = useState<Record<string, number>>({});
-
-  useEffect(() => {
-    const handlePrices = (prices: Map<string, number>) => {
-      setRealPrices(Object.fromEntries(prices));
-    };
-    binanceRealtimeService.on('pricesUpdated', handlePrices);
-    return () => binanceRealtimeService.off('pricesUpdated', handlePrices);
-  }, []);
   const [showLogPanel, setShowLogPanel] = useState(false);
   const [chartData, setChartData] = useState<any>(null);
   const [scannerMode, setScannerMode] = usePersistedState<
@@ -1591,6 +1582,80 @@ const ScannerDashboardInner: React.FC<
     prevPositionsRef.current = filteredPositions;
   }, [filteredPositions]);
 
+  // 🚀 Helper: Filter List 1 candidates by List 2 push funnel rules when instantOpenUsePushFilter is enabled
+  const filterCandidatesByPushConfig = (candidates: ScannerItem[], pushConfig: any): ScannerItem[] => {
+    if (!pushConfig) return candidates;
+    const isPushEffectivelyEnabled = Boolean(
+      pushConfig.enabled || pushConfig.enableTopN || pushConfig.enableChg24h || 
+      pushConfig.enableChg8am || pushConfig.enableVol24h || pushConfig.enableVol8am
+    );
+    if (!isPushEffectivelyEnabled) return candidates;
+
+    const getVol24 = (item: ScannerItem): number => {
+      if (item.volume24h !== undefined && item.volume24h !== null && !isNaN(Number(item.volume24h)) && Number(item.volume24h) > 0) return Number(item.volume24h);
+      if (item.quoteVolume !== undefined && item.quoteVolume !== null && !isNaN(Number(item.quoteVolume))) return Number(item.quoteVolume) / 1_000_000;
+      if (item.price && item.volume) return (Number(item.price) * Number(item.volume)) / 1_000_000;
+      return 0;
+    };
+
+    const getVol8am = (item: ScannerItem): number => {
+      if (item.volume8am !== undefined && !isNaN(Number(item.volume8am))) return Number(item.volume8am);
+      return getVol24(item);
+    };
+
+    const getChg24 = (item: ScannerItem): number => {
+      const it = item as any;
+      if (it.chg24h !== undefined && !isNaN(Number(it.chg24h))) return Number(it.chg24h);
+      if (it.priceChangePercent !== undefined && !isNaN(Number(it.priceChangePercent))) return Number(it.priceChangePercent);
+      return 0;
+    };
+
+    const getChg8am = (item: ScannerItem): number => {
+      const it = item as any;
+      if (it.chg8am !== undefined && !isNaN(Number(it.chg8am))) return Number(it.chg8am);
+      return getChg24(item);
+    };
+
+    let filtered = candidates.filter(item => {
+      const v24 = getVol24(item);
+      const v8am = getVol8am(item);
+      const c24 = getChg24(item);
+      const c8am = getChg8am(item);
+
+      const condChg24 = pushConfig.enableChg24h ? Math.abs(c24) >= (pushConfig.minChg24h || 0) : true;
+      const condChg8am = pushConfig.enableChg8am ? Math.abs(c8am) >= (pushConfig.minChg8am || 0) : true;
+      const condVol24 = pushConfig.enableVol24h ? v24 >= (pushConfig.minVol24h || 0) : true;
+      const condVol8am = pushConfig.enableVol8am ? v8am >= (pushConfig.minVol8am || 0) : true;
+
+      if (pushConfig.mode === 'AND') {
+        return condChg24 && condChg8am && condVol24 && condVol8am;
+      } else {
+        let activeConds = 0;
+        let metConds = 0;
+        if (pushConfig.enableChg24h) { activeConds++; if (condChg24) metConds++; }
+        if (pushConfig.enableChg8am) { activeConds++; if (condChg8am) metConds++; }
+        if (pushConfig.enableVol24h) { activeConds++; if (condVol24) metConds++; }
+        if (pushConfig.enableVol8am) { activeConds++; if (condVol8am) metConds++; }
+        return activeConds === 0 || metConds > 0;
+      }
+    });
+
+    if (pushConfig.enableTopN && pushConfig.topNCount > 0) {
+      const key = pushConfig.topNSortKey || 'CHG_24H_ABS';
+      filtered.sort((a, b) => {
+        if (key === 'VOL_24H') return getVol24(b) - getVol24(a);
+        if (key === 'VOL_8AM') return getVol8am(b) - getVol8am(a);
+        if (key === 'CHG_8AM_ABS') return Math.abs(getChg8am(b)) - Math.abs(getChg8am(a));
+        if (key === 'CHG_24H_DESC') return getChg24(b) - getChg24(a);
+        if (key === 'CHG_24H_ASC') return getChg24(a) - getChg24(b);
+        return Math.abs(getChg24(b)) - Math.abs(getChg24(a));
+      });
+      filtered = filtered.slice(0, pushConfig.topNCount);
+    }
+
+    return filtered;
+  };
+
   useEffect(() => {
     const instantOpen = !!scanConfig?.instantOpenEnabled;
     const instantOpenAfterClose = !!scanConfig?.instantReopenEnabled;
@@ -1626,7 +1691,11 @@ const ScannerDashboardInner: React.FC<
       isReopen: boolean;
     }> = [];
 
-    list1Candidates.forEach(item => {
+    const pushFilteredCandidates = scanConfig?.instantOpenUsePushFilter
+      ? filterCandidatesByPushConfig(list1Candidates, scanConfig.list2PushConfig)
+      : list1Candidates;
+
+    pushFilteredCandidates.forEach(item => {
       const symbol = normalizeSymbol(item.symbol);
       if (allowedFixedSet && !allowedFixedSet.has(symbol.replace('USDT', ''))) {
         return;
@@ -2151,6 +2220,7 @@ const ScannerDashboardInner: React.FC<
                     list2RemoveSignalRef.current = fn;
                   }}
                   strategyId={selectedStrategyId}
+                  activePositions={filteredPositions || currentPositions}
                 />
               )}
             </ErrorBoundary>
@@ -2774,6 +2844,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
           }}
           strategyId={strategyId}
           isBackground={true}
+          activePositions={filteredPositions || currentPositions}
         />
       )}
 

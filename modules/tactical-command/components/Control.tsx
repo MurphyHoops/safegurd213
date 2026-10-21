@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Zap, ShieldCheck, ZapOff, ChevronUp, ChevronDown } from 'lucide-react';
+import { Zap, ShieldCheck, ZapOff, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
 import { ActionConfig } from '../../../components/Scanner/scannerTypes';
 
 export const RiskStatsRow: React.FC<{ stats: { symbolCount: number, totalValue: number, totalPnl: number }, config: ActionConfig }> = ({ stats, config }) => {
@@ -120,6 +120,111 @@ export const List6Control: React.FC<{
                 </span>
             </div>
             <div className={`w-2 h-2 rounded-full ${config.autoExecute ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
+        </div>
+
+        {/* ⚡ 自动平仓后循环复开 (控制面板置于“自动开仓已激活”正下方) */}
+        <div className="bg-amber-950/20 border border-amber-500/30 rounded p-2 space-y-2">
+            {/* 1. 复开总开关 */}
+            <div 
+                onClick={() => setConfig(p => ({...p, autoReopenEnabled: !p.autoReopenEnabled}))}
+                className={`flex items-center justify-between px-2.5 py-1.5 rounded border cursor-pointer transition-all ${
+                    config.autoReopenEnabled ? 'bg-amber-500/20 border-amber-500/50 text-amber-300' : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+            >
+                <div className="flex items-center gap-1.5">
+                    <RefreshCw size={13} className={config.autoReopenEnabled ? 'text-amber-400 animate-spin-slow' : 'text-slate-500'} />
+                    <span className="text-xs font-bold">平仓后自动复开 (Reopen)</span>
+                </div>
+                <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded font-mono ${config.autoReopenEnabled ? 'bg-amber-500 text-black font-extrabold' : 'bg-slate-800 text-slate-500'}`}>
+                    {config.autoReopenEnabled ? '已开启' : '关闭'}
+                </span>
+            </div>
+
+            {/* 2. 复开风控门禁 (牛熊门禁 / 偏离熔断 / 止盈复开) */}
+            {config.autoReopenEnabled && (
+                <div className="space-y-1.5 pt-1 text-[9px] font-sans">
+                    {/* 牛熊趋势门禁 (1h EMA80 可调选择) */}
+                    <div className="flex items-center justify-between bg-slate-900/80 p-1.5 rounded border border-slate-800">
+                        <span className="text-slate-400 font-bold">牛熊趋势门禁</span>
+                        <select
+                            value={config.reopenBullBearFilter ?? '1h_ema80'}
+                            onChange={e => setConfig(p => ({...p, reopenBullBearFilter: e.target.value}))}
+                            className="bg-slate-800 border border-slate-700 text-amber-300 text-[9px] font-mono font-bold rounded px-1 py-0.5 outline-none focus:border-amber-400"
+                        >
+                            <option value="1h_ema80">1h EMA80 上多/下空</option>
+                            <option value="1h_ema200">1h EMA200 强牛熊轴</option>
+                            <option value="4h_ema80">4h EMA80 大周期门禁</option>
+                            <option value="15m_ema80">15m EMA80 敏捷门禁</option>
+                            <option value="OFF">关闭趋势门禁</option>
+                        </select>
+                    </div>
+
+                    {/* 高点回调偏离熔断 % */}
+                    <div className="flex items-center justify-between bg-slate-900/80 p-1.5 rounded border border-slate-800 gap-1">
+                        <span className="text-slate-400 font-bold whitespace-nowrap">高点回调熔断 %</span>
+                        <div className="flex items-center gap-1 flex-1 justify-end">
+                            <input
+                                type="number"
+                                step="0.5"
+                                min="0.5"
+                                max="10"
+                                value={config.reopenPullbackLimitPct ?? 3.0}
+                                onChange={e => setConfig(p => ({...p, reopenPullbackLimitPct: parseFloat(e.target.value) || 3.0}))}
+                                className="w-12 bg-slate-800 border border-slate-700 text-amber-300 text-[10px] font-mono font-bold rounded px-1 py-0.5 text-center outline-none focus:border-amber-400"
+                            />
+                            <div className="flex gap-0.5">
+                                {[1, 2, 3, 5].map(v => (
+                                    <button
+                                        key={v}
+                                        type="button"
+                                        onClick={() => setConfig(p => ({...p, reopenPullbackLimitPct: v}))}
+                                        className={`px-1 py-0.5 rounded font-mono text-[8px] border ${
+                                            (config.reopenPullbackLimitPct ?? 3.0) === v ? 'bg-amber-500/30 text-amber-300 border-amber-500/50 font-bold' : 'bg-slate-800 text-slate-500 border-slate-700'
+                                        }`}
+                                    >
+                                        {v}%
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 仅限止盈平仓后复开开关 */}
+                    <div className="flex items-center justify-between bg-slate-900/80 p-1.5 rounded border border-slate-800">
+                        <span className="text-slate-400 font-bold">仅限止盈平仓复开</span>
+                        <button
+                            type="button"
+                            onClick={() => setConfig(p => ({...p, reopenTakeProfitOnly: !(p.reopenTakeProfitOnly ?? true)}))}
+                            className={`px-2 py-0.5 rounded text-[8px] font-bold border transition-colors ${
+                                (config.reopenTakeProfitOnly ?? true)
+                                    ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300'
+                                    : 'bg-slate-800 border-slate-700 text-slate-500'
+                            }`}
+                        >
+                            {(config.reopenTakeProfitOnly ?? true) ? '开启 (非对冲/止损)' : '任意平仓复开'}
+                        </button>
+                    </div>
+
+                    {/* 单币连亏熔断次数 */}
+                    <div className="flex items-center justify-between bg-slate-900/80 p-1.5 rounded border border-slate-800">
+                        <span className="text-slate-400 font-bold">单币连亏熔断</span>
+                        <div className="flex items-center gap-1 font-mono">
+                            {[1, 2, 3].map(cnt => (
+                                <button
+                                    key={cnt}
+                                    type="button"
+                                    onClick={() => setConfig(p => ({...p, reopenMaxConsecutiveLosses: cnt}))}
+                                    className={`px-1.5 py-0.5 rounded text-[8px] border ${
+                                        (config.reopenMaxConsecutiveLosses ?? 2) === cnt ? 'bg-amber-500/30 text-amber-300 border-amber-500/50 font-bold' : 'bg-slate-800 text-slate-500 border-slate-700'
+                                    }`}
+                                >
+                                    {cnt}次
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
 
         {/* 开仓限制模块 */}

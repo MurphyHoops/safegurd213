@@ -1,5 +1,4 @@
 import { Position, ProfitSettings, PositionSide } from '../../../types';
-import { checkConventionalProfit } from './conventional';
 
 /**
  * AI 智能止盈 (AI Oracle / Single-Coin Smart TP)
@@ -68,9 +67,9 @@ export function checkAiProfit(
     close: (symbol: string, side: PositionSide, reason: string, ratio: number) => void,
     isMasterEnabled: boolean = true
 ): boolean {
-    // If the global AI Smart Profit master switch is turned off, fall back immediately to conventional rules
+    // If the global AI Smart Profit master switch is turned off, do not run
     if (!isMasterEnabled) {
-        return checkConventionalProfit(position, profitSettings.conventional, close);
+        return false;
     }
 
     const settings = profitSettings.ai || { 
@@ -97,15 +96,15 @@ export function checkAiProfit(
     // 1. 单币智能或 AI 启动控制
     const useSmartAI = settings.aiSmartModeEnabled ?? true; 
     if (!useSmartAI) {
-        return checkConventionalProfit(position, profitSettings.conventional, close);
+        return false;
     }
     const actThreshold = getAiActivationThreshold(settings);
     const fallbackThreshold = settings.fallbackProfitPercent ?? 1.0;
 
     // 如果未达到 AI 智能启动盈利阈值，或者当前盈利已经跌破退回常规平仓阈值
     if (maxPnl < actThreshold) {
-        // 未达 AI 门槛 -> 恢复/执行常规平仓逻辑
-        return checkConventionalProfit(position, profitSettings.conventional, close);
+        // 未达 AI 门槛 -> 返回 false，绝不越权偷偷执行常规平仓
+        return false;
     }
     
     // --- 新增：阶梯保底锁定逻辑 ---
@@ -115,8 +114,8 @@ export function checkAiProfit(
     // -----------------------------
 
     if (currentPnl < fallbackThreshold) {
-        // 盈利低于退回常规阀值 -> 恢复常规平仓逻辑
-        return checkConventionalProfit(position, profitSettings.conventional, close);
+        // 盈利低于退回常规阈值 -> 返回 false，绝不越权偷偷执行常规平仓
+        return false;
     }
 
     // 2. 核心 AI 多指标自适应参数匹配引擎 — 实现利润最大化逃顶

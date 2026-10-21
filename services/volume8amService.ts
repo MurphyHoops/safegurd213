@@ -8,6 +8,8 @@
  * 4. K线 index 1 (openPrice) 是早上8点的开盘价，最新价相比开盘价即为【早上8点起涨跌幅】。
  */
 
+import { klineDailyStore } from './klineDailyStore';
+
 export interface Volume8amItem {
     symbol: string;
     volume8am: number;    // 百万 USDT (M)
@@ -67,7 +69,45 @@ function persistCache() {
  */
 export function getVolume8am(symbol: string): Volume8amItem | undefined {
     initCache();
-    return memoryCache.get(symbol);
+    const cached = memoryCache.get(symbol);
+    if (cached && isCurrentTradingDay(cached.openTime) && cached.volume8am > 0) {
+        return cached;
+    }
+
+    // 🏛️ 本地中央日K线总线秒级直读 (0ms延迟，杜绝网络并发与Undefined导致数量暴增暴跌)
+    try {
+        const klines = klineDailyStore.getCachedKlinesSync(symbol, 1);
+        if (Array.isArray(klines) && klines.length > 0) {
+            const k = klines[klines.length - 1];
+            const openTime = Number(k[0] || k.time || 0);
+            if (isCurrentTradingDay(openTime)) {
+                const openPrice = parseFloat(k[1] || k.open) || 0;
+                const highPrice = parseFloat(k[2] || k.high) || openPrice;
+                const lowPrice = parseFloat(k[3] || k.low) || openPrice;
+                const lastPrice = parseFloat(k[4] || k.close) || openPrice;
+                const quoteVol = parseFloat(k[7] || k.quoteVolume || k.quoteAssetVolume) || 0;
+                if (quoteVol > 0) {
+                    const volume8am = +(quoteVol / 1000000).toFixed(2);
+                    const change8am = openPrice > 0 ? +(((lastPrice - openPrice) / openPrice) * 100).toFixed(2) : 0;
+                    const item: Volume8amItem = {
+                        symbol,
+                        volume8am,
+                        change8am,
+                        openPrice,
+                        highPrice,
+                        lowPrice,
+                        lastPrice,
+                        openTime,
+                        updatedAt: Date.now()
+                    };
+                    memoryCache.set(symbol, item);
+                    return item;
+                }
+            }
+        }
+    } catch (_) {}
+
+    return cached;
 }
 
 /**
@@ -103,10 +143,15 @@ export async function fetchVolume8amBatch(
     initCache();
     if (!Array.isArray(symbols) || symbols.length === 0) return memoryCache;
 
+    // 先通过本地中央日K总线秒级补齐，95%+币种无需网络请求
+    symbols.forEach(sym => {
+        getVolume8am(sym);
+    });
+
     const nowTime = Date.now();
     const CACHE_VALID_MS = 10 * 60 * 1000; // 10分钟内缓存有效，彻底阻断高频重复穿透
 
-    // 过滤出需要更新的币种 (优先处理前40个活跃币种，杜绝全域300+币种瞬时并发轰炸)
+    // 过滤出真正需要网络拉取的币种 (平滑分批全量覆盖，绝不在40个后盲目截断导致未加载币种归零被剔除)
     const targets = symbols.filter(sym => {
         if (!sym || !sym.endsWith('USDT')) return false;
         if (activeFetchSymbols.has(sym)) return false;
@@ -116,7 +161,7 @@ export async function fetchVolume8amBatch(
         if (nowTime - cached.updatedAt > CACHE_VALID_MS) return true;
         if (!isCurrentTradingDay(cached.openTime)) return true;
         return false;
-    }).slice(0, 40);
+    }).slice(0, 100);
 
     if (targets.length === 0) {
         return memoryCache;
@@ -264,13 +309,13 @@ export function checkVolumeRule(
             vol24h = Number(item.volume24h);
         } else if ((item as any).quoteVolume !== undefined && !isNaN(Number((item as any).quoteVolume))) {
             const raw = Number((item as any).quoteVolume);
-            vol24h = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? raw : 0);
+            vol24h = !isNaN(raw) ? +(raw / 1000000).toFixed(2) : 0;
         } else if (item.volume !== undefined && !isNaN(Number(item.volume))) {
             const raw = Number(item.volume);
-            vol24h = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? raw : 0);
+            vol24h = !isNaN(raw) ? +(raw / 1000000).toFixed(2) : 0;
         } else if ((item as any).q !== undefined && !isNaN(Number((item as any).q))) {
             const raw = Number((item as any).q);
-            vol24h = raw > 10000 ? +(raw / 1000000).toFixed(2) : (raw > 0 ? raw : 0);
+            vol24h = !isNaN(raw) ? +(raw / 1000000).toFixed(2) : 0;
         }
 
         // 最小交易额校验（大于或等于设定值）
@@ -310,14 +355,15 @@ export function checkVolumeRule(
             }
         }
 
-        // 如果已获取到早上8点的真实交易额，进行严格范围比对
-        if (vol8am !== undefined && !isNaN(vol8am)) {
-            // 最小交易额校验
-            if (min8am > 0 && vol8am < min8am) {
+        // 🎯 最小 8AM 交易额校验：数据未加载(undefined)或未达标时，统一拦截（不盲目放行导致数量爆涨爆跌）
+        if (min8am > 0) {
+            if (vol8am === undefined || isNaN(vol8am) || vol8am < min8am) {
                 return false;
             }
-            // 最大交易额校验（后面为0是无上限）
-            if (effectiveMax8am > 0 && vol8am > effectiveMax8am) {
+        }
+        // 最大 8AM 交易额校验（后面为0是无上限）
+        if (effectiveMax8am > 0 && vol8am !== undefined && !isNaN(vol8am)) {
+            if (vol8am > effectiveMax8am) {
                 return false;
             }
         }

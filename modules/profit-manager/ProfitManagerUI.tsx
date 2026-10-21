@@ -49,7 +49,7 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                                             className={`w-8 h-full flex items-center justify-center border-l transition-colors hover:bg-slate-800/50 ${
                                                 isActive ? 'border-emerald-500/20' : 'border-slate-700'
                                             }`}
-                                            title="并联开关 (选中后该模式将始终在后台运行)"
+                                            title={isOEnabled ? `【${labels[mode]}】总开关已开启 (点击关闭该平仓方式)` : `【${labels[mode]}】总开关已关闭 (点击开启该平仓方式)`}
                                         >
                                             <div className={`w-3 h-3 rounded-full transition-all duration-300 ${
                                                 isOEnabled 
@@ -68,7 +68,7 @@ export const ProfitManagerModule: React.FC<ProfitManagerProps> = (props) => {
                             {/* ATR TREND MODE */}
                             {settings.profitMode === 'ATR' && <AtrTrendMode settings={settings} updateNested={updateNested} />}
                             {/* SMART */}
-                            {settings.profitMode === 'SMART' && <SmartMode settings={settings} updateNested={updateNested} />}
+                            {settings.profitMode === 'SMART' && <SmartMode settings={settings} updateNested={updateNested} onToggleMaster={() => toggleOForMode('SMART')} />}
                             {/* GLOBAL MODE */}
                             {settings.profitMode === 'GLOBAL' && <GlobalMode settings={settings} updateNested={updateNested} />}
                             {/* AI MODE */}

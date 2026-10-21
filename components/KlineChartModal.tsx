@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { X, Loader2, Move, ZoomIn, ZoomOut, RefreshCw, AlertTriangle, WifiOff, Activity, ArrowRight, ArrowUp, ArrowDown, BarChart2, Ruler, Zap, Check, Clock, Layers } from 'lucide-react';
+import { X, Loader2, Move, ZoomIn, ZoomOut, RefreshCw, AlertTriangle, WifiOff, Activity, ArrowRight, ArrowUp, ArrowDown, BarChart2, Ruler, Zap, Check, CheckCircle2, Clock, Layers } from 'lucide-react';
 import { calculateEMA } from '../services/indicators';
 import { fetchWithFallback } from '../services/apiService';
 import { analyzeList2Crossing } from '../services/rules/list2_crossing'; // Import Rule Logic
@@ -702,45 +702,50 @@ const KlineChartModal: React.FC<Props> = ({
               if (isStart) {
                   let crossedAllL = true;
                   if (enableDivergenceCrossCheck) {
-                      let crossed20L = false;
-                      let crossed30L = false;
-                      let crossed40L = false;
-                      let was10Below20 = false;
-                      let was10Below30 = false;
-                      let was10Below40 = false;
+                      let cross20IdxL: number | null = null;
+                      let cross30IdxL: number | null = null;
+                      let cross40IdxL: number | null = null;
 
-                      for (let b = 0; b < divergenceLookbackBars; b++) {
-                          const bIdx = i - b;
-                          if (bIdx - 1 < 0) break;
-
+                      const searchLimitL = Math.max(0, i - divergenceLookbackBars - 60);
+                      for (let bIdx = i; bIdx >= searchLimitL; bIdx--) {
                           const cur10 = getEmaAt(10, bIdx);
-                          const cur20 = getEmaAt(20, bIdx);
-                          const cur30 = getEmaAt(30, bIdx);
-                          const cur40 = getEmaAt(40, bIdx);
-
                           const prev10 = getEmaAt(10, bIdx - 1);
-                          const prev20 = getEmaAt(20, bIdx - 1);
-                          const prev30 = getEmaAt(30, bIdx - 1);
-                          const prev40 = getEmaAt(40, bIdx - 1);
+                          if (cur10 === null || prev10 === null) continue;
 
-                          if (cur10 !== null) {
-                              if (cur20 !== null && cur10 <= cur20) was10Below20 = true;
-                              if (cur30 !== null && cur10 <= cur30) was10Below30 = true;
-                              if (cur40 !== null && cur10 <= cur40) was10Below40 = true;
+                          if (cross20IdxL === null) {
+                              const cur20 = getEmaAt(20, bIdx);
+                              const prev20 = getEmaAt(20, bIdx - 1);
+                              if (cur20 !== null && prev20 !== null && ((prev10 <= prev20 && cur10 > cur20) || (prev10 < prev20 && cur10 >= cur20))) {
+                                  cross20IdxL = bIdx;
+                              }
                           }
 
-                          if (cur10 !== null && prev10 !== null) {
-                              if (cur20 !== null && prev20 !== null && ((prev10 <= prev20 && cur10 >= cur20) || (prev10 < prev20 && cur10 > cur20))) crossed20L = true;
-                              if (cur30 !== null && prev30 !== null && ((prev10 <= prev30 && cur10 >= cur30) || (prev10 < prev30 && cur10 > cur30))) crossed30L = true;
-                              if (cur40 !== null && prev40 !== null && ((prev10 <= prev40 && cur10 >= cur40) || (prev10 < prev40 && cur10 > cur40))) crossed40L = true;
+                          if (cross30IdxL === null) {
+                              const cur30 = getEmaAt(30, bIdx);
+                              const prev30 = getEmaAt(30, bIdx - 1);
+                              if (cur30 !== null && prev30 !== null && ((prev10 <= prev30 && cur10 > cur30) || (prev10 < prev30 && cur10 >= cur30))) {
+                                  cross30IdxL = bIdx;
+                              }
                           }
+
+                          if (cross40IdxL === null) {
+                              const cur40 = getEmaAt(40, bIdx);
+                              const prev40 = getEmaAt(40, bIdx - 1);
+                              if (cur40 !== null && prev40 !== null && ((prev10 <= prev40 && cur10 > cur40) || (prev10 < prev40 && cur10 >= cur40))) {
+                                  cross40IdxL = bIdx;
+                              }
+                          }
+
+                          if (cross20IdxL !== null && cross30IdxL !== null && cross40IdxL !== null) break;
                       }
 
-                      if (e10 > e20 && was10Below20) crossed20L = true;
-                      if (e10 > e30 && was10Below30) crossed30L = true;
-                      if (e10 > e40 && was10Below40) crossed40L = true;
-
-                      crossedAllL = crossed20L && crossed30L && crossed40L;
+                      if (cross20IdxL !== null && cross30IdxL !== null && cross40IdxL !== null) {
+                          const firstCrossIdxL = Math.min(cross20IdxL, cross30IdxL, cross40IdxL);
+                          const distFromCurrentL = (fullData.length - 1) - firstCrossIdxL;
+                          crossedAllL = distFromCurrentL <= divergenceLookbackBars;
+                      } else {
+                          crossedAllL = false;
+                      }
                   }
 
                   if (crossedAllL) {
@@ -798,45 +803,50 @@ const KlineChartModal: React.FC<Props> = ({
               if (isStart) {
                   let crossedAllS = true;
                   if (enableDivergenceCrossCheck) {
-                      let crossed20S = false;
-                      let crossed30S = false;
-                      let crossed40S = false;
-                      let was10Above20 = false;
-                      let was10Above30 = false;
-                      let was10Above40 = false;
+                      let cross20IdxS: number | null = null;
+                      let cross30IdxS: number | null = null;
+                      let cross40IdxS: number | null = null;
 
-                      for (let b = 0; b < divergenceLookbackBars; b++) {
-                          const bIdx = i - b;
-                          if (bIdx - 1 < 0) break;
-
+                      const searchLimitS = Math.max(0, i - divergenceLookbackBars - 60);
+                      for (let bIdx = i; bIdx >= searchLimitS; bIdx--) {
                           const cur10 = getEmaAt(10, bIdx);
-                          const cur20 = getEmaAt(20, bIdx);
-                          const cur30 = getEmaAt(30, bIdx);
-                          const cur40 = getEmaAt(40, bIdx);
-
                           const prev10 = getEmaAt(10, bIdx - 1);
-                          const prev20 = getEmaAt(20, bIdx - 1);
-                          const prev30 = getEmaAt(30, bIdx - 1);
-                          const prev40 = getEmaAt(40, bIdx - 1);
+                          if (cur10 === null || prev10 === null) continue;
 
-                          if (cur10 !== null) {
-                              if (cur20 !== null && cur10 >= cur20) was10Above20 = true;
-                              if (cur30 !== null && cur10 >= cur30) was10Above30 = true;
-                              if (cur40 !== null && cur10 >= cur40) was10Above40 = true;
+                          if (cross20IdxS === null) {
+                              const cur20 = getEmaAt(20, bIdx);
+                              const prev20 = getEmaAt(20, bIdx - 1);
+                              if (cur20 !== null && prev20 !== null && ((prev10 >= prev20 && cur10 < cur20) || (prev10 > prev20 && cur10 <= cur20))) {
+                                  cross20IdxS = bIdx;
+                              }
                           }
 
-                          if (cur10 !== null && prev10 !== null) {
-                              if (cur20 !== null && prev20 !== null && ((prev10 >= prev20 && cur10 <= cur20) || (prev10 > prev20 && cur10 < cur20))) crossed20S = true;
-                              if (cur30 !== null && prev30 !== null && ((prev10 >= prev30 && cur10 <= cur30) || (prev10 > prev30 && cur10 < cur30))) crossed30S = true;
-                              if (cur40 !== null && prev40 !== null && ((prev10 >= prev40 && cur10 <= cur40) || (prev10 > prev40 && cur10 < cur40))) crossed40S = true;
+                          if (cross30IdxS === null) {
+                              const cur30 = getEmaAt(30, bIdx);
+                              const prev30 = getEmaAt(30, bIdx - 1);
+                              if (cur30 !== null && prev30 !== null && ((prev10 >= prev30 && cur10 < cur30) || (prev10 > prev30 && cur10 <= cur30))) {
+                                  cross30IdxS = bIdx;
+                              }
                           }
+
+                          if (cross40IdxS === null) {
+                              const cur40 = getEmaAt(40, bIdx);
+                              const prev40 = getEmaAt(40, bIdx - 1);
+                              if (cur40 !== null && prev40 !== null && ((prev10 >= prev40 && cur10 < cur40) || (prev10 > prev40 && cur10 <= cur40))) {
+                                  cross40IdxS = bIdx;
+                              }
+                          }
+
+                          if (cross20IdxS !== null && cross30IdxS !== null && cross40IdxS !== null) break;
                       }
 
-                      if (e10 < e20 && was10Above20) crossed20S = true;
-                      if (e10 < e30 && was10Above30) crossed30S = true;
-                      if (e10 < e40 && was10Above40) crossed40S = true;
-
-                      crossedAllS = crossed20S && crossed30S && crossed40S;
+                      if (cross20IdxS !== null && cross30IdxS !== null && cross40IdxS !== null) {
+                          const firstCrossIdxS = Math.min(cross20IdxS, cross30IdxS, cross40IdxS);
+                          const distFromCurrentS = (fullData.length - 1) - firstCrossIdxS;
+                          crossedAllS = distFromCurrentS <= divergenceLookbackBars;
+                      } else {
+                          crossedAllS = false;
+                      }
                   }
 
                   if (crossedAllS) {
@@ -1559,7 +1569,8 @@ const KlineChartModal: React.FC<Props> = ({
         } finally {
             if (isMounted) {
                 if (isInitialLoad) setLoading(false);
-                timerId = setTimeout(() => fetchData(false), 15000);
+                // 🔒 [锁定绝对不跳动]: 初始K线拉取完成后，全面交由 WebSocket 实时静默增量更新
+                // 严禁启动周期性全量拉取覆盖 fullData，彻底消除 K 线图隔几秒跳动的问题
             }
         }
     };
@@ -1629,7 +1640,6 @@ const KlineChartModal: React.FC<Props> = ({
             80: calculateEMA(closes, 80),
           };
           setEmaData(emas);
-          setLastUpdated(Date.now());
           return updatedList;
         });
       }
@@ -2228,7 +2238,10 @@ const KlineChartModal: React.FC<Props> = ({
           const layout = getMarkerLayout(signalIdx, isLong ? 'LONG' : 'SHORT', d);
 
           if (isFocal) {
-              const badgeText = isLong ? '做多信号K线' : '做空信号K线';
+              const isNativeTf = !initialTimeframe || timeframe === initialTimeframe;
+              const badgeText = isLong 
+                  ? (isNativeTf ? '做多信号K线' : `做多信号 (${initialTimeframe}原生映射)`) 
+                  : (isNativeTf ? '做空信号K线' : `做空信号 (${initialTimeframe}原生映射)`);
 
               signalMarkers.push(
                   <g key={`sig-focal-anchor-${idx}`} pointerEvents="none">
@@ -3380,6 +3393,18 @@ const KlineChartModal: React.FC<Props> = ({
                             🎯 信号源: {signalPattern}
                         </span>
                     )}
+                    {!isTradeViewMode && initialTimeframe && timeframe !== initialTimeframe && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm flex items-center gap-1" title={`当前查看周期为 ${timeframe}，突破/防守决策线由 ${initialTimeframe} 原生信号映射`}>
+                            <AlertTriangle size={11} className="text-amber-400" />
+                            <span>原生周期: {initialTimeframe} (当前为 {timeframe} 映射)</span>
+                        </span>
+                    )}
+                    {!isTradeViewMode && initialTimeframe && timeframe === initialTimeframe && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm flex items-center gap-1">
+                            <CheckCircle2 size={11} className="text-emerald-400" />
+                            <span>信号原生周期 ({timeframe})</span>
+                        </span>
+                    )}
                     {isTradeViewMode && (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-indigo-500/20 text-indigo-300 border-indigo-500/40 shadow-sm">
                             💼 交易与持仓流水
@@ -3462,6 +3487,7 @@ const KlineChartModal: React.FC<Props> = ({
                         const isActive = timeframe === tf;
                         const isChecked = inspectionTfs.includes(tf);
                         const isTriggered = highlightTf === tf;
+                        const isOriginTf = initialTimeframe === tf;
                         return (
                             <button
                                 key={tf}
@@ -3472,16 +3498,21 @@ const KlineChartModal: React.FC<Props> = ({
                                 className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all relative flex items-center gap-0.5 ${
                                     isActive
                                         ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-400'
-                                        : isChecked
-                                            ? 'bg-slate-800 text-amber-300 border border-amber-500/40 hover:bg-slate-700'
-                                            : isTriggered
-                                                ? 'text-indigo-400 bg-indigo-500/10'
-                                                : 'text-slate-400 hover:text-slate-200 bg-slate-900/60'
+                                        : isOriginTf
+                                            ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/60 hover:bg-emerald-900/60 shadow-sm'
+                                            : isChecked
+                                                ? 'bg-slate-800 text-amber-300 border border-amber-500/40 hover:bg-slate-700'
+                                                : isTriggered
+                                                    ? 'text-indigo-400 bg-indigo-500/10'
+                                                    : 'text-slate-400 hover:text-slate-200 bg-slate-900/60'
                                 }`}
-                                title={`点击切换到 ${tf} 周期`}
+                                title={isOriginTf ? `信号原生周期: ${tf}` : `点击切换到 ${tf} 周期`}
                             >
                                 <span>{tf}</span>
-                                {isChecked && (
+                                {isOriginTf && (
+                                    <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/25 text-emerald-300 font-normal">源</span>
+                                )}
+                                {isChecked && !isOriginTf && (
                                     <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block ml-0.5" title="已加入上下箭头巡检" />
                                 )}
                             </button>

@@ -17,6 +17,7 @@ export interface WsKlineUpdate {
 
 import { klineMultiTfStore } from './klineMultiTfStore';
 import { klineDailyStore } from './klineDailyStore';
+import { l234DataStore } from './l234DataStore';
 
 type KlineCallback = (update: WsKlineUpdate) => void;
 
@@ -129,6 +130,20 @@ class BinanceKlineWsService {
       }
     }
 
+    // 🏛️ [L234 Store Subscription Protection]: Always protect all active symbols in L234 Store
+    const l234Symbols = l234DataStore.getAllSymbols();
+    if (l234Symbols.length > 0) {
+      // Extract unique timeframes requested from requiredPairs
+      const activeTfs = Array.from(new Set(requiredPairs.map(p => p.tf).filter(Boolean)));
+      const tfsToSub = activeTfs.length > 0 ? activeTfs : ['5m', '15m', '1h', '4h'];
+      for (const sym of l234Symbols) {
+        for (const tf of tfsToSub) {
+          const lStream = this.formatStreamName(sym, tf);
+          if (lStream) targetStreams.add(lStream);
+        }
+      }
+    }
+
     // Identify streams to unsubscribe (Never unsubscribe protected position streams)
     for (const sub of this.subscribedStreams) {
       if (!targetStreams.has(sub) && !this.protectedPositionStreams.has(sub)) {
@@ -224,6 +239,7 @@ class BinanceKlineWsService {
                 close: update.close,
                 volume: update.volume
               });
+              l234DataStore.updateRealtimeKline(update);
               if (update.tf === '5m') {
                 const tenMinTime = Math.floor(update.time / (10 * 60 * 1000)) * (10 * 60 * 1000);
                 klineMultiTfStore.updateRealtimeKline(update.symbol, '10m', {
@@ -233,6 +249,11 @@ class BinanceKlineWsService {
                   low: update.low,
                   close: update.close,
                   volume: update.volume
+                });
+                l234DataStore.updateRealtimeKline({
+                  ...update,
+                  tf: '10m',
+                  time: tenMinTime,
                 });
               }
             } catch (_) {}

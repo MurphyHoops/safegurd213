@@ -406,8 +406,7 @@ const _fetchWithFallbackInner = async (
                     throw new Error(`HTTP ${res.status}`);
                 }
 
-                const clone = res.clone();
-                const textData = await clone.text();
+                const textData = await res.text();
 
                 if (textData.trim().startsWith('<') || textData.toLowerCase().includes('doctype html')) {
                     throw new Error("Received HTML instead of JSON");

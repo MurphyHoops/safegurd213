@@ -353,33 +353,49 @@ export const List4Control: React.FC<List4PanelProps> = ({
             </div>
             <div className="bg-slate-800 p-2 rounded border border-slate-700 flex flex-col gap-1 col-span-2">
               <div className="flex items-center justify-between">
-                <span className="text-[9px] text-slate-400 font-bold uppercase flex items-center gap-1" title="突破进攻线后允许开仓的最大偏离比例（默认0.5%，超出则视为严重跑飞拦截不开仓）">
-                  突破偏离上限 (防追高)
+                <span className="text-[9px] text-slate-400 font-bold uppercase flex items-center gap-1" title="以进攻突破线为起点，以信号K线振幅为基准单位：超出该振幅比例直接从列表4当机立断清除淘汰，杜绝追高">
+                  突破偏离上限 (振幅% / 防追高)
                 </span>
-                <div className="flex items-center gap-1">
-                  <span className="text-[8px] text-slate-500">±%</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[8px] text-slate-400 font-medium">% 振幅</span>
                   <input
                     type="number"
-                    step="0.1"
-                    min="0.05"
-                    max="10"
+                    step="5"
+                    min="1"
+                    max="500"
                     value={
                       config.maxBreakoutDeviation === undefined ||
                       Number.isNaN(config.maxBreakoutDeviation)
-                        ? 0.5
+                        ? 100
                         : config.maxBreakoutDeviation
                     }
                     onChange={(e) => {
                       const val = parseFloat(e.target.value);
                       setConfig((p) => ({
                         ...p,
-                        maxBreakoutDeviation: isNaN(val) ? 0.5 : Math.max(0.01, val),
+                        maxBreakoutDeviation: isNaN(val) ? 100 : Math.max(1, val),
                       }));
                     }}
-                    className="w-12 bg-slate-900 border border-slate-700 rounded text-center text-[10px] text-cyan-400 font-bold outline-none"
-                    title="突破进攻线后允许开仓的最大偏离比例（默认0.5%，超出则视为严重跑飞拦截不开仓）"
+                    className="w-14 bg-slate-900 border border-slate-700 rounded text-center text-[10px] text-cyan-400 font-bold outline-none py-0.5"
+                    title="以进攻突破线为起点，以信号K线振幅为基准单位：超出该振幅比例直接从列表4当机立断清除淘汰，杜绝追高"
                   />
                 </div>
+              </div>
+              <div className="flex items-center gap-1 mt-0.5 justify-end">
+                {[50, 80, 100, 150].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setConfig((p) => ({ ...p, maxBreakoutDeviation: preset }))}
+                    className={`px-1.5 py-0.5 rounded text-[7px] font-bold border transition-colors ${
+                      (config.maxBreakoutDeviation ?? 100) === preset
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-[0_0_4px_rgba(6,182,212,0.3)]'
+                        : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    {preset}%
+                  </button>
+                ))}
               </div>
             </div>
           </div>
@@ -431,7 +447,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
                   config.enableThrust ? "text-orange-400" : "text-slate-500"
                 }
               />
-              <span className="text-[8px] text-slate-400 font-bold" title="5K爆发推进：以信号K为中心覆盖左右各2根(共5根)，核验包含信号K的234、345、456任意组合做多涨幅/做空跌幅≥设定阈值">
+              <span className="text-[8px] text-slate-400 font-bold" title="5K爆发推进：以信号K(K3)为中心覆盖12345共5根，核验包含K3的123、23、234、3、34、345任意组合做多涨幅/做空跌幅≥设定阈值 (未达标保持等待开仓)">
                 5K推进
               </span>
               <input
@@ -504,30 +520,54 @@ export const List4Control: React.FC<List4PanelProps> = ({
               className={`space-y-3 pt-2 animate-in slide-in-from-top-1 duration-200 max-h-[320px] overflow-y-auto pr-1.5 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent ${config.enableAntiChase ? "opacity-100" : "opacity-40 pointer-events-none"}`}
             >
               <div className="bg-slate-800/50 p-2 rounded border border-slate-700/50 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-slate-300 font-bold">即时防追高周期</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      value={config.antiChaseConfig.timeframeMinutes ?? 5}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) || 5;
+                        setConfig(c => ({...c, antiChaseConfig: {...c.antiChaseConfig, timeframeMinutes: val}}));
+                      }}
+                      className="w-12 bg-slate-900 border border-slate-700 rounded text-[10px] text-amber-400 font-bold outline-none py-1 px-1.5 text-center font-mono"
+                    />
+                    <span className="text-[9px] text-slate-400">分钟</span>
+                  </div>
+                </div>
+
                 <div className="text-[9px] font-bold text-emerald-500/80 uppercase flex items-center gap-1.5 bg-emerald-500/5 py-0.5 rounded px-1 w-fit">
                   做多锁定限制 (禁止追高)
                 </div>
-                <div className="space-y-1">
-                    {[
-                        { label: "1季度", hours: 2160 },
-                        { label: "1月", hours: 720 },
-                        { label: "1周", hours: 168 },
-                        { label: "1天", hours: 24 },
-                        { label: "1小时", hours: 1 },
-                    ].map((p) => (
-                        <div key={p.hours} className="grid grid-cols-2 gap-2 items-center bg-slate-900 p-1.5 rounded border border-slate-700">
-                            <span className="text-[10px] text-slate-300">{p.label}</span>
-                            <input
-                                type="number"
-                                value={config.antiChaseConfig.longThresholds[p.hours.toString()] || 0}
-                                onChange={(e) => {
-                                    const val = parseFloat(e.target.value) || 0;
-                                    setConfig(c => ({...c, antiChaseConfig: {...c.antiChaseConfig, longThresholds: {...c.antiChaseConfig.longThresholds, [p.hours]: val}}}));
-                                }}
-                                className="w-full bg-slate-800 border border-slate-700 rounded text-[10px] text-white font-bold outline-none py-1 px-2 text-right"
-                            />
-                        </div>
-                    ))}
+                <div className="grid grid-cols-2 gap-2 items-center bg-slate-900 p-1.5 rounded border border-slate-700">
+                  <span className="text-[10px] text-slate-300">
+                    {config.antiChaseConfig.timeframeMinutes ?? 5}分钟涨幅上限
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={config.antiChaseConfig.longThresholds[String(config.antiChaseConfig.timeframeMinutes ?? 5)] ?? config.antiChaseConfig.longThresholds['5'] ?? config.antiChaseConfig.longThresholds['5m'] ?? 2.0}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        const key = String(config.antiChaseConfig.timeframeMinutes ?? 5);
+                        setConfig(c => ({
+                          ...c,
+                          antiChaseConfig: {
+                            ...c.antiChaseConfig,
+                            longThresholds: {
+                              ...c.antiChaseConfig.longThresholds,
+                              [key]: val,
+                              '5': val,
+                              '5m': val
+                            }
+                          }
+                        }));
+                      }}
+                      className="w-full bg-slate-800 border border-slate-700 rounded text-[10px] text-white font-bold outline-none py-1 px-2 text-right font-mono"
+                    />
+                    <span className="text-[9px] text-slate-500">%</span>
+                  </div>
                 </div>
               </div>
 
@@ -535,27 +575,35 @@ export const List4Control: React.FC<List4PanelProps> = ({
                 <div className="text-[9px] font-bold text-red-500/80 uppercase flex items-center gap-1.5 bg-red-500/5 py-0.5 rounded px-1 w-fit">
                   做空锁定限制 (禁止追跌)
                 </div>
-                <div className="space-y-1">
-                    {[
-                        { label: "1季度", hours: 2160 },
-                        { label: "1月", hours: 720 },
-                        { label: "1周", hours: 168 },
-                        { label: "1天", hours: 24 },
-                        { label: "1小时", hours: 1 },
-                    ].map((p) => (
-                        <div key={p.hours} className="grid grid-cols-2 gap-2 items-center bg-slate-900 p-1.5 rounded border border-slate-700">
-                            <span className="text-[10px] text-slate-300">{p.label}</span>
-                            <input
-                                type="number"
-                                value={config.antiChaseConfig.shortThresholds[p.hours.toString()] || 0}
-                                onChange={(e) => {
-                                    const val = parseFloat(e.target.value) || 0;
-                                    setConfig(c => ({...c, antiChaseConfig: {...c.antiChaseConfig, shortThresholds: {...c.antiChaseConfig.shortThresholds, [p.hours]: val}}}));
-                                }}
-                                className="w-full bg-slate-800 border border-slate-700 rounded text-[10px] text-white font-bold outline-none py-1 px-2 text-right"
-                            />
-                        </div>
-                    ))}
+                <div className="grid grid-cols-2 gap-2 items-center bg-slate-900 p-1.5 rounded border border-slate-700">
+                  <span className="text-[10px] text-slate-300">
+                    {config.antiChaseConfig.timeframeMinutes ?? 5}分钟跌幅上限
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={config.antiChaseConfig.shortThresholds[String(config.antiChaseConfig.timeframeMinutes ?? 5)] ?? config.antiChaseConfig.shortThresholds['5'] ?? config.antiChaseConfig.shortThresholds['5m'] ?? 2.0}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        const key = String(config.antiChaseConfig.timeframeMinutes ?? 5);
+                        setConfig(c => ({
+                          ...c,
+                          antiChaseConfig: {
+                            ...c.antiChaseConfig,
+                            shortThresholds: {
+                              ...c.antiChaseConfig.shortThresholds,
+                              [key]: val,
+                              '5': val,
+                              '5m': val
+                            }
+                          }
+                        }));
+                      }}
+                      className="w-full bg-slate-800 border border-slate-700 rounded text-[10px] text-white font-bold outline-none py-1 px-2 text-right font-mono"
+                    />
+                    <span className="text-[9px] text-slate-500">%</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -657,155 +705,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
           )}
         </div>
 
-        {/* 4. Advanced Filtering Section */}
-        <div className="space-y-1 pt-1 border-t border-slate-800/50">
-          <div
-            className="flex items-center justify-between px-1 cursor-pointer hover:bg-slate-800/30 rounded py-1 transition-colors"
-            onClick={() => setIsAdvancedFilterCollapsed(!isAdvancedFilterCollapsed)}
-          >
-            <span className="text-[10px] text-slate-500 font-bold uppercase flex items-center gap-1">
-              <Target
-                size={10}
-                className={config.enableAdvancedFilter ? "text-indigo-400" : ""}
-              />{" "}
-              4. 高级过滤 (Advanced Filter)
-              <ChevronRight
-                size={10}
-                className={`transition-transform duration-200 ${!isAdvancedFilterCollapsed ? "rotate-90" : ""}`}
-              />
-            </span>
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfig((p) => {
-                  const newEnabled = !p.enableAdvancedFilter;
-                  const groups = p.advancedFilterGroups ? [...p.advancedFilterGroups] : [];
-                  for (let i = 1; i <= 5; i++) {
-                    if (!groups.some(g => g.id === i)) {
-                      groups.push({
-                        id: i,
-                        enabled: i === 1 ? newEnabled : false,
-                        filterTimeParam: i === 1 ? (p.advancedFilterConfig?.filterTimeParam ?? 300) : 300,
-                        filterKLinePeriod: i === 1 ? (p.advancedFilterConfig?.filterKLinePeriod ?? '1d') : '1d',
-                        filterEmaPeriod: i === 1 ? (p.advancedFilterConfig?.filterEmaPeriod ?? 80) : 80,
-                        filterCrossingCount: i === 1 ? (p.advancedFilterConfig?.filterCrossingCount ?? 3) : 3,
-                        filterLongMaxPump: i === 1 ? (p.advancedFilterConfig?.filterLongMaxPump ?? 5) : 5,
-                        filterShortMinDrop: i === 1 ? (p.advancedFilterConfig?.filterShortMinDrop ?? -5) : -5,
-                      });
-                    } else if (i === 1) {
-                      groups.find(g => g.id === 1)!.enabled = newEnabled;
-                    }
-                  }
-                  return {
-                    ...p,
-                    enableAdvancedFilter: newEnabled,
-                    advancedFilterGroups: groups
-                  };
-                });
-              }}
-              className={`w-7 h-3.5 rounded-full p-0.5 transition-colors cursor-pointer ${config.enableAdvancedFilter ? "bg-indigo-600" : "bg-slate-700"}`}
-            >
-              <div
-                className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${config.enableAdvancedFilter ? "translate-x-3.5" : "translate-[0px]"}`}
-              />
-            </div>
-          </div>
 
-          {!isAdvancedFilterCollapsed && (
-            <div className={`space-y-2 pt-2 animate-in slide-in-from-top-1 duration-200 ${config.enableAdvancedFilter ? "opacity-100" : "opacity-40 pointer-events-none"}`}>
-              {activeGroups.map((group) => (
-                <div key={group.id} className="bg-black/20 p-2 rounded border border-slate-800/50 space-y-1.5">
-                  <div className="flex items-center justify-between border-b border-slate-800/30 pb-1">
-                    <span className="text-[9px] text-slate-300 font-bold flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full ${group.enabled ? 'bg-indigo-400 animate-pulse' : 'bg-slate-600'}`}></span>
-                      高级过滤限制 - 第 {group.id} 组
-                    </span>
-                    <div
-                      onClick={() => toggleGroupEnabled(group.id)}
-                      className={`w-7 h-3.5 rounded-full p-0.5 transition-colors cursor-pointer ${group.enabled ? "bg-indigo-600" : "bg-slate-700"}`}
-                    >
-                      <div
-                        className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${group.enabled ? "translate-x-3.5" : "translate-[0px]"}`}
-                      />
-                    </div>
-                  </div>
-
-                  {group.enabled && (
-                    <div className="space-y-1.5 pt-1">
-                      <div className="grid grid-cols-3 gap-1">
-                        <div className="bg-slate-800/60 p-1 rounded">
-                          <span className="text-[7px] text-slate-500 uppercase">K线数量</span>
-                          <input
-                            type="number"
-                            value={group.filterTimeParam}
-                            onChange={e => setAdvancedFilterGroup(group.id, 'filterTimeParam', parseInt(e.target.value) || 0)}
-                            className="w-full bg-slate-900 text-white text-[9px] text-center outline-none rounded mt-0.5"
-                          />
-                        </div>
-                        <div className="bg-slate-800/60 p-1 rounded">
-                          <span className="text-[7px] text-slate-500 uppercase">K线周期</span>
-                          <select
-                            value={group.filterKLinePeriod}
-                            onChange={e => setAdvancedFilterGroup(group.id, 'filterKLinePeriod', e.target.value)}
-                            className="w-full bg-slate-900 text-white text-[9px] outline-none rounded mt-0.5 py-0.5"
-                          >
-                            <option value="1h">1h (小时)</option>
-                            <option value="4h">4h (4小时)</option>
-                            <option value="1d">1d (天)</option>
-                            <option value="1w">1w (周)</option>
-                            <option value="1M">1M (月)</option>
-                            <option value="1Q">1Q (季)</option>
-                          </select>
-                        </div>
-                        <div className="bg-slate-800/60 p-1 rounded">
-                          <span className="text-[7px] text-slate-500 uppercase">EMA基线</span>
-                          <select
-                            value={group.filterEmaPeriod}
-                            onChange={e => setAdvancedFilterGroup(group.id, 'filterEmaPeriod', parseInt(e.target.value))}
-                            className="w-full bg-slate-900 text-white text-[9px] outline-none rounded mt-0.5 py-0.5"
-                          >
-                            {[10, 20, 30, 40, 80, 100, 120, 200].map(p => <option key={p} value={p}>{p}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-slate-800/60 p-1 rounded">
-                        <span className="text-[7px] text-slate-400 uppercase font-semibold">EMA 相交次数上限限制 (Max Intersections)</span>
-                        <input
-                          type="number"
-                          value={group.filterCrossingCount}
-                          onChange={e => setAdvancedFilterGroup(group.id, 'filterCrossingCount', parseInt(e.target.value) || 0)}
-                          className="w-full bg-slate-900 text-white text-[9px] text-center outline-none rounded mt-0.5"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-1">
-                        <div className="bg-slate-800/60 p-1 rounded">
-                          <span className="text-[7px] text-emerald-400 uppercase">多头涨幅限制 &lt; %</span>
-                          <input
-                            type="number"
-                            value={group.filterLongMaxPump}
-                            onChange={e => setAdvancedFilterGroup(group.id, 'filterLongMaxPump', parseFloat(e.target.value) || 0)}
-                            className="w-full bg-slate-900 text-white text-[9px] text-center outline-none rounded mt-0.5"
-                          />
-                        </div>
-                        <div className="bg-slate-800/60 p-1 rounded">
-                          <span className="text-[7px] text-rose-400 uppercase">空头跌幅限制 &gt; %</span>
-                          <input
-                            type="number"
-                            value={group.filterShortMinDrop}
-                            onChange={e => setAdvancedFilterGroup(group.id, 'filterShortMinDrop', parseFloat(e.target.value) || 0)}
-                            className="w-full bg-slate-900 text-white text-[9px] text-center outline-none rounded mt-0.5"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
 
         {/* Auto Remove Settings */}
         <div className="space-y-1 pt-1 border-t border-slate-800/50">

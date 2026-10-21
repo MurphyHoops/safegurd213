@@ -10,6 +10,7 @@ import { calculateEMA } from '../../services/indicators';
 import { pipelineCoordinator } from '../../services/pipelineQueue';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../services/volume8amService';
 import { klineDailyStore } from '../../services/klineDailyStore';
+import { auditSymbolAntiChase, DEFAULT_LIST1_ANTI_CHASE_CONFIG } from '../../services/rules/list1_anti_chase';
 
 
 // Helper for fast, isolated, non-blocking klines fetching through official proxy endpoints with hard abort timeout
@@ -787,51 +788,32 @@ export const useScannerLogic = (
             let finalCandidates = filtered;
             if (!configRef.current.useCustomOnly || fixedModeViewRef.current === 'SEARCH') {
                 if (configRef.current.enableVol8am) {
-                    // Fetch 1d klines concurrently to fill volume8am and compute change8am for candidates only when enabled
-                    await Promise.all(filtered.map(async (item) => {
-                        const cached = volume8amCacheRef.current.get(item.symbol);
-                        let vol8am = 0;
-                        let openPrice8am = 0;
-                        if (cached && (nowTime - cached.timestamp < cacheExpiryMs)) {
-                            vol8am = cached.volume;
-                            openPrice8am = cached.openPrice || 0;
-                        } else {
-                            try {
-                                const url1d = `https://fapi.binance.com/fapi/v1/klines?symbol=${item.symbol}&interval=1d&limit=1`;
-                                const klines1d = await safeFetchKlinesDirect(url1d, 3000);
-                                if (Array.isArray(klines1d) && klines1d.length > 0) {
-                                    // index 7 is quote asset volume (USDT volume), index 1 is open price
-                                    vol8am = (parseFloat(klines1d[0][7]) || 0) / 1000000;
-                                    openPrice8am = parseFloat(klines1d[0][1]) || 0;
-                                    volume8amCacheRef.current.set(item.symbol, { volume: vol8am, openPrice: openPrice8am, timestamp: nowTime });
-                                }
-                            } catch (err) {
-                                console.error(`[Volume8am] Error fetching ${item.symbol}:`, err);
-                                vol8am = cached ? cached.volume : (item.volume24h !== undefined ? item.volume24h : 0);
-                                openPrice8am = cached?.openPrice || 0;
+                    // 🎯 使用服务层平稳分批更新 8点 成交额，杜绝 300+ 瞬时并发导致币安 429 限频与超时
+                    const symbolsToFetch = filtered.map(i => i.symbol);
+                    await fetchVolume8amBatch(symbolsToFetch);
+
+                    filtered.forEach(item => {
+                        const cachedMem = volume8amCacheRef.current.get(item.symbol);
+                        const serviceItem = getVolume8am(item.symbol);
+                        const vol8am = serviceItem?.volume8am ?? cachedMem?.volume ?? item.volume8am;
+                        const openPrice8am = serviceItem?.openPrice ?? cachedMem?.openPrice;
+
+                        if (vol8am !== undefined) {
+                            item.volume8am = vol8am;
+                            if (openPrice8am && openPrice8am > 0 && item.price > 0) {
+                                item.change8am = ((item.price - openPrice8am) / openPrice8am) * 100;
                             }
                         }
-                        item.volume8am = vol8am;
-                        if (openPrice8am > 0 && item.price > 0) {
-                            item.change8am = ((item.price - openPrice8am) / openPrice8am) * 100;
-                        } else {
-                            item.change8am = undefined;
-                        }
-                    }));
+                    });
 
-                    const minVol8am = configRef.current.minVolume8am ?? 0;
-                    const maxVol8am = configRef.current.maxVolume8am ?? 0;
                     const minChange = configRef.current.minChange || 0;
                     const source = configRef.current.source || 'BOTH';
 
                     finalCandidates = filtered.filter(item => {
-                        const rawVol8am = item.volume8am;
-                        const cached = volume8amCacheRef.current.get(item.symbol);
-                        const vol8am = rawVol8am !== undefined ? rawVol8am : (cached ? cached.volume : getVolume8am(item.symbol)?.volume8am);
-                        if (minVol8am > 0 && (vol8am === undefined || vol8am < minVol8am)) return false;
-                        if (maxVol8am > 0 && vol8am !== undefined && vol8am > maxVol8am) return false;
+                        if (!checkVolumeRule(item, configRef.current)) return false;
 
-                        const effectiveChange = item.change8am !== undefined ? item.change8am : (item.change || 0);
+                        const serviceItem = getVolume8am(item.symbol);
+                        const effectiveChange = item.change8am !== undefined ? item.change8am : (serviceItem?.change8am ?? (item.change || 0));
                         if (source === 'GAINERS' && effectiveChange <= 0) return false;
                         if (source === 'LOSERS' && effectiveChange >= 0) return false;
                         if (minChange > 0 && Math.abs(effectiveChange) < minChange) return false;
@@ -1321,9 +1303,9 @@ export const useScannerLogic = (
             }
         };
 
-        // 🚀【智能双态极速扫描 - Stage 1 横盘蓄势过滤】:
-        // 1. 命中日K持久化常驻缓存 (0 权重消耗)：5ms 微步进让出 UI 渲染主线程，瞬间全量完成；
-        // 2. 未命中缓存 (冷启动新币拉取)：保留 100ms 安全流控，杜绝币安 IP 限频风险
+        // 🚀【精确 1 秒/组 律动扫描 - Stage 1 横盘蓄势过滤】:
+        // 纯内存 300+ 币种毫秒级批处理计算，并在组末平滑补齐至刚好 1.0 秒（1000ms），满足一秒一组的视觉节奏
+        const s1StageStart = Date.now();
         for (let i = 0; i < targetSymbols.length; i++) {
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
 
@@ -1334,24 +1316,21 @@ export const useScannerLogic = (
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
 
             const currentSym = targetSymbols[i];
-            const stepStart = Date.now();
             const wasCacheHit = await processStage1Coin(currentSym);
 
-            const dynamicDelayMs = wasCacheHit ? 5 : 100;
-            const elapsed = Date.now() - stepStart;
-            const remaining = Math.max(0, dynamicDelayMs - elapsed);
-            if (remaining > 0 && i < targetSymbols.length - 1 && isMountedRef.current && !majorScanAbortRef.current) {
-                const delayStart = Date.now();
-                while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
-                    if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
-                        while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                            await new Promise(resolve => setTimeout(resolve, 200));
-                        }
-                        break;
-                    }
-                    await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
+            if (wasCacheHit) {
+                if (i % 30 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
                 }
+            } else {
+                await new Promise(resolve => setTimeout(resolve, 50));
             }
+        }
+
+        // ⏱️ 严格保证横盘蓄势组平滑占满 1.0 秒（1000ms），精确满足 1秒/组 节奏
+        const s1Elapsed = Date.now() - s1StageStart;
+        if (s1Elapsed < 1000 && isMountedRef.current && !majorScanAbortRef.current) {
+            await new Promise(resolve => setTimeout(resolve, 1000 - s1Elapsed));
         }
 
         // 🔒【第一阶段扫描完成】: 仅在整轮横盘扫描完成后原子化保存到“横盘蓄势过滤底池”，若无通过币种则清空底池
@@ -1413,6 +1392,7 @@ export const useScannerLogic = (
                 currentSymbol: ''
             } as any);
 
+            const s2StageStart = Date.now();
             for (let s2Idx = 0; s2Idx < totalStage2; s2Idx++) {
                 if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
                 if (majorScanAbortRef.current) break;
@@ -1426,7 +1406,6 @@ export const useScannerLogic = (
 
                 const item = stage1PassedItems[s2Idx];
                 const symbol = item.symbol;
-                const s2CycleStart = Date.now();
 
                 const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
                 let klines = item.klines;
@@ -1487,22 +1466,15 @@ export const useScannerLogic = (
                     } as any);
                 }
 
-                // 🚀【智能双态极速扫描 - Stage 2 回溯周期过滤】: 100% 本地内存纯计算，采用 5ms 微步进让出 UI 渲染，秒级完成差量核验
-                const s2DynamicDelayMs = 5;
-                const elapsed = Date.now() - s2CycleStart;
-                const remaining = Math.max(0, s2DynamicDelayMs - elapsed);
-                if (remaining > 0 && s2Idx < totalStage2 - 1 && isMountedRef.current && !majorScanAbortRef.current) {
-                    const delayStart = Date.now();
-                    while (Date.now() - delayStart < remaining && isMountedRef.current && !majorScanAbortRef.current) {
-                        if ((window as any).IS_SCANNER_PIPELINE_PAUSED) {
-                            while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
-                                await new Promise(resolve => setTimeout(resolve, 200));
-                            }
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
-                    }
+                if (s2Idx % 30 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
                 }
+            }
+
+            // ⏱️ 严格保证回溯周期组平滑占满 1.0 秒（1000ms），精确满足 1秒/组 节奏
+            const s2Elapsed = Date.now() - s2StageStart;
+            if (s2Elapsed < 1000 && isMountedRef.current && !majorScanAbortRef.current) {
+                await new Promise(resolve => setTimeout(resolve, 1000 - s2Elapsed));
             }
         }
 
@@ -1584,6 +1556,85 @@ export const useScannerLogic = (
                     pool: lookbackPoolItems
                 }
             }));
+
+            // 🛡️【第三组: 防追高熔断过滤标准化执行与底池派发】
+            let antiChaseCfg = initialConfig.antiChaseFilter || initialConfig.majorTrend?.antiChaseFilter || DEFAULT_LIST1_ANTI_CHASE_CONFIG;
+            try {
+                const storedAntiChase = localStorage.getItem('SCANNER_ANTI_CHASE_CONFIG');
+                if (storedAntiChase) {
+                    const parsed = JSON.parse(storedAntiChase);
+                    if (parsed && typeof parsed === 'object') {
+                        antiChaseCfg = { ...antiChaseCfg, ...parsed };
+                    }
+                }
+            } catch (_) {}
+            let antiChasePassedPool = lookbackPoolItems;
+
+            if (antiChaseCfg && antiChaseCfg.enabled !== false) {
+                antiChasePassedPool = lookbackPoolItems.filter(item => {
+                    const sym = item.symbol;
+                    let klines: any[] = [];
+                    const origItem = stage1PassedItems.find(p => p.symbol === sym);
+                    const rawK = origItem?.klines || klineDailyStore.getCachedKlinesSync(sym, 90) || klineDailyStore.getCachedKlinesSync(sym.toUpperCase(), 90);
+                    if (rawK && Array.isArray(rawK) && rawK.length >= 2) {
+                        const parseV = (k: any, idx: number, key: string) => {
+                            if (Array.isArray(k)) return parseFloat(k[idx]) || 0;
+                            return parseFloat(k[key] ?? k[idx] ?? 0) || 0;
+                        };
+                        klines = rawK.map((k: any) => ({
+                            open: parseV(k, 1, 'open'),
+                            high: parseV(k, 2, 'high'),
+                            low: parseV(k, 3, 'low'),
+                            close: parseV(k, 4, 'close'),
+                            time: Array.isArray(k) ? k[0] : (k.time ?? k[0])
+                        }));
+                    }
+                    let curPrice = item.currentPrice || origItem?.currentPrice || 0;
+                    if (!curPrice) {
+                        const ticker = klineDailyStore.get24hTickerSync(sym) || klineDailyStore.get24hTickerSync(sym.toUpperCase());
+                        if (ticker && ticker.lastPrice) {
+                            curPrice = parseFloat(ticker.lastPrice);
+                        } else if (klines.length > 0) {
+                            curPrice = klines[klines.length - 1].close;
+                        }
+                    }
+                    const res = auditSymbolAntiChase(
+                        sym,
+                        (item.direction as 'LONG' | 'SHORT' | 'BOTH') || 'BOTH',
+                        curPrice,
+                        klines,
+                        antiChaseCfg
+                    );
+                    if (res.passed && !res.blocked) {
+                        if (res.qualifiedDirection) {
+                            item.direction = res.qualifiedDirection;
+                            if (item.fullSymbol) {
+                                item.fullSymbol = item.fullSymbol.includes('_')
+                                    ? `${sym}_${res.qualifiedDirection}`
+                                    : item.fullSymbol;
+                            }
+                        }
+                        return true;
+                    }
+                    return false;
+                });
+            }
+
+            localStorage.setItem('SCANNER_ANTI_CHASE_FILTERED_POOL', JSON.stringify(antiChasePassedPool));
+            window.dispatchEvent(new CustomEvent('scanner_anti_chase_pool_updated', {
+                detail: {
+                    strategyId: strategyId || 'strat-1',
+                    pool: antiChasePassedPool
+                }
+            }));
+
+            setMajorProgress(prev => ({
+                ...(prev || {}),
+                stage: 'completed',
+                group3Total: lookbackPoolItems.length,
+                group3Current: lookbackPoolItems.length,
+                group3Passed: antiChasePassedPool.length
+            } as any));
 
             // 🏛️ [中央行情数据总线]: 为进入初筛的币种自动保留并存储 12 个周期各 300 根基线 K 线
             const newShortlistSymbols = Array.from(finalSet).map(s => s.replace(/_LONG$|_SHORT$/i, ''));
@@ -1688,19 +1739,18 @@ export const useScannerLogic = (
     // --- 🔒 [时间先后·接力赛]: 行情启动底池整轮扫描完毕后，接力唤醒大行情发现扫描 (横盘蓄势过滤 -> 回溯周期过滤) ---
     useEffect(() => {
         const cfg = initialConfig.majorTrend;
-        // 只要开启了大行情发现且未设为纯手动（autoMode 默认即自动运行），就自动监听接力
+        // 只要开启了大行情发现且未设为纯手动（autoMode 默认即自动运行），就开启 10s 全自动律动循环
         if (!cfg?.enabled || cfg?.autoMode === false) return;
 
         let debounceTimer: any = null;
         const handleStartTrendBaton = () => {
             if (!isMountedRef.current || isMajorScanning) return;
-            // 确保底池未在排队冲突中
             if ((window as any).IS_START_TREND_SCANNING) return;
 
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
                 if (!isMountedRef.current || isMajorScanning) return;
-                console.log(`[useScannerLogic] 行情启动底池扫描完成！接力唤醒【${strategyId || '默认策略'}】横盘与回溯周期过滤...`);
+                console.log(`[useScannerLogic] 行情启动底池扫描完成！接力唤醒【${strategyId || '默认策略'}】律动巡检...`);
                 pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
                     await runMajorTrendDiscovery(false);
                 });
@@ -1719,12 +1769,21 @@ export const useScannerLogic = (
             }, 300);
         };
 
-        // 仅在整轮扫描完成或中央日K数据总线更新时触发接力
+        // 🔒【10秒律动高频循环定时器】：每 10 秒自动开启一轮完整 6 组管道巡检，确保不错过任何起爆行情
+        const rhythmLoopTimer = setInterval(() => {
+            if (isMountedRef.current && !isMajorScanning && !(window as any).IS_SCANNER_PIPELINE_PAUSED && !(window as any).IS_START_TREND_SCANNING) {
+                pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
+                    await runMajorTrendDiscovery(false);
+                });
+            }
+        }, 10000);
+
         window.addEventListener('scanner_start_trend_pool_completed', handleStartTrendBaton);
         window.addEventListener('CENTRAL_DAILY_KLINES_UPDATED', handleCentralDailyKlinesUpdated);
 
         return () => {
             if (debounceTimer) clearTimeout(debounceTimer);
+            clearInterval(rhythmLoopTimer);
             window.removeEventListener('scanner_start_trend_pool_completed', handleStartTrendBaton);
             window.removeEventListener('CENTRAL_DAILY_KLINES_UPDATED', handleCentralDailyKlinesUpdated);
         };

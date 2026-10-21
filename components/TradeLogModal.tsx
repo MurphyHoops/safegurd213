@@ -1656,6 +1656,20 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         <td className="px-4 py-3 text-xs font-mono">
                                             <div className="font-bold text-slate-200">
                                                 {(() => {
+                                                    // 1. 补仓/砍仓/子单记录：优先展示本次订单实际发生的真实 USDT 价值 (如 6U, 12U, 24U)
+                                                    if (isRefill || isCut || !!log.parent_entry_id) {
+                                                        if (log.cost_usdt !== undefined && log.cost_usdt > 0) {
+                                                            return `${log.cost_usdt.toFixed(2)} U`;
+                                                        }
+                                                        if (log.current_amount !== undefined && log.entry_price) {
+                                                            return `${(log.current_amount * log.entry_price).toFixed(2)} U`;
+                                                        }
+                                                        return `${(log.cost_usdt ?? 0).toFixed(2)} U`;
+                                                    }
+                                                    // 2. 主新开仓位条目：优先展示初始开仓成本 cost_usdt
+                                                    if (log.cost_usdt !== undefined && log.cost_usdt > 0) {
+                                                        return `${log.cost_usdt.toFixed(2)} U`;
+                                                    }
                                                     if (activePos && log.status === 'OPEN') {
                                                         const remainingCost = (activePos.amount ?? 0) * (activePos.entryPrice || log.entry_price || 1);
                                                         return `${remainingCost.toFixed(2)} U`;
@@ -1668,13 +1682,23 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                 })()}
                                             </div>
                                             {(() => {
-                                                const displayAmount = (activePos && log.status === 'OPEN') ? activePos.amount : log.current_amount;
-                                                if (displayAmount !== undefined && displayAmount !== null) {
-                                                    return (
-                                                        <div className="text-[10px] text-slate-500 mt-0.5">
-                                                            最新持仓: {(displayAmount ?? 0).toFixed(4)}
-                                                        </div>
-                                                    );
+                                                if (isRefill || isCut || !!log.parent_entry_id) {
+                                                    if (log.current_amount !== undefined && log.current_amount !== null) {
+                                                        return (
+                                                            <div className="text-[10px] text-blue-400/80 mt-0.5 font-sans">
+                                                                {isRefill ? '本次加仓' : '本次变动'}: {(log.current_amount ?? 0).toFixed(4)}
+                                                            </div>
+                                                        );
+                                                    }
+                                                } else {
+                                                    const displayAmount = (activePos && log.status === 'OPEN') ? activePos.amount : log.current_amount;
+                                                    if (displayAmount !== undefined && displayAmount !== null) {
+                                                        return (
+                                                            <div className="text-[10px] text-slate-500 mt-0.5 font-sans">
+                                                                最新持仓: {(displayAmount ?? 0).toFixed(4)}
+                                                            </div>
+                                                        );
+                                                    }
                                                 }
                                                 return null;
                                             })()}

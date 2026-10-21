@@ -6,11 +6,12 @@ import { Plus, Trash2, Zap, Sparkles } from 'lucide-react';
 interface Props {
     settings: ProfitSettings;
     updateNested: (subsection: string, key: string, value: any) => void;
+    onToggleMaster?: () => void;
 }
 
-export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
+export const SmartMode: React.FC<Props> = ({ settings, updateNested, onToggleMaster }) => {
     const config = settings.smart;
-    const isSmartEnabled = config.enabled ?? false;
+    const isSmartEnabled = (settings.oEnabledMap?.['SMART'] !== undefined ? settings.oEnabledMap['SMART'] : config.enabled) ?? false;
     const isDecayEnabled = config.decayEnabled ?? true;
     const tiers = Array.isArray(config.tiers) ? config.tiers : [];
 
@@ -32,6 +33,18 @@ export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
         const newTiers = [...tiers];
         newTiers[index] = { ...newTiers[index], [key]: value };
         updateNested('smart', 'tiers', newTiers);
+    };
+
+    const handleToggleMaster = () => {
+        if (onToggleMaster) {
+            onToggleMaster();
+        } else {
+            const nextVal = !isSmartEnabled;
+            updateNested('smart', 'enabled', nextVal);
+            if (settings.oEnabledMap) {
+                updateNested('oEnabledMap', 'SMART', nextVal);
+            }
+        }
     };
 
     return (
@@ -56,9 +69,9 @@ export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
                     </div>
                 </div>
                 <div 
-                    onClick={() => updateNested('smart', 'enabled', !isSmartEnabled)} 
+                    onClick={handleToggleMaster} 
                     className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${isSmartEnabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
-                    title={isSmartEnabled ? '点击关闭智能止盈' : '点击开启智能止盈'}
+                    title={isSmartEnabled ? '点击关闭智能止盈总开关' : '点击开启智能止盈总开关'}
                 >
                     <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${isSmartEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
                 </div>
@@ -116,7 +129,10 @@ export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
                         >
                             {config.conventionalEnabled && <div className="w-1.5 h-1.5 bg-white rounded-full shadow-sm" />}
                         </div>
-                        <span className="text-[10px] text-slate-300 font-bold">阶梯保底锁定方案</span>
+                        <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-300 font-bold">阶梯保底锁定方案</span>
+                            <span className="text-[7.5px] text-slate-500 scale-95 origin-left">智能防呆自适应：回撤≤5按点数，&gt;5按利润比例；顶层阶梯持续追踪</span>
+                        </div>
                     </div>
                     {config.conventionalEnabled && (
                         <button 
@@ -151,10 +167,11 @@ export const SmartMode: React.FC<Props> = ({ settings, updateNested }) => {
                                             />
                                         </div>
                                         <div className="flex flex-col">
-                                            <span className="text-[7px] text-slate-500 scale-90 origin-left">回撤%</span>
+                                            <span className="text-[7px] text-slate-500 scale-90 origin-left" title="≤5按点数(如1=回调1%), >5按比例(如20=回吐20%)">回撤%</span>
                                             <input 
                                                 type="number" 
                                                 value={tier.callback}
+                                                title="回撤容忍：≤5按绝对盈利点数计算(如1表示回落1%)；>5按盈利比例计算(如20表示回落利润的20%)"
                                                 onChange={(e) => updateTier(idx, 'callback', Number(e.target.value))}
                                                 className="bg-slate-900/60 border border-slate-700 rounded px-1 py-0.5 text-[10px] font-mono text-orange-400 focus:outline-none"
                                             />

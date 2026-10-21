@@ -14,8 +14,8 @@ export function checkGlobalRules(
     const profitSettings = settings.profit;
     if (!profitSettings.enabled) return false;
 
-    // 全局模式激活条件：主模式是 GLOBAL，或者并联开关 O 开启了 GLOBAL
-    const isGlobalActive = profitSettings.profitMode === 'GLOBAL' || (profitSettings.oEnabledMap && profitSettings.oEnabledMap['GLOBAL']);
+    // 全局模式激活铁律：必须且仅当【全局】标题旁边的总开关开启 (oEnabledMap['GLOBAL'] === true) 时才允许运行
+    const isGlobalActive = !!(profitSettings.oEnabledMap && profitSettings.oEnabledMap['GLOBAL']);
     if (!isGlobalActive) return false;
 
     const globalSettings = profitSettings.global;

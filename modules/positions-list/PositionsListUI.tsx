@@ -9,6 +9,7 @@ import { PositionItem } from './components/PositionItem';
 import { PositionSettingsModal } from './components/PositionSettingsModal';
 import { AddPositionModal } from './components/AddPositionModal';
 import { SyncControlDropdown } from './components/SyncControlDropdown';
+import { DcaInlineCard } from './components/DcaControlDropdown';
 import { usePositionsListLogic } from './usePositionsListLogic';
 import { binanceWs } from '../../services/binanceWs';
 import { audioService } from '../../services/audioService';
@@ -50,6 +51,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const [isHoveredOnList, setIsHoveredOnList] = useState(false);
     const [isPinLocked, setIsPinLocked] = useState(false);
     const [isManualSyncing, setIsManualSyncing] = useState(false);
+    const [isDcaOpen, setIsDcaOpen] = useState(false);
     const [syncTip, setSyncTip] = useState<string | null>(null);
     const confirmTimeoutRef = React.useRef<any>(null);
     const confirmRecordsTimeoutRef = React.useRef<any>(null);
@@ -270,16 +272,32 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
 
                     {/* 手动获取刷新币安交易数据与单币模糊穿透查询中心（点击展开收纳所有开关与设置） */}
                     {activeTab === 'LIVE' && (
-                        <SyncControlDropdown 
-                            isManualSyncing={isManualSyncing}
-                            syncTip={syncTip}
-                            onManualSync={handleManualSync}
-                            onVerifyPosition={onVerifyPosition}
-                            settings={settings}
-                            onUpdateSettings={onUpdateSettings}
-                            activePositions={positions}
-                            realPrices={realPrices}
-                        />
+                        <>
+                            <SyncControlDropdown 
+                                isManualSyncing={isManualSyncing}
+                                syncTip={syncTip}
+                                onManualSync={handleManualSync}
+                                onVerifyPosition={onVerifyPosition}
+                                settings={settings}
+                                onUpdateSettings={onUpdateSettings}
+                                activePositions={positions}
+                                realPrices={realPrices}
+                            />
+                            {/* ⚡ 智能补仓 / DCA 策略控制入口 (位于当前持仓下方展开) */}
+                            <button
+                                onClick={() => setIsDcaOpen(!isDcaOpen)}
+                                className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 border shadow-sm ${
+                                    isDcaOpen || settings?.martingale?.enabled
+                                        ? 'bg-amber-950/40 text-amber-300 border-amber-500/40 hover:bg-amber-900/50 hover:border-amber-400 font-extrabold'
+                                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800/80'
+                                }`}
+                                title="点击在当前持仓正下方展开/收起 智能补仓 / DCA 策略控制面板"
+                            >
+                                <Zap size={13} className={settings?.martingale?.enabled ? 'text-amber-400 fill-amber-400 animate-pulse' : 'text-slate-500'} />
+                                <span>智能补仓 (DCA)</span>
+                                <span className={`w-1.5 h-1.5 rounded-full ${settings?.martingale?.enabled ? 'bg-amber-400 animate-ping' : 'bg-slate-600'}`} />
+                            </button>
+                        </>
                     )}
                 </div>
                 
@@ -656,6 +674,20 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                     })
                 )}
             </div>
+
+            {/* ⚡ 智能补仓 / DCA 策略参数控制面板 (嵌入在当前持仓列表正下方，彻底不遮挡持仓) */}
+            {isDcaOpen && (
+                <div className="p-3 bg-[#0a0d12] border-t border-amber-500/40 border-b border-slate-800 animate-in slide-in-from-top-2 duration-150">
+                    <DcaInlineCard 
+                        settings={settings}
+                        onUpdateSettings={onUpdateSettings}
+                        activePositions={positions}
+                        realPrices={realPrices}
+                        onManualDca={onManualRefill}
+                        onClose={() => setIsDcaOpen(false)}
+                    />
+                </div>
+            )}
 
             {settingsTargetPosition && (
                 <PositionSettingsModal 

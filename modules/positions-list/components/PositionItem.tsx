@@ -187,7 +187,7 @@ export const PositionItem: React.FC<Props> = React.memo(({
     const profitSettings = p.customProfitSettings || globalProfitSettings;
     const currentProfitMode = profitSettings?.profitMode;
     const oEnabledMap = profitSettings?.oEnabledMap || {};
-    const isAiMode = currentProfitMode === 'AI' || oEnabledMap['AI'] === true;
+    const isAiMode = oEnabledMap['AI'] === true;
     const isAiEnabled = (aiSmartMasterEnabled ?? true) && isAiMode;
 
     const aiSettings = profitSettings?.ai || {

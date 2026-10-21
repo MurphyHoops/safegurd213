@@ -1,6 +1,9 @@
 
-import React, { useRef } from 'react';
-import { Clock, Loader2 } from 'lucide-react';
+import React, { useRef, useState, useMemo } from 'react';
+import { Clock, Loader2, Zap } from 'lucide-react';
+import { PatternMonitorModal } from './PatternMonitorModal';
+import { TimeframeDiagnosticRecord } from '../types';
+import { ScannerItem } from '../../../components/Scanner/scannerTypes';
 
 interface Props {
     timeframes: string[];
@@ -12,12 +15,76 @@ interface Props {
     activeScanTfs?: Set<string>;
     scanningSymbols?: Record<string, string>;
     pollingStatus?: string;
+    totalScanCount?: number;
+    diagnostics?: Record<string, TimeframeDiagnosticRecord>;
+    list2Items?: ScannerItem[];
+    setChartData?: (data: any) => void;
+    config?: any;
 }
 
-export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, activeScanTfs, scanningSymbols, pollingStatus }) => {
+export const TimeframeSelector: React.FC<Props> = ({ 
+    timeframes, countdowns, tfCounts, activeFilterTf, isLocked, onTfInteraction, 
+    activeScanTfs, scanningSymbols, pollingStatus, totalScanCount = 0, diagnostics = {}, list2Items = [], setChartData,
+    config
+}) => {
     const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pressStartTimeRef = useRef<number>(0);
+
+    const [showPatternModal, setShowPatternModal] = useState(false);
+    const [patternModalTab, setPatternModalTab] = useState<'ALL' | 'CROSSING' | 'DIVERGENCE'>('ALL');
+
+    // Aggregate counts of crossed and diverged symbols across all scanned records
+    const { crossingCount, divergenceCount } = useMemo(() => {
+        let cross = 0;
+        let div = 0;
+        const seenCross = new Set<string>();
+        const seenDiv = new Set<string>();
+        const maxLookback = Number(config?.lookbackBars) || 5;
+
+        Object.values(diagnostics || {}).forEach(rec => {
+            if (!rec || !rec.symbol || !rec.tf) return;
+            const norm = (rec.symbol || '').replace(/USDT$/i, '');
+            const key = `${norm}-${rec.tf}`;
+
+            // 🎯 真实穿越判定：最新实时K线发生物理穿透 (isCrossing)，或在近期回溯窗口 (<= lookbackBars) 内发生过穿越
+            const hasCrossing = rec.isCrossing === true || (rec.latestCrossingBarsAgo !== undefined && rec.latestCrossingBarsAgo <= maxLookback);
+            
+            // 🎯 真实发散判定：当前均线呈多头或空头发散形态 (divergenceState !== 'NONE')，或在近期回溯窗口 (<= lookbackBars) 内处于发散形态
+            const hasDiv = (rec.divergenceState === 'BULLISH' || rec.divergenceState === 'BEARISH') || (rec.latestDivergenceBarsAgo !== undefined && rec.latestDivergenceBarsAgo <= maxLookback);
+
+            if (hasCrossing && !seenCross.has(key)) {
+                seenCross.add(key);
+                cross++;
+            }
+            if (hasDiv && !seenDiv.has(key)) {
+                seenDiv.add(key);
+                div++;
+            }
+        });
+
+        // 结合 List2 中已有真实入榜信号
+        (list2Items || []).forEach(item => {
+            if (!item || !item.symbol) return;
+            const norm = (item.symbol || '').replace(/USDT$/i, '');
+            (item.groupedResults || []).forEach(r => {
+                const key = `${norm}-${r.tf}`;
+                const hasCross = (r.crossingCount !== undefined && r.crossingCount > 0) || (r.crossingLags && r.crossingLags.length > 0);
+                const hasAligned = r.isAligned === true;
+
+                if (hasCross && !seenCross.has(key)) {
+                    seenCross.add(key);
+                    cross++;
+                }
+                if (hasAligned && !seenDiv.has(key)) {
+                    seenDiv.add(key);
+                    div++;
+                }
+            });
+        });
+
+        return { crossingCount: cross, divergenceCount: div };
+    }, [diagnostics, list2Items, config?.lookbackBars]);
 
     const handleMouseDown = (tf: string) => {
         const now = Date.now();
@@ -52,16 +119,80 @@ export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfC
 
     return (
         <div>
-            <div className="flex justify-between items-center mb-1.5">
-                <div className="text-[9px] text-slate-500 flex gap-1 items-center"><Clock size={10}/> 扫描周期 (Timeframe)</div>
-                {pollingStatus && (
-                    <div className="text-[8px] text-slate-400 font-mono truncate max-w-[100px]" title={pollingStatus}>
-                        {pollingStatus.replace('最后扫描: ', '')}
+            <div className="flex justify-between items-center mb-1.5 flex-wrap gap-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className="text-[9px] text-slate-400 flex gap-1 items-center font-bold">
+                        <Clock size={10} className="text-slate-400" />
+                        <span>扫描周期</span>
                     </div>
-                )}
-                <div className="flex gap-2">
-                    {isLocked && <span className="text-[8px] text-cyan-400 animate-pulse font-bold border border-cyan-500/30 px-1 rounded">锁定</span>}
-                    {activeFilterTf && !isLocked && <span className="text-[8px] text-amber-400 animate-pulse font-bold border border-amber-500/30 px-1 rounded">单选</span>}
+
+                    {/* 累计跳动扫描计数器 */}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setPatternModalTab('ALL');
+                            setShowPatternModal(true);
+                        }}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 border border-slate-700/80 hover:border-slate-600 text-slate-300 text-[8.5px] font-mono transition-all cursor-pointer group shadow-xs select-none"
+                        title="点击查看所有被扫描及发现形态的币种明细清单"
+                    >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                        <span className="text-slate-400 font-sans text-[8px]">已扫:</span>
+                        <span className="text-emerald-400 font-black text-[9px] group-hover:scale-110 transition-transform">
+                            {totalScanCount > 0 ? totalScanCount : 0}
+                        </span>
+                        <span className="text-[7.5px] text-slate-500 font-sans">个</span>
+                    </button>
+
+                    {/* 符合穿越数量按钮 */}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setPatternModalTab('CROSSING');
+                            setShowPatternModal(true);
+                        }}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8.5px] font-bold transition-all cursor-pointer select-none ${
+                            crossingCount > 0
+                                ? 'bg-cyan-950/70 border-cyan-500/50 text-cyan-300 hover:bg-cyan-900/80 hover:border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.25)]'
+                                : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="点击查看所有符合“均线穿越”的币名、周期与发生时间明细"
+                    >
+                        <span className="w-1 h-1 rounded-full bg-cyan-400 shrink-0" />
+                        <span className="text-[8px]">穿越:</span>
+                        <span className="font-mono font-black text-[9px]">{crossingCount}</span>
+                    </button>
+
+                    {/* 符合发散数量按钮 */}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setPatternModalTab('DIVERGENCE');
+                            setShowPatternModal(true);
+                        }}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8.5px] font-bold transition-all cursor-pointer select-none ${
+                            divergenceCount > 0
+                                ? 'bg-purple-950/70 border-purple-500/50 text-purple-300 hover:bg-purple-900/80 hover:border-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.25)]'
+                                : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="点击查看所有符合“均线发散”的币名、周期与发生时间明细"
+                    >
+                        <span className="w-1 h-1 rounded-full bg-purple-400 shrink-0" />
+                        <span className="text-[8px]">发散:</span>
+                        <span className="font-mono font-black text-[9px]">{divergenceCount}</span>
+                    </button>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                    {pollingStatus && (
+                        <div className="text-[8px] text-slate-400 font-mono truncate max-w-[80px]" title={pollingStatus}>
+                            {pollingStatus.replace('最后扫描: ', '')}
+                        </div>
+                    )}
+                    <div className="flex gap-1">
+                        {isLocked && <span className="text-[8px] text-cyan-400 animate-pulse font-bold border border-cyan-500/30 px-1 rounded">锁定</span>}
+                        {activeFilterTf && !isLocked && <span className="text-[8px] text-amber-400 animate-pulse font-bold border border-amber-500/30 px-1 rounded">单选</span>}
+                    </div>
                 </div>
             </div>
             <div className="grid grid-cols-4 gap-1.5">
@@ -108,10 +239,6 @@ export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfC
                                     </span>
                                 ) : isScanning ? (
                                     <span className="font-mono text-[7px] text-amber-400/80 mt-0.5">扫描中</span>
-                                ) : scanningCoin ? (
-                                    <span className="font-mono text-[7.5px] font-bold text-cyan-300/90 bg-slate-900/90 border border-cyan-500/30 rounded px-1 py-[1px] mt-0.5 truncate max-w-full leading-none">
-                                        {scanningCoin}
-                                    </span>
                                 ) : (
                                     <span className="font-mono text-[7px] opacity-70 scale-90 mt-0.5">{countdowns[tf] || '--:--'}</span>
                                 )}
@@ -125,6 +252,17 @@ export const TimeframeSelector: React.FC<Props> = ({ timeframes, countdowns, tfC
                     );
                 })}
             </div>
+
+            {/* 穿越 & 发散 形态明细实时弹窗 */}
+            <PatternMonitorModal
+                isOpen={showPatternModal}
+                onClose={() => setShowPatternModal(false)}
+                initialTab={patternModalTab}
+                diagnostics={diagnostics || {}}
+                list2Items={list2Items || []}
+                totalScanCount={totalScanCount || 0}
+                setChartData={setChartData}
+            />
         </div>
     );
 };

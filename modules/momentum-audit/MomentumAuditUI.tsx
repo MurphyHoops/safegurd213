@@ -28,7 +28,7 @@ const DEFAULT_CONFIG: List4Config = {
     autoExecute: true, 
     midlineThreshold: 80, 
     breakoutThreshold: 10, // 进攻突破线默认10%
-    maxBreakoutDeviation: 0.5, // 突破偏离上限默认 0.5%
+    maxBreakoutDeviation: 100, // 突破偏离上限默认 100% (以信号K线振幅为基准)
     directionFilter: 'BOTH', 
     enableThresholds: true, 
     enableAntiChase: false, 
@@ -110,29 +110,36 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                 const rawLive = priceRegistry.getPrice(cleanSym) || realPrices[cleanSym] || item.price;
                 const livePrice = (typeof rawLive === 'number' && rawLive > 0) ? rawLive : item.price;
 
-                // 🔒 【双重核心锁 1：进攻突破线必须由当前实时价格达成，且在 0.5% 偏离缓冲区内】
+                // 🔒 【双重核心锁 1：进攻突破线必须由当前实时价格达成，且在信号K线振幅偏离限制内】
                 const entryTrigger = item.momentum?.entryTrigger || 0;
                 const triggerEpsilon = (livePrice || 1) * 0.00001;
                 const maxDevPct = (typeof config.maxBreakoutDeviation === 'number' && !isNaN(config.maxBreakoutDeviation))
                     ? config.maxBreakoutDeviation
-                    : 0.5;
+                    : 100;
+
+                const rawRange = typeof item.structure?.signalHeight === 'number' && item.structure.signalHeight > 0
+                    ? item.structure.signalHeight
+                    : ((typeof item.structure?.signalHigh === 'number' && typeof item.structure?.signalLow === 'number' && item.structure.signalHigh > item.structure.signalLow)
+                        ? (item.structure.signalHigh - item.structure.signalLow)
+                        : (entryTrigger * 0.01));
+                const price_range = rawRange > (livePrice * 0.0005) ? rawRange : (livePrice * 0.0005);
 
                 if (entryTrigger > 0) {
                     if (item.direction === 'LONG') {
                         const isBreakoutReached = livePrice >= (entryTrigger - triggerEpsilon);
-                        const maxAllowedPrice = entryTrigger * (1 + maxDevPct / 100);
+                        const maxAllowedPrice = entryTrigger + (price_range * (maxDevPct / 100));
                         if (!isBreakoutReached || livePrice > maxAllowedPrice) {
                             if (livePrice > maxAllowedPrice) {
-                                console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 超出上限 ${maxAllowedPrice.toFixed(6)} (+${maxDevPct}%)`);
+                                console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 超出上限 ${maxAllowedPrice.toFixed(6)} (+${maxDevPct}% 振幅)`);
                             }
                             return;
                         }
                     } else {
                         const isBreakoutReached = livePrice <= (entryTrigger + triggerEpsilon);
-                        const minAllowedPrice = entryTrigger * (1 - maxDevPct / 100);
+                        const minAllowedPrice = entryTrigger - (price_range * (maxDevPct / 100));
                         if (!isBreakoutReached || livePrice < minAllowedPrice) {
                             if (livePrice < minAllowedPrice) {
-                                console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 低于下限 ${minAllowedPrice.toFixed(6)} (-${maxDevPct}%)`);
+                                console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 低于下限 ${minAllowedPrice.toFixed(6)} (-${maxDevPct}% 振幅)`);
                             }
                             return;
                         }

@@ -4,6 +4,7 @@
 // 未获用户明确指令，严禁擅自修改！
 
 import React from 'react';
+import { Link2, Unlink } from 'lucide-react';
 import { ScanConfig } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput, MarketSentimentWidget } from '../../../components/Scanner/ScannerUIHelpers';
 
@@ -13,6 +14,7 @@ import { StartTrendSection } from './StartTrendSection';
 import { StartTrendPoolBox } from './StartTrendPoolBox';
 import { SidewaysPoolBox } from './SidewaysPoolBox';
 import { LookbackPoolBox } from './LookbackPoolBox';
+import { AntiChasePoolBox } from './AntiChasePoolBox';
 import { BreakoutPoolBox } from './BreakoutPoolBox';
 
 interface Props {
@@ -30,6 +32,17 @@ export const FilterSection: React.FC<Props> = ({
     scanConfig, setScanConfig, marketStats, 
     isMajorScanning, majorProgress, runMajorTrendDiscovery, cancelMajorScan 
 }) => {
+    const isSyncLocked = scanConfig.majorTrend?.syncDirectionLock !== false;
+
+    const toggleDirectionSync = () => {
+        setScanConfig(p => ({
+            ...p,
+            majorTrend: {
+                ...p.majorTrend,
+                syncDirectionLock: !isSyncLocked
+            }
+        }));
+    };
     return (
         <div className="space-y-3 animate-in fade-in slide-in-from-top-1 duration-300">
             {/* 自动选币 vs 固定选币 运行状态提示 */}
@@ -227,6 +240,25 @@ export const FilterSection: React.FC<Props> = ({
                                 className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
                             />
                         </div>
+                        {/* 🔗 方向联动同步开关 (位于“涨跌”按钮右侧) */}
+                        <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
+                            <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
+                                {isSyncLocked ? <Link2 size={11} className="text-indigo-400 shrink-0" /> : <Unlink size={11} className="text-slate-500 shrink-0" />}
+                                联动同步
+                            </span>
+                            <button
+                                type="button"
+                                onClick={toggleDirectionSync}
+                                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold border transition-colors ${
+                                    isSyncLocked
+                                        ? 'bg-indigo-950/90 text-indigo-300 border-indigo-500/60 shadow-[0_0_8px_rgba(99,102,241,0.25)]'
+                                        : 'bg-slate-900 text-slate-500 border-slate-700 hover:text-slate-300'
+                                }`}
+                                title={isSyncLocked ? "已开启全域方向联动：在列表1切换多/空时，全管线所有需要选方向的规则自动同步！" : "已解除方向联动：每个规则可单独独立设置多空方向"}
+                            >
+                                <span>{isSyncLocked ? '已开启联动' : '独立模式'}</span>
+                            </button>
+                        </div>
                         <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
                             <span className="text-[9px] text-slate-500">列表1默认K线周期</span>
                             <select className="w-16 bg-transparent font-mono text-[10px] text-right outline-none text-white" value={scanConfig.list1DefaultTf || '1d'} onChange={e => setScanConfig(p => ({...p, list1DefaultTf: e.target.value}))}>
@@ -372,6 +404,25 @@ export const FilterSection: React.FC<Props> = ({
                                 className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
                             />
                         </div>
+                        {/* 🔗 方向联动同步开关 (位于“振幅”按钮右侧) */}
+                        <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
+                            <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
+                                {isSyncLocked ? <Link2 size={11} className="text-indigo-400 shrink-0" /> : <Unlink size={11} className="text-slate-500 shrink-0" />}
+                                联动同步
+                            </span>
+                            <button
+                                type="button"
+                                onClick={toggleDirectionSync}
+                                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold border transition-colors ${
+                                    isSyncLocked
+                                        ? 'bg-indigo-950/90 text-indigo-300 border-indigo-500/60 shadow-[0_0_8px_rgba(99,102,241,0.25)]'
+                                        : 'bg-slate-900 text-slate-500 border-slate-700 hover:text-slate-300'
+                                }`}
+                                title={isSyncLocked ? "已开启全域方向联动：在列表1切换多/空时，全管线所有需要选方向的规则自动同步！" : "已解除方向联动：每个规则可单独独立设置多空方向"}
+                            >
+                                <span>{isSyncLocked ? '已开启联动' : '独立模式'}</span>
+                            </button>
+                        </div>
                     </div>
 
                     {/* Volume Filter Pool Box - Placed directly above Start Trend */}
@@ -416,6 +467,12 @@ export const FilterSection: React.FC<Props> = ({
                         scanConfig={scanConfig} 
                         onRunDiscovery={runMajorTrendDiscovery} 
                         isMajorScanning={isMajorScanning} 
+                    />
+
+                    {/* 🛡️ 第三组: 初筛极值拦截底池大卡片 (AntiChase Filter Pool Box) */}
+                    <AntiChasePoolBox 
+                        scanConfig={scanConfig} 
+                        setScanConfig={setScanConfig} 
                     />
 
                     {/* 🚀 趋势爆发综合过滤大卡片 (Breakout Filter Pool Box - 融合龙抬头防伪进阶) - 位于防恐慌熔断上方 */}

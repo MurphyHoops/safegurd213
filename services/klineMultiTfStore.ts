@@ -73,9 +73,12 @@ class KlineMultiTfStore {
 
         if (klines.length === 0) return;
 
+        // 🔒 [保留最多最新 300 根基线数据]
+        const sliced = klines.length > 300 ? klines.slice(klines.length - 300) : klines;
+
         const keys = this.getKeys(symbol, tf);
         for (const k of keys) {
-            this.memoryMap.set(k, klines);
+            this.memoryMap.set(k, sliced);
         }
 
         // 同步全局 window 缓存，供第三方调试与兼容

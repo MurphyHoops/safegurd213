@@ -72,12 +72,15 @@ export function checkConventionalProfit(
             if (matchedTier) {
                 // 动态托底线 = 最高盈利 * 保底留存百分比
                 const dynamicFloor = (maxPnl * matchedTier.retentionPercent) / 100;
+                // 🔒【方案 A 双重门槛】：必须满足动态托底回撤条件，且平仓收益不能突破硬保底底线
+                const isDynamicFloorMet = currentPnl <= dynamicFloor;
+                const isHardFloorMet = currentPnl >= triggerThreshold || (dynamicFloor >= triggerThreshold);
 
-                if (currentPnl <= dynamicFloor) {
+                if (isDynamicFloorMet && isHardFloorMet) {
                     close(
                         position.symbol, 
                         position.side, 
-                        `变量阶梯托底平仓触发: 最高盈利曾达 ${maxPnl.toFixed(2)}% (匹配区间 [${matchedTier.minProfit}%~${matchedTier.maxProfit === Infinity ? '∞' : matchedTier.maxProfit}%] 留存 ${matchedTier.retentionPercent}%)，回撤后当前剩余盈利 ${currentPnl.toFixed(2)}% <= 变量托底线 ${dynamicFloor.toFixed(2)}%`,
+                        `变量阶梯托底平仓触发(方案A双门槛): 最高盈利 ${maxPnl.toFixed(2)}% (匹配区间 [${matchedTier.minProfit}%~${matchedTier.maxProfit === Infinity ? '∞' : matchedTier.maxProfit}%] 留存 ${matchedTier.retentionPercent}%, 动态线 ${dynamicFloor.toFixed(2)}%), 当前收益 ${currentPnl.toFixed(2)}% 满足硬保底 ${triggerThreshold}%`,
                         settings.closePercent || 100
                     );
                     return true;
@@ -97,15 +100,22 @@ export function checkConventionalProfit(
     if (settings.profitPercent !== undefined && settings.profitPercent > 0) {
         if (maxPnl < settings.profitPercent) return false;
 
-        // 3. 回撤检查
+        // 3. 回撤与硬保底双重门槛检查 (方案 A)
         const drawdown = maxPnl - currentPnl;
         const effectiveCallback = (settings.closePercent && settings.closePercent < 100 && settings.callbackPercent === 0) ? 0.01 : (settings.callbackPercent || 1);
-        
-        if (drawdown >= effectiveCallback) {
+        const targetThreshold = settings.profitPercent;
+
+        // 🔒【方案 A 双重门槛】：
+        // 条件 1: 必须发生真实完整的设定回调 (drawdown >= effectiveCallback)
+        // 条件 2: 发生回调后的剩余盈利，必须保持 >= 基础激活门槛 targetThreshold
+        const isDrawdownMet = drawdown >= effectiveCallback;
+        const isProfitFloorMet = currentPnl >= targetThreshold || (maxPnl - effectiveCallback >= targetThreshold && drawdown >= effectiveCallback);
+
+        if (isDrawdownMet && isProfitFloorMet) {
             close(
                 position.symbol, 
                 position.side, 
-                `常规止盈触发: 收益 ${currentPnl.toFixed(2)}% (最高 ${maxPnl.toFixed(2)}%, 回撤 ${drawdown.toFixed(2)}% >= ${effectiveCallback}%)`,
+                `常规止盈触发(方案A双门槛): 收益 ${currentPnl.toFixed(2)}% (最高 ${maxPnl.toFixed(2)}%, 目标门槛 ${targetThreshold}%, 回调 ${drawdown.toFixed(2)}% >= ${effectiveCallback}%, 满足硬保底)`,
                 settings.closePercent || 100
             );
             return true;
