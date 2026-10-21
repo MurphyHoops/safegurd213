@@ -411,6 +411,7 @@ export interface MartingaleSettings {
     ratioPercent?: number; // 补仓比例 % (如 100%)
     maxCount?: number; // 补仓次数限制 (如 1次, 2次)
     maxTotalUsdt?: number; // 持仓总数量限制 USDT (如 500 USDT)
+    maxPositionToBalancePercent?: number; // 当前持仓总量占可用余额%上限 (如 80%)，超出停止补仓
 
     // 3. 风控护城河
     cooldownSeconds?: number; // 补仓最小时间间隔(秒, 如 30秒)

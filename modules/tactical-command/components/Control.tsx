@@ -223,6 +223,90 @@ export const List6Control: React.FC<{
                             ))}
                         </div>
                     </div>
+
+                    {/* 做多 N天内上涨 % 不再复开 */}
+                    <div className="flex flex-col bg-slate-900/80 p-1.5 rounded border border-slate-800 gap-1">
+                        <div className="flex items-center justify-between">
+                            <span className="text-emerald-400 font-bold">做多 N天拉升限制</span>
+                            <button
+                                type="button"
+                                onClick={() => setConfig(p => ({...p, reopenLongLimitEnabled: !(p.reopenLongLimitEnabled ?? true)}))}
+                                className={`px-1.5 py-0.2 rounded text-[8px] font-bold border transition-colors ${
+                                    (config.reopenLongLimitEnabled ?? true)
+                                        ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
+                                        : 'bg-slate-800 border-slate-700 text-slate-500'
+                                }`}
+                            >
+                                {(config.reopenLongLimitEnabled ?? true) ? '开启' : '关闭'}
+                            </button>
+                        </div>
+                        {(config.reopenLongLimitEnabled ?? true) && (
+                            <div className="flex items-center gap-1 text-[9px] text-slate-300 flex-wrap">
+                                <span>做多</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="30"
+                                    value={config.reopenLongLimitDays ?? 3}
+                                    onChange={e => setConfig(p => ({...p, reopenLongLimitDays: parseInt(e.target.value) || 1}))}
+                                    className="w-9 bg-slate-800 border border-slate-700 text-emerald-300 text-[9px] font-mono font-bold rounded px-1 py-0.5 text-center outline-none focus:border-emerald-400"
+                                />
+                                <span>天内上涨</span>
+                                <input
+                                    type="number"
+                                    step="1"
+                                    min="1"
+                                    max="500"
+                                    value={config.reopenLongLimitPct ?? 20}
+                                    onChange={e => setConfig(p => ({...p, reopenLongLimitPct: parseFloat(e.target.value) || 0}))}
+                                    className="w-11 bg-slate-800 border border-slate-700 text-emerald-300 text-[9px] font-mono font-bold rounded px-1 py-0.5 text-center outline-none focus:border-emerald-400"
+                                />
+                                <span>% 不再复开</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* 做空 N天内下跌 % 不再复开 */}
+                    <div className="flex flex-col bg-slate-900/80 p-1.5 rounded border border-slate-800 gap-1">
+                        <div className="flex items-center justify-between">
+                            <span className="text-rose-400 font-bold">做空 N天下跌限制</span>
+                            <button
+                                type="button"
+                                onClick={() => setConfig(p => ({...p, reopenShortLimitEnabled: !(p.reopenShortLimitEnabled ?? true)}))}
+                                className={`px-1.5 py-0.2 rounded text-[8px] font-bold border transition-colors ${
+                                    (config.reopenShortLimitEnabled ?? true)
+                                        ? 'bg-rose-950/80 border-rose-500/50 text-rose-300'
+                                        : 'bg-slate-800 border-slate-700 text-slate-500'
+                                }`}
+                            >
+                                {(config.reopenShortLimitEnabled ?? true) ? '开启' : '关闭'}
+                            </button>
+                        </div>
+                        {(config.reopenShortLimitEnabled ?? true) && (
+                            <div className="flex items-center gap-1 text-[9px] text-slate-300 flex-wrap">
+                                <span>做空</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="30"
+                                    value={config.reopenShortLimitDays ?? 3}
+                                    onChange={e => setConfig(p => ({...p, reopenShortLimitDays: parseInt(e.target.value) || 1}))}
+                                    className="w-9 bg-slate-800 border border-slate-700 text-rose-300 text-[9px] font-mono font-bold rounded px-1 py-0.5 text-center outline-none focus:border-rose-400"
+                                />
+                                <span>天内下跌</span>
+                                <input
+                                    type="number"
+                                    step="1"
+                                    min="1"
+                                    max="500"
+                                    value={config.reopenShortLimitPct ?? 20}
+                                    onChange={e => setConfig(p => ({...p, reopenShortLimitPct: parseFloat(e.target.value) || 0}))}
+                                    className="w-11 bg-slate-800 border border-slate-700 text-rose-300 text-[9px] font-mono font-bold rounded px-1 py-0.5 text-center outline-none focus:border-rose-400"
+                                />
+                                <span>% 不再复开</span>
+                            </div>
+                        )}
+                    </div>
                 </div>
             )}
         </div>

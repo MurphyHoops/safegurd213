@@ -1687,13 +1687,39 @@ export class MarketSimulator {
         const peakHigh = klines1h && klines1h.length > 0 ? Math.max(...klines1h.map(k => k.high), realPrice) : realPrice;
         const valleyLow = klines1h && klines1h.length > 0 ? Math.min(...klines1h.map(k => k.low), realPrice) : realPrice;
 
+        const longDays = actionConfig.reopenLongLimitDays ?? 3;
+        const shortDays = actionConfig.reopenShortLimitDays ?? 3;
+        const maxDays = Math.max(longDays, shortDays);
+
+        const klines1d = klineMultiTfStore.getKlinesSync(closedPos.symbol, '1d', maxDays + 2) || [];
+        const klines1hForNDays = klineMultiTfStore.getKlinesSync(closedPos.symbol, '1h', maxDays * 24 + 10) || [];
+
+        let longStartPrice = 0;
+        if (klines1d.length >= longDays) {
+            longStartPrice = klines1d[klines1d.length - 1 - longDays]?.open || klines1d[0]?.open || 0;
+        } else if (klines1hForNDays.length >= longDays * 24) {
+            longStartPrice = klines1hForNDays[klines1hForNDays.length - 1 - longDays * 24]?.open || klines1hForNDays[0]?.open || 0;
+        }
+
+        let shortStartPrice = 0;
+        if (klines1d.length >= shortDays) {
+            shortStartPrice = klines1d[klines1d.length - 1 - shortDays]?.open || klines1d[0]?.open || 0;
+        } else if (klines1hForNDays.length >= shortDays * 24) {
+            shortStartPrice = klines1hForNDays[klines1hForNDays.length - 1 - shortDays * 24]?.open || klines1hForNDays[0]?.open || 0;
+        }
+
+        const longNDaysChangePct = longStartPrice > 0 ? ((realPrice - longStartPrice) / longStartPrice) * 100 : 0;
+        const shortNDaysChangePct = shortStartPrice > 0 ? ((shortStartPrice - realPrice) / shortStartPrice) * 100 : 0;
+
         const klineDetails = {
             peakHigh,
             valleyLow,
             ema80_15m: getEmaVal(closedPos.symbol, '15m', 80),
             ema80_1h: getEmaVal(closedPos.symbol, '1h', 80),
             ema200_1h: getEmaVal(closedPos.symbol, '1h', 200),
-            ema80_4h: getEmaVal(closedPos.symbol, '4h', 80) || getEmaVal(closedPos.symbol, '1h', 80)
+            ema80_4h: getEmaVal(closedPos.symbol, '4h', 80) || getEmaVal(closedPos.symbol, '1h', 80),
+            longNDaysChangePct,
+            shortNDaysChangePct
         };
 
         const reopenResult = checkAutoReopenRules(
@@ -1862,12 +1888,15 @@ export class MarketSimulator {
 
         const corrId = pos.correlationId || nextReopenCount;
 
+        const refPrice = pos.markPrice || pos.entryPrice || 0;
         const extraProps: Partial<Position> = {
             isReopened: true,
             reopenCount: nextReopenCount,
             refillCount: nextTotalRefill,
             correlationId: corrId,
             parentEntryId: pos.entryId,
+            entryPrice: refPrice > 0 ? refPrice : undefined,
+            markPrice: refPrice > 0 ? refPrice : undefined,
             // 🔒 [新周期绝对零负债] 复开属于全新一轮开仓生命周期，坚决物理隔离历史负债
             cumulativeAmputationLoss: 0,
             cumulativeHedgeLoss: 0,
@@ -2818,18 +2847,19 @@ export class MarketSimulator {
         const execPrice = (execData?.price && execData.price > 0) ? execData.price : (p.markPrice || p.entryPrice || 0);
         const execQty = (execData?.qty && execData.qty > 0) ? execData.qty : (p.amount || 0);
 
-        // 🔒【真实盈亏核算铁律】若交易所即时回报无 realizedPnl 或为 0，严格以开仓均价与平仓价及持仓量现场精准核算真实 USDT 盈亏
-        let pnl = (execData?.realizedPnl !== undefined && execData.realizedPnl !== 0)
-            ? execData.realizedPnl
-            : (p.unrealizedPnL !== undefined && p.unrealizedPnL !== 0 ? p.unrealizedPnL : 0);
-
-        if (pnl === 0 && p.entryPrice > 0 && execPrice > 0) {
-            if (p.side === PositionSide.LONG) {
-                pnl = (execPrice - p.entryPrice) * execQty;
-            } else {
-                pnl = (p.entryPrice - execPrice) * execQty;
-            }
+        // 🔒【真实盈亏核算铁律】优先以持仓均价、平仓价与成交量现场精准核算真实 USDT 盈亏；避免交易所单笔回报 realizedPnl 偏离导致显示不一致
+        let calculatedPnl = 0;
+        if (p.entryPrice > 0 && execPrice > 0 && execQty > 0) {
+            calculatedPnl = p.side === PositionSide.LONG
+                ? (execPrice - p.entryPrice) * execQty
+                : (p.entryPrice - execPrice) * execQty;
+        } else if (p.unrealizedPnL !== undefined && p.unrealizedPnL !== 0) {
+            calculatedPnl = p.unrealizedPnL;
         }
+
+        let pnl = (calculatedPnl !== 0) 
+            ? calculatedPnl 
+            : ((execData?.realizedPnl !== undefined && execData.realizedPnl !== 0) ? execData.realizedPnl : 0);
 
         const finalReason = reason || (pnl >= 0 ? '实盘止盈平仓' : '实盘止损平仓');
         const isStopLoss = finalReason.includes('止损') || finalReason.includes('砍仓') || pnl < 0;

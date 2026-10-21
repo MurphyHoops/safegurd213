@@ -424,7 +424,7 @@ export const DcaInlineCard: React.FC<InlineProps> = ({
                         <div className="space-y-0.5 bg-slate-900/60 p-1.5 px-2 rounded-md border border-slate-800">
                             <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
                                 <span>持仓总数量限制 (USDT)</span>
-                                <span className="text-amber-300 font-mono font-bold">${cfg.maxTotalUsdt} USDT</span>
+                                <span className="text-amber-300 font-mono font-bold">${cfg.maxTotalUsdt ?? 500} USDT</span>
                             </div>
                             <input
                                 type="number"
@@ -437,6 +437,28 @@ export const DcaInlineCard: React.FC<InlineProps> = ({
                             />
                             <div className="text-[8px] text-slate-500">
                                 硬性安全阈值：单个持仓补仓后的总本金金额绝对不能超过此上限。
+                            </div>
+                        </div>
+
+                        <div className="space-y-0.5 bg-slate-900/60 p-1.5 px-2 rounded-md border border-slate-800">
+                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                                <span>持仓总量占可用余额%上限</span>
+                                <span className="text-amber-300 font-mono font-bold">{cfg.maxPositionToBalancePercent ?? 80}%</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="number"
+                                    step="5"
+                                    min="10"
+                                    max="100"
+                                    value={cfg.maxPositionToBalancePercent ?? 80}
+                                    onChange={e => updateCfg({ maxPositionToBalancePercent: Math.min(100, Math.max(10, parseInt(e.target.value) || 80)) })}
+                                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-white font-mono text-xs focus:outline-none focus:border-amber-400"
+                                />
+                                <span className="text-xs text-slate-400 font-mono">%</span>
+                            </div>
+                            <div className="text-[8px] text-slate-500">
+                                综合限制：当总持仓占账户可用余额超过该百分比时停止继续补仓。
                             </div>
                         </div>
                     </div>

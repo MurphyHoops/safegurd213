@@ -356,6 +356,13 @@ export interface ActionConfig {
     reopenPullbackLimitPct?: number; // e.g. 3.0 %
     reopenTakeProfitOnly?: boolean; // e.g. true
     reopenMaxConsecutiveLosses?: number; // e.g. 2
+    // 做多/做空 N天内上涨/下跌限制不再复开
+    reopenLongLimitEnabled?: boolean;
+    reopenLongLimitDays?: number; // 如 3 天
+    reopenLongLimitPct?: number; // 如 20 %
+    reopenShortLimitEnabled?: boolean;
+    reopenShortLimitDays?: number; // 如 3 天
+    reopenShortLimitPct?: number; // 如 20 %
 }
 
 export interface SmartScanConfig {

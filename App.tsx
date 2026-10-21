@@ -20,6 +20,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { usePersistedState } from './hooks/usePersistedState';
 import { binanceWs } from './services/binanceWs';
 import { normalizeSymbol, resolvePrice, isMajorCoin, isMemeScaledCoin } from './services/symbolUtils';
+import { priceRegistry } from './services/priceRegistry';
 import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
 import { IpChangeAlertModal, IpChangeAlertData } from './components/IpChangeAlertModal';
@@ -2094,9 +2095,10 @@ const AppContent: React.FC = () => {
             
             // 🛑 STRICT HEDGE LOCK: If hedged, block automatic open/reopen/refill, BUT ALLOW MANUAL OPEN!
             const isManual = (extraProps as any)?.isManual === true || ((extraProps as any)?.reason && typeof (extraProps as any).reason === 'string' && (extraProps as any).reason.includes("Manual"));
-            if (!isManual) {
+            if (!isManual && !extraProps?.isReopened) {
                 const isSymbolHedged = activePositions.some(p => 
                     normalizeSymbol(p.symbol) === cleanSymbol && 
+                    !p.isBeingClosed && (p.amount || 0) > 0.0001 &&
                     (p.isHedged || p.mainPositionId || activePositions.some(h => h.mainPositionId === p.entryId))
                 );
                 if (isSymbolHedged) {
@@ -2236,32 +2238,34 @@ const AppContent: React.FC = () => {
                     const finalLev = resData.leverage || extraProps?.leverage || 20;
                     const tradeTime = Date.now();
                     const orderId = resData.orderId ? String(resData.orderId) : `real_open_${tradeTime}`;
-                    
                     const positionEntryId = `real_${cleanSymbol}_${side}_${orderId}`;
-                    const openLogItem: TradeLog = {
-                        symbol: cleanSymbol,
-                        entry_id: positionEntryId,
-                        binance_order_id: orderId,
-                        status: 'OPEN',
-                        is_hedge: !!extraProps?.mainPositionId,
-                        entry_timestamp: tradeTime,
-                        direction: side,
-                        cost_usdt: amount,
-                        entry_price: price > 0 ? price : 0,
-                        timeframe: signalTf || '5m',
-                        events: [{
-                            timestamp: tradeTime,
-                            action: '实盘开仓下单成功',
-                            price: price > 0 ? price : 0,
-                            amount: resData.qty || (amount / (price > 0 ? price : 1)),
-                            reason: (extraProps as any)?.reason || '列表1批量/立即开仓成交'
-                        }]
-                    };
-
+                    
                     if (simulatorRef.current) {
-                        const finalPrice = resData.price || price || priceBufferRef.current[cleanSymbol] || 0;
+                        const regPrice = priceRegistry.getPrice(cleanSymbol) || 0;
+                        const fallbackRefPrice = price > 0 ? price : (priceBufferRef.current[cleanSymbol] || realPrices[cleanSymbol] || regPrice || (extraProps?.entryPrice && extraProps.entryPrice > 0 ? extraProps.entryPrice : 0));
+                        const finalPrice = (resData.price && parseFloat(resData.price) > 0) ? parseFloat(resData.price) : (fallbackRefPrice > 0 ? fallbackRefPrice : regPrice);
                         const finalCost = resData.cumQuote || amount || (resData.qty * finalPrice);
                         const finalQty = resData.qty || (amount / (finalPrice || 1));
+
+                        const openLogItem: TradeLog = {
+                            symbol: cleanSymbol,
+                            entry_id: positionEntryId,
+                            binance_order_id: orderId,
+                            status: 'OPEN',
+                            is_hedge: !!extraProps?.mainPositionId,
+                            entry_timestamp: tradeTime,
+                            direction: side,
+                            cost_usdt: amount,
+                            entry_price: finalPrice,
+                            timeframe: signalTf || '5m',
+                            events: [{
+                                timestamp: tradeTime,
+                                action: '实盘开仓下单成功',
+                                price: finalPrice,
+                                amount: resData.qty || (amount / (finalPrice || 1)),
+                                reason: (extraProps as any)?.reason || '列表1批量/立即开仓成交'
+                            }]
+                        };
 
                         const autoRealPos: Position = {
                             symbol: cleanSymbol,
@@ -2282,7 +2286,7 @@ const AppContent: React.FC = () => {
                             isHedged: !!extraProps?.mainPositionId,
                             mainPositionId: extraProps?.mainPositionId,
                             strategyId: extraProps?.strategyId,
-                            reopenCount: 0,
+                            reopenCount: extraProps?.reopenCount || 0,
                             ...extraProps
                         };
 
@@ -3439,32 +3443,29 @@ const AppContent: React.FC = () => {
             return;
         }
 
-        // 🔒 [平仓确认硬门禁 (Await-Close Barrier)]: 严禁盲目使用 setTimeout(1500)！
-        // 挂起并等待币安平仓订单回执 (FILLED) 与持仓移除完成，确认平仓尘埃落定后瞬间无缝复开
-        const lockKey = `${cleanSymbol}_${side}`;
-        let waitCount = 0;
-        while (pendingClosesRef.current.has(lockKey) && waitCount < 30) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            waitCount++;
-        }
-        // 给予 150ms 微秒级终极缓冲让数据对账彻底就续
-        await new Promise(resolve => setTimeout(resolve, 150));
-
+        // ⚡【平仓同时秒级同步复开】彻底移除轮询卡顿等待，平仓触发的瞬间同步毫秒级提交复开订单！
         if (simulatorRef.current) {
-            simulatorRef.current.addLog("INFO", `⚡ [自动复开触发] 平仓已硬核确认，正在向币安发送开仓指令以完全复开原仓位: ${cleanSymbol} ${side} | 原始金额: ${amountUsdt.toFixed(2)} USDT | 原因: ${reason}`);
+            simulatorRef.current.addLog("INFO", `⚡ [自动复开极速触发] 平仓已发出，正在向币安无缝提交开仓指令以完全复开原仓位: ${cleanSymbol} ${side} | 原始金额: ${amountUsdt.toFixed(2)} USDT | 原因: ${reason}`);
         }
+
+        // 🔒 [开仓参考价准确抓取] 优先使用平仓价或最新实时推送价作为基准，彻底消除开仓价显示 0.00000000 问题
+        const regPrice = priceRegistry.getPrice(cleanSymbol) || 0;
+        const refPrice = (extraProps?.entryPrice && extraProps.entryPrice > 0)
+            ? extraProps.entryPrice
+            : (realPrices[cleanSymbol] || priceBufferRef.current[cleanSymbol] || regPrice || 0);
 
         try {
-            await handleOpenPosition(cleanSymbol, side, amountUsdt, 0, '1m', undefined, undefined, {
+            await handleOpenPosition(cleanSymbol, side, amountUsdt, refPrice, '1m', undefined, undefined, {
                 ...extraProps,
-                isReopened: true
+                isReopened: true,
+                entryPrice: refPrice > 0 ? refPrice : (regPrice > 0 ? regPrice : undefined)
             });
         } catch (e: any) {
             if (simulatorRef.current) {
                 simulatorRef.current.addLog("DANGER", `🚨 [自动复开异常] 发送开仓指令失败: ${e.message || e}`);
             }
         }
-    }, [handleOpenPosition]);
+    }, [handleOpenPosition, realPrices]);
 
     // Keep execution refs up to date on every render cycle to avoid stale closures
     onRealHedgeRef.current = handleAutoHedge;

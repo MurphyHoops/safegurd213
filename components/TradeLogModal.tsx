@@ -1265,8 +1265,30 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                     ? positions.find(p => p.entryId === log.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction && (p.amount || 0) > 0.0001 && Math.abs((p.entryTime || 0) - log.entry_timestamp) < 300000))
                                     : undefined;
                                 const currentPrice = activePos ? activePos.markPrice : (log.exit_price || log.entry_price || 0);
-                                const realizedPnL = log.profit_usdt || 0;
+                                const rawRealizedPnL = log.profit_usdt || 0;
                                 const realizedPnLPct = log.profit_percent || 0;
+
+                                // 🔒【真实盈亏核算对齐】优先按真实持仓成本 (cost_usdt) 与收益率 (profit_percent) 核算最终 USDT 盈亏
+                                // 彻底解决交易所回报单笔 realizedPnl 偏差导致列表误显 0.94U 而实际应为 7.28U 的显示矛盾
+                                const realizedPnL = (() => {
+                                    const cost = log.cost_usdt || 0;
+                                    if (cost > 0 && realizedPnLPct !== undefined && isFinite(realizedPnLPct) && Math.abs(realizedPnLPct) > 0) {
+                                        const expectedPnl = cost * (realizedPnLPct / 100);
+                                        if (Math.abs(expectedPnl - rawRealizedPnL) > 0.3) {
+                                            return expectedPnl;
+                                        }
+                                    } else if (cost > 0 && log.entry_price && log.exit_price && log.entry_price > 0) {
+                                        const isLongSide = log.direction === PositionSide.LONG || String(log.direction) === 'LONG';
+                                        const pricePct = isLongSide
+                                            ? ((log.exit_price - log.entry_price) / log.entry_price) * 100
+                                            : ((log.entry_price - log.exit_price) / log.entry_price) * 100;
+                                        const expectedPnl = cost * (pricePct / 100);
+                                        if (Math.abs(expectedPnl - rawRealizedPnL) > 0.3) {
+                                            return expectedPnl;
+                                        }
+                                    }
+                                    return rawRealizedPnL;
+                                })();
 
                                 let recoveryInfo: { netProfit: number, grossProfit: number, totalLoss: number, hedgeCount: number, lastStopLossTime: number } | null = null;
                                 if (activeFilter === 'RECOVERY' && !selectedRecoveryId) {
@@ -2025,24 +2047,49 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                              <div><span className="text-xs text-slate-500">开仓均价</span><p className="font-mono text-white">{(selectedLog.entry_price ?? 0).toFixed(8)}</p></div>
                              <div><span className="text-xs text-slate-500">平仓价</span><p className="font-mono text-white">{selectedLog.exit_price?.toFixed(8) || '-'}</p></div>
                         </div>
-                        {selectedLog.status === 'CLOSED' && (
-                            <div className="grid grid-cols-2 gap-4 bg-slate-800/50 p-2 rounded border border-slate-700">
-                                <div>
-                                    <span className="text-xs text-slate-500">单笔盈亏</span>
-                                    <p className={`font-mono font-bold ${selectedLog.profit_usdt && selectedLog.profit_usdt >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                        {selectedLog.profit_usdt && selectedLog.profit_usdt >= 0 ? '+' : ''}{selectedLog.profit_usdt?.toFixed(2) || '0.00'} U
-                                    </p>
-                                </div>
-                                {activeFilter === 'RECOVERY' && recoveryStats.map.get(selectedLog.symbol) && (
+                        {selectedLog.status === 'CLOSED' && (() => {
+                            const cost = selectedLog.cost_usdt || 0;
+                            const rawPnl = selectedLog.profit_usdt || 0;
+                            const rawPct = selectedLog.profit_percent || 0;
+                            let displayPnl = rawPnl;
+                            let displayPct = rawPct;
+
+                            if (cost > 0 && selectedLog.entry_price && selectedLog.exit_price && selectedLog.entry_price > 0) {
+                                const isLongSide = selectedLog.direction === PositionSide.LONG || String(selectedLog.direction) === 'LONG';
+                                const pricePct = isLongSide
+                                    ? ((selectedLog.exit_price - selectedLog.entry_price) / selectedLog.entry_price) * 100
+                                    : ((selectedLog.entry_price - selectedLog.exit_price) / selectedLog.entry_price) * 100;
+                                const expectedPnl = cost * (pricePct / 100);
+                                if (Math.abs(expectedPnl - rawPnl) > 0.3) {
+                                    displayPnl = expectedPnl;
+                                    displayPct = pricePct;
+                                }
+                            } else if (cost > 0 && rawPct !== 0 && isFinite(rawPct)) {
+                                const expectedPnl = cost * (rawPct / 100);
+                                if (Math.abs(expectedPnl - rawPnl) > 0.3) {
+                                    displayPnl = expectedPnl;
+                                }
+                            }
+
+                            return (
+                                <div className="grid grid-cols-2 gap-4 bg-slate-800/50 p-2 rounded border border-slate-700">
                                     <div>
-                                        <span className="text-xs text-indigo-300">最终解套净赚</span>
-                                        <p className={`font-mono font-bold ${(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                            {(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0) >= 0 ? '+' : ''}{(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0).toFixed(2)} U
+                                        <span className="text-xs text-slate-500">实际结算盈亏</span>
+                                        <p className={`font-mono font-bold text-sm ${displayPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                            {displayPnl >= 0 ? '+' : ''}{displayPnl.toFixed(2)} U {displayPct !== 0 && `(${displayPct >= 0 ? '+' : ''}${displayPct.toFixed(2)}%)`}
                                         </p>
                                     </div>
-                                )}
-                            </div>
-                        )}
+                                    {activeFilter === 'RECOVERY' && recoveryStats.map.get(selectedLog.symbol) && (
+                                        <div>
+                                            <span className="text-xs text-indigo-300">最终解套净赚</span>
+                                            <p className={`font-mono font-bold ${(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                {(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0) >= 0 ? '+' : ''}{(recoveryStats.map.get(selectedLog.symbol)?.netProfit ?? 0).toFixed(2)} U
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
                         <div className="bg-slate-800/30 p-2 rounded border border-slate-700">
                             <span className="text-xs text-slate-500 block mb-1">开仓原因</span>
                             <p className="text-sm text-slate-300">

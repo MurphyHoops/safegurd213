@@ -758,12 +758,12 @@ async function startServer() {
 
     // 🛡️ [ANTI-OOM MEMORY SWEEPER]: Periodically purge expired cache entries and enforce hard capacity limits
     // Prevents Node.js heap accumulation from crashing the server and triggering Cloud Run container reboots
-    const MAX_SERVER_CACHE_ENTRIES = 300;
+    const MAX_SERVER_CACHE_ENTRIES = 100;
     setInterval(() => {
       try {
         const now = Date.now();
         for (const [key, entry] of serverCache.entries()) {
-          if (now - entry.timestamp > entry.ttl * 1.5) {
+          if (now - entry.timestamp > entry.ttl) {
             serverCache.delete(key);
           }
         }
@@ -780,7 +780,7 @@ async function startServer() {
           }
         }
       } catch (_) {}
-    }, 20000);
+    }, 15000);
 
 
     const getServerCacheTTL = (url: string): number => {
@@ -3102,12 +3102,12 @@ setInterval(() => {
     const uptimeH = Math.round((process.uptime() / 3600) * 10) / 10;
     console.log(`📊 [Trading Engine Daemon] 运行: ${uptimeH}h | 堆内存: ${heapUsedMB}MB/${heapTotalMB}MB | 物理内存: ${rssMB}MB | 行情订阅: ${priceSubscribers.size}`);
     
-    // 如果开启了 --expose-gc 且堆内存超过 1500MB，主动执行 V8 垃圾回收
-    if (typeof (global as any).gc === 'function' && heapUsedMB > 1500) {
-      console.log('🧹 [Trading Engine Daemon] 触发 V8 堆内存主动垃圾回收...');
+    // 如果开启了 --expose-gc 且堆内存超过 800MB，主动执行 V8 垃圾回收
+    if (typeof (global as any).gc === 'function' && heapUsedMB > 800) {
+      console.log('🧹 [Trading Engine Daemon] 堆内存达到 800MB，触发 V8 主动垃圾回收...');
       (global as any).gc();
     }
   } catch (_) {}
-}, 10 * 60 * 1000);
+}, 2 * 60 * 1000);
 
 startServer();

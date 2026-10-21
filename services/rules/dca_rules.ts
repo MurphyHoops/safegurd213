@@ -73,6 +73,19 @@ export function checkDcaRules(
         return { triggered: false, addAmountUsdt: 0, reason: `补仓后总仓位将超出额度上限 [当前价值: $${currentPositionUsdt.toFixed(1)} + 补: $${addAmountUsdt.toFixed(1)} > 上限: $${maxTotalUsdt}]` };
     }
 
+    // 6.1 持仓总量占可用余额%上限校验
+    const maxPosBalancePct = cfg.maxPositionToBalancePercent ?? 80;
+    if (maxPosBalancePct > 0) {
+        const availBalance = (position as any).availableBalance || (settings as any).availableBalance || 0;
+        if (availBalance > 0) {
+            const totalPosAfterAdd = currentPositionUsdt + addAmountUsdt;
+            const ratioPct = (totalPosAfterAdd / availBalance) * 100;
+            if (ratioPct > maxPosBalancePct) {
+                return { triggered: false, addAmountUsdt: 0, reason: `补仓后持仓总量占可用余额比例 (${ratioPct.toFixed(1)}%) 超出上限 (${maxPosBalancePct}%), 暂停补仓` };
+            }
+        }
+    }
+
     // 判定做多/做空与价格偏离亏损百分比 (按真实价格变动百分比计算，严禁乘算杠杆)
     const isLong = position.side === 'LONG';
     const entryPrice = position.entryPrice;

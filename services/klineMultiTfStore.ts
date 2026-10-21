@@ -86,7 +86,37 @@ class KlineMultiTfStore {
             const winCache = (window as any).KLINE_MULTI_TF_CACHE;
             if (winCache) {
                 for (const k of keys) {
-                    winCache[k] = klines;
+                    winCache[k] = sliced;
+                }
+            }
+        }
+
+        if (this.memoryMap.size > 800) {
+            this.purgeStaleEntries();
+        }
+    }
+
+    /**
+     * 🛡️ [内存防爆扫荡]: 限制全局共享内存映射容量，自动剔除过期/冷数据
+     */
+    public purgeStaleEntries(): void {
+        if (this.memoryMap.size > 600) {
+            let countToRemove = this.memoryMap.size - 400;
+            for (const key of this.memoryMap.keys()) {
+                this.memoryMap.delete(key);
+                if (--countToRemove <= 0) break;
+            }
+        }
+
+        if (typeof window !== 'undefined') {
+            const winCache = (window as any).KLINE_MULTI_TF_CACHE;
+            if (winCache && typeof winCache === 'object') {
+                const winKeys = Object.keys(winCache);
+                if (winKeys.length > 600) {
+                    const toDel = winKeys.slice(0, winKeys.length - 400);
+                    for (const k of toDel) {
+                        delete winCache[k];
+                    }
                 }
             }
         }

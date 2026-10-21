@@ -211,6 +211,37 @@ class KlineDailyStore {
         winCache[symbol]['1d'] = { klines, timestamp };
         winCache[`${norm}_1d`] = klines;
         winCache[`${symbol}_1d`] = klines;
+
+        if (this.memoryMap.size > 300) {
+            this.purgeStaleMemoryCache();
+        }
+    }
+
+    /**
+     * 🛡️ [内存卫兵]: 彻底清理旧/非活跃 K 线对象与全局 window.KLINE_LIMIT_CACHE，防止长时间运行 OOM 崩溃
+     */
+    public purgeStaleMemoryCache(): void {
+        const now = Date.now();
+        if (this.memoryMap.size > 200) {
+            for (const [key, entry] of this.memoryMap.entries()) {
+                if (now - entry.timestamp > 30 * 60 * 1000 || this.memoryMap.size > 150) {
+                    this.memoryMap.delete(key);
+                }
+            }
+        }
+
+        if (typeof window !== 'undefined') {
+            const winCache = (window as any).KLINE_LIMIT_CACHE;
+            if (winCache && typeof winCache === 'object') {
+                const keys = Object.keys(winCache);
+                if (keys.length > 300) {
+                    const toDelete = keys.slice(0, keys.length - 120);
+                    for (const k of toDelete) {
+                        delete winCache[k];
+                    }
+                }
+            }
+        }
     }
 
     /**

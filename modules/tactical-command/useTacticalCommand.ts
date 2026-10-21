@@ -26,7 +26,13 @@ const DEFAULT_CONFIG: ActionConfig = {
     reopenBullBearFilter: '1h_ema80',
     reopenPullbackLimitPct: 3.0,
     reopenTakeProfitOnly: true,
-    reopenMaxConsecutiveLosses: 2
+    reopenMaxConsecutiveLosses: 2,
+    reopenLongLimitEnabled: true,
+    reopenLongLimitDays: 3,
+    reopenLongLimitPct: 20,
+    reopenShortLimitEnabled: true,
+    reopenShortLimitDays: 3,
+    reopenShortLimitPct: 20
 };
 
 export const useTacticalCommand = (strategyId?: string) => {

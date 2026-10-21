@@ -22,6 +22,7 @@ interface PnlRegEntry {
 
 class PriceRegistry {
     private prices: Record<string, number> = {};
+    private cachedPricesCopy: Record<string, number> | null = null;
     private listeners: Set<(prices: Record<string, number>) => void> = new Set();
     
     // symbol -> Set of element registrations
@@ -51,7 +52,10 @@ class PriceRegistry {
     }
 
     public getAllPrices(): Record<string, number> {
-        return { ...this.prices };
+        if (!this.cachedPricesCopy) {
+            this.cachedPricesCopy = { ...this.prices };
+        }
+        return this.cachedPricesCopy;
     }
     
     public updatePrices(newPrices: Record<string, number>) {
@@ -71,6 +75,7 @@ class PriceRegistry {
         }
 
         if (hasChanges) {
+            this.cachedPricesCopy = null;
             // 1. Batch direct DOM updates using requestAnimationFrame (syncs with 60fps monitor vsync)
             if (!this.isRafScheduled) {
                 this.isRafScheduled = true;

@@ -28,6 +28,8 @@ export function checkAutoReopenRules(
         ema200_1h?: number;
         ema80_4h?: number;
         ema80_15m?: number;
+        longNDaysChangePct?: number;
+        shortNDaysChangePct?: number;
     },
     consecutiveLossCount: number = 0
 ): ReopenCheckResult {
@@ -98,9 +100,36 @@ export function checkAutoReopenRules(
         }
     }
 
+    // 6. 做多 N天内上涨 % 不再复开
+    const isLong = closedPosition.side === 'LONG';
+    if (isLong && (actionConfig.reopenLongLimitEnabled ?? true)) {
+        const longDays = actionConfig.reopenLongLimitDays ?? 3;
+        const longPct = actionConfig.reopenLongLimitPct ?? 20;
+        const actualLongPct = klineDetails?.longNDaysChangePct;
+        if (actualLongPct !== undefined && actualLongPct >= longPct) {
+            return {
+                eligible: false,
+                reason: `做多周期涨幅门禁拦截: 做多 ${longDays}天内上涨了 ${actualLongPct.toFixed(2)}% (≥ 限制 ${longPct}%), 暂停做多复开`
+            };
+        }
+    }
+
+    // 7. 做空 N天内下跌 % 不再复开
+    if (!isLong && (actionConfig.reopenShortLimitEnabled ?? true)) {
+        const shortDays = actionConfig.reopenShortLimitDays ?? 3;
+        const shortPct = actionConfig.reopenShortLimitPct ?? 20;
+        const actualShortPct = klineDetails?.shortNDaysChangePct;
+        if (actualShortPct !== undefined && actualShortPct >= shortPct) {
+            return {
+                eligible: false,
+                reason: `做空周期跌幅门禁拦截: 做空 ${shortDays}天内下跌了 ${actualShortPct.toFixed(2)}% (≥ 限制 ${shortPct}%), 暂停做空复开`
+            };
+        }
+    }
+
     return {
         eligible: true,
-        reason: `满足平仓复开所有护城河条件 [牛熊门禁: 放行, 偏离熔断: 放行, 连亏未达限]`,
+        reason: `满足平仓复开所有护城河条件 [牛熊门禁: 放行, 偏离熔断: 放行, N天波幅门禁: 放行, 连亏未达限]`,
         side: closedPosition.side
     };
 }

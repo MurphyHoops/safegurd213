@@ -1732,6 +1732,17 @@ export const useGrandCrossing = (
       klineStoreRef.current.set(safeKey, updated);
       klineMultiTfStore.updateRealtimeKline(symbol, tf, { time, open, high, low, close, volume });
 
+      // 🛡️ [内存卫兵]: 定期清理非候选币种的游离 K 线缓存
+      if (klineStoreRef.current.size > 600) {
+        const activeSyms = new Set(candidatesRef.current.map(c => normalizeSymbol(c.symbol)));
+        for (const k of klineStoreRef.current.keys()) {
+          const sym = k.split('-')[0];
+          if (sym && !activeSyms.has(normalizeSymbol(sym))) {
+            klineStoreRef.current.delete(k);
+          }
+        }
+      }
+
       // Instantaneous local mathematical evaluation
       evaluateKlines(symbol, tf, updated, 0);
     });

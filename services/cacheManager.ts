@@ -11,6 +11,8 @@
 
 import { backtestDb } from './backtest/db';
 import { clearClientSideCache } from './apiService';
+import { klineDailyStore } from './klineDailyStore';
+import { klineMultiTfStore } from './klineMultiTfStore';
 
 export interface StorageEstimateInfo {
     usageBytes: number;
@@ -244,6 +246,11 @@ class CacheManagerService {
 
             // 4. 清理全局 window 上的临时图表缓存与对象池并清空 HTTP 内存缓存
             clearClientSideCache();
+            try {
+                klineDailyStore.purgeStaleMemoryCache();
+                klineMultiTfStore.purgeStaleEntries();
+            } catch (_) {}
+
             if (typeof window !== 'undefined') {
                 try {
                     delete (window as any).__KLINE_CACHE__;
