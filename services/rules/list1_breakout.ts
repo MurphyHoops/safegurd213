@@ -6,6 +6,7 @@ import { BreakoutFilterConfig, BreakoutTimeframe } from '../../components/Scanne
 import { calculateBollingerBands, calculateATR, calculateADX, calculateEMA, checkEmaDivergence } from '../indicators';
 import { fetchWithFallback } from '../apiService';
 import { binanceWsApi } from '../binanceWsApi';
+import { KLineSynthesizer } from '../klineSynthesizer';
 
 export interface BreakoutTimeframeResult {
     tf: string;
@@ -149,7 +150,7 @@ export function synthesize10mFrom5m(klines5m: any[]): any[] {
 }
 
 /**
- * 快速获取币安指定周期的 K 线数据 (30s 内存保鲜缓存 + 10m/60m 智能周期适配 + HIGH 优先级极速直通)
+ * 快速获取币安指定周期的 K 线数据 (30s 内存保鲜缓存 + 5m500根本地全量重采样 + HIGH 优先级极速直通)
  */
 export async function fetchTfKlines(symbol: string, tf: string, limit: number = 60, signal?: AbortSignal): Promise<{ klines: any[] | null; isCacheHit: boolean }> {
     const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
@@ -161,13 +162,17 @@ export async function fetchTfKlines(symbol: string, tf: string, limit: number = 
         return { klines: cached.klines, isCacheHit: true };
     }
 
-    // 10m 由 5m K线合成
-    if (tf === '10m') {
-        const needed5m = Math.max(limit * 2 + 10, 80);
-        const res5m = await fetchTfKlines(symbol, '5m', needed5m, signal);
-        if (res5m.klines && res5m.klines.length > 0) {
-            const synthesized = synthesize10mFrom5m(res5m.klines);
-            if (synthesized.length > 0) {
+    // 🎯 核心架构革新：除 5m 直接拉取 500 根外，10m/15m/30m/60m 全部通过本地 5m 毫秒级无损合成
+    if (tf !== '5m') {
+        const res5m = await fetchTfKlines(symbol, '5m', 500, signal);
+        if (res5m.klines && res5m.klines.length >= 30) {
+            let targetMinutes = 10;
+            if (tf === '15m') targetMinutes = 15;
+            else if (tf === '30m') targetMinutes = 30;
+            else if (tf === '60m' || tf === '1h') targetMinutes = 60;
+
+            const synthesized = KLineSynthesizer.synthesizeFrom5mRaw(res5m.klines, targetMinutes);
+            if (synthesized && synthesized.length > 0) {
                 BREAKOUT_KLINE_CACHE[cacheKey] = {
                     timestamp: now,
                     klines: synthesized
@@ -178,11 +183,9 @@ export async function fetchTfKlines(symbol: string, tf: string, limit: number = 
         return { klines: null, isCacheHit: false };
     }
 
-    // 60m 映射为币安原生 1h
-    const apiTf = tf === '60m' ? '1h' : tf;
-
+    // 5m 基准数据：单币仅发起 1 次网络请求获取 500 根 (limit=500 原生支持上限)
     try {
-        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=${apiTf}&limit=${limit}`;
+        const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=5m&limit=500`;
         const res = await fetchWithFallback(url, { timeout: 3500, priority: 'HIGH', signal }, (d) => Array.isArray(d) && d.length > 0);
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -507,16 +510,29 @@ export async function auditSymbolBreakout(
     };
 
     try {
-        // 1. 并发获取所选周期 K 线 (Promise.all 毫秒级并行拉取)
-        const fetchedList = await Promise.all(
-            targetTfs.map(async (tf) => {
-                const res = await fetchTfKlines(symbol, tf, 60, signal);
-                return { tf, ...res };
-            })
-        );
+        // 1. 🎯 基准粒度高频缓存：单币仅发起 1 次网络请求获取 500 根 5m 数据
+        const base5mRes = await fetchTfKlines(symbol, '5m', 500, signal);
+        if (!base5mRes.klines || base5mRes.klines.length < 30) {
+            defaultFailResult.failReasons = ['5m基准K线数据不足或请求超时'];
+            return defaultFailResult;
+        }
 
-        const isCacheHit = fetchedList.every(f => f.isCacheHit);
-        const validList = fetchedList.filter(f => f.klines && f.klines.length >= 30);
+        // 2. 本地 0ms 瞬间合成所选各个周期，彻底消除多重网络请求与重复占用
+        const fetchedList = targetTfs.map((tf) => {
+            if (tf === '5m') {
+                return { tf, klines: base5mRes.klines, isCacheHit: base5mRes.isCacheHit };
+            }
+            let targetMinutes = 10;
+            if (tf === '15m') targetMinutes = 15;
+            else if (tf === '30m') targetMinutes = 30;
+            else if ((tf as string) === '60m' || (tf as string) === '1h') targetMinutes = 60;
+
+            const synthesized = KLineSynthesizer.synthesizeFrom5mRaw(base5mRes.klines!, targetMinutes);
+            return { tf, klines: synthesized, isCacheHit: base5mRes.isCacheHit };
+        });
+
+        const isCacheHit = base5mRes.isCacheHit;
+        const validList = fetchedList.filter(f => f.klines && f.klines.length >= 20);
 
         if (validList.length === 0) {
             defaultFailResult.failReasons = ['所选周期K线数据不足'];

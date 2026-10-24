@@ -159,6 +159,8 @@ export function translateBinanceError(code?: number | string, rawMsg?: string): 
         translatedMsg = '挂单数量已达到该币种允许的最大上限';
     } else if (msg.includes('Precision is over the maximum')) {
         translatedMsg = '数量或价格的小数位数超过了币安允许的最大精度限制';
+    } else if (msg.includes('Invalid API-key, IP, or permissions') || codeStr === '-2015') {
+        translatedMsg = '【币安 API 密钥无效、IP 限制或缺失合约权限】(服务器出口 IP: 34.34.226.183)。请登录币安 API 管理中心：1. 开启“允许合约 (Enable Futures)”交易权限；2. 将 IP 34.34.226.183 加入白名单或设置为“无 IP 限制”；3. 核对 API Key 与 Secret 是否正确';
     } else if (msg.includes('API-key format invalid')) {
         translatedMsg = 'API Key 格式错误，请检查是否包含多余空格或非法字符';
     } else if (msg.includes('Signature for this request is not valid')) {

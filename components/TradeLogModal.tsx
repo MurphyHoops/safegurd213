@@ -791,6 +791,17 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
       return sorted;
   }, [filteredLogs, isGroupedView, activeFilter, listSortConfig, positions, selectedDebtId]);
 
+  // 🛡️ [DOM 节点防爆与分页截流]: 默认初始渲染前 60 条记录，向下滚动或点击按钮加载更多，杜绝海量 DOM 节点压垮浏览器
+  const [displayLimit, setDisplayLimit] = useState(60);
+
+  useEffect(() => {
+      setDisplayLimit(60);
+  }, [activeFilter, searchTerm, startTime, endTime, isGroupedView, selectedDebtId, selectedRecoveryId]);
+
+  const visibleSortedLogs = useMemo(() => {
+      return sortedFilteredLogs.slice(0, displayLimit);
+  }, [sortedFilteredLogs, displayLimit]);
+
   const renderJson = (data: any) => {
       return (
           <pre className="bg-slate-950 p-3 rounded border border-slate-700 text-[10px] font-mono text-emerald-300 overflow-x-auto">
@@ -1188,8 +1199,16 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                         </tbody>
                     </table>
                  </div>
-            ) : (
-                <div className={`flex-1 overflow-y-auto ${selectedLog ? 'w-2/3 border-r border-slate-800 hidden md:block' : 'w-full'}`}>
+             ) : (
+                <div 
+                    onScroll={(e) => {
+                        const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+                        if (scrollHeight - scrollTop - clientHeight < 150 && displayLimit < sortedFilteredLogs.length) {
+                            setDisplayLimit(prev => Math.min(prev + 60, sortedFilteredLogs.length));
+                        }
+                    }}
+                    className={`flex-1 overflow-y-auto ${selectedLog ? 'w-2/3 border-r border-slate-800 hidden md:block' : 'w-full'}`}
+                >
                     <table className="w-full text-left text-sm text-slate-400">
                                     <thead>
                                         <tr>
@@ -1251,15 +1270,17 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         </tr>
                                     </thead>
                         <tbody className="divide-y divide-slate-800">
-                            {sortedFilteredLogs.map((log, idx) => {
+                            {visibleSortedLogs.map((log, idx) => {
                                 const isSafeClear = log.exit_reason?.includes('防爆安全') || log.exit_reason?.includes('解套');
-                                const prevLog = sortedFilteredLogs[idx - 1];
-                                const nextLog = sortedFilteredLogs[idx + 1];
+                                const prevLog = visibleSortedLogs[idx - 1];
+                                const nextLog = visibleSortedLogs[idx + 1];
                                 const isGrouped = selectedRecoveryId && isSafeClear && (
                                     (prevLog && (prevLog.main_entry_id === log.entry_id || prevLog.parent_entry_id === log.entry_id || prevLog.entry_id === log.main_entry_id || prevLog.entry_id === log.parent_entry_id)) || 
                                     (nextLog && (nextLog.main_entry_id === log.entry_id || nextLog.parent_entry_id === log.entry_id || nextLog.entry_id === log.main_entry_id || nextLog.entry_id === log.parent_entry_id))
                                 );
-                                const uniqueKey = `${log.entry_id}-${log.status}-${log.exit_timestamp || log.entry_timestamp}-${idx}`;
+                                const safeEntryId = log.entry_id || 'id';
+                                const safeTime = isNaN(Number(log.exit_timestamp)) ? (isNaN(Number(log.entry_timestamp)) ? idx : log.entry_timestamp) : log.exit_timestamp;
+                                const uniqueKey = `log-${safeEntryId}-${log.status || 'status'}-${safeTime}-${idx}`;
                                 
                                 const activePos = log.status === 'OPEN'
                                     ? positions.find(p => p.entryId === log.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(log.symbol) && p.side === log.direction && (p.amount || 0) > 0.0001 && Math.abs((p.entryTime || 0) - log.entry_timestamp) < 300000))
@@ -1417,7 +1438,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 );
                                 const isCompletedCycle = isClosed || (!hasActivePosition && hasClosedLog);
 
-                                const isRefill = log.entry_id?.includes('_refill_') || log.exit_reason?.includes('补仓');
+                                const isRefill = log.entry_id?.includes('_refill_') || log.entry_id?.includes('_dca_') || log.exit_reason?.includes('补仓') || log.exit_reason?.includes('加仓');
                                 const isCut = !isRefill && (log.entry_id?.includes('_cut_') || log.exit_reason?.includes('砍仓') || log.exit_reason?.includes('减仓'));
                                 const isClear = isClosed && !isCut && !isRefill && (
                                     log.exit_reason?.includes('清仓') || 
@@ -1565,7 +1586,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         }
                                     } else {
                                         if (isRefill) {
-                                            actionLabel = '原仓位补仓';
+                                            actionLabel = (log.entry_id?.includes('_dca_') || log.exit_reason?.includes('智能补仓')) ? '智能补仓' : '原仓位补仓';
                                             actionBadgeClass = 'bg-blue-900/40 text-blue-400 border-blue-500/20';
                                         } else if (hasEverTriggeredHedge) {
                                             // 开启对冲后，原新开仓标记明确展示为【对冲运行中】
@@ -1631,7 +1652,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                         <span className="text-[11px] text-amber-300/80 font-normal ml-1">({getCoinChineseName(log.symbol)})</span>
                                                     )}
                                                     <span className="text-[10px] text-slate-400 ml-1">
-                                                        ({isRefill ? (isHedgeSide ? '防爆对冲补仓' : '原仓位补仓') : (isCut ? (isHedgeSide ? '防爆对冲砍仓' : '原仓位砍仓') : (isHedgeSide ? '防爆对冲仓位' : (hasEverTriggeredHedge ? '原仓位' : '新开仓位')))})
+                                                        ({isRefill ? (log.entry_id?.includes('_dca_') || log.exit_reason?.includes('智能补仓') ? '智能补仓' : (isHedgeSide ? '防爆对冲补仓' : '原仓位补仓')) : (isCut ? (isHedgeSide ? '防爆对冲砍仓' : '原仓位砍仓') : (isHedgeSide ? '防爆对冲仓位' : (hasEverTriggeredHedge ? '原仓位' : '新开仓位')))})
                                                     </span>
                                                 </span>
                                                 <button onClick={(e) => { e.stopPropagation(); handleSearchChange(log.symbol); handleFilterChange('ALL'); setIsGroupedView(false); }} className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-blue-400 transition-all" title="查看流水"><Clock size={12} /></button>
@@ -1924,6 +1945,27 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                             {filteredLogs.length === 0 && <tr><td colSpan={10} className="text-center py-10 text-slate-600">没有符合筛选条件的记录</td></tr>}
                         </tbody>
                     </table>
+                    {sortedFilteredLogs.length > displayLimit && (
+                        <div className="py-3 px-4 text-center bg-slate-900/90 border-t border-slate-800 flex items-center justify-center gap-3 shrink-0">
+                            <span className="text-xs text-slate-400">
+                                已显示前 <span className="text-indigo-400 font-bold">{displayLimit}</span> 条 (共 <span className="text-slate-200 font-bold">{sortedFilteredLogs.length}</span> 条)
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setDisplayLimit(prev => Math.min(prev + 60, sortedFilteredLogs.length))}
+                                className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-bold transition-all shadow-sm cursor-pointer"
+                            >
+                                加载更多 (+60)
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setDisplayLimit(sortedFilteredLogs.length)}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-normal transition-all border border-slate-700 cursor-pointer"
+                            >
+                                显示全部
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
             
@@ -1945,6 +1987,140 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                     </div>
                     
                     <div className="space-y-4 text-sm flex-1 overflow-y-auto pr-1 custom-scrollbar">
+                        {/* 0. 补仓专项详细审计面板 (针对补仓记录条目) */}
+                        {(() => {
+                            const isRefillLog = selectedLog?.entry_id?.includes('_refill_') || selectedLog?.entry_id?.includes('_dca_') || selectedLog?.exit_reason?.includes('补仓') || selectedLog?.exit_reason?.includes('加仓');
+                            if (!isRefillLog && (!selectedLog?.dcaRecords || selectedLog.dcaRecords.length === 0)) return null;
+
+                            const dcaRec: any = selectedLog.dcaRecords?.[0] || 
+                                (selectedLog.parent_entry_id ? tradeLogs.find(l => l.entry_id === selectedLog.parent_entry_id)?.dcaRecords?.find(d => Math.abs(d.timestamp - (selectedLog.entry_timestamp || 0)) < 15000) : undefined) ||
+                                positions.find(p => p.entryId === selectedLog.parent_entry_id || p.entryId === selectedLog.entry_id || (normalizeSymbol(p.symbol) === normalizeSymbol(selectedLog.symbol) && p.side === selectedLog.direction))?.dcaRecords?.slice(-1)[0];
+
+                            const refillEv = selectedLog.events?.find(e => e.action?.includes('补仓') || e.action?.includes('加仓')) || selectedLog.events?.[0];
+
+                            const rPrice = dcaRec?.price || refillEv?.price || selectedLog.entry_price || 0;
+                            const rTime = dcaRec?.executionTimeStr || refillEv?.executionTimeStr || new Date(selectedLog.entry_timestamp).toLocaleTimeString('zh-CN', { hour12: false });
+                            const preLossPct = dcaRec?.preRefillPnLPct ?? refillEv?.preRefillPnLPct;
+                            const preLossUsdt = dcaRec?.preRefillPnLUsdt ?? refillEv?.preRefillPnLUsdt;
+                            const extP = dcaRec?.extremePrice ?? refillEv?.extremePrice;
+                            const extTime = dcaRec?.extremeTimeStr || refillEv?.extremeTimeStr;
+                            const pullback = dcaRec?.pullbackPct ?? refillEv?.pullbackPct;
+                            const newEntryP = dcaRec?.newEntryPrice || refillEv?.newEntryPrice;
+                            const postLossPct = dcaRec?.postRefillPnLPct ?? refillEv?.postRefillPnLPct;
+                            const costUsdt = dcaRec?.addAmountUsdt || selectedLog.cost_usdt || ((selectedLog.current_amount || 0) * (selectedLog.entry_price || 0));
+                            const tokens = selectedLog.current_amount || refillEv?.amount || (dcaRec?.addAmountUsdt && dcaRec.price > 0 ? dcaRec.addAmountUsdt / dcaRec.price : 0);
+
+                            return (
+                                <div className="bg-gradient-to-br from-blue-950/70 via-slate-900/90 to-slate-950/90 rounded-xl border border-blue-500/50 p-3.5 shadow-xl space-y-2.5 font-sans mb-3">
+                                    <div className="flex items-center justify-between border-b border-blue-500/30 pb-2">
+                                        <div className="flex items-center gap-1.5 text-blue-300 font-bold text-xs">
+                                            <span className="p-1 rounded bg-blue-500/20 text-blue-300 text-[11px]">🔄</span>
+                                            <span>本次补仓详细审计参数</span>
+                                        </div>
+                                        <span className="text-[10px] text-blue-300 bg-blue-900/40 px-2 py-0.5 rounded border border-blue-500/30 font-medium">
+                                            {selectedLog.exit_reason || '智能补仓'}
+                                        </span>
+                                    </div>
+
+                                    <div className="space-y-1.5 text-xs font-mono">
+                                        {/* 🎯 补仓成交价格及时间 */}
+                                        <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800">
+                                            <span className="text-slate-400 font-sans flex items-center gap-1">🎯 补仓成交价格及时间:</span>
+                                            <span className="font-bold text-blue-300">
+                                                {rPrice > 0 ? rPrice.toFixed(8) : '-'}
+                                                <span className="text-slate-400 ml-1.5 font-normal">[{rTime}]</span>
+                                            </span>
+                                        </div>
+
+                                        {/* 📉 补仓前持仓亏损金额与比例 */}
+                                        <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800">
+                                            <span className="text-slate-400 font-sans flex items-center gap-1">📉 补仓前持仓亏损:</span>
+                                            <span className="font-bold text-red-400">
+                                                {preLossPct !== undefined ? `${preLossPct.toFixed(2)}%` : '-'}
+                                                {preLossUsdt !== undefined ? ` (${preLossUsdt.toFixed(2)} U)` : ''}
+                                            </span>
+                                        </div>
+
+                                        {/* ⏱️ 补仓触发极值价格及极值发生时间 */}
+                                        <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800">
+                                            <span className="text-slate-400 font-sans flex items-center gap-1">⏱️ 补仓触发极值:</span>
+                                            <span className="font-bold text-slate-200">
+                                                {extP !== undefined && extP > 0 ? extP.toFixed(8) : '-'}
+                                                {extTime && (
+                                                    <span className="text-slate-400 ml-1.5 font-normal">[{extTime}]</span>
+                                                )}
+                                            </span>
+                                        </div>
+
+                                        {/* 📈 极值反弹 / 回调确认幅度 (双重对比: 目标门槛 vs 实际反弹) */}
+                                        <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800">
+                                            <span className="text-slate-400 font-sans flex items-center gap-1">📈 极值反弹 / 回调确认:</span>
+                                            <div className="text-right font-bold text-emerald-400 flex items-center gap-1.5">
+                                                {(() => {
+                                                    const targetVal = dcaRec?.targetCallbackPercent ?? refillEv?.targetCallbackPercent ?? dcaRec?.callbackPercent ?? refillEv?.callbackPercent;
+                                                    const pbVal = pullback !== undefined ? Math.abs(pullback) : 0;
+
+                                                    if (targetVal !== undefined && targetVal > 0) {
+                                                        return (
+                                                            <>
+                                                                <span className="text-slate-400 font-normal text-[10px] bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700/80">
+                                                                    目标要求 ≥ {targetVal.toFixed(2)}%
+                                                                </span>
+                                                                <span className="text-emerald-400 font-mono">
+                                                                    实际 +{pbVal.toFixed(2)}%
+                                                                </span>
+                                                            </>
+                                                        );
+                                                    } else if (targetVal === 0 || pbVal === 0) {
+                                                        return (
+                                                            <>
+                                                                <span className="text-amber-300/90 font-normal text-[10px] bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-800/50">
+                                                                    直触发模式 (0.00%)
+                                                                </span>
+                                                                <span className="text-emerald-400 font-mono">
+                                                                    实际 +{pbVal.toFixed(2)}%
+                                                                </span>
+                                                            </>
+                                                        );
+                                                    } else {
+                                                        return (
+                                                            <span className="font-mono text-emerald-400">
+                                                                实际 +{pbVal.toFixed(2)}%
+                                                            </span>
+                                                        );
+                                                    }
+                                                })()}
+                                            </div>
+                                        </div>
+
+                                        {/* ✨ 补仓后新持仓均价及亏损拉低后的新持仓状态 */}
+                                        <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800">
+                                            <span className="text-slate-400 font-sans flex items-center gap-1">✨ 补仓后新持仓状态:</span>
+                                            <span className="font-bold text-emerald-300">
+                                                均价 {newEntryP !== undefined && newEntryP > 0 ? newEntryP.toFixed(8) : (rPrice > 0 ? rPrice.toFixed(8) : '-')}
+                                                {postLossPct !== undefined && (
+                                                    <span className="text-red-400 ml-1.5 font-normal">
+                                                        (亏损拉低至 {postLossPct.toFixed(2)}%)
+                                                    </span>
+                                                )}
+                                            </span>
+                                        </div>
+
+                                        {/* 💰 本次实际补仓代币数量与投入价值 */}
+                                        <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800">
+                                            <span className="text-slate-400 font-sans flex items-center gap-1">💰 本次投入价值与数量:</span>
+                                            <span className="font-bold text-amber-300">
+                                                {costUsdt > 0 ? `${costUsdt.toFixed(2)} U` : '-'}
+                                                <span className="text-slate-400 ml-1.5 font-normal">
+                                                    (数量: {tokens > 0 ? tokens.toFixed(4) : '-'})
+                                                </span>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+
                         {/* 1. Timeline of Events (The requested Full Record) */}
                         <div className="bg-slate-950/50 rounded-lg border border-slate-800 p-3 mb-4">
                             <h4 className="text-[10px] uppercase text-indigo-400 font-black mb-3 tracking-widest flex items-center gap-2">
@@ -1982,6 +2158,32 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                     </span>
                                                 </div>
                                                 <p className="text-[10px] text-slate-500 mt-1 italic border-l border-slate-800 pl-2">依据: {ev.reason}</p>
+                                                {ev.action.includes('补仓') && (
+                                                    <div className="mt-2 p-2 bg-slate-900/90 rounded border border-blue-500/30 text-[10px] space-y-1 font-mono">
+                                                        <div className="flex items-center justify-between text-blue-300 font-bold border-b border-slate-800/80 pb-1">
+                                                            <span>🎯 补仓成交价格:</span>
+                                                            <span>{ev.price?.toFixed(4)} [{ev.executionTimeStr || new Date(ev.timestamp).toLocaleTimeString('zh-CN', { hour12: false })}]</span>
+                                                        </div>
+                                                        {ev.extremePrice !== undefined && (
+                                                            <div className="flex items-center justify-between text-slate-300">
+                                                                <span className="text-slate-400">📉 补仓触发极值:</span>
+                                                                <span>{ev.extremePrice.toFixed(4)} [{ev.extremeTimeStr || '秒'}] (反弹 <span className="text-emerald-400">+{Math.abs(ev.pullbackPct || 0).toFixed(2)}%</span>)</span>
+                                                            </div>
+                                                        )}
+                                                        {ev.preRefillPnLPct !== undefined && (
+                                                            <div className="flex items-center justify-between text-slate-300">
+                                                                <span className="text-slate-400">⚠️ 补仓前持仓亏损:</span>
+                                                                <span className="text-red-400 font-bold">{(ev.preRefillPnLPct || 0).toFixed(2)}% ({ev.preRefillPnLUsdt !== undefined ? `${ev.preRefillPnLUsdt.toFixed(2)} U` : '-'})</span>
+                                                            </div>
+                                                        )}
+                                                        {ev.postRefillPnLPct !== undefined && (
+                                                            <div className="flex items-center justify-between text-slate-300">
+                                                                <span className="text-slate-400">✨ 补仓后持仓状态:</span>
+                                                                <span className="text-emerald-400 font-bold">均价 {ev.newEntryPrice ? ev.newEntryPrice.toFixed(4) : ev.price.toFixed(4)} | 亏损拉低至 {(ev.postRefillPnLPct || 0).toFixed(2)}%</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     ))

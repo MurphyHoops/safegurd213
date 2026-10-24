@@ -510,12 +510,22 @@ export class MarketSimulator {
 
                 // Preserve original entry ID, time, and custom local attributes
                 const preservedChainId = primaryOldPos.chainId || matchingOldPositions.find(p => p.chainId)?.chainId || newPos.chainId || `CHAIN_${cleanSym}_${primaryOldPos.entryTime || Date.now()}`;
+                
+                // ⚡【智能补仓 DCA 均价继承】：若已有 DCA 纪录或补仓次数 > 0，优先锁定最新加权均价，防止实盘轮询同步重置为初始首单开仓价
+                const latestDcaRecordPrice = (primaryOldPos.dcaRecords && primaryOldPos.dcaRecords.length > 0)
+                    ? primaryOldPos.dcaRecords[primaryOldPos.dcaRecords.length - 1]?.newEntryPrice
+                    : undefined;
+                const resolvedDcaEntryPrice = (latestDcaRecordPrice && latestDcaRecordPrice > 0)
+                    ? latestDcaRecordPrice
+                    : ((primaryOldPos.dcaCount && primaryOldPos.dcaCount > 0 && primaryOldPos.entryPrice > 0) ? primaryOldPos.entryPrice : undefined);
+
                 const mergedPos: Position = {
                     ...newPos,
                     chainId: preservedChainId,
                     entryId: primaryOldPos.entryId || newPos.entryId,
                     entryTime: primaryOldPos.entryTime || newPos.entryTime,
                     amount: newPos.amount, // 保持实盘或最新来源的真实完整仓位，严禁碎片化
+                    entryPrice: resolvedDcaEntryPrice || newPos.entryPrice,
                     markPrice: (realWsPrice && realWsPrice > 0)
                         ? realWsPrice
                         : (primaryOldPos.markPrice > 0 ? primaryOldPos.markPrice : newPos.markPrice),
@@ -1127,24 +1137,35 @@ export class MarketSimulator {
         this.tradeLogs = [ ...newTradeLogs ];
     }
 
-    public addTradeEvent(pos: Position, action: string, price: number, amount: number, reason: string, pnl?: number) {
+    public addTradeEvent(pos: Position, action: string, price: number, amount: number, reason: string, pnl?: number, auditProps?: Record<string, any>) {
         const event = {
             timestamp: Date.now(),
             action,
             price,
             amount,
             reason,
-            pnl
+            pnl,
+            ...(auditProps || {})
         };
 
         // Find the main log entry for this position
         // If it's a hedge, we want the main position's log
         const mainId = pos.mainPositionId || pos.entryId;
-        const mainLog = this.tradeLogs.find(l => l.entry_id === mainId);
+        const normSym = normalizeSymbol(pos.symbol);
+        let mainLog = this.tradeLogs.find(l => l.entry_id === mainId && l.status === 'OPEN');
+        if (!mainLog) {
+            mainLog = this.tradeLogs.find(l => l.entry_id === mainId);
+        }
+        if (!mainLog) {
+            mainLog = this.tradeLogs.find(l => normalizeSymbol(l.symbol) === normSym && l.direction === pos.side && l.status === 'OPEN');
+        }
         
         if (mainLog) {
             if (!mainLog.events) mainLog.events = [];
             mainLog.events.push(event);
+            if (pos.dcaRecords && pos.dcaRecords.length > 0) {
+                mainLog.dcaRecords = [...pos.dcaRecords];
+            }
         }
     }
 
@@ -1318,19 +1339,43 @@ export class MarketSimulator {
         targetPos.maxPnLPercent = targetPos.unrealizedPnLPercentage;
 
         // 记录在交易流水事件中
+        const now = Date.now();
         const log = this.tradeLogs.find(l => l.symbol === upperSymbol && l.direction === side && l.status === 'OPEN');
         if (log) {
             log.current_amount = newTokenAmount;
             log.entry_price = newWeightedEntryPrice;
             if (!log.events) log.events = [];
             log.events.push({
-                timestamp: Date.now(),
+                timestamp: now,
                 action: '加仓',
                 price: livePrice,
                 amount: deltaTokenAmount,
                 reason: `手动加仓 ${addAmountUsdt.toFixed(2)} USDT`
             });
         }
+
+        // 📜 压入独立加仓流水纪录到交易日志列表
+        this.tradeLogs.unshift({
+            symbol: upperSymbol,
+            entry_id: `${targetPos.entryId}_refill_${now}`,
+            parent_entry_id: targetPos.entryId,
+            status: 'OPEN',
+            is_hedge: false,
+            entry_timestamp: now,
+            direction: side,
+            cost_usdt: addAmountUsdt,
+            entry_price: livePrice,
+            current_amount: deltaTokenAmount,
+            timeframe: targetPos.signalTf || '5m',
+            exit_reason: `手动加仓 (${addAmountUsdt.toFixed(2)} USDT)`,
+            events: [{
+                timestamp: now,
+                action: '原仓位加仓',
+                price: livePrice,
+                amount: deltaTokenAmount,
+                reason: `手动加仓 ${addAmountUsdt.toFixed(2)} USDT`
+            }]
+        });
 
         this.addLog('SUCCESS', `⚡ [手动加仓成功] ${upperSymbol} (${side}) 成功加仓 ${addAmountUsdt.toFixed(2)} USDT (增加数量: ${deltaTokenAmount.toFixed(4)}), 加权新均价: ${newWeightedEntryPrice.toFixed(6)}`);
         audioService.speak(`${upperSymbol} 已成功加仓`);
@@ -1426,8 +1471,8 @@ export class MarketSimulator {
             executionPrice = wsPrice;
         }
 
-        // CRITICAL FIX: Calculate exact hedge quantity based on parent's initial amount and active ratio
-        const originalQty = mainPosition.initialAmount !== undefined ? mainPosition.initialAmount : mainPosition.amount;
+        // 补仓后按最新持仓总量 (mainPosition.amount) 计算对冲金额；若未补仓则 mainPosition.amount 等于初始开仓量
+        const currentQty = (mainPosition.amount && mainPosition.amount > 0) ? mainPosition.amount : (mainPosition.initialAmount || 0);
         
         const hedgeSettings = this.settings.hedging;
         let activeHedgeRatio = hedgeSettings?.enabled ? hedgeSettings.hedgeRatio : 100;
@@ -1439,9 +1484,9 @@ export class MarketSimulator {
             activeHedgeRatio = slSettings.callbackHedgeRatio; // Strategy 3 Override
         }
 
-        const initialCostUsdt = originalQty * (mainPosition.entryPrice || executionPrice);
-        const exactUsdtAmount = initialCostUsdt * (activeHedgeRatio / 100);
-        const exactQty = executionPrice > 0 ? (exactUsdtAmount / executionPrice) : (originalQty * (activeHedgeRatio / 100));
+        const currentCostUsdt = currentQty * (mainPosition.entryPrice || executionPrice);
+        const exactUsdtAmount = currentCostUsdt * (activeHedgeRatio / 100);
+        const exactQty = executionPrice > 0 ? (exactUsdtAmount / executionPrice) : (currentQty * (activeHedgeRatio / 100));
 
         if (this.settings?.system?.realTrading && this.onRealHedge) {
             this.onRealHedge(mainPosition, side, exactUsdtAmount, reason || '自动防爆对冲', exactQty);
@@ -1623,19 +1668,48 @@ export class MarketSimulator {
     private getActionConfig(pos?: Position): ActionConfig | null {
         if (typeof window === 'undefined' || !window.localStorage) return null;
         try {
+            let globalCfg: ActionConfig | null = null;
+            const globalRaw = localStorage.getItem("SCANNER_ACTION_CONFIG");
+            if (globalRaw) {
+                try { globalCfg = JSON.parse(globalRaw); } catch (e) {}
+            }
+
+            let stratCfg: ActionConfig | null = null;
             if (pos?.strategyId) {
                 const stratRaw = localStorage.getItem(`SCANNER_ACTION_CONFIG_${pos.strategyId}`);
-                if (stratRaw) return JSON.parse(stratRaw);
+                if (stratRaw) {
+                    try { stratCfg = JSON.parse(stratRaw); } catch (e) {}
+                }
             }
-            const raw = localStorage.getItem("SCANNER_ACTION_CONFIG");
-            if (raw) return JSON.parse(raw);
+
+            // 当存在策略专属配置和全局配置时，优先继承全局【当前持仓 -> 自动复开】的设置
+            if (stratCfg && globalCfg) {
+                return {
+                    ...stratCfg,
+                    autoReopenEnabled: globalCfg.autoReopenEnabled ?? stratCfg.autoReopenEnabled,
+                    reopenBullBearFilter: globalCfg.reopenBullBearFilter ?? stratCfg.reopenBullBearFilter,
+                    reopenPullbackLimitPct: globalCfg.reopenPullbackLimitPct ?? stratCfg.reopenPullbackLimitPct,
+                    reopenTakeProfitOnly: globalCfg.reopenTakeProfitOnly ?? stratCfg.reopenTakeProfitOnly,
+                    reopenMaxConsecutiveLosses: globalCfg.reopenMaxConsecutiveLosses ?? stratCfg.reopenMaxConsecutiveLosses,
+                    reopenLongLimitEnabled: globalCfg.reopenLongLimitEnabled ?? stratCfg.reopenLongLimitEnabled,
+                    reopenLongLimitDays: globalCfg.reopenLongLimitDays ?? stratCfg.reopenLongLimitDays,
+                    reopenLongLimitPct: globalCfg.reopenLongLimitPct ?? stratCfg.reopenLongLimitPct,
+                    reopenShortLimitEnabled: globalCfg.reopenShortLimitEnabled ?? stratCfg.reopenShortLimitEnabled,
+                    reopenShortLimitDays: globalCfg.reopenShortLimitDays ?? stratCfg.reopenShortLimitDays,
+                    reopenShortLimitPct: globalCfg.reopenShortLimitPct ?? stratCfg.reopenShortLimitPct,
+                };
+            }
+
+            if (stratCfg) return stratCfg;
+            if (globalCfg) return globalCfg;
+
             for (let i = 0; i < localStorage.length; i++) {
                 const key = localStorage.key(i);
                 if (key && key.startsWith("SCANNER_ACTION_CONFIG")) {
                     const val = localStorage.getItem(key);
                     if (val) {
                         const parsed = JSON.parse(val);
-                        if (parsed && parsed.autoReopenEnabled) return parsed;
+                        if (parsed) return parsed;
                     }
                 }
             }
@@ -1651,7 +1725,7 @@ export class MarketSimulator {
 
         const actionConfig = this.getActionConfig(closedPos);
         if (!actionConfig || !actionConfig.autoReopenEnabled) {
-            this.addLog('INFO', `ℹ️ [平仓复开检查] ${closedPos.symbol} 已平仓 (${closeReason})。当前【终极战术终端 -> 平仓后自动复开 (Reopen)】开关处于【未开启】状态，跳过自动复开。`);
+            this.addLog('INFO', `ℹ️ [平仓复开检查] ${closedPos.symbol} 已平仓 (${closeReason})。当前【当前持仓 -> 平仓后自动复开 (Reopen)】开关处于【未开启】状态，跳过自动复开。`);
             return;
         }
 
@@ -2752,6 +2826,18 @@ export class MarketSimulator {
 
         const isHedgePos = !!p.mainPositionId || (p.entryId && p.entryId.startsWith('HEDGE_'));
 
+        const parentLog = this.tradeLogs.find(l => (l.entry_id === p.entryId || (normalizeSymbol(l.symbol) === normalizeSymbol(p.symbol) && l.direction === p.side)) && l.status === 'OPEN');
+        const closeEvent = {
+            timestamp: now,
+            action: finalReason.includes('砍仓') ? '防爆对冲砍仓' : (finalReason.includes('清仓') ? '防爆清仓' : (finalReason.includes('止盈') ? '止盈平仓' : (finalReason.includes('止损') ? '止损平仓' : '平仓'))),
+            price: p.markPrice || p.entryPrice,
+            amount: p.amount,
+            reason: finalReason,
+            pnl: p.unrealizedPnL
+        };
+        const inheritedEvents = parentLog?.events ? [...parentLog.events, closeEvent] : [closeEvent];
+        const inheritedDcaRecords = p.dcaRecords ? [...p.dcaRecords] : (parentLog?.dcaRecords ? [...parentLog.dcaRecords] : undefined);
+
         // 🔒【独立记录与禁止篡改铁律】生成全新独立平仓日志，绝不篡改历史开仓记录
         this.tradeLogs.unshift({
             symbol: p.symbol,
@@ -2775,18 +2861,11 @@ export class MarketSimulator {
             timeframe: p.signalTf,
             last_stop_loss_time: isStopLoss ? now : undefined,
             stop_loss_rule: isStopLoss ? finalReason : undefined,
-            events: [{
-                timestamp: now,
-                action: finalReason.includes('砍仓') ? '防爆对冲砍仓' : (finalReason.includes('清仓') ? '防爆清仓' : (finalReason.includes('止盈') ? '止盈平仓' : (finalReason.includes('止损') ? '止损平仓' : '平仓'))),
-                price: p.markPrice || p.entryPrice,
-                amount: p.amount,
-                reason: finalReason,
-                pnl: p.unrealizedPnL
-            }]
+            dcaRecords: inheritedDcaRecords,
+            events: inheritedEvents
         });
 
         // Add final exit event to parent open log's event array if exists
-        const parentLog = this.tradeLogs.find(l => l.entry_id === p.entryId && l.status === 'OPEN');
         if (parentLog) {
             if (!parentLog.events) parentLog.events = [];
             parentLog.events.push({
@@ -2797,6 +2876,9 @@ export class MarketSimulator {
                 reason: finalReason,
                 pnl: p.unrealizedPnL
             });
+            if (p.dcaRecords && p.dcaRecords.length > 0) {
+                parentLog.dcaRecords = [...p.dcaRecords];
+            }
         }
 
         // --- SAVIOR LAB: Record Trade DNA to Firebase ---
@@ -2912,6 +2994,21 @@ export class MarketSimulator {
             });
         }
 
+        const openLog = this.tradeLogs.find(l => 
+            (l.entry_id === p.entryId || (normalizeSymbol(l.symbol) === normalizeSymbol(p.symbol) && l.direction === p.side)) && 
+            l.status === 'OPEN'
+        );
+        const realCloseEvent = {
+            timestamp: now,
+            action: finalReason.includes('砍仓') ? '防爆对冲砍仓成交回报' : (finalReason.includes('清仓') ? '防爆清仓成交回报' : '交易所平仓成交回报'),
+            price: execPrice,
+            amount: execQty,
+            reason: finalReason,
+            pnl
+        };
+        const inheritedEvents = openLog?.events ? [...openLog.events, realCloseEvent] : [realCloseEvent];
+        const inheritedDcaRecords = p.dcaRecords ? [...p.dcaRecords] : (openLog?.dcaRecords ? [...openLog.dcaRecords] : undefined);
+
         // Record a separate CLOSE log with actual exchange feedback data
         this.tradeLogs.unshift({
             symbol: p.symbol,
@@ -2936,14 +3033,8 @@ export class MarketSimulator {
             timeframe: p.signalTf,
             last_stop_loss_time: isStopLoss ? now : undefined,
             stop_loss_rule: isStopLoss ? finalReason : undefined,
-            events: [{
-                timestamp: now,
-                action: finalReason.includes('砍仓') ? '防爆对冲砍仓成交回报' : (finalReason.includes('清仓') ? '防爆清仓成交回报' : '交易所平仓成交回报'),
-                price: execPrice,
-                amount: execQty,
-                reason: finalReason,
-                pnl
-            }]
+            dcaRecords: inheritedDcaRecords,
+            events: inheritedEvents
         });
 
         const pnlFormatted = pnl >= 0 ? `+${pnl.toFixed(4)}` : `${pnl.toFixed(4)}`;
@@ -3382,6 +3473,17 @@ export class MarketSimulator {
                 : (trade.action === "CLOSE" ? "实盘完全平仓 / 手机APP/外部/系统平仓" : (finalPnl >= 0 ? "实盘止盈平仓 / 手机APP/外部/系统平仓" : "实盘止损平仓 / 手机APP/外部/系统平仓"));
             const profitPercent = costUsdt > 0 ? (finalPnl / costUsdt) * 100 : (entryPrice > 0 ? ((avgPrice - entryPrice) / entryPrice) * (inferredDirection === PositionSide.LONG ? 100 : -100) : 0);
 
+            const instantCloseEvent = {
+                timestamp: tradeTime,
+                action: isPartialClose ? `部分减仓 (${finalPnl >= 0 ? '盈利' : '亏损'})` : (finalPnl >= 0 ? '盈利平仓' : '止损平仓'),
+                price: avgPrice,
+                amount: qty,
+                reason: exitReason,
+                pnl: finalPnl
+            };
+            const inheritedInstantEvents = matchingOpenLog?.events ? [...matchingOpenLog.events, instantCloseEvent] : [instantCloseEvent];
+            const inheritedInstantDcaRecords = targetPos?.dcaRecords ? [...targetPos.dcaRecords] : (matchingOpenLog?.dcaRecords ? [...matchingOpenLog.dcaRecords] : undefined);
+
             // 生成完全独立的 CLOSED 交易流水
             this.tradeLogs.unshift({
                 symbol: rawSymbol,
@@ -3401,14 +3503,8 @@ export class MarketSimulator {
                 exit_price: avgPrice,
                 profit_percent: profitPercent,
                 commission: trade.commission || 0,
-                events: [{
-                    timestamp: tradeTime,
-                    action: isPartialClose ? `部分减仓 (${finalPnl >= 0 ? '盈利' : '亏损'})` : (finalPnl >= 0 ? '盈利平仓' : '止损平仓'),
-                    price: avgPrice,
-                    amount: qty,
-                    reason: exitReason,
-                    pnl: finalPnl
-                }]
+                dcaRecords: inheritedInstantDcaRecords,
+                events: inheritedInstantEvents
             });
 
             if (orderId) this.knownOrderIds.add(orderId);
@@ -3799,56 +3895,58 @@ export class MarketSimulator {
         try {
             const symbols = Array.from(new Set(this.positions.filter(p => p && p.amount > 0.0001).map(p => p.symbol)));
             
-            // 分小批 (每批最多3个币) 发起低优先级请求，彻底避免瞬间并发打满网络连接池
-            const BATCH_SIZE = 3;
-            for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-                const batch = symbols.slice(i, i + BATCH_SIZE);
-                await Promise.all(batch.map(async (symbol) => {
-                    try {
-                        const rawSafe = symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
-                        const spotSafe = rawSafe.startsWith('1000') ? rawSafe.slice(4) : rawSafe;
-                        const url = `https://data-api.binance.vision/api/v3/klines?symbol=${spotSafe}&interval=1h&limit=100`;
-                        const res = await fetchWithFallback(url, { priority: 'LOW', timeout: 5000 }, undefined, this.settings.system.directMode);
-                        const data = await res.json();
-                        
-                        if (Array.isArray(data) && data.length >= 80) {
-                            const closes = data.map((d: any) => parseFloat(d[4]));
-                            const rsi = calculateRSI(closes, 14).pop() || 50;
-                            const ema80 = getLatestEMA(closes, 80);
-                            const currentPrice = this.realPrices[symbol] || closes[closes.length - 1];
-                            
-                            const emaDist = ((currentPrice - ema80) / ema80) * 100;
-                            const deviation = ((currentPrice - getLatestEMA(closes, 20)) / getLatestEMA(closes, 20)) * 100;
-                            
-                            const highs = data.map((d: any) => parseFloat(d[2]));
-                            const lows = data.map((d: any) => parseFloat(d[3]));
-                            const atrs = calculateATR(highs, lows, closes, 14);
-                            const atr = atrs[atrs.length - 1] || 0;
-                            const volatility = (atr / currentPrice) * 100;
-
-                            const volumes = data.map((d: any) => parseFloat(d[5]));
-                            const avgVol = volumes.slice(-20, -1).reduce((a: number, b: number) => a + b, 0) / 19;
-                            const volumeSwell = volumes[volumes.length - 1] / avgVol;
-
-                            this.positions.forEach(p => {
-                                if (p.symbol === symbol) {
-                                    p.currentIndicators = {
-                                        rsi,
-                                        volatility,
-                                        deviation,
-                                        emaDistance: emaDist,
-                                        volumeSwell
-                                    };
-                                }
-                            });
+            for (const symbol of symbols) {
+                try {
+                    const normSym = normalizeSymbol(symbol);
+                    // 100% 本地 0ms 数据库同步读取，彻底消除 HTTP 网络请求
+                    const searchTfs = ['1h', '15m', '5m'];
+                    let klines: any[] = [];
+                    for (const tf of searchTfs) {
+                        const list = klineMultiTfStore.getKlinesSync(normSym, tf, 100);
+                        if (list && list.length >= 14) {
+                            klines = list;
+                            break;
                         }
-                    } catch (e) {
-                        // 单个币种失败不影响其他
                     }
-                }));
+                    
+                    if (klines && klines.length >= 14) {
+                        const closes = klines.map((d: any) => d.close);
+                        const highs = klines.map((d: any) => d.high);
+                        const lows = klines.map((d: any) => d.low);
+                        const rsi = calculateRSI(closes, 14).pop() || 50;
+                        const ema80 = getLatestEMA(closes, 80);
+                        const currentPrice = this.realPrices[normSym] || closes[closes.length - 1];
+                        
+                        const emaDist = ema80 > 0 ? ((currentPrice - ema80) / ema80) * 100 : 0;
+                        const ema20 = getLatestEMA(closes, 20);
+                        const deviation = ema20 > 0 ? ((currentPrice - ema20) / ema20) * 100 : 0;
+                        
+                        const atrs = calculateATR(highs, lows, closes, 14);
+                        const atr = atrs[atrs.length - 1] || 0;
+                        const volatility = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+
+                        const volumes = klines.map((d: any) => d.volume);
+                        const avgVol = volumes.length >= 20 ? (volumes.slice(-20, -1).reduce((a: number, b: number) => a + b, 0) / 19) : 1;
+                        const volumeSwell = avgVol > 0 ? volumes[volumes.length - 1] / avgVol : 1;
+
+                        this.positions.forEach(p => {
+                            if (normalizeSymbol(p.symbol) === normSym) {
+                                p.currentIndicators = {
+                                    rsi,
+                                    volatility,
+                                    deviation,
+                                    emaDistance: emaDist,
+                                    volumeSwell
+                                };
+                            }
+                        });
+                    }
+                } catch (e) {
+                    // 单个币种失败不影响其他
+                }
             }
         } catch (err) {
-            console.error('Failed to update indicators:', err);
+            console.error('Failed to update indicators locally:', err);
         } finally {
             this.isUpdatingIndicators = false;
         }
@@ -3872,47 +3970,37 @@ export class MarketSimulator {
         this.isUpdatingEma = true;
         try {
             const now = Date.now();
-            // Deduplicate active positions to avoid redundant fetches when holding >20 positions
             const validPositions = this.positions.filter(pos => 
                 pos && pos.symbol && pos.symbol !== 'USDT' && pos.symbol.trim() !== '' && 
                 pos.amount > 0.0001 && !pos.isHedged && !pos.mainPositionId
             );
             
-            const BATCH_SIZE = 3;
-            for (let i = 0; i < validPositions.length; i += BATCH_SIZE) {
-                const batch = validPositions.slice(i, i + BATCH_SIZE);
-                await Promise.all(batch.map(async (pos) => {
-                    try {
-                        let tf = atrSettings.emaTimeframe;
-                        if (tf === 'AUTO') {
-                            tf = this.getAutoTimeframe(pos.signalTf || '15m');
-                        }
-
-                        const safeSymbol = pos.symbol.endsWith('USDT') ? pos.symbol : `${pos.symbol}USDT`;
-                        const spotSafe = safeSymbol.startsWith('1000') ? safeSymbol.slice(4) : safeSymbol;
-                        const cacheKey = `${safeSymbol}_${tf}_${atrSettings.emaPeriod}`;
-                        
-                        const cached = this.emaCacheMap.get(cacheKey);
-                        if (cached && (now - cached.time < 60000)) {
-                            pos.currentEmaValue = cached.value;
-                            return;
-                        }
-
-                        const url = `https://data-api.binance.vision/api/v3/klines?symbol=${spotSafe}&interval=${tf}&limit=120`;
-                        const res = await fetchWithFallback(url, { priority: 'LOW', timeout: 5000 }, undefined, this.settings.system.directMode);
-                        const data = await res.json();
-                        
-                        if (Array.isArray(data)) {
-                            // Exclude the current live candle (last one) to avoid EMI drift
-                            const closes = data.slice(0, -1).map((d: any) => parseFloat(d[4]));
-                            const emaValue = getLatestEMA(closes, atrSettings.emaPeriod);
-                            pos.currentEmaValue = emaValue;
-                            this.emaCacheMap.set(cacheKey, { value: emaValue, time: now });
-                        }
-                    } catch (error) {
-                        // Silent fail to avoid spamming logs
+            for (const pos of validPositions) {
+                try {
+                    const normSym = normalizeSymbol(pos.symbol);
+                    let tf = atrSettings.emaTimeframe;
+                    if (tf === 'AUTO') {
+                        tf = this.getAutoTimeframe(pos.signalTf || '15m');
                     }
-                }));
+
+                    const cacheKey = `${normSym}_${tf}_${atrSettings.emaPeriod}`;
+                    const cached = this.emaCacheMap.get(cacheKey);
+                    if (cached && (now - cached.time < 15000)) {
+                        pos.currentEmaValue = cached.value;
+                        continue;
+                    }
+
+                    // 从本地 klineMultiTfStore 0ms 读取 K 线，完全避免网络请求
+                    const klines = klineMultiTfStore.getKlinesSync(normSym, tf, 120);
+                    if (klines && klines.length >= 10) {
+                        const closes = klines.slice(0, -1).map((d: any) => d.close);
+                        const emaValue = getLatestEMA(closes, atrSettings.emaPeriod);
+                        pos.currentEmaValue = emaValue;
+                        this.emaCacheMap.set(cacheKey, { value: emaValue, time: now });
+                    }
+                } catch (error) {
+                    // Silent fail
+                }
             }
         } finally {
             this.isUpdatingEma = false;
@@ -4114,111 +4202,282 @@ export class MarketSimulator {
                 continue;
             }
 
-            // ⚡ [智能补仓 / DCA 策略] 触发判定与加仓拉低均价
+            // ⚡ [智能补仓 / DCA 策略] 批处理引擎 (支持最大同时补仓币种数限制 & 最亏优先竞逐)
             if (this.settings.martingale?.enabled && !position.isHedge && !position.isHedged) {
-                // 1. 使用精准的 0 延迟实时价格解析器 (自动处理 1000倍 币种与规范化符号)
-                const currentPrice = resolvePrice(position.symbol, this.realPrices, position.markPrice || position.entryPrice);
-                
-                // 2. 从共享内存池中提取最新多周期 K线与 EMA 均线数据（多周期降级适配，防止单一周期缺失）
-                const targetTf = position.signalTf || '15m';
-                const searchTfs = [targetTf, '1m', '5m', '15m'];
-                let klines: any[] = [];
-                for (const tf of searchTfs) {
-                    const list = klineMultiTfStore.getKlinesSync(position.symbol, tf, 10);
-                    if (list && list.length >= 5) {
-                        klines = list;
-                        break;
+                const cfg = this.settings.martingale;
+                const maxCoins = (cfg.maxAddingCoinsCount && cfg.maxAddingCoinsCount > 0) ? cfg.maxAddingCoinsCount : 0;
+                const priorityMetric = cfg.addPriorityMetric || 'pnl_usdt';
+
+                // 统计全盘当前处于已补仓状态(dcaCount > 0)的独立主持仓数量（包含处于防爆对冲状态但尚未平仓解套的币种，严禁对冲币规避计数）
+                const activeDcaPositions = this.positions.filter(p => !p.isHedge && (p.dcaCount || 0) > 0);
+                const currentAddingCount = activeDcaPositions.length;
+                let availableSlots = maxCoins > 0 ? Math.max(0, maxCoins - currentAddingCount) : 999;
+
+                // 判断当前仓位是首次补仓还是已有补仓
+                const isFirstDca = (position.dcaCount || 0) === 0;
+
+                // 如果是首次补仓且设置了名额限制，并且当前名额已满，判断是否能获得名额
+                let canProceedWithDca = true;
+                if (isFirstDca && maxCoins > 0 && availableSlots <= 0) {
+                    canProceedWithDca = false;
+                    const now = Date.now();
+                    const lastLogTime = (position as any)._lastDcaQueueLogTime || 0;
+                    if (now - lastLogTime > 30000) {
+                        (position as any)._lastDcaQueueLogTime = now;
+                        this.addLog(
+                            'WARNING',
+                            `⏳ 智能补仓排队中: ${position.symbol} [无可用补仓名额 ${currentAddingCount}/${maxCoins}]，需优先配给最亏币种或等平仓释位`
+                        );
                     }
                 }
-                let klineData: any = undefined;
 
-                if (klines && klines.length >= 5) {
-                    const lastCandle = klines[klines.length - 1];
-                    const closes = klines.map(k => k.close);
-                    if (closes.length > 0) closes[closes.length - 1] = currentPrice;
-
-                    // 计算开仓以来的真实历史最低/最高价（用于回调/反弹绝对极值校准）
-                    const relevantTime = Math.max(position.entryTime || 0, position.lastDcaAt || 0, position.lastRefillTime || 0);
-                    const recentCandles = klines.filter(k => (k.time || 0) >= (relevantTime - 60000));
-                    const extremeLow = recentCandles.length > 0 ? Math.min(...recentCandles.map(k => k.low), currentPrice) : currentPrice;
-                    const extremeHigh = recentCandles.length > 0 ? Math.max(...recentCandles.map(k => k.high), currentPrice) : currentPrice;
-
-                    klineData = {
-                        open: lastCandle.open,
-                        high: Math.max(lastCandle.high, currentPrice),
-                        low: Math.min(lastCandle.low, currentPrice),
-                        close: currentPrice,
-                        extremeLow,
-                        extremeHigh,
-                        emaDetails: {
-                            ema10: getLatestEMA(closes, 10),
-                            ema20: getLatestEMA(closes, 20),
-                            ema30: getLatestEMA(closes, 30),
-                            ema40: getLatestEMA(closes, 40),
-                            ema80: getLatestEMA(closes, 80)
+                if (canProceedWithDca) {
+                    // 使用精准的 0 延迟实时价格解析器
+                    const currentPrice = resolvePrice(position.symbol, this.realPrices, position.markPrice || position.entryPrice);
+                    
+                    // 从共享内存池中提取最新多周期 K线与 EMA 均线数据
+                    const targetTf = position.signalTf || '15m';
+                    const searchTfs = [targetTf, '1m', '5m', '15m'];
+                    let klines: any[] = [];
+                    for (const tf of searchTfs) {
+                        const list = klineMultiTfStore.getKlinesSync(position.symbol, tf, 10);
+                        if (list && list.length >= 5) {
+                            klines = list;
+                            break;
                         }
-                    };
-                } else {
-                    // ⚡【极速补仓增强】：K线未就绪时构建基础 klineData，保证实时 Tick 出现亏损时毫秒级秒下补仓单！
-                    klineData = {
-                        open: currentPrice,
-                        high: currentPrice,
-                        low: currentPrice,
-                        close: currentPrice,
-                        extremeLow: currentPrice,
-                        extremeHigh: currentPrice
-                    };
-                }
+                    }
+                    let klineData: any = undefined;
 
-                const dcaResult = checkDcaRules(position, this.settings, currentPrice, klineData);
-                
-                if (dcaResult.triggered && dcaResult.addAmountUsdt > 0) {
-                    const oldQty = position.amount;
-                    const oldPrice = position.entryPrice;
-                    const addQty = dcaResult.addAmountUsdt / currentPrice;
-                    const newAmount = oldQty + addQty;
-                    const newEntryPrice = dcaResult.newEntryPrice || ((oldQty * oldPrice + dcaResult.addAmountUsdt) / newAmount);
+                    if (klines && klines.length >= 5) {
+                        const lastCandle = klines[klines.length - 1];
+                        const closes = klines.map(k => k.close);
+                        if (closes.length > 0) closes[closes.length - 1] = currentPrice;
 
-                    const initialQty = position.initialAmount !== undefined ? position.initialAmount : oldQty;
-                    const initialPrice = position.initialEntryPrice || oldPrice;
-                    position.initialAmount = initialQty;
-                    position.initialEntryPrice = initialPrice;
-                    position.initialAmountUsdt = initialQty * initialPrice;
-                    const newDcaCount = (position.dcaCount || 0) + 1;
-                    position.amount = newAmount;
-                    position.entryPrice = newEntryPrice;
-                    position.dcaCount = newDcaCount;
-                    position.lastDcaAt = Date.now();
-                    position.lastDcaPrice = currentPrice;
+                        const relevantTime = Math.max(position.entryTime || 0, position.lastDcaAt || 0, position.lastRefillTime || 0);
+                        const recentCandles = klines.filter(k => (k.time || 0) >= (relevantTime - 60000));
+                        const extremeLow = recentCandles.length > 0 ? Math.min(...recentCandles.map(k => k.low), currentPrice) : currentPrice;
+                        const extremeHigh = recentCandles.length > 0 ? Math.max(...recentCandles.map(k => k.high), currentPrice) : currentPrice;
 
-                    // 📜 记录本次补仓的详细物理信号、原因与资金变动
-                    const newRecord = {
-                        id: `dca_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                        timestamp: Date.now(),
-                        count: newDcaCount,
-                        triggerMode: dcaResult.triggerMode || 'LOSS_PCT',
-                        triggerModeLabel: dcaResult.triggerModeLabel || '智能补仓',
-                        reason: dcaResult.reason,
-                        signalDetail: dcaResult.signalDetail || dcaResult.reason,
-                        addAmountUsdt: dcaResult.addAmountUsdt,
-                        price: currentPrice,
-                        oldEntryPrice: oldPrice,
-                        newEntryPrice: newEntryPrice,
-                        oldAmountTokens: oldQty,
-                        newAmountTokens: newAmount
-                    };
-
-                    position.dcaRecords = [...(position.dcaRecords || []), newRecord];
-
-                    // 实盘加仓动作分发
-                    if (this.settings.system?.realTrading && this.onRealOpen) {
-                        const qty = dcaResult.addAmountUsdt / currentPrice;
-                        this.onRealOpen(position, qty, `⚡ DCA 智能补仓 (第 ${newDcaCount} 次 | ${newRecord.triggerModeLabel})`);
+                        klineData = {
+                            open: lastCandle.open,
+                            high: Math.max(lastCandle.high, currentPrice),
+                            low: Math.min(lastCandle.low, currentPrice),
+                            close: currentPrice,
+                            extremeLow,
+                            extremeHigh,
+                            emaDetails: {
+                                ema10: getLatestEMA(closes, 10),
+                                ema20: getLatestEMA(closes, 20),
+                                ema30: getLatestEMA(closes, 30),
+                                ema40: getLatestEMA(closes, 40),
+                                ema80: getLatestEMA(closes, 80)
+                            }
+                        };
+                    } else {
+                        klineData = {
+                            open: currentPrice,
+                            high: currentPrice,
+                            low: currentPrice,
+                            close: currentPrice,
+                            extremeLow: currentPrice,
+                            extremeHigh: currentPrice
+                        };
                     }
 
-                    this.addLog('SUCCESS', `⚡ 智能补仓触发 [第 ${newDcaCount}/${this.settings.martingale?.maxCount ?? 2} 次 | ${newRecord.triggerModeLabel}]: ${position.symbol} | 信号: ${newRecord.signalDetail} | 加仓 $${dcaResult.addAmountUsdt.toFixed(1)} USDT @ $${currentPrice.toFixed(4)} | 均价: $${oldPrice.toFixed(4)} ➔ $${newEntryPrice.toFixed(4)}`);
-                    audioService.speak('智能补仓触发');
-                    actionTaken = true;
+                    const dcaResult = checkDcaRules(position, this.settings, currentPrice, klineData);
+                    
+                    if (dcaResult.triggered && dcaResult.addAmountUsdt > 0) {
+                        // 首次补仓竞争逻辑：如果在本轮 Tick 中有多个首次补仓触发，按最亏优先逻辑校验
+                        if (isFirstDca && maxCoins > 0) {
+                            // 检查全盘是否有比当前币种更亏且同样触发补仓的候选币
+                            const otherFirstDcaCandidates = this.positions.filter(p => 
+                                !p.isHedge && !p.isHedged && 
+                                (p.dcaCount || 0) === 0 && 
+                                p.entryId !== position.entryId
+                            );
+
+                            let hasWorseCandidate = false;
+                            const oldQty = position.amount;
+                            const oldPrice = position.entryPrice;
+                            const isLong = position.side === 'LONG';
+                            const myLossUsdt = Math.max(0, isLong ? (oldPrice - currentPrice) * oldQty : (currentPrice - oldPrice) * oldQty);
+                            const myLossPct = Math.max(0, isLong ? ((oldPrice - currentPrice) / oldPrice) * 100 : ((currentPrice - oldPrice) / oldPrice) * 100);
+
+                            for (const otherPos of otherFirstDcaCandidates) {
+                                const otherPrice = resolvePrice(otherPos.symbol, this.realPrices, otherPos.markPrice || otherPos.entryPrice);
+                                const otherRes = checkDcaRules(otherPos, this.settings, otherPrice, undefined);
+                                if (otherRes.triggered && otherRes.addAmountUsdt > 0) {
+                                    const otherQty = otherPos.amount;
+                                    const otherEntry = otherPos.entryPrice;
+                                    const otherIsLong = otherPos.side === 'LONG';
+                                    const otherLossUsdt = Math.max(0, otherIsLong ? (otherEntry - otherPrice) * otherQty : (otherPrice - otherEntry) * otherQty);
+                                    const otherLossPct = Math.max(0, otherIsLong ? ((otherEntry - otherPrice) / otherEntry) * 100 : ((otherPrice - otherEntry) / otherEntry) * 100);
+
+                                    if (priorityMetric === 'pnl_percent') {
+                                        if (otherLossPct > myLossPct) {
+                                            hasWorseCandidate = true;
+                                            break;
+                                        }
+                                    } else {
+                                        if (otherLossUsdt > myLossUsdt) {
+                                            hasWorseCandidate = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (hasWorseCandidate && availableSlots <= 1) {
+                                // 有比自己更亏的币种触发，让出配额
+                                const now = Date.now();
+                                const lastLogTime = (position as any)._lastDcaQueueLogTime || 0;
+                                if (now - lastLogTime > 30000) {
+                                    (position as any)._lastDcaQueueLogTime = now;
+                                    this.addLog(
+                                        'WARNING',
+                                        `⏳ 智能补仓避让: ${position.symbol} 已达补仓门槛，但有更亏的币种优先补仓，配额避让中`
+                                    );
+                                }
+                                canProceedWithDca = false;
+                            }
+                        }
+
+                        if (canProceedWithDca) {
+                            const oldQty = position.amount;
+                            const oldPrice = position.entryPrice;
+                            const addQty = dcaResult.addAmountUsdt / currentPrice;
+                            const newAmount = oldQty + addQty;
+                            const newEntryPrice = dcaResult.newEntryPrice || ((oldQty * oldPrice + dcaResult.addAmountUsdt) / newAmount);
+
+                            const initialQty = position.initialAmount !== undefined ? position.initialAmount : oldQty;
+                            const initialPrice = position.initialEntryPrice || oldPrice;
+                            position.initialAmount = initialQty;
+                            position.initialEntryPrice = initialPrice;
+                            position.initialAmountUsdt = initialQty * initialPrice;
+                            const newDcaCount = (position.dcaCount || 0) + 1;
+                            position.amount = newAmount;
+                            position.entryPrice = newEntryPrice;
+                            position.dcaCount = newDcaCount;
+                            position.lastDcaAt = Date.now();
+                            position.lastDcaPrice = currentPrice;
+
+                            // 📜 记录本次补仓的全维度物理信号、极值时间点与资金变动审计
+                            const isLongSide = position.side === 'LONG';
+                            const preRefillPnLPct = isLongSide 
+                                ? ((oldPrice - currentPrice) / oldPrice) * -100 
+                                : ((currentPrice - oldPrice) / oldPrice) * -100;
+                            const preRefillPnLUsdt = isLongSide 
+                                ? (currentPrice - oldPrice) * oldQty 
+                                : (oldPrice - currentPrice) * oldQty;
+
+                            const extPrice = position.lastDcaExtremePrice || position.dcaExtremePrice || currentPrice;
+                            const extTimeMs = position.dcaExtremeTime || Date.now();
+                            const nowMs = Date.now();
+                            const extTimeStr = new Date(extTimeMs).toLocaleTimeString('zh-CN', { hour12: false });
+                            const execTimeStr = new Date(nowMs).toLocaleTimeString('zh-CN', { hour12: false });
+
+                            const pullbackPct = isLongSide 
+                                ? (extPrice > 0 ? ((currentPrice - extPrice) / extPrice) * 100 : 0) 
+                                : (extPrice > 0 ? ((extPrice - currentPrice) / extPrice) * 100 : 0);
+
+                            const postRefillPnLPct = isLongSide 
+                                ? ((newEntryPrice - currentPrice) / newEntryPrice) * -100 
+                                : ((currentPrice - newEntryPrice) / newEntryPrice) * -100;
+                            const postRefillPnLUsdt = preRefillPnLUsdt;
+
+                            const newRecord = {
+                                id: `dca_${nowMs}_${Math.random().toString(36).substring(2, 7)}`,
+                                timestamp: nowMs,
+                                count: newDcaCount,
+                                triggerMode: dcaResult.triggerMode || 'LOSS_PCT',
+                                triggerModeLabel: dcaResult.triggerModeLabel || '智能补仓',
+                                reason: dcaResult.reason,
+                                signalDetail: dcaResult.signalDetail || dcaResult.reason,
+                                addAmountUsdt: dcaResult.addAmountUsdt,
+                                price: currentPrice,
+                                executionTimeStr: execTimeStr,
+                                oldEntryPrice: oldPrice,
+                                newEntryPrice: newEntryPrice,
+                                oldAmountTokens: oldQty,
+                                newAmountTokens: newAmount,
+                                preRefillPnLPct,
+                                preRefillPnLUsdt,
+                                extremePrice: extPrice,
+                                extremeTimeStr: extTimeStr,
+                                pullbackPct,
+                                postRefillPnLPct,
+                                postRefillPnLUsdt
+                            };
+
+                            position.dcaRecords = [...(position.dcaRecords || []), newRecord];
+
+                            // 📜 实时生成并压入交易日志表独立补仓流水记录 (显示在历史流水/交易日志列表中)
+                            const dcaLogEntry: TradeLog = {
+                                symbol: position.symbol,
+                                entry_id: `${position.entryId || position.symbol}_dca_${nowMs}`,
+                                parent_entry_id: position.entryId,
+                                status: 'OPEN',
+                                is_hedge: false,
+                                entry_timestamp: nowMs,
+                                direction: position.side,
+                                cost_usdt: dcaResult.addAmountUsdt,
+                                entry_price: currentPrice,
+                                current_amount: addQty,
+                                timeframe: position.signalTf || '5m',
+                                exit_reason: `智能补仓 (第 ${newDcaCount} 次 | ${newRecord.triggerModeLabel})`,
+                                dcaRecords: [newRecord],
+                                events: [{
+                                    timestamp: nowMs,
+                                    action: '原仓位补仓',
+                                    price: currentPrice,
+                                    amount: addQty,
+                                    reason: `DCA 智能补仓 (第 ${newDcaCount} 次 | ${newRecord.triggerModeLabel})`,
+                                    preRefillPnLPct,
+                                    preRefillPnLUsdt,
+                                    extremePrice: extPrice,
+                                    extremeTimeStr: extTimeStr,
+                                    executionTimeStr: execTimeStr,
+                                    pullbackPct,
+                                    postRefillPnLPct,
+                                    postRefillPnLUsdt,
+                                    newEntryPrice
+                                }]
+                            };
+                            this.tradeLogs.unshift(dcaLogEntry);
+
+                            // 记录生命周期全过程审计事件
+                            this.addTradeEvent(
+                                position, 
+                                '原仓位补仓', 
+                                currentPrice, 
+                                addQty, 
+                                `DCA 智能补仓 (第 ${newDcaCount} 次 | ${newRecord.triggerModeLabel})`, 
+                                undefined, 
+                                {
+                                    preRefillPnLPct,
+                                    preRefillPnLUsdt,
+                                    extremePrice: extPrice,
+                                    extremeTimeStr: extTimeStr,
+                                    executionTimeStr: execTimeStr,
+                                    pullbackPct,
+                                    postRefillPnLPct,
+                                    postRefillPnLUsdt,
+                                    newEntryPrice
+                                }
+                            );
+
+                            // 实盘加仓动作分发
+                            if (this.settings.system?.realTrading && this.onRealOpen) {
+                                const qty = dcaResult.addAmountUsdt / currentPrice;
+                                this.onRealOpen(position, qty, `⚡ DCA 智能补仓 (第 ${newDcaCount} 次 | ${newRecord.triggerModeLabel})`);
+                            }
+
+                            const maxLimitTag = maxCoins > 0 ? ` | 全盘控数: ${currentAddingCount + 1}/${maxCoins}` : '';
+                            this.addLog('SUCCESS', `⚡ 智能补仓触发 [第 ${newDcaCount}/${this.settings.martingale?.maxCount ?? 2} 次${maxLimitTag} | ${newRecord.triggerModeLabel}]: ${position.symbol} | 亏损: ${preRefillPnLPct.toFixed(2)}% ($${preRefillPnLUsdt.toFixed(2)} U) | 极值: $${extPrice.toFixed(4)} [${extTimeStr}] (反弹 ${pullbackPct.toFixed(2)}%) | 补仓价 $${currentPrice.toFixed(4)} [${execTimeStr}] | 均价: $${oldPrice.toFixed(4)} ➔ $${newEntryPrice.toFixed(4)} (亏损拉低至 ${postRefillPnLPct.toFixed(2)}%)`);
+                            audioService.speak('智能补仓触发');
+                            actionTaken = true;
+                        }
+                    }
                 }
             }
 
@@ -4570,12 +4829,26 @@ export class MarketSimulator {
         if (this.pendingUpdate) return;
         
         const now = Date.now();
-        const throttleMs = 100; // UI 刷新节流：100ms (Reduced for better sync)
+        const throttleMs = 300; // UI 刷新节流：300ms (防止多持仓密集 re-render 打爆主线程)
         
         const doUpdate = () => {
             this.pendingUpdate = false;
             this.lastEmitTime = Date.now();
             
+            const posList = this.getPositions();
+
+            // ⚡ 全局 O(1) 持仓 Set 实时同步，供 List 1 / List 2 / List 3 秒级检索
+            try {
+                const activeSet = new Set<string>();
+                for (let i = 0; i < posList.length; i++) {
+                    const p = posList[i];
+                    if (p && p.symbol) {
+                        activeSet.add(normalizeSymbol(p.symbol));
+                    }
+                }
+                (window as any).ACTIVE_POSITIONS_SET = activeSet;
+            } catch (_) {}
+
             if (this.updateCallback) {
                 // 限制发送到 UI 的日志数量，减少序列化压力
                 const limitedTradeLogs = this.tradeLogs.slice(0, 2000);
@@ -4583,7 +4856,7 @@ export class MarketSimulator {
 
                 this.updateCallback(
                     { ...this.account },
-                    this.getPositions(),
+                    posList,
                     limitedLogs,
                     null,
                     limitedTradeLogs,

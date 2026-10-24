@@ -10,6 +10,7 @@ import { PositionSettingsModal } from './components/PositionSettingsModal';
 import { AddPositionModal } from './components/AddPositionModal';
 import { SyncControlDropdown } from './components/SyncControlDropdown';
 import { DcaInlineCard } from './components/DcaControlDropdown';
+import { ReopenInlineCard } from './components/ReopenControlDropdown';
 import { usePositionsListLogic } from './usePositionsListLogic';
 import { binanceWs } from '../../services/binanceWs';
 import { audioService } from '../../services/audioService';
@@ -52,6 +53,33 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const [isPinLocked, setIsPinLocked] = useState(false);
     const [isManualSyncing, setIsManualSyncing] = useState(false);
     const [isDcaOpen, setIsDcaOpen] = useState(false);
+    const [isReopenOpen, setIsReopenOpen] = useState(false);
+    const [isReopenEnabled, setIsReopenEnabled] = useState<boolean>(() => {
+        if (typeof window !== 'undefined' && window.localStorage) {
+            try {
+                const raw = localStorage.getItem('SCANNER_ACTION_CONFIG');
+                if (raw) return !!JSON.parse(raw).autoReopenEnabled;
+            } catch (e) {}
+        }
+        return false;
+    });
+
+    useEffect(() => {
+        const checkReopenStatus = () => {
+            if (typeof window !== 'undefined' && window.localStorage) {
+                try {
+                    const raw = localStorage.getItem('SCANNER_ACTION_CONFIG');
+                    if (raw) setIsReopenEnabled(!!JSON.parse(raw).autoReopenEnabled);
+                } catch (e) {}
+            }
+        };
+        window.addEventListener('storage', checkReopenStatus);
+        window.addEventListener('scanner_action_config_updated', checkReopenStatus as EventListener);
+        return () => {
+            window.removeEventListener('storage', checkReopenStatus);
+            window.removeEventListener('scanner_action_config_updated', checkReopenStatus as EventListener);
+        };
+    }, []);
     const [syncTip, setSyncTip] = useState<string | null>(null);
     const confirmTimeoutRef = React.useRef<any>(null);
     const confirmRecordsTimeoutRef = React.useRef<any>(null);
@@ -285,7 +313,10 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                             />
                             {/* ⚡ 智能补仓 / DCA 策略控制入口 (位于当前持仓下方展开) */}
                             <button
-                                onClick={() => setIsDcaOpen(!isDcaOpen)}
+                                onClick={() => {
+                                    setIsDcaOpen(!isDcaOpen);
+                                    if (!isDcaOpen) setIsReopenOpen(false);
+                                }}
                                 className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 border shadow-sm ${
                                     isDcaOpen || settings?.martingale?.enabled
                                         ? 'bg-amber-950/40 text-amber-300 border-amber-500/40 hover:bg-amber-900/50 hover:border-amber-400 font-extrabold'
@@ -296,6 +327,24 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                                 <Zap size={13} className={settings?.martingale?.enabled ? 'text-amber-400 fill-amber-400 animate-pulse' : 'text-slate-500'} />
                                 <span>智能补仓 (DCA)</span>
                                 <span className={`w-1.5 h-1.5 rounded-full ${settings?.martingale?.enabled ? 'bg-amber-400 animate-ping' : 'bg-slate-600'}`} />
+                            </button>
+
+                            {/* 🔄 平仓自动复开 / Reopen 策略控制入口 (位于“智能补仓”正右侧) */}
+                            <button
+                                onClick={() => {
+                                    setIsReopenOpen(!isReopenOpen);
+                                    if (!isReopenOpen) setIsDcaOpen(false);
+                                }}
+                                className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 border shadow-sm ${
+                                    isReopenOpen || isReopenEnabled
+                                        ? 'bg-indigo-950/40 text-indigo-300 border-indigo-500/40 hover:bg-indigo-900/50 hover:border-indigo-400 font-extrabold'
+                                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800/80'
+                                }`}
+                                title="点击在当前持仓正下方展开/收起 平仓后自动复开 (Reopen) 策略控制面板"
+                            >
+                                <RefreshCw size={13} className={isReopenEnabled ? 'text-indigo-400 animate-spin-slow' : 'text-slate-500'} />
+                                <span>自动复开 (Reopen)</span>
+                                <span className={`w-1.5 h-1.5 rounded-full ${isReopenEnabled ? 'bg-indigo-400 animate-ping' : 'bg-slate-600'}`} />
                             </button>
                         </>
                     )}
@@ -685,6 +734,15 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                         realPrices={realPrices}
                         onManualDca={onManualRefill}
                         onClose={() => setIsDcaOpen(false)}
+                    />
+                </div>
+            )}
+
+            {/* 🔄 平仓后自动复开 / Reopen 策略参数控制面板 (嵌入在当前持仓列表正下方) */}
+            {isReopenOpen && (
+                <div className="p-3 bg-[#0a0d12] border-t border-indigo-500/40 border-b border-slate-800 animate-in slide-in-from-top-2 duration-150">
+                    <ReopenInlineCard 
+                        onClose={() => setIsReopenOpen(false)}
                     />
                 </div>
             )}

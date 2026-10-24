@@ -28,8 +28,8 @@ export const TradeDnaList: React.FC<Props> = ({ isLoading, dnaList }) => {
 
     return (
         <div className="grid grid-cols-1 gap-3">
-            {dnaList.map((dna) => (
-                <div key={dna.id} className="bg-slate-900/50 border border-slate-800 rounded-lg p-3 hover:border-purple-500/30 transition-all group">
+            {dnaList.map((dna, idx) => (
+                <div key={`${dna.id || 'dna'}-${idx}`} className="bg-slate-900/50 border border-slate-800 rounded-lg p-3 hover:border-purple-500/30 transition-all group">
                     <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-3">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${dna.side === 'LONG' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>

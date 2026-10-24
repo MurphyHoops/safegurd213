@@ -74,6 +74,13 @@ export const GrandCrossingModule: React.FC<Props> = ({
         }
     }, [removeSignal]);
 
+    // ⚡ [全域缓存总线联动]: 实时同步列表2勾选周期给全局中央缓存引擎
+    useEffect(() => {
+        if (typeof window !== 'undefined' && config?.timeframes && config.timeframes.length > 0) {
+            (window as any).SAVIOR_LIST2_ACTIVE_TIMEFRAMES = config.timeframes;
+        }
+    }, [config?.timeframes]);
+
     // Active open position symbols for position standby buffer
     const openPositionSymbols = React.useMemo(() => {
         const set = new Set<string>();

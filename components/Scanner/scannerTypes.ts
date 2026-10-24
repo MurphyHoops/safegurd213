@@ -238,6 +238,7 @@ export interface List2Config {
     consecutiveVolBars?: number;          // 新增：龙抬头连续放量递增根数（默认2根）
     viewMode?: 'ALL' | 'LONG' | 'SHORT';
     syncDirectionFilterToList3?: boolean;
+    isStopped?: boolean;
 }
 
 export interface List3Config {

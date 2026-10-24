@@ -175,8 +175,8 @@ const HedgeHistoryModal: React.FC<Props> = ({ symbol, records, tradeLogs, onClos
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800">
-                            {symbolRecords.map((record) => (
-                                <tr key={record.id} className="hover:bg-slate-800/30 transition-colors group">
+                            {symbolRecords.map((record, idx) => (
+                                <tr key={`${record.id || 'rec'}-${idx}`} className="hover:bg-slate-800/30 transition-colors group">
                                     <td className="px-4 py-3 font-mono text-xs whitespace-nowrap text-slate-300">
                                         <div className="flex items-center gap-1">
                                             <Clock size={12}/>

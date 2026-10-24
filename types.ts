@@ -112,6 +112,8 @@ export interface Position {
     initialAmountUsdt?: number; // 初始开仓金额(USDT)
     initialEntryPrice?: number; // 初始开仓基准价
     dcaExtremePrice?: number; // 📉 智能补仓专用的极值追踪（用于计算回调/反弹确认）
+    dcaExtremeTime?: number; // ⏰ 智能补仓极值价格发生的时间戳 (精确到毫秒)
+    lastDcaExtremePrice?: number; // 🔒 上次补仓生效时的历史极点 (用于二次/多次补仓核验 D < B 突破规则)
     dcaRecords?: DcaRecord[]; // 📜 智能补仓历史记录与信号详情
 }
 
@@ -124,11 +126,19 @@ export interface DcaRecord {
     reason: string; // 补仓触发总结
     signalDetail: string; // 补仓触发物理信号明细
     addAmountUsdt: number; // 本次补仓金额 USDT
-    price: number; // 补仓价格
-    oldEntryPrice: number; // 补仓前均价
-    newEntryPrice: number; // 补仓后新均价
+    price: number; // 补仓成交价格
+    executionTimeStr?: string; // 补仓成交时间 (精确到秒, HH:mm:ss)
+    oldEntryPrice: number; // 补仓前持仓均价
+    newEntryPrice: number; // 补仓后新持仓均价
     oldAmountTokens?: number;
     newAmountTokens?: number;
+    preRefillPnLPct?: number; // 补仓前亏损值 % (如 -3.50%)
+    preRefillPnLUsdt?: number; // 补仓前亏损金额 USDT (如 -15.20 U)
+    extremePrice?: number; // 触底/触顶极值价格 (最低价/最高价)
+    extremeTimeStr?: string; // 极值发生时间 (精确到秒, HH:mm:ss)
+    pullbackPct?: number; // 从极值的回调/反弹值 % (如 +0.55%)
+    postRefillPnLPct?: number; // 补仓后新持仓亏损值 % (如 -1.82%)
+    postRefillPnLUsdt?: number; // 补仓后新持仓亏损金额 USDT (如 -15.20 U)
 }
 
 export type LogCategory = 'ALL' | 'AUTO' | 'MANUAL' | 'HEDGE' | 'PNL' | 'ERROR';
@@ -169,6 +179,17 @@ export interface TradeEvent {
     amount: number;
     reason: string;
     pnl?: number;
+    preRefillPnLPct?: number;
+    preRefillPnLUsdt?: number;
+    extremePrice?: number;
+    extremeTimeStr?: string;
+    executionTimeStr?: string;
+    pullbackPct?: number;
+    targetCallbackPercent?: number;
+    callbackPercent?: number;
+    postRefillPnLPct?: number;
+    postRefillPnLUsdt?: number;
+    newEntryPrice?: number;
 }
 
 export interface TradeLog {
@@ -421,6 +442,10 @@ export interface MartingaleSettings {
     // 4. 出局与联动
     breakevenTakeProfitPercent?: number; // 补仓后新均价微利解套止盈 % (如 0.5%)
     dynamicHedgeShiftEnabled?: boolean; // 补仓后按新均价重算防爆对冲点
+
+    // 5. 最亏优先与全盘配额风控限制
+    maxAddingCoinsCount?: number; // 允许同时补仓的最大币种数 (0 表示不限制, 如 5 表示全盘最多同时 5 个币补仓)
+    addPriorityMetric?: 'pnl_usdt' | 'pnl_percent'; // 补仓优先竞逐标准: 'pnl_usdt' (浮亏金额最大优先) | 'pnl_percent' (真实跌幅比例最大优先)
 }
 
 export interface SystemSettings {

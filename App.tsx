@@ -21,6 +21,7 @@ import { usePersistedState } from './hooks/usePersistedState';
 import { binanceWs } from './services/binanceWs';
 import { normalizeSymbol, resolvePrice, isMajorCoin, isMemeScaledCoin } from './services/symbolUtils';
 import { priceRegistry } from './services/priceRegistry';
+import { browserKeepAlive } from './services/browserKeepAlive';
 import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
 import { IpChangeAlertModal, IpChangeAlertData } from './components/IpChangeAlertModal';
@@ -193,6 +194,20 @@ const AppContent: React.FC = () => {
         return [...positions, ...backtestPositions].filter(p => p && (p.amount || 0) > 0.0001 && !p.isAmputatedToZero && !p.isBeingClosed);
     }, [settings.system.realTrading, positions, backtestPositions]);
 
+    // ⚡ 全局持仓 Set 同步供全系统 O(1) 检索
+    useEffect(() => {
+        try {
+            const set = new Set<string>();
+            for (let i = 0; i < combinedPositions.length; i++) {
+                const p = combinedPositions[i];
+                if (p && p.symbol) {
+                    set.add(normalizeSymbol(p.symbol));
+                }
+            }
+            (window as any).ACTIVE_POSITIONS_SET = set;
+        } catch (_) {}
+    }, [combinedPositions]);
+
     const logsPendingRef = useRef<LogEntry[]>([]);
     const lastLogUpdateRef = useRef<number>(0);
     const logBufferTimerRef = useRef<any>(null);
@@ -307,10 +322,11 @@ const AppContent: React.FC = () => {
         }
     }, [updateLogsFromBuffer, streamLogToDisk]);
 
-    // 🔒 @LOCKED: 币安全域请求与响应中文日志审计注册（零遗漏即时推送到系统日志）
+    // 🔒 @LOCKED: 币安全域请求与响应中文日志审计注册与浏览器专属防挂起保活启动
     useEffect(() => {
         setBinanceLogSink(handleLog);
         installBinanceFetchInterceptor();
+        browserKeepAlive.init();
     }, [handleLog]);
 
     // 补偿定时器：确保即便没有新日志进入，最后的缓冲日志也能被刷新

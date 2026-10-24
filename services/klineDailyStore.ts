@@ -55,6 +55,7 @@ class KlineDailyStore {
     private tickerMemoryMap = new Map<string, CachedTickerEntry>();
     private rawTickersList: any[] = [];
     private shortlistTfMemoryMap = new Map<string, CachedShortlistTfEntry>();
+    private lastTickerPurgeTime = 0;
     private isSyncingDaily = false;
     private lastDailySyncTime = 0;
     private dailyScheduleTimer: any = null;
@@ -141,23 +142,24 @@ class KlineDailyStore {
                     };
                 }
 
-                // 2. 预热 24 小时全量行情广播数据
+                // 2. 预热 24 小时全量行情广播数据 (严格限定 1 分钟内的最新推送)
                 if (this.db.objectStoreNames.contains(STORE_TICKERS)) {
                     const txTickers = this.db.transaction(STORE_TICKERS, 'readonly');
                     const tickerStore = txTickers.objectStore(STORE_TICKERS);
                     const reqTickers = tickerStore.getAll();
                     reqTickers.onsuccess = () => {
                         const tickers: CachedTickerEntry[] = reqTickers.result || [];
+                        const now = Date.now();
                         if (tickers.length > 0) {
                             const rawList: any[] = [];
                             tickers.forEach(t => {
-                                if (t && t.symbol) {
+                                if (t && t.symbol && (now - (t.timestamp || 0) < 60000)) {
                                     this.tickerMemoryMap.set(t.symbol, t);
                                     rawList.push(t);
                                 }
                             });
                             this.rawTickersList = rawList;
-                            console.log(`[KlineDailyStore] 成功预热载入 ${tickers.length} 个币种的 24H 实时行情总线快照！`);
+                            console.log(`[KlineDailyStore] 成功预热载入 ${rawList.length} 个币种的 24H 实时行情快照 (1分钟滚动窗口)！`);
                         }
                     };
                 }
@@ -251,11 +253,10 @@ class KlineDailyStore {
         const norm = this.normalizeSym(symbol);
         const now = Date.now();
 
-        // 1. 检查类内部缓存
+        // 1. 检查类内部缓存 (本地数据库只要有 >=30 根有效日K即视为完整有效数据，杜绝无意义网络穿透)
         const entry = this.memoryMap.get(norm) || this.memoryMap.get(symbol);
-        if (entry && (now - entry.timestamp < CACHE_VALIDITY_1D) && Array.isArray(entry.klines)) {
-            // 如果请求的是大回溯（>=200根），必须保证K线长度充足或真实上市不足
-            if (entry.klines.length >= minRequiredLength || (entry.isListingEnd && entry.klines.length >= 30)) {
+        if (entry && (now - entry.timestamp < CACHE_VALIDITY_1D) && Array.isArray(entry.klines) && entry.klines.length > 0) {
+            if (entry.klines.length >= minRequiredLength || entry.klines.length >= 30 || entry.isListingEnd) {
                 return entry.klines;
             }
             if (minRequiredLength < 30 && entry.klines.length >= minRequiredLength) {
@@ -279,8 +280,8 @@ class KlineDailyStore {
                 ];
 
                 for (const cand of candidates) {
-                    if (Array.isArray(cand)) {
-                        if (cand.length >= minRequiredLength || (entry && entry.isListingEnd && cand.length >= 30)) {
+                    if (Array.isArray(cand) && cand.length > 0) {
+                        if (cand.length >= minRequiredLength || cand.length >= 30 || (entry && entry.isListingEnd)) {
                             return cand;
                         }
                         if (minRequiredLength < 30 && cand.length >= minRequiredLength) {
@@ -391,12 +392,22 @@ class KlineDailyStore {
             rawList.push(entry);
         });
 
+        // 🔒 [1分钟滑动窗口自动熔断与垃圾回收]: 
+        // 接收到广播传来的推送数据只保留1分钟，自动循环更新，1分钟以前的数据自动删除，防止撑死浏览器
+        if (now - this.lastTickerPurgeTime > 15000) {
+            this.lastTickerPurgeTime = now;
+            for (const [key, entry] of Array.from(this.tickerMemoryMap.entries())) {
+                if (now - entry.timestamp > 60000) {
+                    this.tickerMemoryMap.delete(key);
+                }
+            }
+        }
+
         // 🔒 [全量增量无缝防蒸发铁律]: 
-        // 增量更新内存 Map 中已存在的币种；当传入的是局部/分片 WS 推送时，
-        // rawTickersList 必须基于 tickerMemoryMap 保留全量约 350+ 币种，绝不因局部增量推送而覆盖清空全量池！
+        // 基于 tickerMemoryMap 保留 1 分钟内的有效行情，绝不无限堆积旧历史数据！
         const uniqueEntries = new Map<string, CachedTickerEntry>();
         this.tickerMemoryMap.forEach(v => {
-            if (v && v.symbol) {
+            if (v && v.symbol && (now - v.timestamp <= 60000)) {
                 uniqueEntries.set(v.symbol, v);
             }
         });
@@ -408,11 +419,20 @@ class KlineDailyStore {
                 this.tickerSaveTimer = null;
                 if (!this.db || this.pendingTickerSaves.length === 0) return;
                 try {
-                    const toSave = [...this.pendingTickerSaves];
+                    // 仅保留每个币种最新一条记录，避免大量重复冗余写入 IndexedDB
+                    const uniqueToSave = new Map<string, CachedTickerEntry>();
+                    this.pendingTickerSaves.forEach(item => uniqueToSave.set(item.symbol, item));
                     this.pendingTickerSaves = [];
+                    const curTime = Date.now();
                     const tx = this.db.transaction(STORE_TICKERS, 'readwrite');
                     const store = tx.objectStore(STORE_TICKERS);
-                    toSave.forEach(item => store.put(item));
+                    uniqueToSave.forEach(item => {
+                        if (curTime - item.timestamp < 60000) {
+                            store.put(item);
+                        } else {
+                            store.delete(item.symbol);
+                        }
+                    });
                 } catch (e) {
                     console.warn('[KlineDailyStore] Failed to persist 24h tickers to IndexedDB:', e);
                 }
@@ -467,8 +487,10 @@ class KlineDailyStore {
                 this.shortlistSaveTimer = null;
                 if (!this.db || this.pendingShortlistSaves.length === 0) return;
                 try {
-                    const toSave = [...this.pendingShortlistSaves];
+                    const uniqueMap = new Map<string, CachedShortlistTfEntry>();
+                    this.pendingShortlistSaves.forEach(item => uniqueMap.set(item.key, item));
                     this.pendingShortlistSaves = [];
+                    const toSave = Array.from(uniqueMap.values());
                     const tx = this.db.transaction(STORE_SHORTLIST_TF, 'readwrite');
                     const store = tx.objectStore(STORE_SHORTLIST_TF);
                     toSave.forEach(item => store.put(item));
@@ -498,20 +520,45 @@ class KlineDailyStore {
     }
 
     /**
-     * 批量自动拉取初筛币 12 个周期的 300 根基线 K 线 (仅针对初筛通过币种执行)
+     * 获取当前列表2激活的K线周期（杜绝盲目拉取全量12个周期）
+     */
+    public getActiveList2Timeframes(): string[] {
+        if (typeof window !== 'undefined') {
+            const winTfs = (window as any).SAVIOR_LIST2_ACTIVE_TIMEFRAMES;
+            if (Array.isArray(winTfs) && winTfs.length > 0) return winTfs;
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (k && k.startsWith('SCANNER_LIST2_CONFIG')) {
+                        const parsed = JSON.parse(localStorage.getItem(k) || '{}');
+                        if (Array.isArray(parsed?.timeframes) && parsed.timeframes.length > 0) {
+                            return parsed.timeframes;
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+        return ['15m'];
+    }
+
+    /**
+     * 批量自动拉取初筛币在列表2所选周期的 300 根基线 K 线 (仅针对初筛通过币种执行)
      */
     public async syncShortlistMultiTfKlines(
         symbols: string[],
-        timeframes: string[] = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'],
+        timeframes?: string[],
         limit: number = 300
     ): Promise<void> {
         const uniqueSymbols = Array.from(new Set(symbols.map(s => this.normalizeSym(s)).filter(Boolean)));
         if (uniqueSymbols.length === 0) return;
 
+        // 严格锁定为列表2所选周期（以前是盲目拉取12个周期，现在仅根据列表2所需拉取）
+        const targetTfs = (timeframes && timeframes.length > 0) ? timeframes : this.getActiveList2Timeframes();
+
         // 仅抓取未缓存或已陈旧的周期
         const tasks: { sym: string; tf: string }[] = [];
         for (const sym of uniqueSymbols) {
-            for (const tf of timeframes) {
+            for (const tf of targetTfs) {
                 const existing = this.getShortlistKlineSync(sym, tf, 200);
                 if (!existing || existing.length < 200) {
                     tasks.push({ sym, tf });
@@ -529,6 +576,19 @@ class KlineDailyStore {
                 try {
                     const safeSym = sym.endsWith('USDT') ? sym : `${sym}USDT`;
                     let data: any = null;
+
+                    // 若目标周期可以通过 5m 本地合成（如 10m, 15m, 30m, 60m/1h）且已有 5m 数据，则 0ms 本地瞬时合成
+                    const targetMinutes = tf === '10m' ? 10 : tf === '15m' ? 15 : tf === '30m' ? 30 : (tf === '1h' || tf === '60m') ? 60 : 0;
+                    if (targetMinutes > 0) {
+                        const klines5m = this.getShortlistKlineSync(safeSym, '5m', 100);
+                        if (klines5m && klines5m.length >= 100) {
+                            const synth = KLineSynthesizer.synthesizeFrom5mRaw(klines5m, targetMinutes);
+                            if (synth && synth.length >= 20) {
+                                this.saveShortlistMultiTfKlines(safeSym, tf, synth);
+                                return;
+                            }
+                        }
+                    }
 
                     if (tf === '10m') {
                         // 基于 5m K线合成 10m
@@ -552,15 +612,7 @@ class KlineDailyStore {
                         }
 
                         if (Array.isArray(source5m) && source5m.length > 0) {
-                            const formatted5m = source5m.map((k: any) => ({
-                                time: Number(k.time || k[0]),
-                                open: parseFloat(k.open || k[1]) || 0,
-                                high: parseFloat(k.high || k[2]) || 0,
-                                low: parseFloat(k.low || k[3]) || 0,
-                                close: parseFloat(k.close || k[4]) || 0,
-                                volume: parseFloat(k.volume || k[5]) || 0,
-                            }));
-                            const synth10m = KLineSynthesizer.synthesize(formatted5m, 10);
+                            const synth10m = KLineSynthesizer.synthesizeFrom5mRaw(source5m, 10);
                             if (synth10m.length > 0) {
                                 this.saveShortlistMultiTfKlines(safeSym, '10m', synth10m);
                             }
@@ -586,6 +638,46 @@ class KlineDailyStore {
                 } catch (_) {}
             }));
             await new Promise(r => setTimeout(r, 40));
+        }
+    }
+
+    /**
+     * 🛡️ [退池即焚 (Purge on Eviction)]:
+     * 当初筛币种淘汰或未再入选初筛时，立即从内存 Map 及 IndexedDB 中彻底焚毁其多周期 K 线缓存
+     */
+    public evictStaleCandidates(activeSymbols: string[]): void {
+        if (!activeSymbols) return;
+        const activeNormSet = new Set(
+            activeSymbols.map(s => this.normalizeSym(s)).filter(Boolean)
+        );
+
+        const keysToDelete: string[] = [];
+        const symbolsToEvict: string[] = [];
+
+        for (const [key, entry] of this.shortlistTfMemoryMap.entries()) {
+            const symNorm = this.normalizeSym(entry.symbol);
+            if (!activeNormSet.has(symNorm)) {
+                keysToDelete.push(key);
+                symbolsToEvict.push(entry.symbol);
+            }
+        }
+
+        for (const k of keysToDelete) {
+            this.shortlistTfMemoryMap.delete(k);
+        }
+
+        // 同步通知 klineMultiTfStore 焚毁多周期缓存
+        if (symbolsToEvict.length > 0) {
+            klineMultiTfStore.evictSymbols(symbolsToEvict);
+        }
+
+        // 异步从 IndexedDB 中删除
+        if (this.db && keysToDelete.length > 0) {
+            try {
+                const tx = this.db.transaction(STORE_SHORTLIST_TF, 'readwrite');
+                const store = tx.objectStore(STORE_SHORTLIST_TF);
+                keysToDelete.forEach(k => store.delete(k));
+            } catch (_) {}
         }
     }
 

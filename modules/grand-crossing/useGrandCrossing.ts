@@ -1686,6 +1686,7 @@ export const useGrandCrossing = (
     binanceKlineWs.syncSubscriptions(pairs);
 
     const unsubscribe = binanceKlineWs.addListener((update: WsKlineUpdate) => {
+      if (configRef.current.isStopped) return;
       const { symbol, tf, time, open, high, low, close, volume } = update;
       const normSym = normalizeSymbol(symbol);
       const safeSym = formatToBinanceSymbol(symbol);
@@ -1760,6 +1761,7 @@ export const useGrandCrossing = (
     isRetry: boolean = false,
     isPrefetch: boolean = false,
   ) => {
+    if (configRef.current.isStopped) return;
     const normSym = normalizeSymbol(symbol);
     const candidateItem = candidatesRef.current.find(
       (c) => normalizeSymbol(c.symbol) === normSym,
@@ -1800,7 +1802,7 @@ export const useGrandCrossing = (
   // ⚡ [Instant Prefetch 瞬时高并发保底预热流水线]: 
   // 当列表1产生候选币时，采用小周期优先 + 差量去重并发预热，绝不粗暴中断已在进行的任务
   const prefetchCandidates = useCallback(async (currentCandidates: ScannerItem[]) => {
-    if (!currentCandidates || currentCandidates.length === 0) return;
+    if (!currentCandidates || currentCandidates.length === 0 || configRef.current.isStopped) return;
 
     const activeTfs = (configRef.current.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
     if (activeTfs.length === 0) return;
@@ -1885,6 +1887,13 @@ export const useGrandCrossing = (
 
       while (isRunning) {
         try {
+          if (configRef.current.isStopped) {
+            if (status !== 'IDLE') setStatus('IDLE');
+            setScanText('已停止运行');
+            await delay(1000);
+            continue;
+          }
+
           const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
           const candidates = sortedCandidatesRef.current || [];
 

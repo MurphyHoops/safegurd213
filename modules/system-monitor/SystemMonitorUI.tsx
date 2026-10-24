@@ -570,8 +570,8 @@ export const SystemMonitorModule: React.FC = () => {
                             <p>监听中...</p>
                         </div>
                     ) : (
-                        logs.map(log => (
-                            <div key={log.id} className="group border-b border-slate-800/30 pb-0.5 last:border-0 hover:bg-slate-800/30 px-1 rounded transition-colors">
+                        logs.map((log, idx) => (
+                            <div key={`log-${log.id || idx}-${idx}`} className="group border-b border-slate-800/30 pb-0.5 last:border-0 hover:bg-slate-800/30 px-1 rounded transition-colors">
                                 <div className="flex items-start gap-1.5">
                                     <span className="text-[8px] text-slate-600 mt-0.5 shrink-0">
                                         {safeFormatTime(log.timestamp)}
@@ -636,11 +636,11 @@ export const SystemMonitorModule: React.FC = () => {
                             </button>
                         </div>
                     ) : (
-                        crashEntries.map(entry => {
+                        crashEntries.map((entry, idx) => {
                             const badge = getCrashTypeBadge(entry.type);
                             const isExpanded = expandedCrashId === entry.id;
                             return (
-                                <div key={entry.id} className="border border-slate-800 rounded bg-slate-900/60 p-2 space-y-1 hover:border-slate-700 transition-colors">
+                                <div key={`crash-${entry.id || idx}-${idx}`} className="border border-slate-800 rounded bg-slate-900/60 p-2 space-y-1 hover:border-slate-700 transition-colors">
                                     <div className="flex items-start justify-between gap-1">
                                         <div className="flex items-center gap-1.5 flex-wrap">
                                             <span className={`px-1.5 py-0.2 rounded border text-[8px] font-bold ${badge.bg}`}>

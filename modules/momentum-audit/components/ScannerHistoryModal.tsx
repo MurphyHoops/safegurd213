@@ -807,8 +807,8 @@ export const ScannerHistoryModal: React.FC<HistoryModalProps> = ({ onClose, list
                             {searchQuery ? '未搜索到匹配的币种历史记录' : '暂无历史记录'}
                         </div>
                     ) : (
-                        filteredRecords.map(r => (
-                            <div key={r.id} className="bg-slate-800/80 hover:bg-slate-800 p-3 rounded text-[10px] text-slate-300 border border-slate-700/60 transition-colors">
+                        filteredRecords.map((r, idx) => (
+                            <div key={`${r.id || 'hist'}-${idx}`} className="bg-slate-800/80 hover:bg-slate-800 p-3 rounded text-[10px] text-slate-300 border border-slate-700/60 transition-colors">
                                 <div className="flex justify-between font-bold text-slate-100 mb-1">
                                     <span 
                                         className={`text-emerald-400 font-bold text-[11px] ${setChartData ? 'cursor-pointer hover:underline hover:text-emerald-300' : ''}`}

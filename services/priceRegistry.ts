@@ -382,7 +382,8 @@ class PriceRegistry {
         tickers.forEach(t => {
             if (t && t.symbol) {
                 const norm = normalizeSymbol(t.symbol);
-                const existing = this.rawTickerMap.get(t.symbol) || this.rawTickerMap.get(norm);
+                if (!norm) return;
+                const existing = this.rawTickerMap.get(norm);
                 if (existing) {
                     const newQuoteVol = parseFloat(t.quoteVolume || t.quoteAssetVolume || '0');
                     const existingQuoteVol = parseFloat(existing.quoteVolume || existing.quoteAssetVolume || '0');
@@ -395,17 +396,10 @@ class PriceRegistry {
                         t.priceChangePercent = existing.priceChangePercent;
                     }
                 }
-                this.rawTickerMap.set(t.symbol, t);
                 this.rawTickerMap.set(norm, t);
             }
         });
-        const unique = new Map<string, any>();
-        this.rawTickerMap.forEach(v => {
-            if (v && v.symbol) {
-                unique.set(v.symbol, v);
-            }
-        });
-        const fullList = Array.from(unique.values());
+        const fullList = Array.from(this.rawTickerMap.values());
         this.rawTickers = fullList;
         this.tickerListeners.forEach(cb => {
             try {

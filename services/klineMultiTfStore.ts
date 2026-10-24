@@ -123,6 +123,31 @@ class KlineMultiTfStore {
     }
 
     /**
+     * 🛡️ [退池即焚]: 从内存及全局缓存中彻底清除指定币种的所有多周期 K 线
+     */
+    public evictSymbols(symbolsToEvict: string[]): void {
+        if (!symbolsToEvict || symbolsToEvict.length === 0) return;
+        const normSet = new Set(symbolsToEvict.map(s => normalizeSymbol(s).toUpperCase().replace(/[\/_]/g, '').trim()));
+        for (const key of Array.from(this.memoryMap.keys())) {
+            const symPart = key.split('-')[0];
+            if (normSet.has(symPart)) {
+                this.memoryMap.delete(key);
+            }
+        }
+        if (typeof window !== 'undefined') {
+            const winCache = (window as any).KLINE_MULTI_TF_CACHE;
+            if (winCache && typeof winCache === 'object') {
+                for (const key of Object.keys(winCache)) {
+                    const symPart = key.split('-')[0];
+                    if (normSet.has(symPart)) {
+                        delete winCache[key];
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * 极速同步查询（0 毫秒瞬间响应）
      */
     public getKlinesSync(symbol: string, tf: string, minLength: number = 20): UnifiedKline[] | null {

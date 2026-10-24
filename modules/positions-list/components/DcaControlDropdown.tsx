@@ -70,10 +70,10 @@ export const DcaInlineCard: React.FC<InlineProps> = ({
     const mainPositions = activePositions.filter(p => !p.isHedge && !p.isHedged);
 
     return (
-        <div className="w-full max-w-[460px] mx-auto bg-[#0d1017] border border-amber-500/40 rounded-xl shadow-xl overflow-hidden flex flex-col font-sans select-none my-1">
+        <div className="w-full max-w-[760px] mx-auto bg-[#0d1017] border border-amber-500/50 rounded-xl shadow-2xl overflow-hidden flex flex-col font-sans select-none my-1 transition-all">
             
             {/* 1. 面板头部 */}
-            <div className="p-2 px-2.5 bg-[#121620] border-b border-slate-800 flex items-center justify-between">
+            <div className="p-2.5 px-3 bg-[#121620] border-b border-slate-800 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
                     <div className="p-1 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-400">
                         <Zap size={14} />
@@ -164,8 +164,8 @@ export const DcaInlineCard: React.FC<InlineProps> = ({
                 </button>
             </div>
 
-            {/* 3. Tab 内容区 (纵向紧凑高度约束 max-h-[62vh] 视口自适应) */}
-            <div className="p-2.5 space-y-2 text-xs text-slate-200 bg-[#0d1017] max-h-[62vh] overflow-y-auto">
+            {/* 3. Tab 内容区 (扩高 max-h-[75vh] 增加底部内边距 pb-16，确保底边功能 100% 完整可见不被遮挡) */}
+            <div className="p-3 space-y-2.5 text-xs text-slate-200 bg-[#0d1017] max-h-[75vh] overflow-y-auto pb-16 custom-scrollbar">
 
                 {/* TAB 1: 触发条件 */}
                 {activeTab === 'TRIGGER' && (
@@ -421,44 +421,121 @@ export const DcaInlineCard: React.FC<InlineProps> = ({
                             </div>
                         </div>
 
-                        <div className="space-y-0.5 bg-slate-900/60 p-1.5 px-2 rounded-md border border-slate-800">
-                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
-                                <span>持仓总数量限制 (USDT)</span>
-                                <span className="text-amber-300 font-mono font-bold">${cfg.maxTotalUsdt ?? 500} USDT</span>
+                        {/* 双视角组合防护：持仓单体上限 与 账户总容量占比 (左右双列并排) */}
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-0.5 bg-slate-900/60 p-1.5 px-2 rounded-md border border-slate-800">
+                                <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                                    <span>持仓总数量限制 (USDT)</span>
+                                    <span className="text-amber-300 font-mono font-bold">${cfg.maxTotalUsdt ?? 500} USDT</span>
+                                </div>
+                                <input
+                                    type="number"
+                                    step="50"
+                                    min="50"
+                                    max="10000"
+                                    value={cfg.maxTotalUsdt ?? 500}
+                                    onChange={e => updateCfg({ maxTotalUsdt: parseInt(e.target.value) || 500 })}
+                                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-white font-mono text-xs focus:outline-none focus:border-amber-400"
+                                />
+                                <div className="text-[8px] text-slate-500 leading-tight">
+                                    硬性安全阈值：单个持仓补仓后的总本金绝对不能超过此上限。
+                                </div>
                             </div>
-                            <input
-                                type="number"
-                                step="50"
-                                min="50"
-                                max="10000"
-                                value={cfg.maxTotalUsdt ?? 500}
-                                onChange={e => updateCfg({ maxTotalUsdt: parseInt(e.target.value) || 500 })}
-                                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-white font-mono text-xs focus:outline-none focus:border-amber-400"
-                            />
-                            <div className="text-[8px] text-slate-500">
-                                硬性安全阈值：单个持仓补仓后的总本金金额绝对不能超过此上限。
+
+                            <div className="space-y-0.5 bg-slate-900/60 p-1.5 px-2 rounded-md border border-slate-800">
+                                <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                                    <span>持仓总量占可用余额%上限</span>
+                                    <span className="text-amber-300 font-mono font-bold">{cfg.maxPositionToBalancePercent ?? 80}%</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <input
+                                        type="number"
+                                        step="5"
+                                        min="10"
+                                        max="100"
+                                        value={cfg.maxPositionToBalancePercent ?? 80}
+                                        onChange={e => updateCfg({ maxPositionToBalancePercent: Math.min(100, Math.max(10, parseInt(e.target.value) || 80)) })}
+                                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-white font-mono text-xs focus:outline-none focus:border-amber-400"
+                                    />
+                                    <span className="text-xs text-slate-400 font-mono">%</span>
+                                </div>
+                                <div className="text-[8px] text-slate-500 leading-tight">
+                                    综合限制：总持仓占可用余额超过该百分比时停止继续补仓。
+                                </div>
                             </div>
                         </div>
 
-                        <div className="space-y-0.5 bg-slate-900/60 p-1.5 px-2 rounded-md border border-slate-800">
-                            <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
-                                <span>持仓总量占可用余额%上限</span>
-                                <span className="text-amber-300 font-mono font-bold">{cfg.maxPositionToBalancePercent ?? 80}%</span>
+                        {/* 🛡️ 全盘同时补仓币种数限制与最亏优先 */}
+                        <div className="p-2 rounded-md bg-amber-950/30 border border-amber-800/50 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                                <label className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
+                                    <span>最大同时补仓币种数限制</span>
+                                    <span className="text-[8px] bg-amber-500/20 text-amber-300 px-1 rounded font-mono">配额风控</span>
+                                </label>
+                                <span className="text-[9px] font-mono text-amber-400 font-bold">
+                                    已占额度: {mainPositions.filter(p => (p.dcaCount || 0) > 0).length} / {(cfg.maxAddingCoinsCount && cfg.maxAddingCoinsCount > 0) ? `${cfg.maxAddingCoinsCount} 币` : '不限'}
+                                </span>
                             </div>
                             <div className="flex items-center gap-2">
                                 <input
                                     type="number"
-                                    step="5"
-                                    min="10"
-                                    max="100"
-                                    value={cfg.maxPositionToBalancePercent ?? 80}
-                                    onChange={e => updateCfg({ maxPositionToBalancePercent: Math.min(100, Math.max(10, parseInt(e.target.value) || 80)) })}
+                                    min="0"
+                                    max="50"
+                                    step="1"
+                                    value={cfg.maxAddingCoinsCount ?? 0}
+                                    onChange={e => updateCfg({ maxAddingCoinsCount: Math.max(0, parseInt(e.target.value) || 0) })}
                                     className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-white font-mono text-xs focus:outline-none focus:border-amber-400"
+                                    placeholder="0表示不限制"
                                 />
-                                <span className="text-xs text-slate-400 font-mono">%</span>
+                                <span className="text-[9px] text-slate-400 font-mono whitespace-nowrap">币 (0不限)</span>
                             </div>
-                            <div className="text-[8px] text-slate-500">
-                                综合限制：当总持仓占账户可用余额超过该百分比时停止继续补仓。
+                            <div className="flex gap-1 pt-0.5">
+                                {[0, 3, 5, 10].map(num => (
+                                    <button
+                                        key={num}
+                                        type="button"
+                                        onClick={() => updateCfg({ maxAddingCoinsCount: num })}
+                                        className={`flex-1 py-0.5 text-[8px] rounded font-mono border ${
+                                            (cfg.maxAddingCoinsCount ?? 0) === num ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold' : 'bg-slate-800 text-slate-400 border-slate-700'
+                                        }`}
+                                    >
+                                        {num === 0 ? '不限制' : `${num} 个币`}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* 最亏优先竞逐模式 */}
+                            <div className="pt-1 border-t border-slate-800/80 space-y-1">
+                                <label className="text-[9px] font-bold text-slate-400 flex justify-between">
+                                    <span>多币触发时优先级竞逐标准</span>
+                                    <span className="text-amber-400 font-mono text-[8px]">最亏优先铁律</span>
+                                </label>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => updateCfg({ addPriorityMetric: 'pnl_usdt' })}
+                                        className={`p-1 px-2 rounded border text-left transition-all ${
+                                            (cfg.addPriorityMetric || 'pnl_usdt') === 'pnl_usdt'
+                                                ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 font-bold'
+                                                : 'bg-slate-900/60 border-slate-800 text-slate-400'
+                                        }`}
+                                    >
+                                        <div className="text-[9px] font-bold">1. 浮亏金额最大优先 (USDT)</div>
+                                        <div className="text-[7.5px] opacity-70">优先补亏损 USDT 最大的持仓</div>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => updateCfg({ addPriorityMetric: 'pnl_percent' })}
+                                        className={`p-1 px-2 rounded border text-left transition-all ${
+                                            cfg.addPriorityMetric === 'pnl_percent'
+                                                ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 font-bold'
+                                                : 'bg-slate-900/60 border-slate-800 text-slate-400'
+                                        }`}
+                                    >
+                                        <div className="text-[9px] font-bold">2. 跌幅比例最大优先 (%)</div>
+                                        <div className="text-[7.5px] opacity-70">优先补价格跌幅百分比最大的持仓</div>
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -648,8 +725,8 @@ export const DcaInlineCard: React.FC<InlineProps> = ({
                                                                             【{rec.triggerModeLabel || rec.triggerMode || '智能触发'}】
                                                                         </span>
                                                                     </div>
-                                                                    <span className="text-[9px] text-slate-500">
-                                                                        {new Date(rec.timestamp).toLocaleTimeString()}
+                                                                    <span className="text-[9px] text-slate-500 font-mono">
+                                                                        {rec.executionTimeStr || new Date(rec.timestamp).toLocaleTimeString()}
                                                                     </span>
                                                                 </div>
 
@@ -658,9 +735,32 @@ export const DcaInlineCard: React.FC<InlineProps> = ({
                                                                     <span className="text-amber-200/90 font-mono font-bold">{rec.signalDetail || rec.reason}</span>
                                                                 </div>
 
+                                                                {/* ⚡ 补仓 5 维精准全过程数据核验 */}
+                                                                <div className="grid grid-cols-2 gap-1 bg-[#121722] p-1.5 rounded border border-slate-800 text-[9px] font-mono mt-1">
+                                                                    <div className="text-red-400">
+                                                                        1. 补仓前亏损: <span className="font-bold">{rec.preRefillPnLPct !== undefined ? `${rec.preRefillPnLPct.toFixed(2)}%` : '---'}</span>
+                                                                        {rec.preRefillPnLUsdt !== undefined && <span className="text-slate-400 ml-1">(${rec.preRefillPnLUsdt.toFixed(2)} U)</span>}
+                                                                    </div>
+                                                                    <div className="text-blue-300">
+                                                                        2. 极值价格: <span className="font-bold">{rec.extremePrice ? `$${rec.extremePrice.toFixed(4)}` : '---'}</span>
+                                                                        <span className="text-slate-400 ml-1">({rec.extremeTimeStr || '---'})</span>
+                                                                    </div>
+                                                                    <div className="text-amber-300">
+                                                                        3. 补仓执行: <span className="font-bold">{rec.price ? `$${rec.price.toFixed(4)}` : '---'}</span>
+                                                                        <span className="text-slate-400 ml-1">({rec.executionTimeStr || new Date(rec.timestamp).toLocaleTimeString()})</span>
+                                                                    </div>
+                                                                    <div className="text-emerald-300">
+                                                                        4. 回调/反弹: <span className="font-bold">{rec.pullbackPct !== undefined ? `${rec.pullbackPct >= 0 ? '+' : ''}${rec.pullbackPct.toFixed(2)}%` : '---'}</span>
+                                                                    </div>
+                                                                    <div className="col-span-2 text-slate-300 pt-0.5 border-t border-slate-800/60 flex items-center justify-between">
+                                                                        <span>5. 补仓后摊薄: 均价 <span className="line-through text-slate-500">${rec.oldEntryPrice?.toFixed(4)}</span> ➔ <strong className="text-amber-300">${rec.newEntryPrice?.toFixed(4)}</strong></span>
+                                                                        <span className="text-emerald-400 font-bold">新亏损: {rec.postRefillPnLPct !== undefined ? `${rec.postRefillPnLPct.toFixed(2)}%` : '---'}</span>
+                                                                    </div>
+                                                                </div>
+
                                                                 <div className="flex items-center justify-between text-slate-400 text-[9px] pt-0.5 border-t border-slate-800/40">
-                                                                    <span>加仓: <strong className="text-amber-300">${rec.addAmountUsdt.toFixed(1)} USDT</strong> @ ${rec.price?.toFixed(4) || '---'}</span>
-                                                                    <span>持仓均价: <span className="line-through text-slate-500">${rec.oldEntryPrice?.toFixed(4)}</span> ➔ <strong className="text-emerald-400">${rec.newEntryPrice?.toFixed(4)}</strong></span>
+                                                                    <span>加仓金额: <strong className="text-amber-300">${rec.addAmountUsdt.toFixed(1)} USDT</strong></span>
+                                                                    <span>补仓序号: <strong className="text-slate-200">第 {rec.count || 1} 次</strong></span>
                                                                 </div>
                                                             </div>
                                                         ))

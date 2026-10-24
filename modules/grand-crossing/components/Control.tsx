@@ -53,15 +53,32 @@ export const List2Control: React.FC<List2PanelProps> = ({ config, setConfig, sca
     
     return (
         <div className="p-3 bg-slate-900 border-b border-slate-800 shrink-0 flex flex-col">
-            {/* Row 1: Title */}
-            <div className="flex items-center justify-between cursor-pointer select-none pb-1.5" onClick={toggleCollapse}>
+            {/* Row 1: Title & Start/Stop Switch */}
+            <div className="flex items-center justify-between select-none pb-1.5">
                 <div className="flex items-center gap-3">
-                    <div className="font-bold text-blue-400 text-sm flex items-center gap-2">
+                    <div className="font-bold text-blue-400 text-sm flex items-center gap-2 cursor-pointer" onClick={toggleCollapse}>
                         <Activity size={14} className="text-blue-500" /> 
                         <span>2. 均线穿越</span>
                     </div>
+
+                    {/* 🔒 [列表2 运行/停止 控制开关] */}
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setConfig(p => ({ ...p, isStopped: !p.isStopped }));
+                        }}
+                        className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded text-xs font-bold transition-all shadow-sm ${
+                            config.isStopped
+                                ? 'bg-red-950/90 hover:bg-red-900 text-red-300 border border-red-700/80'
+                                : 'bg-emerald-950/90 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/80'
+                        }`}
+                        title={config.isStopped ? "点击启动列表2均线穿越扫描" : "点击停止列表2均线穿越扫描"}
+                    >
+                        <span className={`w-2 h-2 rounded-full ${config.isStopped ? 'bg-red-500' : 'bg-emerald-400 animate-pulse'}`} />
+                        <span>{config.isStopped ? '停止 (点击启动)' : '运行中 (点击停止)'}</span>
+                    </button>
                 </div>
-                <div className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300">
+                <div className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300 cursor-pointer" onClick={toggleCollapse}>
                     <span>{isCollapsed ? '展开设置' : '折叠设置'}</span>
                     {isCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
                 </div>

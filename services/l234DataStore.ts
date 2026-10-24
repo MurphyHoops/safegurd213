@@ -101,6 +101,22 @@ class L234DataStoreService {
   }
 
   /**
+   * Sync active candidates in Market Selection List / List 2.
+   * Evicts unselected symbols to immediately free memory.
+   */
+  public syncActiveCandidates(activeSymbols: string[]) {
+    if (!Array.isArray(activeSymbols)) return;
+    const activeSet = new Set(
+      activeSymbols.map(s => normalizeSymbol(s)).filter(Boolean)
+    );
+    for (const sym of Array.from(this.registeredSymbols)) {
+      if (!activeSet.has(sym)) {
+        this.unregisterSymbol(sym);
+      }
+    }
+  }
+
+  /**
    * Check if a symbol is in L234 Store
    */
   public hasSymbol(rawSymbol: string): boolean {

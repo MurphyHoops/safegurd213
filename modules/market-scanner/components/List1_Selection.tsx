@@ -1256,16 +1256,19 @@ const List1_Selection: React.FC<Props> = ({
         return finalResult;
     }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, scanConfig.antiChaseFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, lookbackPool, antiChasePool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
 
-    // 🏛️ [中央行情数据总线]: 只要列表1 (市场初筛列表) 发生变动，自动同步预热全量币种 12 个周期 (各 200~300 根) 基线 K 线
+    // 🏛️ [中央行情数据总线]: 只要列表1 (市场初筛列表) 发生变动，自动同步预热入选币种在列表2所选周期 (300 根) 基线 K 线，并执行退池即焚
     useEffect(() => {
         if (filteredList && filteredList.length > 0) {
             const symbols = filteredList.map(item => item.symbol).filter(Boolean);
             if (symbols.length > 0) {
                 const timer = setTimeout(() => {
                     klineDailyStore.syncShortlistMultiTfKlines(symbols);
+                    klineDailyStore.evictStaleCandidates(symbols);
                 }, 150);
                 return () => clearTimeout(timer);
             }
+        } else {
+            klineDailyStore.evictStaleCandidates([]);
         }
     }, [filteredList]);
 
@@ -2375,7 +2378,7 @@ const List1_Selection: React.FC<Props> = ({
                         const currentSymbols = currentItems.map(x => x.symbol);
                         return currentItems.map((item, idx) => (
                             <List1Item 
-                                key={item.symbol}
+                                key={`${item.symbol || 'item'}-${idx}`}
                                 item={item}
                                 idx={idx}
                                 symbolList={currentSymbols}

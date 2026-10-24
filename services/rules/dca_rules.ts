@@ -216,29 +216,41 @@ export function checkDcaRules(
                 }
                 if (!position.dcaExtremePrice || currentPrice < position.dcaExtremePrice) {
                     position.dcaExtremePrice = currentPrice;
+                    position.dcaExtremeTime = Date.now();
                 }
 
                 bouncePct = ((currentPrice - position.dcaExtremePrice) / position.dcaExtremePrice) * 100;
                 refPointLabel = `最低极点 $${position.dcaExtremePrice.toFixed(4)}`;
             } else {
-                // 阶段 2：已补仓后
+                // 阶段 2：已补仓后 (二次及多次补仓铁律：新极点 D 必须突破上一次极点 B，即 D < B)
                 const lastPrice = position.lastDcaPrice!;
+                const prevExtremeB = position.lastDcaExtremePrice || lastPrice;
 
-                if (currentPrice < lastPrice) {
-                    // 实时价格低于上次补仓价，以补后全新极低点为起点算反弹
-                    if (klineData?.extremeLow && klineData.extremeLow > 0) {
-                        position.dcaExtremePrice = Math.min(position.dcaExtremePrice || currentPrice, klineData.extremeLow);
-                    }
-                    if (!position.dcaExtremePrice || currentPrice < position.dcaExtremePrice) {
-                        position.dcaExtremePrice = currentPrice;
-                    }
+                // 获取本轮 Tick 新候选极低点 D (结合 K 线极低与实时现价)
+                const candidateLow = (klineData?.extremeLow && klineData.extremeLow > 0) 
+                    ? Math.min(currentPrice, klineData.extremeLow) 
+                    : currentPrice;
 
+                // 核心突破规则校验：新极低点 candidateLow 必须严格下破上一次极点 prevExtremeB (D < B)
+                if (candidateLow < prevExtremeB) {
+                    if (!position.dcaExtremePrice || candidateLow < position.dcaExtremePrice) {
+                        position.dcaExtremePrice = candidateLow;
+                        position.dcaExtremeTime = Date.now();
+                    }
                     bouncePct = ((currentPrice - position.dcaExtremePrice) / position.dcaExtremePrice) * 100;
-                    refPointLabel = `补后新极低点 $${position.dcaExtremePrice.toFixed(4)}`;
-                } else {
-                    // 实时价格高于或等于上次补仓价，按上次补仓价为起点算反弹
+                    refPointLabel = `突破上极点($${prevExtremeB.toFixed(4)})的新极低点 $${position.dcaExtremePrice.toFixed(4)}`;
+                } else if (position.dcaExtremePrice && position.dcaExtremePrice < prevExtremeB) {
+                    // 沿用已记录且已下破 B 的极低点计算反弹
+                    bouncePct = ((currentPrice - position.dcaExtremePrice) / position.dcaExtremePrice) * 100;
+                    refPointLabel = `突破上极点($${prevExtremeB.toFixed(4)})的新极低点 $${position.dcaExtremePrice.toFixed(4)}`;
+                } else if (currentPrice > lastPrice) {
+                    // 实时价格高于上次补仓点，按上次补仓点为基准计算阶梯追补反弹
                     bouncePct = ((currentPrice - lastPrice) / lastPrice) * 100;
                     refPointLabel = `上次补仓点 $${lastPrice.toFixed(4)}`;
+                } else {
+                    // 未成功下破上一次极点 B (D >= B)，不确认为有效极低点，阻止浅度误触发
+                    bouncePct = 0;
+                    refPointLabel = `新极点 $${candidateLow.toFixed(4)} 未突破上极点 $${prevExtremeB.toFixed(4)} (需 D < B)`;
                 }
             }
 
@@ -269,28 +281,41 @@ export function checkDcaRules(
                 }
                 if (!position.dcaExtremePrice || currentPrice > position.dcaExtremePrice) {
                     position.dcaExtremePrice = currentPrice;
+                    position.dcaExtremeTime = Date.now();
                 }
 
                 bouncePct = ((position.dcaExtremePrice - currentPrice) / position.dcaExtremePrice) * 100;
                 refPointLabel = `最高极点 $${position.dcaExtremePrice.toFixed(4)}`;
             } else {
+                // 阶段 2：已补仓后 (二次及多次补仓铁律：新极点 D 必须突破上一次极点 B，即 D > B)
                 const lastPrice = position.lastDcaPrice!;
+                const prevExtremeB = position.lastDcaExtremePrice || lastPrice;
 
-                if (currentPrice > lastPrice) {
-                    // 比上次补仓点更高，以补后全新极高点为起点算回调
-                    if (klineData?.extremeHigh && klineData.extremeHigh > 0) {
-                        position.dcaExtremePrice = Math.max(position.dcaExtremePrice || currentPrice, klineData.extremeHigh);
-                    }
-                    if (!position.dcaExtremePrice || currentPrice > position.dcaExtremePrice) {
-                        position.dcaExtremePrice = currentPrice;
-                    }
+                // 获取本轮 Tick 新候选极高点 D (结合 K 线极高与实时现价)
+                const candidateHigh = (klineData?.extremeHigh && klineData.extremeHigh > 0) 
+                    ? Math.max(currentPrice, klineData.extremeHigh) 
+                    : currentPrice;
 
+                // 核心突破规则校验：新极高点 candidateHigh 必须严格上破上一次极点 prevExtremeB (D > B)
+                if (candidateHigh > prevExtremeB) {
+                    if (!position.dcaExtremePrice || candidateHigh > position.dcaExtremePrice) {
+                        position.dcaExtremePrice = candidateHigh;
+                        position.dcaExtremeTime = Date.now();
+                    }
                     bouncePct = ((position.dcaExtremePrice - currentPrice) / position.dcaExtremePrice) * 100;
-                    refPointLabel = `补后新极高点 $${position.dcaExtremePrice.toFixed(4)}`;
-                } else {
-                    // 比上次补仓点低或相等，按上次补仓点为起点算回调
+                    refPointLabel = `突破上极点($${prevExtremeB.toFixed(4)})的新极高点 $${position.dcaExtremePrice.toFixed(4)}`;
+                } else if (position.dcaExtremePrice && position.dcaExtremePrice > prevExtremeB) {
+                    // 沿用已记录且已上破 B 的极高点计算回调
+                    bouncePct = ((position.dcaExtremePrice - currentPrice) / position.dcaExtremePrice) * 100;
+                    refPointLabel = `突破上极点($${prevExtremeB.toFixed(4)})的新极高点 $${position.dcaExtremePrice.toFixed(4)}`;
+                } else if (currentPrice < lastPrice) {
+                    // 实时价格低于上次补仓点，按上次补仓点为基准计算阶梯追补回调
                     bouncePct = ((lastPrice - currentPrice) / lastPrice) * 100;
                     refPointLabel = `上次补仓点 $${lastPrice.toFixed(4)}`;
+                } else {
+                    // 未成功上破上一次极点 B (D <= B)，不确认为有效极高点，阻止浅度误触发
+                    bouncePct = 0;
+                    refPointLabel = `新极点 $${candidateHigh.toFixed(4)} 未突破上极点 $${prevExtremeB.toFixed(4)} (需 D > B)`;
                 }
             }
 
@@ -312,8 +337,9 @@ export function checkDcaRules(
         }
     }
 
-    // 满足条件准备触发补仓，更新上次实际补仓成交价，重置极值锁定供后续使用
+    // 满足条件准备触发补仓，更新上次实际补仓成交价与极值点，重置极值锁定供后续使用
     position.lastDcaPrice = currentPrice;
+    position.lastDcaExtremePrice = position.dcaExtremePrice || currentPrice;
     position.dcaExtremePrice = undefined;
 
     // 11. 计算补仓后的加权平均持仓新均价

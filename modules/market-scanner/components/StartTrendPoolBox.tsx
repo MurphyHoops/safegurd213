@@ -397,10 +397,15 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 return isCacheHit;
             };
 
-            // 🚀【精确 1 秒/组 律动扫描 - 行情启动趋势】:
-            // 纯内存 300+ 币种毫秒级批处理计算，并在组末平滑补齐至刚好 1.0 秒（1000ms），满足一秒一组的视觉节奏
+            // 🏛️ 中央日K总线后台平滑预热，确保候选币种日K无缝直读
+            klineDailyStore.syncAllDailyKlines(candidates).catch(() => {});
+
+            // 🚀【本地数据库超高速通道 - 行情启动趋势】:
+            // 24 协程高并发批处理，全量本地数据库直读，秒级极速扫描计算完毕
+            const BATCH_SIZE = 24;
             const scanStageStart = Date.now();
-            for (let i = 0; i < candidates.length; i++) {
+
+            for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
                 if (!isMountedRef.current || !isScanningRef.current) break;
 
                 // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
@@ -409,22 +414,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 }
                 if (!isMountedRef.current || !isScanningRef.current) break;
 
-                const currentSym = candidates[i];
-                const wasHit = await processCoin(currentSym);
-
-                if (wasHit) {
-                    if (i % 30 === 0) {
-                        await new Promise(resolve => setTimeout(resolve, 0));
-                    }
-                } else {
-                    await new Promise(resolve => setTimeout(resolve, 50));
-                }
-            }
-
-            // ⏱️ 严格保证行情启动组平滑占满 1.0 秒（1000ms），精确满足 1秒/组 节奏
-            const stageElapsed = Date.now() - scanStageStart;
-            if (stageElapsed < 1000 && isMountedRef.current && isScanningRef.current) {
-                await new Promise(resolve => setTimeout(resolve, 1000 - stageElapsed));
+                const batch = candidates.slice(i, i + BATCH_SIZE);
+                await Promise.all(batch.map(sym => processCoin(sym)));
+                await new Promise(resolve => setTimeout(resolve, 5));
             }
 
             if (isMountedRef.current) {
@@ -786,9 +778,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                                     : '未找到匹配搜索条件的币种'}
                             </div>
                         ) : (
-                            displayList.map(item => (
+                            displayList.map((item, idx) => (
                                 <div 
-                                    key={item.symbol}
+                                    key={`${item.symbol || 'item'}-${item.direction || 'dir'}-${idx}`}
                                     className={`px-1.5 py-0.5 rounded border transition-all flex items-center gap-1 group cursor-default ${
                                         item.direction === 'LONG' 
                                             ? 'bg-emerald-950/40 border-emerald-800/60 hover:border-emerald-500 text-emerald-300' 

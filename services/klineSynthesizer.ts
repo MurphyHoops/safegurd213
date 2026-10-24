@@ -49,4 +49,58 @@ export class KLineSynthesizer {
             volume: lines.reduce((sum, l) => sum + (l.volume || 0), 0)
         };
     }
+
+    /**
+     * 将 5m 原始数组格式数据 ([time, open, high, low, close, volume, closeTime, quoteVolume]) 本地合成任意目标周期 (10m, 15m, 30m, 60m)
+     * 0ms 纯内存重采样，减少 80%+ 的网络请求
+     */
+    static synthesizeFrom5mRaw(fiveMinKlines: any[], targetMinutes: number): any[] {
+        if (!Array.isArray(fiveMinKlines) || fiveMinKlines.length === 0) return [];
+        if (targetMinutes === 5) return fiveMinKlines;
+
+        const results: any[] = [];
+        let currentBucket: any[] | null = null;
+        let currentBucketStart = 0;
+        const bucketIntervalMs = targetMinutes * 60 * 1000;
+
+        for (const k of fiveMinKlines) {
+            const openTime = Number(k[0]);
+            const open = parseFloat(k[1]);
+            const high = parseFloat(k[2]);
+            const low = parseFloat(k[3]);
+            const close = parseFloat(k[4]);
+            const vol = parseFloat(k[5]) || 0;
+            const closeTime = Number(k[6]) || (openTime + bucketIntervalMs - 1);
+            const quoteVol = parseFloat(k[7]) || 0;
+
+            const bucketStart = Math.floor(openTime / bucketIntervalMs) * bucketIntervalMs;
+            if (!currentBucket || bucketStart !== currentBucketStart) {
+                if (currentBucket) {
+                    results.push(currentBucket);
+                }
+                currentBucketStart = bucketStart;
+                currentBucket = [
+                    bucketStart,
+                    open.toString(),
+                    high.toString(),
+                    low.toString(),
+                    close.toString(),
+                    vol.toString(),
+                    closeTime,
+                    quoteVol.toString()
+                ];
+            } else {
+                currentBucket[2] = Math.max(parseFloat(currentBucket[2]), high).toString();
+                currentBucket[3] = Math.min(parseFloat(currentBucket[3]), low).toString();
+                currentBucket[4] = close.toString();
+                currentBucket[5] = (parseFloat(currentBucket[5]) + vol).toString();
+                currentBucket[6] = closeTime;
+                currentBucket[7] = (parseFloat(currentBucket[7]) + quoteVol).toString();
+            }
+        }
+        if (currentBucket) {
+            results.push(currentBucket);
+        }
+        return results;
+    }
 }

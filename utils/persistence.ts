@@ -225,3 +225,20 @@ export const saveState = (key: string, data: any, maxSizeRows: number = 800): bo
         return false;
     }
 };
+
+const saveStateDebounceTimers: Map<string, any> = new Map();
+
+/**
+ * ⚡ 2000ms 防抖异步落盘，消除每秒密集 IO 阻塞主线程
+ */
+export const saveStateDebounced = (key: string, data: any, delayMs: number = 2000, maxSizeRows: number = 800) => {
+    if (saveStateDebounceTimers.has(key)) {
+        clearTimeout(saveStateDebounceTimers.get(key));
+    }
+    const timer = setTimeout(() => {
+        saveStateDebounceTimers.delete(key);
+        saveState(key, data, maxSizeRows);
+    }, delayMs);
+    saveStateDebounceTimers.set(key, timer);
+};
+

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { loadState, saveState } from '../utils/persistence';
+import { loadState, saveState, saveStateDebounced } from '../utils/persistence';
 
 export function usePersistedState<T>(key: string, defaultValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
     const defaultValueRef = useRef(defaultValue);
@@ -28,7 +28,7 @@ export function usePersistedState<T>(key: string, defaultValue: T): [T, React.Di
     useEffect(() => {
         if (state.key === key && !Object.is(lastSavedValueRef.current, state.value)) {
             lastSavedValueRef.current = state.value;
-            saveState(key, state.value);
+            saveStateDebounced(key, state.value, 1500);
         }
     }, [key, state.key, state.value]);
 

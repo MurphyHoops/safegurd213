@@ -491,11 +491,11 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                                     : '未找到符合当前成交范围过滤条件的币种'}
                             </div>
                         ) : (
-                            displayList.map(item => {
+                            displayList.map((item, idx) => {
                                 const v8am = item.volume8am ?? getVolume8am(item.symbol)?.volume8am;
                                 return (
                                     <div 
-                                        key={item.symbol}
+                                        key={`${item.symbol || 'item'}-${idx}`}
                                         className="px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700 hover:border-indigo-500/50 hover:bg-slate-700/70 transition-all flex items-center gap-1 group cursor-default"
                                         title={`${item.symbol}: 24H成交额 ${item.volume24h}M USDT${v8am !== undefined ? ` | 8AM起成交额 ${v8am.toFixed(1)}M USDT` : ''} | 涨跌幅 ${item.change24h > 0 ? `+${item.change24h}%` : `${item.change24h}%`}`}
                                     >

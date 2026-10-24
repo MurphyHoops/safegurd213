@@ -10,6 +10,7 @@ import { calculateEMA } from '../../services/indicators';
 import { pipelineCoordinator } from '../../services/pipelineQueue';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../services/volume8amService';
 import { klineDailyStore } from '../../services/klineDailyStore';
+import { l234DataStore } from '../../services/l234DataStore';
 import { auditSymbolAntiChase, DEFAULT_LIST1_ANTI_CHASE_CONFIG } from '../../services/rules/list1_anti_chase';
 
 
@@ -225,12 +226,15 @@ export const useScannerLogic = (
         } catch (e) { return new Set(); }
     });
 
-    // Persist Major Trend Candidates (仅在当前状态确属于该 strategyId 时持久化)
+    // Persist Major Trend Candidates and sync Tier 2 memory pool for active selection list
     useEffect(() => {
         if (activeStrategyRef.current === strategyId) {
             try {
                 majorTrendCandidatesRef.current = majorTrendCandidates;
-                localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(Array.from(majorTrendCandidates)));
+                const candsList = Array.from(majorTrendCandidates);
+                localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(candsList));
+                // 🛡️ [Tier 2 精细化内存管理]: 联动 l234DataStore 同步精选列表，被踢出“市场初筛列表”的币种自动销毁小周期缓存
+                l234DataStore.syncActiveCandidates(candsList);
             } catch (e) {
                 console.warn("Failed to persist Major Trend Candidates");
             }
@@ -267,10 +271,18 @@ export const useScannerLogic = (
             } catch (_) {}
         };
 
+        const handle8amUpdate = () => {
+            if (rawDataRef.current && rawDataRef.current.length > 0) {
+                lastFilterPulseRef.current = ''; // 强效刷新触发实时再重筛
+            }
+        };
+
         window.addEventListener('scanner_major_trend_candidates_updated', handleUpdate);
+        window.addEventListener('scanner_8am_cache_updated', handle8amUpdate);
         window.addEventListener('storage', handleUpdate);
         return () => {
             window.removeEventListener('scanner_major_trend_candidates_updated', handleUpdate);
+            window.removeEventListener('scanner_8am_cache_updated', handle8amUpdate);
             window.removeEventListener('storage', handleUpdate);
         };
     }, [strategyId, majorTrendCandidatesKey, suffix]);
@@ -689,7 +701,7 @@ export const useScannerLogic = (
                 
                 const res = await fetchWithFallback(
                     endpoint, 
-                    { cache: 'no-store', timeout: 45000 }, 
+                    { cache: 'no-store', timeout: 8000 }, 
                     (d) => Array.isArray(d) && d.length > 0, 
                     directModeRef.current
                 );
@@ -788,9 +800,9 @@ export const useScannerLogic = (
             let finalCandidates = filtered;
             if (!configRef.current.useCustomOnly || fixedModeViewRef.current === 'SEARCH') {
                 if (configRef.current.enableVol8am) {
-                    // 🎯 使用服务层平稳分批更新 8点 成交额，杜绝 300+ 瞬时并发导致币安 429 限频与超时
+                    // 🎯 使用服务层平稳分批更新 8点 成交额，后台异步增量拉取，绝不阻塞主扫描循环
                     const symbolsToFetch = filtered.map(i => i.symbol);
-                    await fetchVolume8amBatch(symbolsToFetch);
+                    fetchVolume8amBatch(symbolsToFetch).catch(() => {});
 
                     filtered.forEach(item => {
                         const cachedMem = volume8amCacheRef.current.get(item.symbol);
@@ -1173,140 +1185,110 @@ export const useScannerLogic = (
 
         const processStage1Coin = async (symbol: string): Promise<boolean> => {
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) return true;
-            const maxWorkTime = 12000;
 
-            const coinAbortController = new AbortController();
-            let coinTimeoutId: any = null;
+            const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
+            const limit = Math.min(timeParam + 20, 350);
+            const minRequired = Math.min(timeParam, 200);
+            let klines: any[] | null = null;
             let wasCacheHit = false;
-            try {
-                await Promise.race([
-                    (async () => {
-                        const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
-                        const limit = Math.min(timeParam + 20, 350);
-                        const minRequired = Math.min(timeParam, 200);
-                        let klines: any[] | null = null;
 
-                        const nowTime = Date.now();
-                        const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
+            const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
 
-                        // ⚡ [日K全天常驻持久化缓存]: 优先从 24小时持久化存储中秒级命中 (0毫秒响应，解决冷启动丢币)
-                        const storedKlines = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
-                        if (storedKlines && Array.isArray(storedKlines) && (storedKlines.length >= minRequired || storedKlines.length >= 30)) {
-                            klines = storedKlines;
-                            wasCacheHit = true;
-                        } else {
-                            const CACHE_VALIDITY_1D = 86400000;
-                            if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][timeParam].klines) && (KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                                klines = KLINE_LIMIT_CACHE[symbol][timeParam].klines;
-                                wasCacheHit = true;
-                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines) && (KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                                klines = KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines;
-                                wasCacheHit = true;
-                            } else if (KLINE_LIMIT_CACHE[symbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][300].klines) && (KLINE_LIMIT_CACHE[symbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                                klines = KLINE_LIMIT_CACHE[symbol][300].klines;
-                                wasCacheHit = true;
-                            } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][300].klines) && (KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
-                                klines = KLINE_LIMIT_CACHE[safeSymbol][300].klines;
-                                wasCacheHit = true;
-                            } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= minRequired) {
-                                klines = KLINE_LIMIT_CACHE[`${symbol}_1d`];
-                                wasCacheHit = true;
-                            } else if (KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && KLINE_LIMIT_CACHE[`${safeSymbol}_1d`].length >= minRequired) {
-                                klines = KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
-                                wasCacheHit = true;
-                            }
-                        }
-
-                        if (!klines || !Array.isArray(klines) || (klines.length < minRequired && klines.length < 30)) {
-                            wasCacheHit = false;
-                            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}&isScanner=true`;
-                            klines = await safeFetchKlinesDirect(url, 10000, coinAbortController.signal);
-                            if (!klines || klines.length < 2) {
-                                // 失败时自动重试一次，杜绝偶发网络抖动遗漏币种
-                                klines = await safeFetchKlinesDirect(url, 10000, coinAbortController.signal);
-                            }
-                        }
-                
-                        if (Array.isArray(klines) && klines.length >= 2) {
-                            // 同步写入持久化存储（携带请求的limit，精准判断是否次新币）
-                            klineDailyStore.saveKlines(safeSymbol, klines, limit);
-                            klineDailyStore.saveKlines(symbol, klines, limit);
-
-                            if (!KLINE_LIMIT_CACHE[symbol]) KLINE_LIMIT_CACHE[symbol] = {};
-                            if (!KLINE_LIMIT_CACHE[safeSymbol]) KLINE_LIMIT_CACHE[safeSymbol] = {};
-                            if (klines.length >= minRequired || klines.length >= 30) {
-                                KLINE_LIMIT_CACHE[symbol][timeParam] = { timestamp: Date.now(), klines };
-                                KLINE_LIMIT_CACHE[safeSymbol][timeParam] = { timestamp: Date.now(), klines };
-                                KLINE_LIMIT_CACHE[symbol][300] = { timestamp: Date.now(), klines };
-                                KLINE_LIMIT_CACHE[safeSymbol][300] = { timestamp: Date.now(), klines };
-                                KLINE_LIMIT_CACHE[`${symbol}_1d`] = klines;
-                                KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] = klines;
-                            }
-
-                            // 标记成功获取数据并完成第一阶段评估
-                            successfullyEvaluatedSymbols.add(symbol);
-                            successfullyEvaluatedSymbols.add(safeSymbol);
-                            successfullyEvaluatedSymbols.add(`${safeSymbol}_LONG`);
-                            successfullyEvaluatedSymbols.add(`${safeSymbol}_SHORT`);
-                            successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
-                            successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
-
-                            // 1. Stage 1: 横盘蓄势过滤 (调用原子化规则引擎 evaluateSidewaysFilter)
-                            const sidewaysRes = evaluateSidewaysFilter(
-                                symbol,
-                                klines,
-                                cfg,
-                                enableSidewaysLong,
-                                enableSidewaysShort
-                            );
-
-                            if (sidewaysRes.passed) {
-                                stage1PassedItems.push({
-                                    symbol: safeSymbol,
-                                    maxZ: sidewaysRes.maxZ,
-                                    minZ: sidewaysRes.minZ,
-                                    dropFromMax: sidewaysRes.dropFromMax,
-                                    riseFromMin: sidewaysRes.riseFromMin,
-                                    currentPrice: sidewaysRes.currentPrice,
-                                    klines
-                                });
-                            }
-                        }
-                    })(),
-                    new Promise((_, reject) => {
-                        coinTimeoutId = setTimeout(() => reject(new Error('TIMEOUT_EXCEEDED')), maxWorkTime);
-                    })
-                ]);
-            } catch (coinErr) {
-                console.warn(`[MajorTrend Stage 1] Skipping ${symbol} (exceeded ${maxWorkTime}ms or network error)`);
-            } finally {
-                if (coinTimeoutId) clearTimeout(coinTimeoutId);
-                try {
-                    coinAbortController.abort();
-                } catch (_) {}
-                processedGroup1Count++;
-                if (isMountedRef.current) {
-                    setMajorProgress({
-                        current: processedGroup1Count,
-                        total: targetSymbols.length,
-                        stage: 'group1',
-                        group1Total: targetSymbols.length,
-                        group1Current: processedGroup1Count,
-                        group1Passed: stage1PassedItems.length,
-                        group2Total: stage1PassedItems.length,
-                        group2Current: 0,
-                        group2Passed: 0,
-                        currentSymbol: symbol
-                    } as any);
+            // ⚡ [日K本地数据库高速直读]: 优先从 24小时持久化存储中秒级命中 (0毫秒响应)
+            const storedKlines = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
+            if (storedKlines && Array.isArray(storedKlines) && (storedKlines.length >= minRequired || storedKlines.length >= 30)) {
+                klines = storedKlines;
+                wasCacheHit = true;
+            } else {
+                const nowTime = Date.now();
+                const CACHE_VALIDITY_1D = 86400000;
+                if (KLINE_LIMIT_CACHE[symbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][timeParam].klines) && (KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                    klines = KLINE_LIMIT_CACHE[symbol][timeParam].klines;
+                    wasCacheHit = true;
+                } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[timeParam]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines) && (KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][timeParam].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                    klines = KLINE_LIMIT_CACHE[safeSymbol][timeParam].klines;
+                    wasCacheHit = true;
+                } else if (KLINE_LIMIT_CACHE[symbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[symbol][300].klines) && (KLINE_LIMIT_CACHE[symbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[symbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[symbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                    klines = KLINE_LIMIT_CACHE[symbol][300].klines;
+                    wasCacheHit = true;
+                } else if (KLINE_LIMIT_CACHE[safeSymbol]?.[300]?.klines && Array.isArray(KLINE_LIMIT_CACHE[safeSymbol][300].klines) && (KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= minRequired || KLINE_LIMIT_CACHE[safeSymbol][300].klines.length >= 30) && (nowTime - (KLINE_LIMIT_CACHE[safeSymbol][300].timestamp || 0) < CACHE_VALIDITY_1D)) {
+                    klines = KLINE_LIMIT_CACHE[safeSymbol][300].klines;
+                    wasCacheHit = true;
+                } else if (KLINE_LIMIT_CACHE[`${symbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${symbol}_1d`]) && KLINE_LIMIT_CACHE[`${symbol}_1d`].length >= 30) {
+                    klines = KLINE_LIMIT_CACHE[`${symbol}_1d`];
+                    wasCacheHit = true;
+                } else if (KLINE_LIMIT_CACHE[`${safeSymbol}_1d`] && Array.isArray(KLINE_LIMIT_CACHE[`${safeSymbol}_1d`]) && KLINE_LIMIT_CACHE[`${safeSymbol}_1d`].length >= 30) {
+                    klines = KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
+                    wasCacheHit = true;
                 }
-                return wasCacheHit;
             }
+
+            // 本地数据库未命中的极少数孤儿币种，采用极速轻量网络兜底
+            if (!klines || !Array.isArray(klines) || (klines.length < minRequired && klines.length < 30)) {
+                try {
+                    const coinAbortController = new AbortController();
+                    const timeoutId = setTimeout(() => { try { coinAbortController.abort(); } catch (_) {} }, 2500);
+                    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}&isScanner=true`;
+                    klines = await safeFetchKlinesDirect(url, 2500, coinAbortController.signal);
+                    clearTimeout(timeoutId);
+                } catch (_) {}
+            }
+
+            if (Array.isArray(klines) && klines.length >= 2) {
+                klineDailyStore.saveKlines(safeSymbol, klines, limit);
+                klineDailyStore.saveKlines(symbol, klines, limit);
+
+                successfullyEvaluatedSymbols.add(symbol);
+                successfullyEvaluatedSymbols.add(safeSymbol);
+                successfullyEvaluatedSymbols.add(`${safeSymbol}_LONG`);
+                successfullyEvaluatedSymbols.add(`${safeSymbol}_SHORT`);
+                successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
+                successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
+
+                // 1. Stage 1: 横盘蓄势过滤 (调用原子化规则引擎 evaluateSidewaysFilter)
+                const sidewaysRes = evaluateSidewaysFilter(
+                    symbol,
+                    klines,
+                    cfg,
+                    enableSidewaysLong,
+                    enableSidewaysShort
+                );
+
+                if (sidewaysRes.passed) {
+                    stage1PassedItems.push({
+                        symbol: safeSymbol,
+                        maxZ: sidewaysRes.maxZ,
+                        minZ: sidewaysRes.minZ,
+                        dropFromMax: sidewaysRes.dropFromMax,
+                        riseFromMin: sidewaysRes.riseFromMin,
+                        currentPrice: sidewaysRes.currentPrice,
+                        klines
+                    });
+                }
+            }
+
+            processedGroup1Count++;
+            if (isMountedRef.current) {
+                setMajorProgress({
+                    current: processedGroup1Count,
+                    total: targetSymbols.length,
+                    stage: 'group1',
+                    group1Total: targetSymbols.length,
+                    group1Current: processedGroup1Count,
+                    group1Passed: stage1PassedItems.length,
+                    group2Total: stage1PassedItems.length,
+                    group2Current: 0,
+                    group2Passed: 0,
+                    currentSymbol: symbol
+                } as any);
+            }
+            return wasCacheHit;
         };
 
-        // 🚀【精确 1 秒/组 律动扫描 - Stage 1 横盘蓄势过滤】:
-        // 纯内存 300+ 币种毫秒级批处理计算，并在组末平滑补齐至刚好 1.0 秒（1000ms），满足一秒一组的视觉节奏
-        const s1StageStart = Date.now();
-        for (let i = 0; i < targetSymbols.length; i++) {
+        // 🚀【本地数据库超高速并发扫描 - Stage 1 横盘蓄势过滤】:
+        // 全量基于本地日K数据库，20 协程并发毫秒级批处理，整轮 300+ 币种瞬间完成
+        const BATCH_SIZE_S1 = 20;
+        for (let i = 0; i < targetSymbols.length; i += BATCH_SIZE_S1) {
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
 
             // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
@@ -1315,22 +1297,9 @@ export const useScannerLogic = (
             }
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
 
-            const currentSym = targetSymbols[i];
-            const wasCacheHit = await processStage1Coin(currentSym);
-
-            if (wasCacheHit) {
-                if (i % 30 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
-            } else {
-                await new Promise(resolve => setTimeout(resolve, 50));
-            }
-        }
-
-        // ⏱️ 严格保证横盘蓄势组平滑占满 1.0 秒（1000ms），精确满足 1秒/组 节奏
-        const s1Elapsed = Date.now() - s1StageStart;
-        if (s1Elapsed < 1000 && isMountedRef.current && !majorScanAbortRef.current) {
-            await new Promise(resolve => setTimeout(resolve, 1000 - s1Elapsed));
+            const batch = targetSymbols.slice(i, i + BATCH_SIZE_S1);
+            await Promise.all(batch.map(sym => processStage1Coin(sym)));
+            await new Promise(resolve => setTimeout(resolve, 5));
         }
 
         // 🔒【第一阶段扫描完成】: 仅在整轮横盘扫描完成后原子化保存到“横盘蓄势过滤底池”，若无通过币种则清空底池
@@ -1392,89 +1361,77 @@ export const useScannerLogic = (
                 currentSymbol: ''
             } as any);
 
-            const s2StageStart = Date.now();
-            for (let s2Idx = 0; s2Idx < totalStage2; s2Idx++) {
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
-                if (majorScanAbortRef.current) break;
+            // 🚀【本地数据库超高速并发扫描 - Stage 2 回溯周期过滤】
+            const BATCH_SIZE_S2 = 16;
+            for (let s2Idx = 0; s2Idx < totalStage2; s2Idx += BATCH_SIZE_S2) {
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
 
                 // ⏸️ 暂停检查：如果全局暂停，则在此等待直到用户点击继续
                 while ((window as any).IS_SCANNER_PIPELINE_PAUSED && isMountedRef.current && !majorScanAbortRef.current) {
                     await new Promise(resolve => setTimeout(resolve, 200));
                 }
-                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled) break;
-                if (majorScanAbortRef.current) break;
+                if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
 
-                const item = stage1PassedItems[s2Idx];
-                const symbol = item.symbol;
-
-                const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
-                let klines = item.klines;
-                if (!klines || !Array.isArray(klines) || klines.length < 30) {
-                    const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
-                    const storeFallback = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
-                    if (storeFallback && Array.isArray(storeFallback) && storeFallback.length >= 30) {
-                        klines = storeFallback;
+                const batch = stage1PassedItems.slice(s2Idx, s2Idx + BATCH_SIZE_S2);
+                batch.forEach(item => {
+                    const symbol = item.symbol;
+                    const timeParam = cfg.filterTimeParam || cfg.lookbackDays || 300;
+                    let klines = item.klines;
+                    if (!klines || !Array.isArray(klines) || klines.length < 30) {
+                        const safeSymbol = symbol.toUpperCase().replace(/_LONG$|_SHORT$/i, '').replace(/[\/_]/g, '').trim();
+                        const storeFallback = klineDailyStore.getCachedKlinesSync(symbol, timeParam) || klineDailyStore.getCachedKlinesSync(safeSymbol, timeParam);
+                        if (storeFallback && Array.isArray(storeFallback) && storeFallback.length >= 30) {
+                            klines = storeFallback;
+                        }
                     }
-                }
-                const prices = (klines || []).map((k: any) => parseFloat(k[4]));
-                const periodKlines = (klines || []).slice(-timeParam);
-                const highs = periodKlines.map((k: any) => parseFloat(k[2]));
-                const lows = periodKlines.map((k: any) => parseFloat(k[3]));
-                const currentPrice = item.currentPrice;
-                const maxZ = item.maxZ;
-                const minZ = item.minZ;
+                    const currentPrice = item.currentPrice;
+                    const maxZ = item.maxZ;
+                    const minZ = item.minZ;
 
-                // Stage 2: 回溯周期过滤 (调用原子化规则引擎 evaluateLookbackFilter)
-                const lookbackRes = evaluateLookbackFilter(
-                    symbol,
-                    klines || [],
-                    currentPrice,
-                    maxZ,
-                    minZ,
-                    cfg,
-                    enableLong,
-                    enableShort,
-                    enableSideways
-                );
+                    // Stage 2: 回溯周期过滤 (调用原子化规则引擎 evaluateLookbackFilter)
+                    const lookbackRes = evaluateLookbackFilter(
+                        symbol,
+                        klines || [],
+                        currentPrice,
+                        maxZ,
+                        minZ,
+                        cfg,
+                        enableLong,
+                        enableShort,
+                        enableSideways
+                    );
 
-                if (lookbackRes.isLongMatch) {
-                    stage2PassedSymbols.add(`${symbol}_LONG`);
-                    stage2LimitsMap[symbol] = { maxZ, minZ };
-                }
-                if (lookbackRes.isShortMatch) {
-                    stage2PassedSymbols.add(`${symbol}_SHORT`);
-                    stage2LimitsMap[symbol] = { maxZ, minZ };
-                }
+                    if (lookbackRes.isLongMatch) {
+                        stage2PassedSymbols.add(`${symbol}_LONG`);
+                        stage2LimitsMap[symbol] = { maxZ, minZ };
+                    }
+                    if (lookbackRes.isShortMatch) {
+                        stage2PassedSymbols.add(`${symbol}_SHORT`);
+                        stage2LimitsMap[symbol] = { maxZ, minZ };
+                    }
 
-                successfullyEvaluatedSymbols.add(symbol);
-                successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
-                successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
+                    successfullyEvaluatedSymbols.add(symbol);
+                    successfullyEvaluatedSymbols.add(`${symbol}_LONG`);
+                    successfullyEvaluatedSymbols.add(`${symbol}_SHORT`);
+                });
 
-                // 仅更新扫描进度显示，绝不在此处触发初筛列表的增减更新
                 if (isMountedRef.current) {
+                    const currProcessed = Math.min(s2Idx + BATCH_SIZE_S2, totalStage2);
                     setMajorProgress({
-                        current: s2Idx + 1,
+                        current: currProcessed,
                         total: totalStage2,
                         stage: 'group2',
                         group1Total: targetSymbols.length,
                         group1Current: targetSymbols.length,
                         group1Passed: totalStage2,
                         group2Total: totalStage2,
-                        group2Current: s2Idx + 1,
+                        group2Current: currProcessed,
                         group2Passed: getMatchedUniqueSymbolsCount(stage2PassedSymbols, enableLong, enableShort),
-                        currentSymbol: symbol
+                        currentSymbol: batch[batch.length - 1]?.symbol || ''
                     } as any);
                 }
 
-                if (s2Idx % 30 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
-            }
-
-            // ⏱️ 严格保证回溯周期组平滑占满 1.0 秒（1000ms），精确满足 1秒/组 节奏
-            const s2Elapsed = Date.now() - s2StageStart;
-            if (s2Elapsed < 1000 && isMountedRef.current && !majorScanAbortRef.current) {
-                await new Promise(resolve => setTimeout(resolve, 1000 - s2Elapsed));
+                await new Promise(resolve => setTimeout(resolve, 5));
             }
         }
 
@@ -1636,12 +1593,15 @@ export const useScannerLogic = (
                 group3Passed: antiChasePassedPool.length
             } as any));
 
-            // 🏛️ [中央行情数据总线]: 为进入初筛的币种自动保留并存储 12 个周期各 300 根基线 K 线
+            // 🏛️ [中央行情数据总线]: 为进入初筛的币种自动保留并存储列表2所选周期 300 根基线 K 线，并对淘汰币种执行退池即焚
             const newShortlistSymbols = Array.from(finalSet).map(s => s.replace(/_LONG$|_SHORT$/i, ''));
             if (newShortlistSymbols.length > 0) {
                 setTimeout(() => {
                     klineDailyStore.syncShortlistMultiTfKlines(newShortlistSymbols);
+                    klineDailyStore.evictStaleCandidates(newShortlistSymbols);
                 }, 100);
+            } else {
+                klineDailyStore.evictStaleCandidates([]);
             }
 
             audioService.speak("大行情发现任务完成");

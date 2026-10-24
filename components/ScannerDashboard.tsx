@@ -2007,28 +2007,32 @@ const ScannerDashboardInner: React.FC<
 
   return (
     <div style={containerStyle}>
+      {/* 🛡️ [DOM 节点防爆与后台常驻优化]: 当扫描终端未在前台打开时，彻底卸载重型视觉 DOM 树，释放 8000+ 节点 */}
       {/* Minimized View */}
-      <div
-        className={`fixed bottom-6 right-6 transition-opacity duration-300 ${isMinimized ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
-        style={{ zIndex: 100 }}
-        onClick={() => setIsMinimized(false)}
-      >
-        <div className="bg-[#0b0e11] border border-slate-700 rounded-lg shadow-2xl p-3 flex items-center gap-3 cursor-pointer hover:border-indigo-500 hover:shadow-indigo-500/20 transition-all">
-          <Activity size={20} className="text-indigo-400 animate-pulse" />
-          <div className="text-xs font-bold text-white">
-            {scannerMode === "BACKTEST" ? "回测引擎运行中" : "扫描终端运行中"}
+      {isVisible && isMinimized && (
+        <div
+          className="fixed bottom-6 right-6 transition-opacity duration-300 opacity-100 pointer-events-auto"
+          style={{ zIndex: 100 }}
+          onClick={() => setIsMinimized(false)}
+        >
+          <div className="bg-[#0b0e11] border border-slate-700 rounded-lg shadow-2xl p-3 flex items-center gap-3 cursor-pointer hover:border-indigo-500 hover:shadow-indigo-500/20 transition-all">
+            <Activity size={20} className="text-indigo-400 animate-pulse" />
+            <div className="text-xs font-bold text-white">
+              {scannerMode === "BACKTEST" ? "回测引擎运行中" : "扫描终端运行中"}
+            </div>
+            <Maximize2 size={16} className="text-slate-500" />
           </div>
-          <Maximize2 size={16} className="text-slate-500" />
         </div>
-      </div>
+      )}
 
       {/* Full View */}
-      <div
-        className={`fixed inset-0 bg-black/90 backdrop-blur-sm items-center justify-center p-4 ${isMinimized ? "hidden" : "flex"}`}
-        style={{ zIndex: 100 }}
-      >
-        <div className="bg-[#0b0e11] w-full h-full max-w-[1800px] rounded-xl border border-slate-800 shadow-2xl flex flex-col overflow-hidden">
-          {/* Top Bar */}
+      {isVisible && !isMinimized && (
+        <div
+          className="fixed inset-0 bg-black/90 backdrop-blur-sm items-center justify-center p-4 flex"
+          style={{ zIndex: 100 }}
+        >
+          <div className="bg-[#0b0e11] w-full h-full max-w-[1800px] rounded-xl border border-slate-800 shadow-2xl flex flex-col overflow-hidden">
+            {/* Top Bar */}
           <div
             className={`flex items-center justify-between p-3 border-b border-slate-800 transition-colors ${scannerMode === "BACKTEST" ? "bg-amber-950/30" : "bg-[#161a25]"}`}
           >
@@ -2387,8 +2391,9 @@ const ScannerDashboardInner: React.FC<
           )}
         </div>
       </div>
+      )}
 
-      {chartData && (
+      {isVisible && chartData && (
         <KlineChartModal
           key={chartData.sessionId || 'scanner-chart-modal'}
           symbol={chartData.symbol}
@@ -2432,7 +2437,7 @@ const ScannerDashboardInner: React.FC<
 
       {/* Background Multi-Strategy Runners */}
       {strategies.map((strat) => {
-        if (strat.id === selectedStrategyId) return null; // Already rendered visibly in UI
+        if (isVisible && strat.id === selectedStrategyId) return null; // Already rendered visibly in UI
         if (strat.unconfigured) return null; // Don't run if unconfigured
         return (
           <BackgroundStrategyRunner

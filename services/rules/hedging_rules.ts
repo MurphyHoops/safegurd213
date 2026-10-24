@@ -209,9 +209,10 @@ export function checkHedgingRules(
             activeHedgeRatio = slSettings.callbackHedgeRatio; // Strategy 3 Override
         }
 
-        const originalQty = position.initialAmount !== undefined ? position.initialAmount : position.amount;
-        const initialCostUsdt = originalQty * (position.entryPrice || position.markPrice);
-        const hedgeAmount = initialCostUsdt * (activeHedgeRatio / 100);
+        // 补仓后按最新持仓总量 (position.amount) 计算对冲金额；若未补仓则 position.amount 等于初始开仓量
+        const currentQty = (position.amount && position.amount > 0) ? position.amount : (position.initialAmount || 0);
+        const currentCostUsdt = currentQty * (position.entryPrice || position.markPrice);
+        const hedgeAmount = currentCostUsdt * (activeHedgeRatio / 100);
         
         openHedge(
             position.symbol,
