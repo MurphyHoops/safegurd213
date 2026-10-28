@@ -3,6 +3,21 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
+// 🛡️ [绝对顶部：彻底禁用 GPU 硬件加速 & 4GB V8 HEAP & 24小时后台非节流指令集]
+// 必须在任何窗口、单实例或图形上下文初始化前第一时间执行，彻底切断 Chromium 与 Direct3D 显卡驱动的底层绑定
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-gpu-compositing');
+app.commandLine.appendSwitch('disable-gpu-rasterization');
+app.commandLine.appendSwitch('disable-software-rasterizer');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+app.commandLine.appendSwitch('disable-http-cache');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-gpu-process-crash-limit');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HighEfficiencyModeAvailable,AudioServiceOutOfProcess');
+
 // 🛡️ [单实例互斥锁]: 防止重复双击打开多个进程导致端口 3000 冲突崩溃
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -66,16 +81,6 @@ try {
   console.warn('⚠️ powerSaveBlocker 启动失败:', e);
 }
 
-// 🛡️ [4GB V8 HEAP & 24小时后台非节流指令集]:
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
-app.commandLine.appendSwitch('disable-http-cache');
-// 禁用后台定时器降频（杜绝最小化或无人操作几小时后定时器/心跳被 Windows 冻结）
-app.commandLine.appendSwitch('disable-background-timer-throttling');
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
-app.commandLine.appendSwitch('disable-renderer-backgrounding');
-// 🔒 根绝 Windows 锁屏/显卡驱动 TDR 重置导致 GPU 崩溃闪退
-app.commandLine.appendSwitch('disable-gpu-process-crash-limit');
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HighEfficiencyModeAvailable,AudioServiceOutOfProcess');
 
 // 捕获 GPU 进程崩溃并优雅恢复，防止显卡重置引发程序自退
 app.on('gpu-process-gone', (event, details) => {
@@ -97,6 +102,7 @@ let mainWindow = null;
 let serverProcess = null;
 let tray = null;
 let isExplicitQuitting = false;
+let isRecreatingWindow = false; // 🔒 关键生命周期守卫：防止销毁死窗口瞬间触发 window-all-closed 导致连环自杀退出
 
 app.on('before-quit', () => {
   isExplicitQuitting = true;
@@ -223,17 +229,29 @@ function createWindow() {
 
     // 🔒 铁律：当 Chromium 渲染进程崩溃时，旧窗口对象已被标记为 Dead，调用 reload() 极易黑屏卡死！
     // 必须彻底 destroy 销毁死句柄，再创建全新的 BrowserWindow！
-    if (!isExplicitQuitting && details.reason !== 'clean-exit') {
-      console.log('🔄 正在安全销毁僵死窗口并彻底重建渲染进程，杜绝看盘界面挂起...');
+    // 🛡️ [防自杀锁]: 只要不是用户显式点击退出程序，不管任何 reason，立刻锁定 isRecreatingWindow = true，杜绝 window-all-closed 杀进程
+    if (!isExplicitQuitting) {
+      if (isRecreatingWindow) return;
+      isRecreatingWindow = true;
+      console.log('🔄 [Electron Guard] 收到 render-process-gone，正在安全销毁僵死窗口并触发免疫重建...');
+      
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy();
+        }
+      } catch (_) {}
+      mainWindow = null;
+
       setTimeout(() => {
         try {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.destroy();
-          }
-        } catch (_) {}
-        mainWindow = null;
-        createWindow();
-      }, 1000);
+          console.log('🔄 [Electron Guard] 正在重建全新 BrowserWindow 看盘主窗口...');
+          createWindow();
+        } catch (e) {
+          console.error('❌ 重建看盘主窗口异常:', e);
+        } finally {
+          isRecreatingWindow = false;
+        }
+      }, 500);
     }
   });
 
@@ -395,12 +413,19 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   // 🛡️ [交易永续铁律]: 即使前台所有窗口因任何原因关闭或崩溃，绝对不能杀死后台服务，绝对不能退出程序！
-  console.log('ℹ️ [Electron Guard] 前台窗口暂无可见实例，后台量化交易服务持续不间断运行');
+  console.log(`ℹ️ [Electron Guard] window-all-closed 触发: isExplicitQuitting=${isExplicitQuitting}, isRecreating=${isRecreatingWindow}`);
   if (isExplicitQuitting) {
     if (serverProcess) {
       try { serverProcess.kill(); } catch (e) {}
     }
     app.quit();
+    return;
+  }
+
+  // 🛡️ [防连锁自杀双重闭环]: 若窗口全关且非主动退出、非重建中，立刻自动拉起新窗口，杜绝进程变孤儿
+  if (!isRecreatingWindow && (!mainWindow || mainWindow.isDestroyed())) {
+    console.warn('⚠️ [Electron Guard] 检测到前台窗口已被销毁且未处于重建态，立即自动拉起全新看盘窗口...');
+    createWindow();
   }
 });
 
