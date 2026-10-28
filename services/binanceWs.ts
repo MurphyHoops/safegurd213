@@ -38,6 +38,11 @@ export class BinanceWebSocket {
     private lastRestFetchTime = 0;
     private lastTickersEmitTime = 0;
 
+    // 🛡️ [HIGH-FREQUENCY RAF UPDATE BUFFER POOL]
+    private pendingPriceBuffer: Record<string, number> = {};
+    private isFlushScheduled = false;
+    private lastBreadcrumbTime = 0;
+
     private getLocalWsUrl(): string | null {
         if (typeof window === 'undefined') return null;
         try {
@@ -187,9 +192,7 @@ export class BinanceWebSocket {
                     }
 
                     if (Object.keys(newPrices).length > 0) {
-                        recordBreadcrumb('WS_PRICES_UPDATE', { count: Object.keys(newPrices).length });
-                        priceRegistry.updatePrices(newPrices);
-                        this.notifyCallbacks(newPrices);
+                        this.enqueuePriceUpdates(newPrices);
                     }
 
                     if (shouldEmitTickers && rawTickers.length > 0) {
@@ -281,8 +284,7 @@ export class BinanceWebSocket {
                         });
                         
                         if (Object.keys(newPrices).length > 0) {
-                            priceRegistry.updatePrices(newPrices);
-                            this.notifyCallbacks(newPrices);
+                            this.enqueuePriceUpdates(newPrices);
                             this.lastMessageTime = Date.now();
                             return;
                         }
@@ -342,8 +344,63 @@ export class BinanceWebSocket {
         };
     }
 
+    public enqueuePriceUpdates(prices: Record<string, number>) {
+        if (!prices) return;
+        let added = 0;
+        for (const k in prices) {
+            this.pendingPriceBuffer[k] = prices[k];
+            added++;
+        }
+        if (added > 0) {
+            this.scheduleBatchFlush();
+        }
+    }
+
+    private scheduleBatchFlush() {
+        if (this.isFlushScheduled) return;
+        this.isFlushScheduled = true;
+
+        if (typeof document !== 'undefined' && document.hidden) {
+            // Background fallback: throttle to 100ms so background strategy/safety monitoring keeps running smoothly
+            setTimeout(() => this.flushPendingPrices(), 100);
+        } else {
+            // Foreground: lock frame flush to display vsync (max 60Hz) with requestAnimationFrame
+            const scheduleFrame = typeof requestAnimationFrame !== 'undefined'
+                ? requestAnimationFrame
+                : (cb: () => void) => setTimeout(cb, 16);
+
+            scheduleFrame(() => {
+                this.flushPendingPrices();
+            });
+        }
+    }
+
+    private flushPendingPrices() {
+        this.isFlushScheduled = false;
+        const batch = this.pendingPriceBuffer;
+        this.pendingPriceBuffer = {};
+
+        const symbols = Object.keys(batch);
+        if (symbols.length === 0) return;
+
+        // Throttle telemetry breadcrumb to max once every 10 seconds to eliminate micro-task clogging
+        const now = Date.now();
+        if (now - this.lastBreadcrumbTime > 10000) {
+            this.lastBreadcrumbTime = now;
+            recordBreadcrumb('WS_PRICES_BATCH_FLUSH', { count: symbols.length });
+        }
+
+        // 1. Dispatch consolidated batch to price registry
+        priceRegistry.updatePrices(batch);
+
+        // 2. Notify subscribers with merged batch
+        this.notifyCallbacks(batch);
+    }
+
     private notifyCallbacks(prices: Record<string, number>) {
-        this.callbacks.forEach(cb => cb(prices));
+        this.callbacks.forEach(cb => {
+            try { cb(prices); } catch (_) {}
+        });
     }
 
     public disconnect() {
@@ -351,6 +408,8 @@ export class BinanceWebSocket {
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         clearInterval(this.fallbackTimer);
         clearInterval(this.statusCheckTimer);
+        this.pendingPriceBuffer = {};
+        this.isFlushScheduled = false;
         
         if (this.ws) {
             try {

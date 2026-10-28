@@ -134,6 +134,7 @@ export const useStructureAudit = (
   const isScanningRef = useRef(false);
   const pendingItemsRef = useRef<ScannerItem[]>([]);
   const lastCandleScanRef = useRef<Map<string, number>>(new Map());
+  const prevConfigStrRef = useRef<string>("");
   const expiredSignalCacheRef = useRef<Set<string>>(
     new Set(
       (() => {
@@ -258,6 +259,11 @@ export const useStructureAudit = (
   }, [cacheMapKey, expiredSignalsKey]);
 
   useEffect(() => {
+    const configStr = JSON.stringify(config);
+    if (configStr === prevConfigStrRef.current) {
+      return;
+    }
+    prevConfigStrRef.current = configStr;
     configRef.current = config;
     
     let changed = false;
@@ -298,6 +304,8 @@ export const useStructureAudit = (
             ema30: c.emaDetails?.ema30 || c.price,
             ema40: c.emaDetails?.ema40 || c.price,
             ema80: c.emaDetails?.ema80 || c.price,
+            ema80Intersections: 0,
+            isPriorReverseFound: r.isPriorReverseFound ?? true,
           };
           return {
             tf: r.tf,
@@ -395,9 +403,9 @@ export const useStructureAudit = (
         continue;
       }
 
-      const latestTime = gr.crossingTimes
+      const latestTime = (gr.crossingTimes && gr.crossingTimes.length > 0)
         ? Math.max(...gr.crossingTimes)
-        : klines[klines.length - 1].time;
+        : (gr.signalTime || (klines.length > 0 ? klines[klines.length - 1].time : Date.now()));
 
       // Re-map KLine back to Binance raw format for internal rule consumption if needed
       // (The rules often expectation raw array format [time, open, high, low, close, vol])
@@ -418,6 +426,7 @@ export const useStructureAudit = (
           time: latestTime,
           price: livePrice,
           periodChange,
+          isPriorReverseFound: gr.isPriorReverseFound,
         },
         closes,
         highs,
@@ -577,7 +586,7 @@ export const useStructureAudit = (
       if (itemsToScan.length === 0) return;
 
       const cfg = configRef.current;
-      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
+      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance && !cfg.enableAdvancedFilter && !cfg.enablePriorReverseDivergence;
       if (areAllRulesOff) {
         return; // 限制规则未开启时绝对禁止后台执行审计
       }
@@ -797,11 +806,11 @@ export const useStructureAudit = (
                       ? item.symbol
                       : `${item.symbol}USDT`;
 
-                    // ⚡ [中央行情数据总线 0ms 直读通道]: 优先从本地中央总线获取该周期数据
-                    const busCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 20) ||
-                                      klineDailyStore.getShortlistKlineSync(safeSymbol, tf, 20) ||
-                                      (tf === '1d' ? klineDailyStore.getCachedKlinesSync(safeSymbol, 30) : null);
-                    if (busCached && Array.isArray(busCached) && busCached.length >= 20) {
+                    // ⚡ [中央行情数据总线 0ms 直读通道]: 优先从本地中央总线获取该周期数据 (要求至少80根以保障EMA40/EMA80及前置反发散探针精度)
+                    const busCached = klineMultiTfStore.getKlinesSync(safeSymbol, tf, 80) ||
+                                      klineDailyStore.getShortlistKlineSync(safeSymbol, tf, 80) ||
+                                      (tf === '1d' ? klineDailyStore.getCachedKlinesSync(safeSymbol, 80) : null);
+                    if (busCached && Array.isArray(busCached) && busCached.length >= 80) {
                       const klines: KLine[] = busCached.map((k: any) => ({
                         time: Number(k.time || k[0]),
                         open: parseFloat(k.open || k[1]) || 0,
@@ -873,7 +882,7 @@ export const useStructureAudit = (
       if (itemsToScan.length === 0) return;
 
       const cfg = configRef.current;
-      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
+      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance && !cfg.enableAdvancedFilter && !cfg.enablePriorReverseDivergence;
       if (areAllRulesOff) {
         return; // 限制规则未开启时绝对禁止后台执行审计
       }
@@ -1328,6 +1337,8 @@ export const useStructureAudit = (
                 ema30: matchingCandidate.emaDetails?.ema30 || matchingCandidate.price,
                 ema40: matchingCandidate.emaDetails?.ema40 || matchingCandidate.price,
                 ema80: matchingCandidate.emaDetails?.ema80 || matchingCandidate.price,
+                ema80Intersections: 0,
+                isPriorReverseFound: true,
               };
               return {
                 tf: r.tf,
@@ -1364,7 +1375,7 @@ export const useStructureAudit = (
     }
 
     const cfg = configRef.current;
-    const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
+    const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance && !cfg.enableAdvancedFilter && !cfg.enablePriorReverseDivergence;
 
     // Identify New/Changed Candidates
     const itemsToScan: ScannerItem[] = [];
@@ -1410,6 +1421,8 @@ export const useStructureAudit = (
             ema30: c.emaDetails?.ema30 || c.price,
             ema40: c.emaDetails?.ema40 || c.price,
             ema80: c.emaDetails?.ema80 || c.price,
+            ema80Intersections: 0,
+            isPriorReverseFound: true,
           };
           return {
             tf: r.tf,
@@ -1493,6 +1506,8 @@ export const useStructureAudit = (
                 ema30: c.emaDetails?.ema30 || c.price,
                 ema40: c.emaDetails?.ema40 || c.price,
                 ema80: c.emaDetails?.ema80 || c.price,
+                ema80Intersections: 0,
+                isPriorReverseFound: true,
               };
               cached.list3Results?.push({
                 tf: r.tf,
@@ -1528,7 +1543,7 @@ export const useStructureAudit = (
     let verifyCounter = 0;
     const checkTimer = setInterval(() => {
       const cfg = configRef.current;
-      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance;
+      const areAllRulesOff = !cfg.strictTrend && !cfg.checkCandleColor && !cfg.enableAmplitudeAudit && (cfg.enableRsi === false) && !cfg.enableMultiResonance && !cfg.enableAdvancedFilter && !cfg.enablePriorReverseDivergence;
       if (areAllRulesOff) {
         return; // 列表3限制规则未开启时，绝对禁止在后台执行高频动态审计
       }

@@ -184,6 +184,18 @@ const List1_Selection: React.FC<Props> = ({
     // 🎯 是否仅在列表1中查看定向截取推送池
     const [viewOnlyPushed, setViewOnlyPushed] = useState(false);
 
+    // 🛡️ [方案 1: DOM 节点防爆与按需物理渲染上限 - 默认初始渲染前 40 张卡片，杜绝超万级 DOM 导致 Chromium 强杀]
+    const [visibleCardLimit, setVisibleCardLimit] = useState(40);
+
+    useEffect(() => {
+        const handleCapLimit = (e: any) => {
+            const lim = e.detail?.limit || 40;
+            setVisibleCardLimit(lim);
+        };
+        window.addEventListener('savior_cap_list1_limit', handleCapLimit);
+        return () => window.removeEventListener('savior_cap_list1_limit', handleCapLimit);
+    }, []);
+
     // 🌊 行情启动底池数据监听 (用于当未开启大行情发现时，市场初筛列表直接展示行情启动底池里的币)
     const [startTrendPool, setStartTrendPool] = useState<any[]>(() => {
         try {
@@ -2376,25 +2388,72 @@ const List1_Selection: React.FC<Props> = ({
                     (() => {
                         const currentItems = viewOnlyPushed ? list2PushCandidates : filteredList;
                         const currentSymbols = currentItems.map(x => x.symbol);
-                        return currentItems.map((item, idx) => (
-                            <List1Item 
-                                key={`${item.symbol || 'item'}-${idx}`}
-                                item={item}
-                                idx={idx}
-                                symbolList={currentSymbols}
-                                scanConfig={scanConfig}
-                                fixedModeView={fixedModeView}
-                                customSymbolSet={customSymbolSet}
-                                onToggleSymbol={onToggleSymbol}
-                                onDeleteSymbol={onDeleteSymbol}
-                                setChartData={setChartData}
-                                mode={scannerMode || mode}
-                                extremeMetrics={metricsCache[item.symbol]}
-                                downloadProgress={downloadProgressMap[item.symbol]}
-                                onDownload={onDownload}
-                                pushRank={pushRankMap.get(item.symbol)}
-                            />
-                        ));
+                        const displayedItems = currentItems.slice(0, visibleCardLimit);
+                        return (
+                            <>
+                                <div id="submodule-list1-items" className="contents">
+                                    {displayedItems.map((item, idx) => (
+                                        <List1Item 
+                                            key={`${item.symbol || 'item'}-${idx}`}
+                                            item={item}
+                                            idx={idx}
+                                            symbolList={currentSymbols}
+                                            scanConfig={scanConfig}
+                                            fixedModeView={fixedModeView}
+                                            customSymbolSet={customSymbolSet}
+                                            onToggleSymbol={onToggleSymbol}
+                                            onDeleteSymbol={onDeleteSymbol}
+                                            setChartData={setChartData}
+                                            mode={scannerMode || mode}
+                                            extremeMetrics={metricsCache[item.symbol]}
+                                            downloadProgress={downloadProgressMap[item.symbol]}
+                                            onDownload={onDownload}
+                                            pushRank={pushRankMap.get(item.symbol)}
+                                        />
+                                    ))}
+                                </div>
+
+                                {currentItems.length > visibleCardLimit && (
+                                    <div className="py-2.5 px-3 bg-slate-900/90 border border-slate-800 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-400 mt-2 shadow-inner">
+                                        <div className="flex items-center gap-2">
+                                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                            <span>
+                                                已物理渲染前 <b>{visibleCardLimit}</b> 项 / 底池全量共 <b>{currentItems.length}</b> 项 (后台全量并发计算中)
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                            <button
+                                                type="button"
+                                                onClick={() => setVisibleCardLimit(prev => Math.min(prev + 40, currentItems.length))}
+                                                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded border border-slate-700 hover:border-indigo-500 text-[11px] font-bold transition-all cursor-pointer"
+                                            >
+                                                加载更多 (+40)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setVisibleCardLimit(currentItems.length)}
+                                                className="px-2 py-1 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded border border-indigo-500/40 text-[11px] font-bold transition-all cursor-pointer"
+                                            >
+                                                展开全部 ({currentItems.length})
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {visibleCardLimit > 40 && currentItems.length > 40 && (
+                                    <div className="py-1.5 px-3 bg-slate-900/60 border border-slate-800/80 rounded-lg flex items-center justify-between text-xs text-slate-400 mt-2">
+                                        <span className="text-[11px]">当前已展开显示全部 {displayedItems.length} 项</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => setVisibleCardLimit(40)}
+                                            className="px-2.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-medium transition-all border border-slate-700 cursor-pointer"
+                                        >
+                                            收起至前 40 项 (防爆优化)
+                                        </button>
+                                    </div>
+                                )}
+                            </>
+                        );
                     })()
                 )}
             </div>

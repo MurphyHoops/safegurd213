@@ -3,6 +3,7 @@ import { MajorTrendConfig, StartTrendGroup } from '../../../components/Scanner/s
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
 import { TrendingUp, ChevronDown, ChevronUp, Link2, Unlink } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
+import { applyDirectionSync } from '../../../utils/directionSync';
 
 interface Props {
     config?: MajorTrendConfig;
@@ -79,15 +80,11 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
         const updatedGroups = newVal ? ensureActiveGroups(groups) : groups;
         
         if (isSyncLocked) {
-            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步多头方向
+            const nextMode = newVal ? (activeConfig.enableStartTrendShort ? 'BOTH' : 'LONG_ONLY') : (activeConfig.enableStartTrendShort ? 'SHORT_ONLY' : 'LONG_ONLY');
+            const dummyScanConfig = { majorTrend: activeConfig } as any;
+            const syncedConfig = applyDirectionSync(dummyScanConfig, nextMode);
             setConfig({
-                ...activeConfig,
-                enableStartTrendLong: newVal,
-                enableStartTrend: newVal || !!activeConfig.enableStartTrendShort,
-                enableSidewaysLong: newVal,
-                enableSideways: newVal || (activeConfig.enableSidewaysShort !== false),
-                enableLong: newVal,
-                enableLookbackFilter: newVal || (activeConfig.enableShort !== false),
+                ...syncedConfig.majorTrend,
                 startTrendGroups: updatedGroups
             });
         } else {
@@ -106,15 +103,11 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
         const updatedGroups = newVal ? ensureActiveGroups(groups) : groups;
         
         if (isSyncLocked) {
-            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步空头方向
+            const nextMode = newVal ? (activeConfig.enableStartTrendLong ? 'BOTH' : 'SHORT_ONLY') : (activeConfig.enableStartTrendLong ? 'LONG_ONLY' : 'SHORT_ONLY');
+            const dummyScanConfig = { majorTrend: activeConfig } as any;
+            const syncedConfig = applyDirectionSync(dummyScanConfig, nextMode);
             setConfig({
-                ...activeConfig,
-                enableStartTrendShort: newVal,
-                enableStartTrend: !!activeConfig.enableStartTrendLong || newVal,
-                enableSidewaysShort: newVal,
-                enableSideways: (activeConfig.enableSidewaysLong !== false) || newVal,
-                enableShort: newVal,
-                enableLookbackFilter: (activeConfig.enableLong !== false) || newVal,
+                ...syncedConfig.majorTrend,
                 startTrendGroups: updatedGroups
             });
         } else {
@@ -130,49 +123,12 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
 
     const handleQuickDirection = (mode: 'LONG_ONLY' | 'SHORT_ONLY' | 'BOTH') => {
         const updatedGroups = ensureActiveGroups(groups);
-        if (mode === 'LONG_ONLY') {
-            setConfig({
-                ...activeConfig,
-                enableStartTrendLong: true,
-                enableStartTrendShort: false,
-                enableStartTrend: true,
-                enableSidewaysLong: true,
-                enableSidewaysShort: false,
-                enableSideways: true,
-                enableLong: true,
-                enableShort: false,
-                enableLookbackFilter: true,
-                startTrendGroups: updatedGroups
-            });
-        } else if (mode === 'SHORT_ONLY') {
-            setConfig({
-                ...activeConfig,
-                enableStartTrendLong: false,
-                enableStartTrendShort: true,
-                enableStartTrend: true,
-                enableSidewaysLong: false,
-                enableSidewaysShort: true,
-                enableSideways: true,
-                enableLong: false,
-                enableShort: true,
-                enableLookbackFilter: true,
-                startTrendGroups: updatedGroups
-            });
-        } else {
-            setConfig({
-                ...activeConfig,
-                enableStartTrendLong: true,
-                enableStartTrendShort: true,
-                enableStartTrend: true,
-                enableSidewaysLong: true,
-                enableSidewaysShort: true,
-                enableSideways: true,
-                enableLong: true,
-                enableShort: true,
-                enableLookbackFilter: true,
-                startTrendGroups: updatedGroups
-            });
-        }
+        const dummyScanConfig = { majorTrend: activeConfig } as any;
+        const syncedConfig = applyDirectionSync(dummyScanConfig, mode);
+        setConfig({
+            ...syncedConfig.majorTrend,
+            startTrendGroups: updatedGroups
+        });
     };
 
     return (
@@ -381,6 +337,19 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
                                                         />
                                                         <span className="text-[8.5px] text-slate-500 font-mono">%</span>
                                                     </div>
+                                                    <div className="flex items-center gap-1 bg-slate-950/60 px-1.5 py-0.5 rounded border border-slate-800">
+                                                        <span className="text-slate-500 text-[8.5px]">且向右涨幅 &le;</span>
+                                                        <SmartNumberInput 
+                                                            value={group.maxLongRightIncreasePct !== undefined ? group.maxLongRightIncreasePct : 5} 
+                                                            onChange={v => {
+                                                                const updated = [...groups];
+                                                                updated[idx] = { ...updated[idx], maxLongRightIncreasePct: v };
+                                                                updateField('startTrendGroups', updated);
+                                                            }}
+                                                            className="w-6 bg-transparent text-center outline-none text-emerald-400 font-bold"
+                                                        />
+                                                        <span className="text-[8.5px] text-slate-500 font-mono">%</span>
+                                                    </div>
                                                 </div>
                                             )}
 
@@ -418,6 +387,19 @@ export const StartTrendSection: React.FC<Props> = ({ config, setConfig }) => {
                                                             onChange={v => {
                                                                 const updated = [...groups];
                                                                 updated[idx] = { ...updated[idx], maxPullbackShort: v };
+                                                                updateField('startTrendGroups', updated);
+                                                            }}
+                                                            className="w-6 bg-transparent text-center outline-none text-rose-400 font-bold"
+                                                        />
+                                                        <span className="text-[8.5px] text-slate-500 font-mono">%</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-1 bg-slate-950/60 px-1.5 py-0.5 rounded border border-slate-800">
+                                                        <span className="text-slate-500 text-[8.5px]">且向右跌幅 &le;</span>
+                                                        <SmartNumberInput 
+                                                            value={group.maxShortRightDecreasePct !== undefined ? group.maxShortRightDecreasePct : 5} 
+                                                            onChange={v => {
+                                                                const updated = [...groups];
+                                                                updated[idx] = { ...updated[idx], maxShortRightDecreasePct: v };
                                                                 updateField('startTrendGroups', updated);
                                                             }}
                                                             className="w-6 bg-transparent text-center outline-none text-rose-400 font-bold"

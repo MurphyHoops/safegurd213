@@ -28,6 +28,13 @@
       ::-webkit-scrollbar-thumb:hover {
         background: #64748b; 
       }
+
+      /* 🚀 [Chromium Native Rendering Virtualization & Containment] */
+      .crypto-virtual-card {
+        content-visibility: auto;
+        contain-intrinsic-size: 0 88px;
+        contain: layout style paint;
+      }
     </style>
 </head>
   <body>

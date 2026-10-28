@@ -94,25 +94,29 @@ export class MarketSimulator {
         if (side) {
             const key = `${cleanSymbol}_${side}`;
             const t = this.recentlyClosedKeys.get(key);
-            return !!(t && (now - t < 25000));
+            return !!(t && (now - t < 60000));
         }
         const t1 = this.recentlyClosedKeys.get(`${cleanSymbol}_${PositionSide.LONG}`);
         const t2 = this.recentlyClosedKeys.get(`${cleanSymbol}_${PositionSide.SHORT}`);
-        return !!((t1 && (now - t1 < 25000)) || (t2 && (now - t2 < 25000)));
+        const t3 = this.recentlyClosedKeys.get(cleanSymbol);
+        return !!((t1 && (now - t1 < 60000)) || (t2 && (now - t2 < 60000)) || (t3 && (now - t3 < 60000)));
     }
 
     public registerInFlightClosing(symbol: string, side: PositionSide, amount: number, retainLocally: boolean = false) {
         const cleanSymbol = normalizeSymbol(symbol);
         const key = `${cleanSymbol}_${side}`;
+        const now = Date.now();
         const record = {
             symbol: cleanSymbol,
             side,
             amount,
-            requestTime: Date.now(),
+            requestTime: now,
             retryCount: 0
         };
         this.inFlightClosingPool.set(key, record);
         this.inFlightClosingPool.set(cleanSymbol, record);
+        this.recentlyClosedKeys.set(key, now);
+        this.recentlyClosedKeys.set(cleanSymbol, now);
         
         // 🔒 立即给内存持仓打上在途平仓状态标记，全系统策略立即感知拦截
         const targetPos = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSymbol && (p.side === side || (p.side as any) === 'BOTH'));
@@ -140,6 +144,8 @@ export class MarketSimulator {
             };
             this.inFlightClosingPool.set(key, record);
             this.inFlightClosingPool.set(cleanSymbol, record);
+            this.recentlyClosedKeys.set(key, now);
+            this.recentlyClosedKeys.set(cleanSymbol, now);
             pos.isClosing = true;
             pos.isBeingClosed = true;
             this.removePositionLocally(cleanSymbol, pos.side);
@@ -323,13 +329,20 @@ export class MarketSimulator {
         for (const np of validNewPositions) {
             const sym = normalizeSymbol(np.symbol);
             const key = `${sym}_${np.side}`;
-            const inFlight = this.inFlightClosingPool.get(key);
+            const inFlight = this.inFlightClosingPool.get(key) || this.inFlightClosingPool.get(sym);
+            const closedTimestamp = this.recentlyClosedKeys.get(key) || this.recentlyClosedKeys.get(sym) || 0;
+
+            // 🔒 1. 墓地关卡：只要处于 60 秒平仓/一键清仓保护期内，绝对物理拦截，严禁由于交易所 snapshot 延迟而导致幽灵复活！
+            if (closedTimestamp > 0 && (now - closedTimestamp < 60000)) {
+                console.log(`[MarketSimulator] Graveyard active for ${sym} (${np.side}) [closed ${now - closedTimestamp}ms ago]. Suppressing stale position.`);
+                continue;
+            }
 
             if (inFlight) {
                 const elapsed = now - inFlight.requestTime;
                 
-                // Check if already closed in logs or recently closed keys (exclude partial amputation/cut logs)
-                const isAlreadyClosed = this.recentlyClosedKeys.has(key) || this.tradeLogs.some(l => 
+                // Check if already closed in logs or recently closed keys
+                const isAlreadyClosed = this.isRecentlyClosed(sym, np.side) || this.tradeLogs.some(l => 
                     normalizeSymbol(l.symbol) === sym && 
                     l.status === 'CLOSED' && 
                     l.direction === np.side && 
@@ -339,32 +352,13 @@ export class MarketSimulator {
                     (now - (l.exit_timestamp || 0) < 60000)
                 );
 
-                if (isAlreadyClosed) {
-                    this.inFlightClosingPool.delete(key);
-                    continue; // Skip stale snapshot position
-                }
-
-                // Buffer period: 8 seconds (8000ms) to allow Binance snapshot to clear
-                if (elapsed < 8000) {
-                    console.log(`[MarketSimulator] In-flight closing buffer active for ${sym} (${np.side}) [elapsed ${elapsed}ms < 8000ms]. Masking from UI positions.`);
+                if (isAlreadyClosed || elapsed < 60000) {
+                    console.log(`[MarketSimulator] In-flight closing buffer active for ${sym} (${np.side}) [elapsed ${elapsed}ms < 60000ms]. Masking from UI positions.`);
                     continue; // Suppress popping up during buffer period!
                 } else {
-                    // Buffer expired (> 8s).
+                    // Buffer expired (> 60s).
                     this.inFlightClosingPool.delete(key);
-                    this.recentlyClosedKeys.delete(key);
-
-                    // Trigger self-healing auto-retry close if retry count < 1 (max 1 retry) and not already closed
-                    if (inFlight.retryCount < 1 && isReal && typeof this.onRealClose === 'function' && !isAlreadyClosed) {
-                        console.log(`[MarketSimulator] Auto-retrying failed close for ${sym} (${np.side}) (retry #${inFlight.retryCount + 1})...`);
-                        this.addLog('WARNING', `⚠️ [平仓核验未完全平掉] ${sym} ${np.side} 未完全成交，系统正在自动发起极速补平 (第${inFlight.retryCount + 1}次重试)...`);
-                        this.inFlightClosingPool.set(key, {
-                            ...inFlight,
-                            requestTime: Date.now(),
-                            retryCount: inFlight.retryCount + 1
-                        });
-                        this.onRealClose(np, '未完全平仓自动重试补平');
-                        continue;
-                    }
+                    this.inFlightClosingPool.delete(sym);
                 }
             }
             filteredNewPositions.push(np);
@@ -3748,6 +3742,14 @@ export class MarketSimulator {
                             this.addLog('SUCCESS', `🔵 [账户变动同步] 手机APP/外部补仓/加仓: ${pos.s} ${inferredSide} 持仓量由 ${oldQty} 增加至 ${absQty} (增加: ${(absQty - oldQty).toFixed(4)})`);
                         }
                     } else if (absQty > 0.00001) {
+                        const key = `${normSym}_${inferredSide}`;
+                        const closedTime = this.recentlyClosedKeys.get(key) || this.recentlyClosedKeys.get(normSym) || 0;
+                        const inFlight = this.inFlightClosingPool.get(key) || this.inFlightClosingPool.get(normSym);
+                        if ((closedTime > 0 && (Date.now() - closedTime < 60000)) || inFlight) {
+                            console.log(`[MarketSimulator ACCOUNT_UPDATE] Suppressing stale open position creation for ${normSym} ${inferredSide}`);
+                            continue;
+                        }
+
                         const opposingPos = this.positions.find(p => normalizeSymbol(p.symbol) === normSym && p.side !== inferredSide);
                         const isHedge = !!opposingPos;
                         const entryId = `acc_open_${normSym}_${inferredSide}_${Date.now()}`;

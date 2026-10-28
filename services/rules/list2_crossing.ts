@@ -50,6 +50,9 @@ export function analyzeList2Crossing(
     const divergenceLookbackBars = (config.divergenceLookbackBars !== undefined && !Number.isNaN(config.divergenceLookbackBars)) ? Math.max(1, config.divergenceLookbackBars) : 20;
     const enableSignalDeviationFilter = !!config.enableSignalDeviationFilter;
     const maxSignalDeviationPercent = (config.maxSignalDeviationPercent !== undefined && !Number.isNaN(config.maxSignalDeviationPercent)) ? Math.max(0, config.maxSignalDeviationPercent) : 50;
+    const enablePriorReverseDivergence = !!config.enablePriorReverseDivergence;
+    const priorReverseLookbackBars = (config.priorReverseLookbackBars !== undefined && !Number.isNaN(config.priorReverseLookbackBars)) ? Math.max(1, config.priorReverseLookbackBars) : 20;
+    const priorReverseMode = config.priorReverseMode || 'BOTH';
     const currentPrice = closes[idx];
     
     // 🔒 [USER MANDATORY RULE - 信号存续 (Retention & Lookback)]
@@ -135,6 +138,9 @@ export function analyzeList2Crossing(
         time: number; 
         bodyRatio: number; 
         isAligned: boolean;
+        isCandleCrossed?: boolean;
+        isMaCrossed?: boolean;
+        isFirstMaCross?: boolean;
         ampValid: boolean;
         volValid: boolean;
         maxVolRatio?: number;
@@ -146,6 +152,8 @@ export function analyzeList2Crossing(
         isWaitDivergencePending?: boolean;
         waitElapsedBars?: number;
         waitTotalBars?: number;
+        isPriorReverseFound?: boolean;
+        priorReverseType?: 'V_REVERSAL_LONG' | 'V_REVERSAL_SHORT';
         kHigh: number;
         kLow: number;
         kClose: number;
@@ -158,6 +166,9 @@ export function analyzeList2Crossing(
         time: number; 
         bodyRatio: number; 
         isAligned: boolean;
+        isCandleCrossed?: boolean;
+        isMaCrossed?: boolean;
+        isFirstMaCross?: boolean;
         ampValid: boolean;
         volValid: boolean;
         maxVolRatio?: number;
@@ -169,6 +180,8 @@ export function analyzeList2Crossing(
         isWaitDivergencePending?: boolean;
         waitElapsedBars?: number;
         waitTotalBars?: number;
+        isPriorReverseFound?: boolean;
+        priorReverseType?: 'V_REVERSAL_LONG' | 'V_REVERSAL_SHORT';
         kHigh: number;
         kLow: number;
         kClose: number;
@@ -248,6 +261,8 @@ export function analyzeList2Crossing(
             let divConfirmedLagL = lag;
             let divConfirmedIdxL = checkIdx;
             let divIsPendingGrayL = false;
+            let isPriorReverseFoundL = false;
+            let priorReverseTypeL: 'V_REVERSAL_LONG' | undefined = undefined;
 
             if (isAlignedL && lag > 0) {
                 // 1. 追溯本轮多头发散的初生起爆原点 (Genesis Bar K0)
@@ -274,9 +289,29 @@ export function analyzeList2Crossing(
 
                 const genesisAgeL = idx - genesisIdxL;
 
-                // 2. 龙头寿命门禁：发散起爆原点距今 K 线根数 (genesisAgeL) 必须 <= 寿命根数 (retentionThreshold)
-                // 坚决只抓龙头，超出寿命根数 (> retentionThreshold) 的老旧发散趋势坚决淘汰下线！
-                const isGenesisEligibleL = genesisAgeL <= retentionThreshold;
+                // 2. 追溯发散起爆原点之前 N 根K线内是否存在反向发散 (空头发散: EMA10 < 20 < 30 < 40 - 诱空洗盘)
+                const effLookbackL = Math.max(priorReverseLookbackBars, 80);
+                const searchEndL = Math.max(minHistoryNeeded, genesisIdxL - effLookbackL);
+                for (let rIdx = genesisIdxL - 1; rIdx >= searchEndL; rIdx--) {
+                    const rE10 = getEmaVal(ema10, rIdx, 10);
+                    const rE20 = getEmaVal(ema20, rIdx, 20);
+                    const rE30 = getEmaVal(ema30, rIdx, 30);
+                    const rE40 = getEmaVal(ema40, rIdx, 40);
+                    if (rE10 !== null && rE20 !== null && rE30 !== null && rE40 !== null) {
+                        if ((rE10 < rE20 && rE20 < rE30 && rE30 < rE40) || (rE10 < rE20 && rE20 < rE30)) {
+                            isPriorReverseFoundL = true;
+                            priorReverseTypeL = 'V_REVERSAL_LONG';
+                            break;
+                        }
+                    }
+                }
+
+                // 前置洗盘反发散门禁转移至列表3执行；列表2仅记录并透传 isPriorReverseFound 状态
+                let passPriorReverseL = true;
+
+                // 3. 龙头寿命门禁与洗盘/V反门禁
+                // 坚决只抓龙头，超出寿命根数 (> retentionThreshold) 或未通过前置洗盘发散门禁的过滤淘汰！
+                const isGenesisEligibleL = (genesisAgeL <= retentionThreshold) && passPriorReverseL;
 
                 if (isGenesisEligibleL) {
                     // 3. 🔒 [USER MANDATORY RULE - 发散回溯穿越硬门禁]
@@ -399,6 +434,8 @@ export function analyzeList2Crossing(
             let divConfirmedLagS = lag;
             let divConfirmedIdxS = checkIdx;
             let divIsPendingGrayS = false;
+            let isPriorReverseFoundS = false;
+            let priorReverseTypeS: 'V_REVERSAL_SHORT' | undefined = undefined;
 
             if (isAlignedS && lag > 0) {
                 // 1. 追溯本轮空头发散的初生起爆原点 (Genesis Bar K0)
@@ -425,9 +462,29 @@ export function analyzeList2Crossing(
 
                 const genesisAgeS = idx - genesisIdxS;
 
-                // 2. 龙头寿命门禁：发散起爆原点距今 K 线根数 (genesisAgeS) 必须 <= 寿命根数 (retentionThreshold)
-                // 坚决只抓龙头，超出寿命根数 (> retentionThreshold) 的老旧发散趋势坚决淘汰下线！
-                const isGenesisEligibleS = genesisAgeS <= retentionThreshold;
+                // 2. 追溯发散起爆原点之前 N 根K线内是否存在反向发散 (多头发散: EMA10 > 20 > 30 > 40 - 诱多洗盘)
+                const effLookbackS = Math.max(priorReverseLookbackBars, 80);
+                const searchEndS = Math.max(minHistoryNeeded, genesisIdxS - effLookbackS);
+                for (let rIdx = genesisIdxS - 1; rIdx >= searchEndS; rIdx--) {
+                    const rE10 = getEmaVal(ema10, rIdx, 10);
+                    const rE20 = getEmaVal(ema20, rIdx, 20);
+                    const rE30 = getEmaVal(ema30, rIdx, 30);
+                    const rE40 = getEmaVal(ema40, rIdx, 40);
+                    if (rE10 !== null && rE20 !== null && rE30 !== null && rE40 !== null) {
+                        if ((rE10 > rE20 && rE20 > rE30 && rE30 > rE40) || (rE10 > rE20 && rE20 > rE30)) {
+                            isPriorReverseFoundS = true;
+                            priorReverseTypeS = 'V_REVERSAL_SHORT';
+                            break;
+                        }
+                    }
+                }
+
+                // 前置洗盘反发散门禁转移至列表3执行；列表2仅记录并透传 isPriorReverseFound 状态
+                let passPriorReverseS = true;
+
+                // 3. 龙头寿命门禁与洗盘/V反门禁
+                // 坚决只抓龙头，超出寿命根数 (> retentionThreshold) 或未通过前置洗盘发散门禁的过滤淘汰！
+                const isGenesisEligibleS = (genesisAgeS <= retentionThreshold) && passPriorReverseS;
 
                 if (isGenesisEligibleS) {
                     // 3. 🔒 [USER MANDATORY RULE - 发散回溯穿越硬门禁]
@@ -553,20 +610,187 @@ export function analyzeList2Crossing(
             const crossingIsBullish = closes[checkIdx] > opens[checkIdx] && lag > 0;
             const crossingIsBearish = closes[checkIdx] < opens[checkIdx] && lag > 0;
 
-            // 锁定做多与做空的目标确认K线索引 (优先采用符合阳/阴线条件的精确K线)
+            const reqMa = config.requireMaCross ?? false;
+
+            // 均线连续穿越：EMA10 在设定 N 根 K 线内顺次连续穿越 EMA20/30/40
+            const prevE10 = getEmaVal(ema10, checkIdx - 1, 10);
+            const prevE20 = getEmaVal(ema20, checkIdx - 1, 20);
+            const prevE30 = getEmaVal(ema30, checkIdx - 1, 30);
+            const prevE40 = getEmaVal(ema40, checkIdx - 1, 40);
+
+            let isMaCrossLong = false;
+            let isMaCrossShort = false;
+            let isFirstMaCrossLong = false;
+            let isFirstMaCrossShort = false;
+            let maCrossConfirmedIdxL: number | null = null;
+            let maCrossConfirmedIdxS: number | null = null;
+
+            const maLookbackLimit = (config.maCrossLookbackBars !== undefined && !Number.isNaN(config.maCrossLookbackBars))
+                ? Math.max(1, config.maCrossLookbackBars)
+                : 15;
+
+            if (e10 !== null && prevE10 !== null && e40 !== null && prevE40 !== null) {
+                // 1. 金叉 (Long): 当根 K 线 (checkIdx) 必须完成 EMA10 向上金叉穿越 EMA40
+                const c40L = prevE10 <= prevE40 && e10 > e40;
+                if (c40L) {
+                    // 2. 追溯在过去 N 根 K 线内 (checkIdx - maLookbackLimit 到 checkIdx)，EMA10 是否顺次完成对 EMA20 与 EMA30 的金叉穿越
+                    let cross20IdxL: number | null = null;
+                    let cross30IdxL: number | null = null;
+                    const searchMinIdxL = Math.max(minHistoryNeeded, checkIdx - maLookbackLimit);
+
+                    for (let b = checkIdx; b >= searchMinIdxL; b--) {
+                        const bE10 = getEmaVal(ema10, b, 10);
+                        const pbE10 = getEmaVal(ema10, b - 1, 10);
+                        if (bE10 === null || pbE10 === null) continue;
+
+                        if (cross20IdxL === null) {
+                            const bE20 = getEmaVal(ema20, b, 20);
+                            const pbE20 = getEmaVal(ema20, b - 1, 20);
+                            if (bE20 !== null && pbE20 !== null && pbE10 <= pbE20 && bE10 > bE20) {
+                                cross20IdxL = b;
+                            }
+                        }
+
+                        if (cross30IdxL === null) {
+                            const bE30 = getEmaVal(ema30, b, 30);
+                            const pbE30 = getEmaVal(ema30, b - 1, 30);
+                            if (bE30 !== null && pbE30 !== null && pbE10 <= pbE30 && bE10 > bE30) {
+                                cross30IdxL = b;
+                            }
+                        }
+
+                        if (cross20IdxL !== null && cross30IdxL !== null) break;
+                    }
+
+                    // 必须在过去 N 根 K 线内同时完成对 EMA20/30/40 的连续金叉穿越
+                    if (cross20IdxL !== null && cross30IdxL !== null) {
+                        // 🔒【第一根同向阳线确认逻辑】：
+                        // A. 若穿越当根 (checkIdx) 就是已收盘阳线，当根直接确认！
+                        // B. 若穿越当根为阴线/十字星，向右顺延寻找第一根已收盘阳线 (Close > Open) 确定为信号 K 线
+                        if (closes[checkIdx] > opens[checkIdx] && (idx - checkIdx > 0)) {
+                            maCrossConfirmedIdxL = checkIdx;
+                        } else {
+                            const maxForwardL = Math.min(idx - 1, checkIdx + retentionThreshold);
+                            for (let f = checkIdx + 1; f <= maxForwardL; f++) {
+                                const fE10 = getEmaVal(ema10, f, 10);
+                                const fE20 = getEmaVal(ema20, f, 20);
+                                if (fE10 === null || fE20 === null || fE10 <= fE20) break;
+                                if (closes[f] > opens[f]) {
+                                    maCrossConfirmedIdxL = f;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (maCrossConfirmedIdxL !== null) {
+                            isMaCrossLong = true;
+
+                            // 校验【仅限首次穿越】：追溯前 N 根 K 线，要求 EMA10 在金叉前未处于 EMA40 上方
+                            let wasBelow = true;
+                            const checkBackLimit = Math.max(0, checkIdx - 8);
+                            for (let b = checkIdx - 2; b >= checkBackLimit; b--) {
+                                const b10 = getEmaVal(ema10, b, 10);
+                                const b40 = getEmaVal(ema40, b, 40);
+                                if (b10 !== null && b40 !== null && b10 > b40) {
+                                    wasBelow = false;
+                                    break;
+                                }
+                            }
+                            isFirstMaCrossLong = wasBelow;
+                        }
+                    }
+                }
+
+                // 1. 死叉 (Short): 当根 K 线 (checkIdx) 必须完成 EMA10 向下死叉穿越 EMA40
+                const c40S = prevE10 >= prevE40 && e10 < e40;
+                if (c40S) {
+                    // 2. 追溯在过去 N 根 K 线内 (checkIdx - maLookbackLimit 到 checkIdx)，EMA10 是否顺次完成对 EMA20 与 EMA30 的死叉穿越
+                    let cross20IdxS: number | null = null;
+                    let cross30IdxS: number | null = null;
+                    const searchMinIdxS = Math.max(minHistoryNeeded, checkIdx - maLookbackLimit);
+
+                    for (let b = checkIdx; b >= searchMinIdxS; b--) {
+                        const bE10 = getEmaVal(ema10, b, 10);
+                        const pbE10 = getEmaVal(ema10, b - 1, 10);
+                        if (bE10 === null || pbE10 === null) continue;
+
+                        if (cross20IdxS === null) {
+                            const bE20 = getEmaVal(ema20, b, 20);
+                            const pbE20 = getEmaVal(ema20, b - 1, 20);
+                            if (bE20 !== null && pbE20 !== null && pbE10 >= pbE20 && bE10 < bE20) {
+                                cross20IdxS = b;
+                            }
+                        }
+
+                        if (cross30IdxS === null) {
+                            const bE30 = getEmaVal(ema30, b, 30);
+                            const pbE30 = getEmaVal(ema30, b - 1, 30);
+                            if (bE30 !== null && pbE30 !== null && pbE10 >= pbE30 && bE10 < pbE30) {
+                                cross30IdxS = b;
+                            }
+                        }
+
+                        if (cross20IdxS !== null && cross30IdxS !== null) break;
+                    }
+
+                    // 必须在过去 N 根 K 线内同时完成对 EMA20/30/40 的连续死叉穿越
+                    if (cross20IdxS !== null && cross30IdxS !== null) {
+                        // 🔒【第一根同向阴线确认逻辑】：
+                        // A. 若穿越当根 (checkIdx) 就是已收盘阴线，当根直接确认！
+                        // B. 若穿越当根为阳线/十字星，向右顺延寻找第一根已收盘阴线 (Close < Open) 确定为信号 K 线
+                        if (closes[checkIdx] < opens[checkIdx] && (idx - checkIdx > 0)) {
+                            maCrossConfirmedIdxS = checkIdx;
+                        } else {
+                            const maxForwardS = Math.min(idx - 1, checkIdx + retentionThreshold);
+                            for (let f = checkIdx + 1; f <= maxForwardS; f++) {
+                                const fE10 = getEmaVal(ema10, f, 10);
+                                const fE20 = getEmaVal(ema20, f, 20);
+                                if (fE10 === null || fE20 === null || fE10 >= fE20) break;
+                                if (closes[f] < opens[f]) {
+                                    maCrossConfirmedIdxS = f;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (maCrossConfirmedIdxS !== null) {
+                            isMaCrossShort = true;
+
+                            // 校验【仅限首次穿越】：追溯前 N 根 K 线，要求 EMA10 在死叉前未处于 EMA40 下方
+                            let wasAbove = true;
+                            const checkBackLimit = Math.max(0, checkIdx - 8);
+                            for (let b = checkIdx - 2; b >= checkBackLimit; b--) {
+                                const b10 = getEmaVal(ema10, b, 10);
+                                const b40 = getEmaVal(ema40, b, 40);
+                                if (b10 !== null && b40 !== null && b10 < b40) {
+                                    wasAbove = false;
+                                    break;
+                                }
+                            }
+                            isFirstMaCrossShort = wasAbove;
+                        }
+                    }
+                }
+            }
+
+            // 锁定做多与做空的目标确认K线索引 (当开启【均线穿越】时，优先定位为穿越时或穿越后第一根同向确立K线)
             let targetIdxL = checkIdx;
-            if (config.requireAlignment && !config.requireCrossing) {
+            if (reqMa && isMaCrossLong && maCrossConfirmedIdxL !== null) {
+                targetIdxL = maCrossConfirmedIdxL;
+            } else if (config.requireAlignment && !config.requireCrossing && !reqMa) {
                 targetIdxL = divConfirmedIdxL;
-            } else if (divergenceValidL && !(isCrossing && closes[checkIdx] > opens[checkIdx])) {
+            } else if (divergenceValidL && !(isCrossing && closes[checkIdx] > opens[checkIdx]) && !reqMa) {
                 targetIdxL = divConfirmedIdxL;
             } else {
                 targetIdxL = checkIdx;
             }
 
             let targetIdxS = checkIdx;
-            if (config.requireAlignment && !config.requireCrossing) {
+            if (reqMa && isMaCrossShort && maCrossConfirmedIdxS !== null) {
+                targetIdxS = maCrossConfirmedIdxS;
+            } else if (config.requireAlignment && !config.requireCrossing && !reqMa) {
                 targetIdxS = divConfirmedIdxS;
-            } else if (divergenceValidS && !(isCrossing && closes[checkIdx] < opens[checkIdx])) {
+            } else if (divergenceValidS && !(isCrossing && closes[checkIdx] < opens[checkIdx]) && !reqMa) {
                 targetIdxS = divConfirmedIdxS;
             } else {
                 targetIdxS = checkIdx;
@@ -707,7 +931,14 @@ export function analyzeList2Crossing(
             const bodyValidL = bodyRatioL >= minBodyRatio;
             const bodyValidS = bodyRatioS >= minBodyRatio;
 
-            // Crossing Rules & Divergence Rules Evaluation with AND/OR Logic
+
+
+            // 规则独立开关提取
+            const reqCandle = config.requireCandleCross !== undefined ? config.requireCandleCross : (config.requireCrossing ?? true);
+            // reqMa already extracted above
+            const reqAlign = config.requireAlignment ?? false;
+            const reqFirstMaOnly = config.requireFirstMaCrossOnly ?? false;
+
             // 🔒 核心方向门禁：做多信号绝对禁止在 EMA10 < EMA20 且 EMA10 < EMA30 的空头排列下触发；
             // 做空信号绝对禁止在 EMA10 > EMA20 且 EMA10 > EMA30 的多头排列下触发
             const directionGuardL = !(e10 < e20 && (e30 === null || e10 < e30));
@@ -717,9 +948,12 @@ export function analyzeList2Crossing(
             const strictOkL = !strictFiltering || (ampValidL && volValidL && bodyValidL);
             const strictOkS = !strictFiltering || (ampValidS && volValidS && bodyValidS);
 
-            // 🔒 [USER MANDATORY RULE] 做空时，必须严格呈 EMA10 < EMA20 < EMA30 < EMA40 形态才能入选列表2
+            // 各条件独立有效性计算
             const crossingValidL = isCrossing && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
             const crossingValidS = isCrossing && !conflictS && strictOkS && isAlignedShort && crossingIsBearish;
+
+            const maCrossValidL = isMaCrossLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
+            const maCrossValidS = isMaCrossShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && isAlignedShort && crossingIsBearish;
 
             const divergenceStrictValidL = divergenceValidL && strictOkL;
             const divergenceStrictValidS = divergenceValidS && strictOkS && isAlignedShort;
@@ -728,7 +962,7 @@ export function analyzeList2Crossing(
             let patternMatchedS = false;
             const logicMode = config.crossingDivergenceLogic || 'AND';
 
-            // 🔒 [USER MANDATORY RULE - 先穿越后等待发散模式 (WAIT MODE - 方案 B 实时可视进榜)]
+            // 🔒 [USER MANDATORY RULE - 先穿越后等待发散模式 (WAIT MODE)]
             let isWaitPendingL = false;
             let waitElapsedL = 0;
             let waitTotalL = 0;
@@ -740,8 +974,11 @@ export function analyzeList2Crossing(
             if (logicMode === 'WAIT') {
                 const waitBars = Math.max(1, config.waitDivergenceBars ?? 5);
 
-                // 做多：当前发生大十字星穿越且已收盘收阳，向后等待发散
-                if (isCrossing && crossingIsBullish && !conflictL && strictOkL && directionGuardL) {
+                const hasCrossL = (reqCandle && isCrossing) || (reqMa && isMaCrossLong);
+                const hasCrossS = (reqCandle && isCrossing) || (reqMa && isMaCrossShort);
+
+                // 做多：当前发生穿越且已收盘收阳，向后等待发散
+                if (hasCrossL && crossingIsBullish && !conflictL && strictOkL && directionGuardL) {
                     const elapsedBars = idx - checkIdx;
                     if (elapsedBars <= waitBars) {
                         let waitDivergenceFoundL = false;
@@ -754,7 +991,6 @@ export function analyzeList2Crossing(
                             const fE30 = getEmaVal(ema30, fIdx, 30);
                             const fE40 = getEmaVal(ema40, fIdx, 40);
 
-                            // 门禁：中途均线若发生死叉崩溃，则终止等待
                             if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
                                 if (fIdx > checkIdx) break;
                             }
@@ -763,9 +999,7 @@ export function analyzeList2Crossing(
                                 (fE30 === null || fE20 > fE30) &&
                                 (fE40 === null || (fE30 !== null && fE30 > fE40));
 
-                            // 必须为已收盘阳线，且确立多头发散
                             if (isBulldiv && closes[fIdx] > opens[fIdx] && (idx - fIdx > 0)) {
-                                // 🔒 [STRICT BODY GATE]: 先穿越等待发散模式下，发散确认K线也必须严格满足实体比例门禁
                                 const fRangeL = highs[fIdx] - lows[fIdx];
                                 const fBodyRatioL = fRangeL > 0 ? (closes[fIdx] - opens[fIdx]) / fRangeL * 100 : 0;
                                 if (strictFiltering && fBodyRatioL < minBodyRatio) {
@@ -778,11 +1012,10 @@ export function analyzeList2Crossing(
                         }
 
                         if (waitDivergenceFoundL) {
-                            targetIdxL = waitDivergenceIdxL; // 🔒 严格将出现发散形态的这根K线标记为信号K线（已转正）
+                            targetIdxL = waitDivergenceIdxL;
                             patternMatchedL = true;
                             isWaitPendingL = false;
                         } else {
-                            // 尚未发散，但仍在等待期内：以穿越K线即时进榜，显示等待发散蓄势中
                             const curE10 = getEmaVal(ema10, idx - 1, 10);
                             const curE20 = getEmaVal(ema20, idx - 1, 20);
                             const curE30 = getEmaVal(ema30, idx - 1, 30);
@@ -799,8 +1032,8 @@ export function analyzeList2Crossing(
                     }
                 }
 
-                // 做空：当前发生大十字星穿越且已收盘收阴，向后等待发散
-                if (isCrossing && crossingIsBearish && !conflictS && strictOkS) {
+                // 做空：当前发生穿越且已收盘收阴，向后等待发散
+                if (hasCrossS && crossingIsBearish && !conflictS && strictOkS) {
                     const elapsedBars = idx - checkIdx;
                     if (elapsedBars <= waitBars) {
                         let waitDivergenceFoundS = false;
@@ -813,7 +1046,6 @@ export function analyzeList2Crossing(
                             const fE30 = getEmaVal(ema30, fIdx, 30);
                             const fE40 = getEmaVal(ema40, fIdx, 40);
 
-                            // 门禁：中途均线若发生金叉崩溃，则终止等待
                             if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
                                 if (fIdx > checkIdx) break;
                             }
@@ -822,9 +1054,7 @@ export function analyzeList2Crossing(
                                 (fE30 === null || fE20 < fE30) &&
                                 (fE40 === null || (fE30 !== null && fE30 < fE40));
 
-                            // 必须为已收盘阴线，且确立空头发散
                             if (isBearDiv && closes[fIdx] < opens[fIdx] && (idx - fIdx > 0)) {
-                                // 🔒 [STRICT BODY GATE]: 先穿越等待发散模式下，发散确认K线也必须严格满足实体比例门禁
                                 const fRangeS = highs[fIdx] - lows[fIdx];
                                 const fBodyRatioS = fRangeS > 0 ? (opens[fIdx] - closes[fIdx]) / fRangeS * 100 : 0;
                                 if (strictFiltering && fBodyRatioS < minBodyRatio) {
@@ -837,11 +1067,10 @@ export function analyzeList2Crossing(
                         }
 
                         if (waitDivergenceFoundS) {
-                            targetIdxS = waitDivergenceIdxS; // 🔒 严格将出现发散形态的这根K线标记为信号K线（已转正）
+                            targetIdxS = waitDivergenceIdxS;
                             patternMatchedS = true;
                             isWaitPendingS = false;
                         } else {
-                            // 尚未发散，但仍在等待期内：以穿越K线即时进榜，显示等待发散蓄势中
                             const curE10 = getEmaVal(ema10, idx - 1, 10);
                             const curE20 = getEmaVal(ema20, idx - 1, 20);
                             const curE30 = getEmaVal(ema30, idx - 1, 30);
@@ -857,25 +1086,32 @@ export function analyzeList2Crossing(
                         }
                     }
                 }
-            } else if (config.requireCrossing && config.requireAlignment) {
-                if (logicMode === 'OR') {
-                    patternMatchedL = crossingValidL || divergenceStrictValidL;
-                    patternMatchedS = crossingValidS || divergenceStrictValidS;
-                } else {
-                    // AND
-                    patternMatchedL = crossingValidL && divergenceStrictValidL;
-                    patternMatchedS = crossingValidS && divergenceStrictValidS;
+            } else if (logicMode === 'OR') {
+                let matchL = false;
+                let matchS = false;
+                if (reqCandle) { matchL = matchL || crossingValidL; matchS = matchS || crossingValidS; }
+                if (reqMa) { matchL = matchL || maCrossValidL; matchS = matchS || maCrossValidS; }
+                if (reqAlign) { matchL = matchL || divergenceStrictValidL; matchS = matchS || divergenceStrictValidS; }
+                if (!reqCandle && !reqMa && !reqAlign) {
+                    matchL = strictOkL && !conflictL && crossingIsBullish;
+                    matchS = strictOkS && !conflictS && isAlignedShort && crossingIsBearish;
                 }
-            } else if (config.requireCrossing) {
-                patternMatchedL = crossingValidL;
-                patternMatchedS = crossingValidS;
-            } else if (config.requireAlignment) {
-                patternMatchedL = divergenceStrictValidL;
-                patternMatchedS = divergenceStrictValidS;
+                patternMatchedL = matchL;
+                patternMatchedS = matchS;
             } else {
-                // Squeeze fallback
-                patternMatchedL = strictOkL && !conflictL && crossingIsBullish;
-                patternMatchedS = strictOkS && !conflictS && isAlignedShort && crossingIsBearish;
+                // AND (全套共振)
+                let matchL = true;
+                let matchS = true;
+                let countActive = 0;
+                if (reqCandle) { matchL = matchL && crossingValidL; matchS = matchS && crossingValidS; countActive++; }
+                if (reqMa) { matchL = matchL && maCrossValidL; matchS = matchS && maCrossValidS; countActive++; }
+                if (reqAlign) { matchL = matchL && divergenceStrictValidL; matchS = matchS && divergenceStrictValidS; countActive++; }
+                if (countActive === 0) {
+                    matchL = strictOkL && !conflictL && crossingIsBullish;
+                    matchS = strictOkS && !conflictS && isAlignedShort && crossingIsBearish;
+                }
+                patternMatchedL = matchL;
+                patternMatchedS = matchS;
             }
 
             // 🔒 [USER MANDATORY RULE] 做空时，任何匹配模式均必须严格满足 EMA10 < EMA20 < EMA30 < EMA40
@@ -971,6 +1207,9 @@ export function analyzeList2Crossing(
                         time: signalTimeL, 
                         bodyRatio: finalBodyRatioL, 
                         isAligned: isAlignedLong,
+                        isCandleCrossed: isCrossing,
+                        isMaCrossed: isMaCrossLong,
+                        isFirstMaCross: isFirstMaCrossLong,
                         ampValid: finalAmpValidL,
                         volValid: volValidL,
                         maxVolRatio: maxVolRatioL,
@@ -982,6 +1221,8 @@ export function analyzeList2Crossing(
                         isWaitDivergencePending: isWaitPendingL,
                         waitElapsedBars: waitElapsedL,
                         waitTotalBars: waitTotalL,
+                        isPriorReverseFound: isPriorReverseFoundL,
+                        priorReverseType: priorReverseTypeL,
                         kHigh: highs[targetIdxL],
                         kLow: lows[targetIdxL],
                         kClose: closes[targetIdxL],
@@ -1015,6 +1256,9 @@ export function analyzeList2Crossing(
                         time: signalTimeS, 
                         bodyRatio: finalBodyRatioS, 
                         isAligned: isAlignedShort,
+                        isCandleCrossed: isCrossing,
+                        isMaCrossed: isMaCrossShort,
+                        isFirstMaCross: isFirstMaCrossShort,
                         ampValid: finalAmpValidS,
                         volValid: volValidS,
                         maxVolRatio: maxVolRatioS,
@@ -1026,6 +1270,8 @@ export function analyzeList2Crossing(
                         isWaitDivergencePending: isWaitPendingS,
                         waitElapsedBars: waitElapsedS,
                         waitTotalBars: waitTotalS,
+                        isPriorReverseFound: isPriorReverseFoundS,
+                        priorReverseType: priorReverseTypeS,
                         kHigh: highs[targetIdxS],
                         kLow: lows[targetIdxS],
                         kClose: closes[targetIdxS],
@@ -1145,11 +1391,16 @@ export function analyzeList2Crossing(
                     isConsecutiveRising: signalMember.isConsecutiveRising,
                     bodyValid: signalMember.bodyValid,
                     isAligned: signalMember.isAligned,
+                    isCandleCrossed: signalMember.isCandleCrossed,
+                    isMaCrossed: signalMember.isMaCrossed,
+                    isFirstMaCross: signalMember.isFirstMaCross,
                     isClosed: signalMember.isClosed,
                     isPendingGray: signalMember.isPendingGray,
                     isWaitDivergencePending: signalMember.isWaitDivergencePending,
                     waitElapsedBars: signalMember.waitElapsedBars,
                     waitTotalBars: signalMember.waitTotalBars,
+                    isPriorReverseFound: signalMember.isPriorReverseFound,
+                    priorReverseType: signalMember.priorReverseType,
                     kOpen: signalMember.kOpen,
                     kClose: signalMember.kClose,
                     kHigh: signalMember.kHigh,
@@ -1216,11 +1467,16 @@ export function analyzeList2Crossing(
                     isConsecutiveRising: signalMember.isConsecutiveRising,
                     bodyValid: signalMember.bodyValid,
                     isAligned: signalMember.isAligned,
+                    isCandleCrossed: signalMember.isCandleCrossed,
+                    isMaCrossed: signalMember.isMaCrossed,
+                    isFirstMaCross: signalMember.isFirstMaCross,
                     isClosed: signalMember.isClosed,
                     isPendingGray: signalMember.isPendingGray,
                     isWaitDivergencePending: signalMember.isWaitDivergencePending,
                     waitElapsedBars: signalMember.waitElapsedBars,
                     waitTotalBars: signalMember.waitTotalBars,
+                    isPriorReverseFound: signalMember.isPriorReverseFound,
+                    priorReverseType: signalMember.priorReverseType,
                     kOpen: signalMember.kOpen,
                     kClose: signalMember.kClose,
                     kHigh: signalMember.kHigh,

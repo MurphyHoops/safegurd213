@@ -6,7 +6,7 @@ import SettingsPanel from '../../components/SettingsPanel';
 import TradeLogModal from '../../components/TradeLogModal';
 import { LogCenterModule } from '../log-center';
 import { BacktestScannerDashboard } from './mirrored/BacktestScannerDashboard';
-import { Play, Pause, SkipForward, RotateCcw, X, Clock, TrendingUp, BarChart2 } from 'lucide-react';
+import { Play, Pause, SkipForward, RotateCcw, X, Clock, TrendingUp, BarChart2, ArrowLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBacktest } from './BacktestContext';
 
@@ -217,7 +217,15 @@ export const BacktestUniverse: React.FC<BacktestUniverseProps> = ({ settings, kl
                             {account.totalBalance.toFixed(2)} USDT
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-red-900/50 rounded text-slate-400 hover:text-white transition-colors">
+                    <button 
+                        onClick={onClose} 
+                        className="px-3.5 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+                        title="退出回测模式终端，返回实盘交易主界面"
+                    >
+                        <ArrowLeft size={14} />
+                        <span>返回主界面</span>
+                    </button>
+                    <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors" title="关闭">
                         <X size={20}/>
                     </button>
                 </div>

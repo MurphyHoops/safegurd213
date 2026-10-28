@@ -445,13 +445,13 @@ export const initCrashWatchdog = () => {
                     let inferredReason = '系统强杀/显卡驱动重置/进程异常终止 (Abnormal Process Exit)';
                     let crashType: CrashBlackboxEntry['type'] = 'BROWSER_TAB_KILL';
 
-                    if (memPct > 75 || usedMB > 1400) {
+                    if (memPct > 80 || usedMB > 2000) {
                         inferredReason = `V8 堆内存溢出 (OOM) 崩溃 - 崩溃前已使用: ${usedMB}MB / ${limitMB}MB (${memPct}%)`;
                         crashType = 'OOM_ALERT';
                     } else if (prev.isEventLoopBlocked) {
                         inferredReason = '主线程事件循环无限死循环阻塞 (Event Loop Freeze)';
                         crashType = 'EVENT_LOOP_FREEZE';
-                    } else if (domNodes > 3000) {
+                    } else if (domNodes > 35000 && memPct > 65) {
                         inferredReason = `DOM 节点过度堆积导致渲染瓦解 (DOM Leaked: ${domNodes} 节点)`;
                         crashType = 'RENDER_CRASH';
                     }

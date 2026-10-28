@@ -508,7 +508,7 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                     chineseName: getCoinChineseName(item.symbol)
                 });
             }}
-            className={`rounded overflow-hidden animate-in fade-in transition-all cursor-pointer relative border ${tierCardStyle}`}
+            className={`crypto-virtual-card rounded overflow-hidden animate-in fade-in transition-all cursor-pointer relative border ${tierCardStyle}`}
         >
             {/* Individual Remove Button (Far Right) */}
             <button 

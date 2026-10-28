@@ -3494,12 +3494,19 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
 
     const handleClosePosition = useCallback(async (symbol: string, side: PositionSide) => {
         const cleanSymbol = normalizeSymbol(symbol);
+        const lockKey = `${cleanSymbol}_${side}`;
+        const now = Date.now();
+        recentlyClosedPositionsRef.current.set(lockKey, now);
+        recentlyClosedPositionsRef.current.set(cleanSymbol, now);
+        pendingClosesRef.current.add(lockKey);
+        pendingClosesRef.current.add(cleanSymbol);
+
         setManuallyClosedSymbols(prev => new Set(prev).add(cleanSymbol));
         setTimeout(() => setManuallyClosedSymbols(prev => {
             const next = new Set(prev);
             next.delete(cleanSymbol);
             return next;
-        }), 3000);
+        }), 15000);
 
         const isReal = settingsRef.current.system.realTrading;
         if (isReal) {
@@ -3703,6 +3710,29 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 alert("没有当前持仓可以清仓。");
                 return;
             }
+
+            const now = Date.now();
+            activePositionsToClose.forEach(pos => {
+                const cleanSymbol = normalizeSymbol(pos.symbol);
+                const lockKey = `${cleanSymbol}_${pos.side}`;
+                recentlyClosedPositionsRef.current.set(lockKey, now);
+                recentlyClosedPositionsRef.current.set(cleanSymbol, now);
+                pendingClosesRef.current.add(lockKey);
+                pendingClosesRef.current.add(cleanSymbol);
+            });
+
+            setManuallyClosedSymbols(prev => {
+                const next = new Set(prev);
+                activePositionsToClose.forEach(p => next.add(normalizeSymbol(p.symbol)));
+                return next;
+            });
+            setTimeout(() => {
+                setManuallyClosedSymbols(prev => {
+                    const next = new Set(prev);
+                    activePositionsToClose.forEach(p => next.delete(normalizeSymbol(p.symbol)));
+                    return next;
+                });
+            }, 20000);
 
             if (simulatorRef.current) {
                 simulatorRef.current.addLog("INFO", `[实盘一键清仓] 启动全量极速平仓，共 ${activePositionsToClose.length} 个仓位，全并发实时平仓提交...`);

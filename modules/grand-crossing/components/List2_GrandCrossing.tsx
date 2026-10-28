@@ -1,13 +1,15 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { List2Config, ScannerItem, ScanConfig, COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { List2Control } from './Control';
 import { List2Item } from './Item';
-import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History, ArrowUpDown, Lock } from 'lucide-react';
+import { Shield, Loader2, Layers, TrendingUp, TrendingDown, Maximize2, Trash2, AlertCircle, History, ArrowUpDown, Lock, Tv, Clock, Zap, X } from 'lucide-react';
 import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 import { ScannerHistoryModal, useAutoHistoryLogger } from '../../momentum-audit/components/ScannerHistoryModal';
 import { TimeframeDiagnosticRecord } from '../types';
 import { normalizeSymbol } from '../../../services/symbolUtils';
+import KlineChartModal from '../../../components/KlineChartModal';
+import { audioService } from '../../../services/audioService';
 
 interface Props {
     networkStatus?: 'healthy' | 'delayed' | 'disconnected';
@@ -52,6 +54,138 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
     const [isHoldingStandbyExpanded, setIsHoldingStandbyExpanded] = useState(true);
+
+    // --- 🖥️ LIST 2 AUTO K-LINE POPUP STATE & TIMER (5-Minute Inactivity Countdown) ---
+    const [enableAutoPopup, setEnableAutoPopup] = useState<boolean>(() => {
+        if (config?.enableAutoPopup !== undefined) return config.enableAutoPopup;
+        try {
+            return localStorage.getItem('SAVIOR_LIST2_AUTO_POPUP') === 'true';
+        } catch (e) {
+            return false;
+        }
+    });
+
+    const [autoPopupItem, setAutoPopupItem] = useState<ScannerItem | null>(null);
+    const [popupTimeLeft, setPopupTimeLeft] = useState<number>(300); // 300 seconds = 5 minutes
+    const seenSignalKeysRef = useRef<Set<string>>(new Set());
+    const isFirstLoadRef = useRef<boolean>(true);
+
+    // Toggle switch handler
+    const handleToggleAutoPopup = () => {
+        const nextVal = !enableAutoPopup;
+        setEnableAutoPopup(nextVal);
+        try {
+            localStorage.setItem('SAVIOR_LIST2_AUTO_POPUP', String(nextVal));
+        } catch (e) {}
+        setConfig(prev => ({ ...prev, enableAutoPopup: nextVal }));
+    };
+
+    // Track new coins/signals entering List 2 and pop up K-line according to viewMode (ALL | LONG | SHORT)
+    useEffect(() => {
+        const currentList = allList2 || filteredList2 || [];
+        if (!currentList || currentList.length === 0) return;
+
+        // On initial mount, seed seenSignalKeysRef with existing signal keys so page refresh doesn't trigger mass popups
+        if (isFirstLoadRef.current) {
+            currentList.forEach(item => {
+                if (item && item.symbol) {
+                    const norm = normalizeSymbol(item.symbol);
+                    if (item.groupedResults && item.groupedResults.length > 0) {
+                        item.groupedResults.forEach(r => {
+                            if (r.direction) {
+                                seenSignalKeysRef.current.add(`${norm}-${r.direction}`);
+                            }
+                        });
+                    } else if (item.direction) {
+                        seenSignalKeysRef.current.add(`${norm}-${item.direction}`);
+                    } else {
+                        seenSignalKeysRef.current.add(norm);
+                    }
+                }
+            });
+            isFirstLoadRef.current = false;
+            return;
+        }
+
+        // Detect new signals appearing in List 2
+        for (const item of currentList) {
+            if (!item || !item.symbol) continue;
+            const norm = normalizeSymbol(item.symbol);
+            const results = item.groupedResults || [];
+
+            if (results.length > 0) {
+                for (const r of results) {
+                    const dir = r.direction || 'LONG';
+                    const signalKey = `${norm}-${dir}`;
+
+                    if (!seenSignalKeysRef.current.has(signalKey)) {
+                        seenSignalKeysRef.current.add(signalKey);
+
+                        // 🔒 [USER MANDATORY RULE]: 配合方向选项 (ALL | LONG | SHORT)
+                        // 当只选多 (LONG) 时只弹出向上发散(多)的K线图，当只选空 (SHORT) 时只弹出向下发散(空)的K线图
+                        const isDirectionMatch = viewMode === 'ALL' || viewMode === dir;
+
+                        if (enableAutoPopup && isDirectionMatch) {
+                            const matchingResults = results.filter(res => viewMode === 'ALL' || res.direction === dir);
+                            const popupItemToSet: ScannerItem = {
+                                ...item,
+                                direction: dir,
+                                groupedResults: matchingResults.length > 0 ? matchingResults : results
+                            };
+                            setAutoPopupItem(popupItemToSet);
+                            setPopupTimeLeft(300); // 300 seconds (5 minutes)
+                            try {
+                                const dirText = dir === 'LONG' ? '向上发散(多)' : '向下发散(空)';
+                                audioService.speak(`列表2新币${dirText}自动弹窗: ${norm}`, true);
+                            } catch (e) {}
+                            return;
+                        }
+                    }
+                }
+            } else {
+                const dir = item.direction || 'LONG';
+                const signalKey = `${norm}-${dir}`;
+                if (!seenSignalKeysRef.current.has(signalKey)) {
+                    seenSignalKeysRef.current.add(signalKey);
+                    const isDirectionMatch = viewMode === 'ALL' || viewMode === dir;
+                    if (enableAutoPopup && isDirectionMatch) {
+                        setAutoPopupItem(item);
+                        setPopupTimeLeft(300);
+                        try {
+                            const dirText = dir === 'LONG' ? '向上发散(多)' : '向下发散(空)';
+                            audioService.speak(`列表2新币${dirText}自动弹窗: ${norm}`, true);
+                        } catch (e) {}
+                        return;
+                    }
+                }
+            }
+        }
+    }, [filteredList2, allList2, enableAutoPopup, viewMode]);
+
+    // 5-minute countdown timer (Auto close after 300s of inactivity)
+    useEffect(() => {
+        if (!autoPopupItem) return;
+
+        const timer = setInterval(() => {
+            setPopupTimeLeft(prev => {
+                if (prev <= 1) {
+                    setAutoPopupItem(null);
+                    return 0;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+
+        return () => clearInterval(timer);
+    }, [autoPopupItem]);
+
+    // Reset timer back to 300s on user operation inside modal
+    const handleModalInteraction = () => {
+        setPopupTimeLeft(300);
+    };
+
+    // 🛡️ [方案 1: DOM 节点防爆与按需物理渲染上限 - 默认初始显示前 30 个信号卡片]
+    const [visibleCount, setVisibleCount] = useState(30);
 
     // Separate Lists and filter groupedResults by direction for strict separation with 100% deduplication
     const { longs, shorts } = useMemo(() => {
@@ -173,7 +307,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     if (!config) return <div className="p-4 text-xs text-red-500">List 2 Config Error</div>;
 
     return (
-        <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 ${COLUMN_WIDTH_CLASS}`}>
+        <div className="flex flex-col h-full bg-slate-900 border-r border-slate-800 flex-[1.3] min-w-[320px] 2xl:min-w-[350px]">
             
             {/* Polling Status Bar */}
             {pollingStatus && (
@@ -207,6 +341,19 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         <span>2. 绝对防御</span>
                     </div>
                     <div className="flex items-center gap-1">
+                        <button
+                            type="button"
+                            onClick={handleToggleAutoPopup}
+                            className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] font-bold transition-all mr-1 cursor-pointer ${
+                                enableAutoPopup 
+                                    ? 'bg-indigo-900/50 text-indigo-300 border-indigo-500/60 shadow-[0_0_8px_rgba(99,102,241,0.3)]' 
+                                    : 'bg-slate-800 text-slate-500 border-slate-700 hover:text-slate-300'
+                            }`}
+                            title={enableAutoPopup ? "自动弹窗已开启：列表2有新币出现时自动在桌面上弹出K线图5分钟 (无操作自动关闭)" : "点击开启：列表2有新币出现时自动在桌面上弹出K线图"}
+                        >
+                            <Tv size={12} className={enableAutoPopup ? "text-indigo-400 animate-pulse" : "text-slate-500"} />
+                            <span>自动弹窗: {enableAutoPopup ? '开' : '关'}</span>
+                        </button>
                         <button 
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -404,7 +551,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar bg-slate-950/20">
-                {normalList.map((item, idx) => (
+                {normalList.slice(0, visibleCount).map((item, idx) => (
                     item ? (
                         <List2Item 
                             key={`${item.symbol}-${item.direction || 'ALL'}-${idx}`} 
@@ -417,6 +564,29 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         />
                     ) : null
                 ))}
+
+                {normalList.length > visibleCount && (
+                    <div className="py-2 px-3 bg-slate-900/80 border border-slate-800 rounded-lg flex items-center justify-between text-xs text-slate-400 mt-1 shadow-inner">
+                        <span className="text-[10px]">已显示前 {visibleCount} 项 / 共 {normalList.length} 项信号</span>
+                        <div className="flex items-center gap-1.5">
+                            <button
+                                type="button"
+                                onClick={() => setVisibleCount(prev => Math.min(prev + 30, normalList.length))}
+                                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded border border-slate-700 text-[10px] font-bold transition-all cursor-pointer"
+                            >
+                                更多 (+30)
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setVisibleCount(normalList.length)}
+                                className="px-2 py-0.5 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded border border-indigo-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                            >
+                                展开全部
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {normalList.length === 0 && holdingStandbyList.length === 0 && (
                     <div className="flex flex-col items-center justify-center h-24 text-slate-600 opacity-50">
                         <span className="text-[10px]">该方向暂无信号</span>
@@ -474,6 +644,63 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                     </div>
                 )}
             </div>
+
+            {/* 🖥️ 列表2 新币桌面自动弹出 K线图 (支持5分钟无操作自动关闭与手工操作续期) */}
+            {autoPopupItem && (
+                <div 
+                    onMouseMove={handleModalInteraction} 
+                    onClick={handleModalInteraction} 
+                    onKeyDown={handleModalInteraction}
+                    onScroll={handleModalInteraction}
+                    className="relative"
+                >
+                    {/* Floating Top Inactivity Countdown Bar Overlay */}
+                    <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[100000] bg-slate-950/90 border border-indigo-500/80 px-4 py-1.5 rounded-full shadow-[0_0_25px_rgba(99,102,241,0.6)] flex items-center gap-3 text-xs font-bold text-white backdrop-blur-md animate-in fade-in slide-in-from-top-2">
+                        <span className="flex items-center gap-1.5 text-indigo-300">
+                            <Zap size={14} className="text-amber-400 animate-pulse" />
+                            <span>列表2新币自动弹出: <strong className="text-amber-300 font-mono text-sm">{normalizeSymbol(autoPopupItem.symbol)}</strong> {autoPopupItem.direction === 'LONG' ? <span className="text-emerald-400 bg-emerald-950/80 border border-emerald-500/40 px-1.5 py-0.5 rounded text-[10px] ml-1">向上发散(多)</span> : autoPopupItem.direction === 'SHORT' ? <span className="text-red-400 bg-red-950/80 border border-red-500/40 px-1.5 py-0.5 rounded text-[10px] ml-1">向下发散(空)</span> : null}</span>
+                        </span>
+                        <span className="font-mono bg-indigo-900/80 border border-indigo-500/50 px-2.5 py-0.5 rounded-full text-amber-300 flex items-center gap-1.5 shadow-inner">
+                            <Clock size={12} className="text-amber-400 animate-spin" style={{ animationDuration: '4s' }} />
+                            <span>⏱️ {Math.floor(popupTimeLeft / 60)}:{(popupTimeLeft % 60).toString().padStart(2, '0')}</span>
+                            <span className="text-[10px] text-slate-400 font-sans font-normal ml-0.5">(无操作 5 分钟自动关闭)</span>
+                        </span>
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setAutoPopupItem(null);
+                            }}
+                            className="bg-slate-800 hover:bg-red-900/60 p-1 rounded-full text-slate-300 hover:text-white transition-all border border-slate-700 hover:border-red-500/50 ml-1 cursor-pointer"
+                            title="手动关闭弹窗"
+                        >
+                            <X size={14} />
+                        </button>
+                    </div>
+
+                    <KlineChartModal
+                        symbol={autoPopupItem.symbol}
+                        initialTimeframe={autoPopupItem.groupedResults?.[0]?.tf || activeFilterTf || '15m'}
+                        signals={(() => {
+                            const defaultTf = autoPopupItem.groupedResults?.[0]?.tf || activeFilterTf || '15m';
+                            const sigs: { time: number, type: 'LONG' | 'SHORT' }[] = [];
+                            autoPopupItem.groupedResults?.forEach(res => {
+                                if (res.tf === defaultTf && res.crossingTimes) {
+                                    res.crossingTimes.forEach(t => {
+                                        sigs.push({ time: t, type: res.direction || 'LONG' });
+                                    });
+                                }
+                            });
+                            return sigs;
+                        })()}
+                        currentPrice={autoPopupItem.price}
+                        list2Config={config}
+                        showAuditLines={false}
+                        source="list2"
+                        onClose={() => setAutoPopupItem(null)}
+                    />
+                </div>
+            )}
         </div>
     );
 };

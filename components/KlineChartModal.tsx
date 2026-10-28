@@ -1474,14 +1474,20 @@ const KlineChartModal: React.FC<Props> = ({
 
         let hasLoadedFromLocal = false;
         if (cachedLocalKlines && Array.isArray(cachedLocalKlines) && cachedLocalKlines.length >= 20) {
-            const localMapped: KlineData[] = cachedLocalKlines.map((k: any) => ({
-                time: Number(k.time || k[0]),
-                open: parseFloat(k.open || k[1]) || 0,
-                high: parseFloat(k.high || k[2]) || 0,
-                low: parseFloat(k.low || k[3]) || 0,
-                close: parseFloat(k.close || k[4]) || 0,
-                volume: parseFloat(k.volume || k[5]) || 0
-            }));
+            const localMapped: KlineData[] = cachedLocalKlines
+                .filter((k: any) => k && (k.time !== undefined || k[0] !== undefined))
+                .map((k: any, kIdx: number) => {
+                    const parsed = Number(k.time ?? k[0]);
+                    const safeTime = (!isNaN(parsed) && parsed > 0) ? parsed : (Date.now() - (cachedLocalKlines!.length - kIdx) * 60000);
+                    return {
+                        time: safeTime,
+                        open: parseFloat(k.open || k[1]) || 0,
+                        high: parseFloat(k.high || k[2]) || 0,
+                        low: parseFloat(k.low || k[3]) || 0,
+                        close: parseFloat(k.close || k[4]) || 0,
+                        volume: parseFloat(k.volume || k[5]) || 0
+                    };
+                });
             const closes = localMapped.map(k => k.close);
             const emas = {
                 10: calculateEMA(closes, 10),
@@ -1519,14 +1525,20 @@ const KlineChartModal: React.FC<Props> = ({
             if (isMounted) {
                 if (Array.isArray(json) && json.length > 0) {
                     klineMultiTfStore.saveKlines(safeSymbol, timeframe, json);
-                    const klines: KlineData[] = json.map((k: any) => ({
-                        time: k[0],
-                        open: parseFloat(k[1]) || 0,
-                        high: parseFloat(k[2]) || 0,
-                        low: parseFloat(k[3]) || 0,
-                        close: parseFloat(k[4]) || 0, 
-                        volume: parseFloat(k[5]) || 0
-                    }));
+                    const klines: KlineData[] = json
+                        .filter((k: any) => k && (k.time !== undefined || k[0] !== undefined))
+                        .map((k: any, kIdx: number) => {
+                            const parsed = Number(k[0] ?? k.time);
+                            const safeTime = (!isNaN(parsed) && parsed > 0) ? parsed : (Date.now() - (json.length - kIdx) * 60000);
+                            return {
+                                time: safeTime,
+                                open: parseFloat(k[1] || k.open) || 0,
+                                high: parseFloat(k[2] || k.high) || 0,
+                                low: parseFloat(k[3] || k.low) || 0,
+                                close: parseFloat(k[4] || k.close) || 0, 
+                                volume: parseFloat(k[5] || k.volume) || 0
+                            };
+                        });
                     
                     const closes = klines.map(k => k.close);
                     const emas = {
@@ -2031,8 +2043,11 @@ const KlineChartModal: React.FC<Props> = ({
           const color = isUp ? COLOR_UP : COLOR_DOWN;
           const vHeight = maxVol > 0 ? (d.volume / maxVol) * (volumeHeight - 5) : 0;
           const vy = height - padding.bottom - vHeight;
+          const safeKey = (d && d.time !== undefined && !isNaN(d.time) && d.time > 0)
+              ? `candle-${d.time}-${startIndex + i}`
+              : `candle-idx-${startIndex + i}`;
           return (
-              <g key={d.time}>
+              <g key={safeKey}>
                   <rect x={x} y={vy} width={candleWidth} height={vHeight} fill={color} opacity={0.3} />
                   <line x1={x + candleWidth/2} y1={yHigh} x2={x + candleWidth/2} y2={yLow} stroke={color} strokeWidth={1} />
                   <rect x={x} y={Math.min(yOpen, yClose)} width={candleWidth} height={Math.max(1, Math.abs(yOpen - yClose))} fill={color} />
@@ -2062,12 +2077,12 @@ const KlineChartModal: React.FC<Props> = ({
           return dPath ? <path d={dPath} fill="none" stroke={color} strokeWidth={1.5} /> : null;
       };
 
-      const yLabels = [0, 0.2, 0.4, 0.6, 0.8, 1].map(pct => {
+      const yLabels = [0, 0.2, 0.4, 0.6, 0.8, 1].map((pct, pIdx) => {
           const val = maxPrice - (pct * safePriceRange);
           const y = getY(val);
           if (isNaN(y)) return null;
           return (
-              <g key={pct}>
+              <g key={`ylabel-${pIdx}-${pct}`}>
                   <line x1={0} y1={y} x2={width - padding.right} stroke={COLOR_GRID} strokeDasharray="3 3" />
                   <text x={width - 75} y={y + 3} fill={COLOR_TEXT} fontSize="9" style={{ fontFamily: 'monospace' }}>{val.toFixed(8)}</text>
               </g>

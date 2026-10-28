@@ -72,15 +72,15 @@ export function checkConventionalProfit(
             if (matchedTier) {
                 // 动态托底线 = 最高盈利 * 保底留存百分比
                 const dynamicFloor = (maxPnl * matchedTier.retentionPercent) / 100;
-                // 🔒【方案 A 双重门槛】：必须满足动态托底回撤条件，且平仓收益不能突破硬保底底线
+                // 🚀【方案 1 纯动态留存托底】：消除硬保底互斥死锁。
+                // 只要从最高浮盈冲高回撤跌破动态托底线 (currentPnl <= dynamicFloor)，立即平仓锁定留存利润！
                 const isDynamicFloorMet = currentPnl <= dynamicFloor;
-                const isHardFloorMet = currentPnl >= triggerThreshold || (dynamicFloor >= triggerThreshold);
 
-                if (isDynamicFloorMet && isHardFloorMet) {
+                if (isDynamicFloorMet) {
                     close(
                         position.symbol, 
                         position.side, 
-                        `变量阶梯托底平仓触发(方案A双门槛): 最高盈利 ${maxPnl.toFixed(2)}% (匹配区间 [${matchedTier.minProfit}%~${matchedTier.maxProfit === Infinity ? '∞' : matchedTier.maxProfit}%] 留存 ${matchedTier.retentionPercent}%, 动态线 ${dynamicFloor.toFixed(2)}%), 当前收益 ${currentPnl.toFixed(2)}% 满足硬保底 ${triggerThreshold}%`,
+                        `变量阶梯托底平仓触发(纯动态留存托底): 最高盈利 ${maxPnl.toFixed(2)}% (匹配区间 [${matchedTier.minProfit}%~${matchedTier.maxProfit === Infinity ? '∞' : matchedTier.maxProfit}%] 留存 ${matchedTier.retentionPercent}%, 动态线 ${dynamicFloor.toFixed(2)}%), 当前收益 ${currentPnl.toFixed(2)}% 已触及托底线`,
                         settings.closePercent || 100
                     );
                     return true;

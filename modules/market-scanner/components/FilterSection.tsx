@@ -15,7 +15,6 @@ import { StartTrendPoolBox } from './StartTrendPoolBox';
 import { SidewaysPoolBox } from './SidewaysPoolBox';
 import { LookbackPoolBox } from './LookbackPoolBox';
 import { AntiChasePoolBox } from './AntiChasePoolBox';
-import { BreakoutPoolBox } from './BreakoutPoolBox';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -28,6 +27,8 @@ interface Props {
     cancelMajorScan?: () => void;
 }
 
+import { applyDirectionSync } from '../../../utils/directionSync';
+
 export const FilterSection: React.FC<Props> = ({ 
     scanConfig, setScanConfig, marketStats, 
     isMajorScanning, majorProgress, runMajorTrendDiscovery, cancelMajorScan 
@@ -35,16 +36,43 @@ export const FilterSection: React.FC<Props> = ({
     const isSyncLocked = scanConfig.majorTrend?.syncDirectionLock !== false;
 
     const toggleDirectionSync = () => {
-        setScanConfig(p => ({
-            ...p,
-            majorTrend: {
-                ...p.majorTrend,
-                syncDirectionLock: !isSyncLocked
+        const nextLock = !isSyncLocked;
+        setScanConfig(p => {
+            const nextMajor = {
+                ...(p.majorTrend || {
+                    enabled: false,
+                    updateIntervalHours: 4,
+                    requestPerMinute: 20,
+                    lookbackDays: 300,
+                    minHistoryDrop: 50,
+                    minHistoryPump: 100,
+                    maxExtremeDistance: 5,
+                    sidewaysDays: 7,
+                    sidewaysMaxPump: 10,
+                    sidewaysMaxDrop: 10
+                }),
+                syncDirectionLock: nextLock
+            };
+            const updated = { ...p, majorTrend: nextMajor };
+            if (nextLock) {
+                const targetMode = p.source === 'GAINERS' ? 'LONG_ONLY' : (p.source === 'LOSERS' ? 'SHORT_ONLY' : 'BOTH');
+                return applyDirectionSync(updated, targetMode);
             }
-        }));
+            return updated;
+        });
+    };
+
+    const handleSourceChange = (s: 'GAINERS' | 'LOSERS' | 'BOTH') => {
+        if (isSyncLocked) {
+            const targetMode = s === 'GAINERS' ? 'LONG_ONLY' : (s === 'LOSERS' ? 'SHORT_ONLY' : 'BOTH');
+            setScanConfig(p => applyDirectionSync(p, targetMode));
+        } else {
+            setScanConfig(p => ({ ...p, source: s }));
+        }
     };
     return (
-        <div className="space-y-3 animate-in fade-in slide-in-from-top-1 duration-300">
+        <div id="submodule-filter-section" className="contents">
+            <div className="space-y-3 animate-in fade-in slide-in-from-top-1 duration-300">
             {/* 自动选币 vs 固定选币 运行状态提示 */}
             {scanConfig.useCustomOnly ? (
                 <div className="bg-cyan-950/40 border border-cyan-500/30 rounded p-2 flex items-center justify-between text-[10px] text-cyan-300">
@@ -102,8 +130,8 @@ export const FilterSection: React.FC<Props> = ({
             {scanConfig.timeBasis === '8AM' ? (
                 <div className="space-y-3 animate-in fade-in slide-in-from-left-2 duration-300">
                     <div className="flex gap-2">
-                        {['GAINERS','LOSERS','BOTH'].map(s => (
-                            <button key={s} onClick={() => setScanConfig(p => ({...p, source: s as any}))} className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-all ${scanConfig.source === s ? 'bg-indigo-900/30 text-indigo-400 border-indigo-500/50' : 'bg-[#1e2329] text-slate-500 border-slate-700'}`}>{s==='BOTH'?'全部':s==='GAINERS'?'涨幅榜':'跌幅榜'}</button>
+                        {(['GAINERS','LOSERS','BOTH'] as const).map(s => (
+                            <button key={s} onClick={() => handleSourceChange(s)} className={`flex-1 py-1.5 text-[10px] font-bold rounded border transition-all ${scanConfig.source === s ? 'bg-indigo-900/30 text-indigo-400 border-indigo-500/50' : 'bg-[#1e2329] text-slate-500 border-slate-700'}`}>{s==='BOTH'?'全部':s==='GAINERS'?'涨幅榜':'跌幅榜'}</button>
                         ))}
                     </div>
                     
@@ -426,62 +454,67 @@ export const FilterSection: React.FC<Props> = ({
                     </div>
 
                     {/* Volume Filter Pool Box - Placed directly above Start Trend */}
-                    <VolumePoolBox scanConfig={scanConfig} />
+                    <div id="submodule-volume-pool" className="contents">
+                        <VolumePoolBox scanConfig={scanConfig} />
+                    </div>
 
-                    {/* Start Trend Configuration (Extracted from Major Trend) */}
-                    <StartTrendSection 
-                        config={scanConfig.majorTrend}
-                        setConfig={(cfg) => setScanConfig(p => ({
-                            ...p, 
-                            majorTrend: cfg
-                        }))}
-                    />
-
-                    {/* Start Trend Pool Box - Directly reads from Volume Pool Box */}
-                    <StartTrendPoolBox scanConfig={scanConfig} />
+                    {/* Start Trend Configuration & Pool Box */}
+                    <div id="submodule-start-trend" className="contents">
+                        <StartTrendSection 
+                            config={scanConfig.majorTrend}
+                            setConfig={(cfg) => setScanConfig(p => ({
+                                ...p, 
+                                majorTrend: cfg
+                            }))}
+                        />
+                        <StartTrendPoolBox scanConfig={scanConfig} />
+                    </div>
 
                     {/* Sideways Filter Pool Box - Holds Stage 1 passed coins */}
-                    <SidewaysPoolBox 
-                        scanConfig={scanConfig} 
-                        onRunDiscovery={runMajorTrendDiscovery} 
-                        isMajorScanning={isMajorScanning} 
-                    />
+                    <div id="submodule-sideways-pool" className="contents">
+                        <SidewaysPoolBox 
+                            scanConfig={scanConfig} 
+                            onRunDiscovery={runMajorTrendDiscovery} 
+                            isMajorScanning={isMajorScanning} 
+                        />
+                    </div>
 
                     {/* Major Trend Section - Primary Focus here */}
-                    <MajorTrendSection 
-                        config={scanConfig.majorTrend}
-                        setConfig={(cfg) => setScanConfig(p => ({
-                            ...p, 
-                            majorTrend: cfg,
-                            instantOpenDirection: (cfg.enableLong !== false && cfg.enableShort === false) ? 'LONG' : (cfg.enableLong === false && cfg.enableShort !== false ? 'SHORT' : p.instantOpenDirection)
-                        }))}
-                        isMajorScanning={isMajorScanning}
-                        majorProgress={majorProgress}
-                        onRunDiscovery={runMajorTrendDiscovery}
-                        onCancelDiscovery={cancelMajorScan}
-                        isPrimaryMode={true}
-                    />
+                    <div id="submodule-majortrend-pool" className="contents">
+                        <MajorTrendSection 
+                            config={scanConfig.majorTrend}
+                            setConfig={(cfg) => setScanConfig(p => ({
+                                ...p, 
+                                majorTrend: cfg,
+                                instantOpenDirection: (cfg.enableLong !== false && cfg.enableShort === false) ? 'LONG' : (cfg.enableLong === false && cfg.enableShort !== false ? 'SHORT' : p.instantOpenDirection)
+                            }))}
+                            isMajorScanning={isMajorScanning}
+                            majorProgress={majorProgress}
+                            onRunDiscovery={runMajorTrendDiscovery}
+                            onCancelDiscovery={cancelMajorScan}
+                            isPrimaryMode={true}
+                        />
+                    </div>
 
                     {/* Lookback Filter Pool Box - Holds Stage 2 passed coins */}
-                    <LookbackPoolBox 
-                        scanConfig={scanConfig} 
-                        onRunDiscovery={runMajorTrendDiscovery} 
-                        isMajorScanning={isMajorScanning} 
-                    />
+                    <div id="submodule-lookback-pool" className="contents">
+                        <LookbackPoolBox 
+                            scanConfig={scanConfig} 
+                            onRunDiscovery={runMajorTrendDiscovery} 
+                            isMajorScanning={isMajorScanning} 
+                        />
+                    </div>
 
                     {/* 🛡️ 第三组: 初筛极值拦截底池大卡片 (AntiChase Filter Pool Box) */}
-                    <AntiChasePoolBox 
-                        scanConfig={scanConfig} 
-                        setScanConfig={setScanConfig} 
-                    />
-
-                    {/* 🚀 趋势爆发综合过滤大卡片 (Breakout Filter Pool Box - 融合龙抬头防伪进阶) - 位于防恐慌熔断上方 */}
-                    <BreakoutPoolBox 
-                        scanConfig={scanConfig} 
-                        setScanConfig={setScanConfig} 
-                    />
+                    <div id="submodule-antichase-pool" className="contents">
+                        <AntiChasePoolBox 
+                            scanConfig={scanConfig} 
+                            setScanConfig={setScanConfig} 
+                        />
+                    </div>
                 </div>
             )}
+        </div>
         </div>
     );
 };

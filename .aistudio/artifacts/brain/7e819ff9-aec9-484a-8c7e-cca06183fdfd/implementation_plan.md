@@ -1,93 +1,94 @@
-# 方案设计：全域轻量化分级数据缓存与极速合成架构
+# List 3 Independent Rule Mode [Hard Filter vs. Star Rating] Implementation Plan
 
-本方案综合梳理了我们讨论的全部核心内容，旨在彻底重构系统的数据流与缓存架构，将原本高达 1.5GB+、容易导致浏览器崩溃（OOM 自动退出）的冗余数据链，精简为极度轻量的 **“日K常驻 + 1分钟广播滑动窗口 + 5m500根本地重采样 + 列表2精准按需存蓄”** 的闭环体系。
+## 1. Goal Overview
+Upgrade List 3 (Structure Audit) so that each of the 5 core structural audit rules can be **independently configured** in either:
+1. **【强拦截 (HARD FILTER)】**: Drops coins from List 3 if they do not pass the rule (legacy behavior).
+2. **【仅星标 (STAR AUDIT)】**: Keeps coins in List 3 regardless, but awards a **⭐ Star Point & Badge** if satisfied.
 
 ---
 
-## 1. 核心架构设计与层级数据流
+## 2. Five Independent Structural Audit Dimensions
 
-```text
-【全盘 ~350 币】
-   │
-   ├─► 第一数据库（中央日K总线 SaviorDailyKlineDB）：
-   │   - 仅存储全盘 350+ 币种 300 天 1d (日K) 数据
-   │   - 每日北京时间早 08:00 (UTC 00:00) 日K收盘时增量写入当天 1 根
-   │   - 其余 24 小时全天常驻不可变，内存占用仅 ~10MB
-   │
-   ├─► WebSocket 广播推流（1分钟滑动窗口 Ring Buffer）：
-   │   - 仅保留当前实时最新报价（用于 DOM Bypass 0ms 直推）
-   │   - 历史 Ticker 队列仅保留过去 60 秒的滑动窗口，超过 1 分钟的数据立即解除引用由 GC 销毁
-   │
-   ├─► 列表1上游 5 道底池（交易额 ──► 行情启动 ──► 横盘蓄势 ──► 回溯周期 ──► 初筛极值拦截）：
-   │   - 100% 仅使用 300 天日K数据，完全不拉取、不加载任何小周期 K 线
-   │
-【通过“初筛极值拦截”的 ~20-40 个候选币】
-   │
-   ├─► 基准粒度高频缓存（5m 500根）：
-   │   - 单币仅发起 1 次网络请求获取 500 根 5m K线（覆盖约 41 小时）
-   │   - 存入临时保鲜内存，绝不存储任何其他原始小周期
-   │
-【趋势爆发综合过滤】
-   │
-   ├─► 本地 0ms 瞬间合成与即用即弃：
-   │   - 由 500 根 5m 本地快速合成所需周期：
-   │     • 10m (250根) / 15m (166根) / 30m (83根) / 60m (41根)
-   │   - 计算完成空间蓄势、放量突破与 ADX 动能后，临时合成对象立即销毁
-   │
-【最终入选“市场初筛列表”交接给列表2的 ~10-25 个币】
-   │
-   └─► 列表2专属周期数据库（精准 300 根）：
-       - 彻底废除以前全盘 12 个周期 × 300 根（3600根/币）的过度膨胀机制
-       - 仅针对入选币种，精准拉取并维护【列表2当前所选生效周期】的 300 根 K线
-       - 配合【退池即焚】机制：币种一旦被移出市场初筛列表，对应的小周期 K线立刻从内存与 IndexedDB 中注销销毁
+| # | Rule Name | Field Key | Hard Filter Behavior | Star Audit Behavior |
+|---|---|---|---|---|
+| 1 | **同色交叉** | `checkCandleColor` / `checkCandleColorMode` | Drop coin if candle color is wrong | Award **⭐色** badge if candle color is correct |
+| 2 | **严格趋势** | `strictTrend` / `strictTrendMode` | Drop coin if EMAs are not strictly fan-shaped | Award **⭐势** badge if trend is strictly fan-shaped |
+| 3 | **时空共振** | `enableMultiResonance` / `multiResonanceMode` | Drop coin if sub-2-timeframes aren't aligned | Award **⭐共** badge if sub-2-timeframes aligned |
+| 4 | **高级过滤 (EMA80)** | `enableAdvancedFilter` / `advancedFilterMode` | Drop coin if EMA80 intersections > threshold | Award **⭐审** badge if EMA80 intersections <= threshold |
+| 5 | **前置洗盘 V 反** | `enablePriorReverseDivergence` / `priorReverseMode` | Drop coin if no prior reverse divergence found | Award **⭐反** badge if prior reverse divergence found |
+
+---
+
+## 3. Data Structure & Config Enhancements
+
+### A. Config Extensions (`components/Scanner/scannerTypes.ts`)
+Add mode properties to `List3Config`:
+```typescript
+export interface List3Config {
+    // Rule Mode Selections ('FILTER' = Hard Filter, 'STAR' = Soft Star Audit)
+    checkCandleColorMode?: 'FILTER' | 'STAR';
+    strictTrendMode?: 'FILTER' | 'STAR';
+    multiResonanceMode?: 'FILTER' | 'STAR';
+    advancedFilterMode?: 'FILTER' | 'STAR';
+    priorReverseMode?: 'FILTER' | 'STAR' | 'BOTH' | 'BADGE';
+    
+    // Sort option
+    sortModeList3?: 'LATEST' | 'STARS' | 'TIMEFRAME';
+}
+```
+
+### B. Signal Result & Item Extensions
+Add star tracking to `List3SignalResult['structure']` and `ScannerItem`:
+```typescript
+export interface List3SignalResult {
+    structure: {
+        // ... existing fields
+        starScore?: number;        // 0 to 5 stars
+        starBadges?: string[];     // ['色', '势', '共', '审', '反']
+        colorPassed?: boolean;
+        strictTrendPassed?: boolean;
+        resonancePassed?: boolean;
+        advFilterPassed?: boolean;
+        priorReversePassed?: boolean;
+    }
+}
 ```
 
 ---
 
-## 2. 拟修改的关键文件与工程任务
+## 4. Evaluation Engine (`services/rules/list3_structure.ts`)
 
-### 任务 1：第一数据库（日K常驻）与 WebSocket 1分钟滑动窗口改造
-* **目标文件**：`services/klineDailyStore.ts`、`services/binanceWs.ts`
-* **变更要点**：
-  1. 固化 300 天日K存储规则，保证早 8:00 自动追加 1 根。
-  2. 改造 `klineDailyStore.save24hTickers` 与 `pendingTickerSaves`：去除长效累积的 Ticker 历史数组，限制历史时间戳必须在当前时刻前 60 秒内，超过 1 分钟立即从内存及待持久化队列中剔除。
-  3. WebSocket 广播仅保留最新一帧用于行情注册表，杜绝内存持续攀升。
-
-### 任务 2：“初筛极值拦截” 5m 500根拉取与本地多周期合成
-* **目标文件**：`services/rules/list1_breakout.ts`、`modules/market-scanner/components/BreakoutPoolBox.tsx`、`services/klineSynthesizer.ts`
-* **变更要点**：
-  1. 在 `list1_breakout.ts` 中改造数据源入口：对于进入趋势爆发过滤的候选币，统一只调用一次 `fetchTfKlines(symbol, '5m', 500)` 拉取 500 根 5m K线。
-  2. 扩展本地合成器：利用这 500 根 5m 数据，由本地毫秒级重采样合成出 10m、15m、30m、60m(1h) 临时 K 线。
-  3. 趋势爆发各项指标（布林带挤压、放量突破倍数、ADX 动能）直接在本地合成数据上进行运算，彻底移除向币安直接请求 15m/30m/1h 的网络调用。
-  4. 运算完毕后，内存中仅保留轻量布尔判定结果，临时 K 线数组随函数结束自动释放。
-
-### 任务 3：市场初筛列表按列表2所选周期精准存蓄 300 根 K 线
-* **目标文件**：`services/klineDailyStore.ts`、`modules/market-scanner/components/List1_Selection.tsx`、`modules/market-scanner/useScannerLogic.ts`
-* **变更要点**：
-  1. 废除原 `klineDailyStore.syncShortlistMultiTfKlines` 中默认拉取 12 个周期的逻辑（`['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d']`）。
-  2. 改造为 `syncShortlistTargetTfKlines(symbols, targetTf, limit = 300)`：仅获取列表2当前设置的主周期（如 15m 或 30m）的 300 根 K 线。
-  3. 实现**退池即焚（Purge on Eviction）**：在初筛列表差量比对（Diff）中，当候选币被剔除时，自动调用清理函数注销该币种对应的小周期缓存，杜绝历史僵尸数据积压。
+1. **Calculate All 5 Statuses**:
+   Compute `colorPassed`, `strictTrendPassed`, `resonancePassed`, `advFilterPassed`, `priorReversePassed` regardless of filter modes.
+2. **Calculate Stars & Badges**:
+   - Count how many satisfied rules exist for this coin.
+   - Attach `starScore` (0~5) and `starBadges` array.
+3. **Hard Filter Check**:
+   - Only return a rejection reason (`getList3SignalRejectReason`) if a rule is:
+     - Enabled (`true`), AND
+     - Set to `'FILTER'` (Hard Filter), AND
+     - Not satisfied.
+   - Rules set to `'STAR'` (Soft Audit) will **NEVER** trigger rejection.
 
 ---
 
-## 3. 内存与网络负载预期收益
+## 5. UI & Control Panel Updates (`modules/structure-audit/`)
 
-| 指标维度 | 旧系统运行指标 | **本方案实施后预期** | 改善成效 |
-| :--- | :--- | :--- | :--- |
-| **单币网络请求数 (爆发过滤阶段)** | 4 ~ 5 次 / 币 | **仅 1 次 (5m 500根)** | **网络请求下降 80%** |
-| **单币小周期缓存根数 (初筛列表)** | 3,600 根 (12周期×300根) | **300 根 (单周期×300根)** | **单币缓存下降 91.7%** |
-| **WebSocket Ticker 驻留对象数** | 长期累加数万个 | **恒定维持在 60 秒内** | **消除内存泄漏与堆积** |
-| **浏览器常驻内存 (RAM)** | **1.2 GB ~ 1.8 GB (濒临崩溃)** | **80 MB ~ 150 MB (极度安全)** | **总体内存削减 90%+** |
+1. **`Control.tsx`**:
+   - For each of the 5 rules, render an intuitive toggle pill next to the switch:
+     - `[强拦截]` (Red/Purple border)
+     - `[仅星标]` (Gold/Amber border)
+2. **`Item.tsx` / `List3_Structure.tsx`**:
+   - Display prominent **⭐ Star Rating** (e.g. `⭐⭐⭐⭐⭐ 5星` / `⭐⭐3星`).
+   - Display illuminated badges (`[色] [势] [共] [审] [反]`).
+   - Add sorting button: Sort by **Star Rating (⭐星级优先置顶)**.
 
 ---
 
-## 4. 验证与回归测试计划
-
-1. **功能完整性验证**：
-   - 验证上游底池（行情启动、横盘蓄势、回溯周期、初筛极值拦截）在仅使用 300 天日K下计算结果 100% 正确。
-   - 验证 5m 500 根 K 线在本地合成 10m、15m、30m、60m 的无损准确性与指标一致性。
-   - 验证进入“市场初筛列表”后，列表2能够无缝读取到目标周期的 300 根 K线并正常开展大十字星与均线发散判定。
-2. **内存与生命周期测试**：
-   - 模拟连续多轮扫描与退池更新，监控内存曲线是否维持在 150MB 以下平稳横盘，不再随时间单调上升。
-3. **静态代码质量与编译检查**：
-   - 执行 `compile_applet` 和 `lint_applet` 确保 TypeScript 类型安全，0 错误、0 警告。
+## 6. Execution & Verification Plan
+1. Update `scannerTypes.ts` with mode types and star rating fields.
+2. Update `list3_structure.ts` with 5-dimension star evaluation and mode-aware filtering logic.
+3. Update `useStructureAudit.ts` to preserve star scores and badges.
+4. Update `Control.tsx` with individual `[强拦截 / 仅星标]` pill controls for all 5 rules.
+5. Update `List3_Structure.tsx` and `Item.tsx` to render star ratings, illuminated badges, and star-sorting option.
+6. Verify via `compile_applet` and test with simulated signals.

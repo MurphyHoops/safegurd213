@@ -326,7 +326,27 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                                             const pullbackPct = periodMaxHigh > 0 ? ((periodMaxHigh - currentPrice) / periodMaxHigh) * 100 : 0;
                                             const maxPullbackLong = group.maxPullbackLong !== undefined ? group.maxPullbackLong : 5;
 
-                                            if (!isNaN(changePct) && changePct >= group.minLong && changePct <= group.maxLong &&
+                                            // 极值向右变幅限制 (做多：最低点向右最高价涨幅)
+                                            let longRightValid = true;
+                                            const isExtremeLimitActive = group.enableExtremeRangeLimit ?? cfg?.enableExtremeRangeLimit;
+                                            if (isExtremeLimitActive) {
+                                                const lows = lastCandles.map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                                if (lows.length > 0) {
+                                                    const periodMinLow = Math.min(...lows);
+                                                    const minLowIdx = lows.indexOf(periodMinLow);
+                                                    if (minLowIdx !== -1) {
+                                                        const rightHighs = lastCandles.slice(minLowIdx).map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                                        const maxHighAfterLow = rightHighs.length > 0 ? Math.max(...rightHighs) : periodMinLow;
+                                                        const rightIncreasePct = periodMinLow > 0 ? ((maxHighAfterLow - periodMinLow) / periodMinLow) * 100 : 0;
+                                                        const maxLongRightLimit = group.maxLongRightIncreasePct ?? cfg?.maxLongRightIncreasePct ?? 5.0;
+                                                        if (rightIncreasePct > maxLongRightLimit) {
+                                                            longRightValid = false;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (longRightValid && !isNaN(changePct) && changePct >= group.minLong && changePct <= group.maxLong &&
                                                 !isNaN(pullbackPct) && pullbackPct <= maxPullbackLong) {
                                                 matchedItem = {
                                                     symbol,
@@ -356,7 +376,27 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                                             const pullbackPct = periodMinLow > 0 ? ((currentPrice - periodMinLow) / periodMinLow) * 100 : 0;
                                             const maxPullbackShort = group.maxPullbackShort !== undefined ? group.maxPullbackShort : 5;
 
-                                            if (!isNaN(dropPct) && dropPct >= group.minShort && dropPct <= group.maxShort &&
+                                            // 极值向右变幅限制 (做空：最高点向右最低价跌幅)
+                                            let shortRightValid = true;
+                                            const isExtremeLimitActive = group.enableExtremeRangeLimit ?? cfg?.enableExtremeRangeLimit;
+                                            if (isExtremeLimitActive) {
+                                                const highs = lastCandles.map((k: any) => parseFloat(k[2])).filter(val => !isNaN(val) && val > 0);
+                                                if (highs.length > 0) {
+                                                    const periodMaxHigh = Math.max(...highs);
+                                                    const maxHighIdx = highs.indexOf(periodMaxHigh);
+                                                    if (maxHighIdx !== -1) {
+                                                        const rightLows = lastCandles.slice(maxHighIdx).map((k: any) => parseFloat(k[3])).filter(val => !isNaN(val) && val > 0);
+                                                        const minLowAfterHigh = rightLows.length > 0 ? Math.min(...rightLows) : periodMaxHigh;
+                                                        const rightDecreasePct = periodMaxHigh > 0 ? ((periodMaxHigh - minLowAfterHigh) / periodMaxHigh) * 100 : 0;
+                                                        const maxShortRightLimit = group.maxShortRightDecreasePct ?? cfg?.maxShortRightDecreasePct ?? 5.0;
+                                                        if (rightDecreasePct > maxShortRightLimit) {
+                                                            shortRightValid = false;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (shortRightValid && !isNaN(dropPct) && dropPct >= group.minShort && dropPct <= group.maxShort &&
                                                 !isNaN(pullbackPct) && pullbackPct <= maxPullbackShort) {
                                                 matchedItem = {
                                                     symbol,

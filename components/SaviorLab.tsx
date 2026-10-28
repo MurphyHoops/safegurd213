@@ -1,12 +1,12 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Database, History, Play } from 'lucide-react';
+import { X, Database, History, Play, ArrowLeft } from 'lucide-react';
 import { TradeDNA, AppSettings } from '../types';
 import { saviorLabService } from '../services/saviorLabService';
 import { auth } from '../firebase';
 import { motion } from 'motion/react';
 import { TradeDnaList } from './SaviorLab/TradeDnaList';
-import { BacktestEngineConfig } from './SaviorLab/BacktestEngineConfig';
+import { AdvancedBacktester } from '../modules/backtester/AdvancedBacktester';
 
 interface Props {
     isOpen: boolean;
@@ -40,7 +40,7 @@ export const SaviorLab: React.FC<Props> = ({ isOpen, onClose, settings, initialT
             <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="bg-[#0b0e11] border border-slate-800 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+                className="bg-[#0b0e11] border border-slate-800 rounded-xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden"
             >
                 {/* Header */}
                 <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/50">
@@ -50,12 +50,22 @@ export const SaviorLab: React.FC<Props> = ({ isOpen, onClose, settings, initialT
                         </div>
                         <div>
                             <h2 className="text-lg font-bold text-white tracking-tight">Savior Lab <span className="text-purple-400 text-xs ml-2 font-normal">救世实验室 v1.0</span></h2>
-                            <p className="text-[10px] text-slate-500">AI 驱动的交易进化 system：数据复盘与参数对撞</p>
+                            <p className="text-[10px] text-slate-500">AI 驱动的交易进化 system：数据复盘与全域回测终端</p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
-                        <X size={20} className="text-slate-400" />
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button 
+                            onClick={onClose}
+                            className="px-3.5 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+                            title="退出实验室，返回交易主界面"
+                        >
+                            <ArrowLeft size={14} />
+                            <span>返回主界面</span>
+                        </button>
+                        <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
+                            <X size={20} className="text-slate-400" />
+                        </button>
+                    </div>
                 </div>
 
                 {/* Tabs */}
@@ -72,7 +82,7 @@ export const SaviorLab: React.FC<Props> = ({ isOpen, onClose, settings, initialT
                         className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'BACKTEST' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20' : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300'}`}
                     >
                         <Play size={14} />
-                        启动回测引擎
+                        全域回测终端
                     </button>
                 </div>
 
@@ -81,7 +91,7 @@ export const SaviorLab: React.FC<Props> = ({ isOpen, onClose, settings, initialT
                     {activeTab === 'DNA' ? (
                         <TradeDnaList isLoading={isLoading} dnaList={dnaList} />
                     ) : (
-                        <BacktestEngineConfig />
+                        <AdvancedBacktester settings={settings} onClose={onClose} />
                     )}
                 </div>
 

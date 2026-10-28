@@ -66,7 +66,7 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                     chineseName: getCoinChineseName(item.symbol)
                 });
             }}
-            className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${
+            className={`crypto-virtual-card bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group ${
             isGray 
                 ? 'border-slate-600/40 hover:border-slate-500/60' 
                 : isLong 
@@ -185,13 +185,38 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                             {/* Top Label Row */}
                             <div className="flex items-center justify-between px-1.5 py-1 z-10 gap-2">
                                 <div className="flex flex-col">
-                                    <div className="flex items-center gap-1">
+                                    <div className="flex items-center gap-1 flex-wrap">
                                         <span className={`text-[9px] font-bold ${isFiltered ? 'text-amber-300' : 'text-indigo-300'}`}>{res.tf}</span>
                                         <span className={`text-[8px] px-0.5 rounded font-bold ${res.direction === 'LONG' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
                                             {res.direction === 'LONG' ? '多' : '空'}
                                         </span>
-                                        {res.isAligned && (
-                                            <span className="text-[7px] bg-indigo-500/20 text-indigo-300 px-0.5 rounded border border-indigo-500/30 font-bold" title="EMA 发散已对齐">顺</span>
+                                        {/* Signal source & Resonance badges */}
+                                        {(() => {
+                                            const matchCount = (res.isCandleCrossed ? 1 : 0) + (res.isMaCrossed ? 1 : 0) + (res.isAligned ? 1 : 0);
+                                            if (matchCount >= 3) {
+                                                return <span className="text-[7px] bg-amber-500/20 text-amber-300 px-0.5 rounded border border-amber-500/40 font-bold animate-pulse" title="K线穿越 + 均线穿越 + 均线发散 三重共振">🔥三重共振</span>;
+                                            } else if (matchCount === 2) {
+                                                return <span className="text-[7px] bg-emerald-500/20 text-emerald-300 px-0.5 rounded border border-emerald-500/40 font-bold" title="双条件共振触发">⚡双重共振</span>;
+                                            } else if (res.isMaCrossed) {
+                                                return (
+                                                    <span className="text-[7px] bg-purple-500/20 text-purple-300 px-0.5 rounded border border-purple-500/30 font-bold" title={res.isFirstMaCross ? 'EMA10 首次穿越 EMA20/30/40' : 'EMA10 穿越 EMA20/30/40'}>
+                                                        {res.isFirstMaCross ? '均线首穿' : '均线穿越'}
+                                                    </span>
+                                                );
+                                            } else if (res.isCandleCrossed) {
+                                                return <span className="text-[7px] bg-emerald-500/20 text-emerald-300 px-0.5 rounded border border-emerald-500/30 font-bold" title="K线实体/影线穿越EMA均线簇">K线穿越</span>;
+                                            } else if (res.isAligned) {
+                                                return <span className="text-[7px] bg-indigo-500/20 text-indigo-300 px-0.5 rounded border border-indigo-500/30 font-bold" title="EMA 10-20-30-40 完美发散排列">均线发散</span>;
+                                            }
+                                            return null;
+                                        })()}
+                                        {res.isPriorReverseFound && (
+                                            <span 
+                                                className="text-[7px] bg-purple-500/20 text-purple-300 px-0.5 rounded border border-purple-500/40 font-bold" 
+                                                title={res.direction === 'LONG' ? '⚡ 诱空洗盘V反 (起爆前近N根K线包含空头发散)' : '⚡ 诱多洗盘V反 (起爆前近N根K线包含多头发散)'}
+                                            >
+                                                ⚡V反
+                                            </span>
                                         )}
                                     </div>
                                     {res.bodyRatio !== undefined && (

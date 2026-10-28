@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
     Download, Play, Database, BarChart2, TrendingUp, History, 
     Activity, AlertCircle, Loader2, Calendar, Settings, Trash2,
-    CheckCircle2, Clock, Layers, HelpCircle, TrendingDown, Eye, BookOpen, ChevronRight, ChevronDown
+    CheckCircle2, Clock, Layers, HelpCircle, TrendingDown, Eye, BookOpen, ChevronRight, ChevronDown, ArrowLeft
 } from 'lucide-react';
 import { 
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
@@ -22,9 +22,10 @@ import { BacktestMarketScannerModule } from './mirrored/BacktestScannerUI';
 
 interface Props {
     settings: AppSettings;
+    onClose?: () => void;
 }
 
-export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
+export const AdvancedBacktester: React.FC<Props> = ({ settings, onClose }) => {
     const [activeTab, setActiveTab] = useState<'config' | 'discovery' | 'data' | 'history' | 'results' | 'logs' | 'guide'>('guide');
     const [symbols, setSymbols] = useState<string>('BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,XRPUSDT,ADAUSDT,MATICUSDT,DOTUSDT,LINKUSDT');
     const [selectedIntervals, setSelectedIntervals] = useState<string[]>(['1m', '5m', '15m', '1h']);
@@ -264,14 +265,26 @@ export const AdvancedBacktester: React.FC<Props> = ({ settings }) => {
                         <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Scanner Pipeline Simulation & Report Center</p>
                     </div>
                 </div>
-                <div className="flex flex-wrap bg-slate-900 p-0.5 rounded-lg border border-slate-800 gap-0.5 w-full xl:w-auto overflow-x-auto justify-start xl:justify-end">
-                    <TabButton active={activeTab === 'guide'} onClick={() => setActiveTab('guide')} icon={BookOpen} label="说明指南" />
-                    <TabButton active={activeTab === 'config'} onClick={() => setActiveTab('config')} icon={Settings} label="回测配置" />
-                    <TabButton active={activeTab === 'discovery'} onClick={() => setActiveTab('discovery')} icon={Layers} label="初筛发现" />
-                    <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={Database} label="行情数据" />
-                    <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={History} label={`历史记录 (${reports.length})`} />
-                    <TabButton active={activeTab === 'results'} onClick={() => setActiveTab('results')} icon={BarChart2} label="回测结果" disabled={!result} />
-                    <TabButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} icon={Activity} label="运行日志" disabled={!result} />
+                <div className="flex items-center gap-3 w-full xl:w-auto justify-between xl:justify-end">
+                    <div className="flex flex-wrap bg-slate-900 p-0.5 rounded-lg border border-slate-800 gap-0.5 overflow-x-auto justify-start xl:justify-end">
+                        <TabButton active={activeTab === 'guide'} onClick={() => setActiveTab('guide')} icon={BookOpen} label="说明指南" />
+                        <TabButton active={activeTab === 'config'} onClick={() => setActiveTab('config')} icon={Settings} label="回测配置" />
+                        <TabButton active={activeTab === 'discovery'} onClick={() => setActiveTab('discovery')} icon={Layers} label="初筛发现" />
+                        <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={Database} label="行情数据" />
+                        <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={History} label={`历史记录 (${reports.length})`} />
+                        <TabButton active={activeTab === 'results'} onClick={() => setActiveTab('results')} icon={BarChart2} label="回测结果" disabled={!result} />
+                        <TabButton active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} icon={Activity} label="运行日志" disabled={!result} />
+                    </div>
+                    {onClose && (
+                        <button 
+                            onClick={onClose}
+                            className="px-3.5 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 shadow-sm"
+                            title="退出回测模式终端，返回交易主界面"
+                        >
+                            <ArrowLeft size={14} />
+                            <span>返回主界面</span>
+                        </button>
+                    )}
                 </div>
             </div>
 

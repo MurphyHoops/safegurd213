@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Play, BarChart2, History, Settings, AlertCircle, Loader2, TrendingUp, TrendingDown, Activity } from 'lucide-react';
+import { Play, BarChart2, History, Settings, AlertCircle, Loader2, TrendingUp, TrendingDown, Activity, Layers, ArrowLeft } from 'lucide-react';
 import { BacktestService, BacktestResult } from '../../services/backtestService';
 import { AppSettings } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
@@ -8,12 +8,15 @@ import { BacktesterControls } from './components/BacktesterControls';
 import { EquityCurveChart } from './components/EquityCurveChart';
 import { TradeHistoryTable } from './components/TradeHistoryTable';
 import { StatCard } from './components/StatCard';
+import { AdvancedBacktester } from './AdvancedBacktester';
 
 interface Props {
     settings: AppSettings;
+    onClose?: () => void;
 }
 
-export const BacktesterModule: React.FC<Props> = ({ settings }) => {
+export const BacktesterModule: React.FC<Props> = ({ settings, onClose }) => {
+    const [mode, setMode] = useState<'SIMPLE' | 'ADVANCED'>('ADVANCED');
     const [symbol, setSymbol] = useState('BTCUSDT');
     const [interval, setInterval] = useState('1h');
     const [limit, setLimit] = useState(500);
@@ -35,9 +38,47 @@ export const BacktesterModule: React.FC<Props> = ({ settings }) => {
         }
     };
 
+    if (mode === 'ADVANCED') {
+        return (
+            <div className="space-y-2 p-2">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <div className="flex items-center gap-2">
+                        <button 
+                            onClick={() => setMode('SIMPLE')} 
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[10px] font-bold transition-all"
+                        >
+                            切换至单币极速模式
+                        </button>
+                    </div>
+                </div>
+                <AdvancedBacktester settings={settings} onClose={onClose} />
+            </div>
+        );
+    }
+
     return (
         <div className="p-4 space-y-4 bg-slate-900/50 min-h-[400px]">
-            {/* Header / Controls */}
+            {/* Header Controls */}
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                <div className="flex items-center gap-2">
+                    <button 
+                        onClick={() => setMode('ADVANCED')} 
+                        className="px-3 py-1 bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-600 hover:text-white rounded text-[11px] font-bold transition-all flex items-center gap-1.5"
+                    >
+                        <Layers size={13} />
+                        切换至全域高级回测终端
+                    </button>
+                </div>
+                {onClose && (
+                    <button 
+                        onClick={onClose}
+                        className="px-3 py-1 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 rounded text-[11px] font-bold transition-all flex items-center gap-1.5"
+                    >
+                        <ArrowLeft size={13} />
+                        <span>返回主界面</span>
+                    </button>
+                )}
+            </div>
             <BacktesterControls 
                 symbol={symbol}
                 interval={interval}

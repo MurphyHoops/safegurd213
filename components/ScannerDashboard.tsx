@@ -31,6 +31,7 @@ import { loadState, saveState } from "../utils/persistence";
 import { eventBus } from "../core/EventBus";
 import { CoinContextMenu, CoinContextMenuState } from "./CoinContextMenu";
 import { QuickTradeModal } from "./QuickTradeModal";
+import { DomTrackerWidget } from "./DomTrackerWidget";
 
 // --- ALL ATOMIC MODULES ---
 import { MarketScannerModule } from "../modules/market-scanner";
@@ -2025,10 +2026,12 @@ const ScannerDashboardInner: React.FC<
         </div>
       )}
 
-      {/* Full View */}
-      {isVisible && !isMinimized && (
+      {/* Full View: 保持常驻挂载，最小化时仅使用 CSS 隐藏，确保列表 123456 保持 24 小时完全不停的一直运行 */}
+      {isVisible && (
         <div
-          className="fixed inset-0 bg-black/90 backdrop-blur-sm items-center justify-center p-4 flex"
+          className={`fixed inset-0 bg-black/90 backdrop-blur-sm items-center justify-center p-4 ${
+            !isMinimized ? "flex" : "hidden pointer-events-none"
+          }`}
           style={{ zIndex: 100 }}
         >
           <div className="bg-[#0b0e11] w-full h-full max-w-[1800px] rounded-xl border border-slate-800 shadow-2xl flex flex-col overflow-hidden">
@@ -2054,6 +2057,10 @@ const ScannerDashboardInner: React.FC<
                     ? "智能选币终端 (SMART SELECTION)"
                     : "全域扫描终端 (SCANNER)"}
               </h2>
+              {/* 🧠 全局 DOM 节点实时归因追踪与诊断面板 */}
+              <div className="shrink-0">
+                <DomTrackerWidget />
+              </div>
               {scannerMode !== "BACKTEST" && isRealTrading && (
                 <div className="flex items-center gap-1.5 bg-emerald-950/50 border border-emerald-500/35 rounded px-2.5 py-1 animate-pulse shrink-0">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]" />
@@ -2155,195 +2162,207 @@ const ScannerDashboardInner: React.FC<
           )}
 
           <div className="flex-1 flex gap-1 overflow-x-auto overflow-y-hidden bg-[#0b0e11] scrollbar-thin scrollbar-thumb-slate-800">
-            <ErrorBoundary moduleName="1. 市场初筛">
-              <MemoizedMarketScannerModule
-                key={selectedStrategyId}
-                onCandidatesUpdate={handleList1Results}
-                setChartData={safeSetChartData}
-                directMode={directMode}
-                scanConfig={scanConfig}
-                setScanConfig={setScanConfig}
-                mode={scannerMode}
-                setMode={setScannerMode}
-                onStartBacktest={handleStartBacktest}
-                isSyncing={!!syncProgress}
-                backtestProps={memoizedBacktestProps}
-                strategies={strategies}
-                selectedStrategyId={selectedStrategyId}
-                onSelectStrategy={handleSelectStrategy}
-                onAddStrategy={handleAddStrategy}
-                onDeleteStrategy={handleDeleteStrategy}
-                onRenameStrategy={handleRenameStrategy}
-                onExportStrategy={handleExportStrategy}
-                onImportStrategy={handleImportStrategy}
-                activeStrategyId={isRotationEnabled ? rotationActiveStrategyId : selectedStrategyId}
-                isScanAllowed={true}
-                isRotationEnabled={isRotationEnabled}
-                rotationIntervalMinutes={rotationIntervalMinutes}
-                rotationTimeLeft={rotationTimeLeft}
-                onToggleRotation={setIsRotationEnabled}
-                onChangeRotationInterval={setRotationIntervalMinutes}
-                list2Results={list2Results}
-                list3Results={list3Results}
-                list3Config={list3Config}
-                currentPrices={currentPrices}
-              />
-            </ErrorBoundary>
-
-            <ErrorBoundary moduleName="2. 均线穿越">
-              {isUnconfigured ? (
-                <UnconfiguredColumn
-                  title="2. 均线穿越 (CROSSOVER)"
-                  description="当前自动选币属于全新创建。金叉/死叉与压缩区间监控参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
-                />
-              ) : scannerMode === "BACKTEST" ? (
-                <BacktestGrandCrossingModule
-                  candidates={list1Candidates}
-                  onResultsUpdate={handleList2Results}
+            <div id="module-list1" className="contents">
+              <ErrorBoundary moduleName="1. 市场初筛">
+                <MemoizedMarketScannerModule
+                  key={selectedStrategyId}
+                  onCandidatesUpdate={handleList1Results}
+                  setChartData={safeSetChartData}
+                  directMode={directMode}
                   scanConfig={scanConfig}
                   setScanConfig={setScanConfig}
-                  setChartData={safeSetChartData}
-                  directMode={directMode}
-                  onLog={onLog}
-                  onRemoveSignalReady={(fn) => {
-                    list2RemoveSignalRef.current = fn;
-                  }}
-                />
-              ) : (
-                <MemoizedGrandCrossingModule
-                  key={selectedStrategyId}
-                  networkStatus={networkStatus}
-                  candidates={list1Candidates}
-                  onResultsUpdate={handleList2Results}
-                  scanConfig={scanConfig}
-                  setScanConfig={setScanConfig}
-                  setChartData={safeSetChartData}
-                  directMode={directMode}
-                  onLog={onLog}
-                  onRemoveSignalReady={(fn) => {
-                    list2RemoveSignalRef.current = fn;
-                  }}
-                  strategyId={selectedStrategyId}
-                  activePositions={filteredPositions || currentPositions}
-                />
-              )}
-            </ErrorBoundary>
-
-            <ErrorBoundary moduleName="3. 结构审计">
-              {isUnconfigured ? (
-                <UnconfiguredColumn
-                  title="3. 结构审计 (STRUCTURE)"
-                  description="当前自动选币属于全新创建。二次支撑、阻力与趋势审计参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
-                />
-              ) : scannerMode === "BACKTEST" ? (
-                <BacktestStructureAuditModule
-                  candidates={list2Results}
-                  onResultsUpdate={handleList3Results}
-                  onConfigUpdate={setList3Config}
-                  onRemoveSignalReady={handleRemoveSignalReady}
-                  realPrices={currentPrices}
-                  setChartData={safeSetChartData}
-                  executeTradeSafe={executeTradeSafe}
-                  activePositions={filteredPositions}
-                  directMode={directMode}
-                  actionConfig={actionConfig}
-                />
-              ) : (
-                <MemoizedStructureAuditModule
-                  key={selectedStrategyId}
-                  candidates={list2Results}
-                  onResultsUpdate={handleList3Results}
-                  onConfigUpdate={setList3Config}
-                  onRemoveSignalReady={handleRemoveSignalReady}
-                  realPrices={currentPrices}
-                  setChartData={safeSetChartData}
-                  executeTradeSafe={executeTradeSafe}
-                  activePositions={filteredPositions}
-                  directMode={directMode}
-                  actionConfig={actionConfig}
-                  strategyId={selectedStrategyId}
-                />
-              )}
-            </ErrorBoundary>
-
-            <ErrorBoundary moduleName="4. 动能审计">
-              {isUnconfigured ? (
-                <UnconfiguredColumn
-                  title="4. 动能审计 (MOMENTUM)"
-                  description="当前自动选币属于全新创建。突破突破监控、防追高熔断与动态方向锁等监控参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
-                />
-              ) : scannerMode === "BACKTEST" ? (
-                <BacktestMomentumAuditModule
-                  candidates={list3Results}
-                  setChartData={safeSetChartData}
-                  executeTradeSafe={executeTradeSafe}
+                  mode={scannerMode}
+                  setMode={setScannerMode}
+                  onStartBacktest={handleStartBacktest}
+                  isSyncing={!!syncProgress}
+                  backtestProps={memoizedBacktestProps}
+                  strategies={strategies}
+                  selectedStrategyId={selectedStrategyId}
+                  onSelectStrategy={handleSelectStrategy}
+                  onAddStrategy={handleAddStrategy}
+                  onDeleteStrategy={handleDeleteStrategy}
+                  onRenameStrategy={handleRenameStrategy}
+                  onExportStrategy={handleExportStrategy}
+                  onImportStrategy={handleImportStrategy}
+                  activeStrategyId={isRotationEnabled ? rotationActiveStrategyId : selectedStrategyId}
+                  isScanAllowed={true}
+                  isRotationEnabled={isRotationEnabled}
+                  rotationIntervalMinutes={rotationIntervalMinutes}
+                  rotationTimeLeft={rotationTimeLeft}
+                  onToggleRotation={setIsRotationEnabled}
+                  onChangeRotationInterval={setRotationIntervalMinutes}
+                  list2Results={list2Results}
+                  list3Results={list3Results}
                   list3Config={list3Config}
-                  realPrices={currentPrices}
-                  activePositions={filteredPositions}
-                  onRemoveSignal={handleRemoveSignal}
-                  actionConfig={actionConfig}
-                  onLog={onLog}
+                  currentPrices={currentPrices}
                 />
-              ) : (
-                <MemoizedMomentumAuditModule
-                  key={selectedStrategyId}
-                  candidates={list3Results}
-                  setChartData={safeSetChartData}
-                  executeTradeSafe={executeTradeSafe}
-                  list3Config={list3Config}
-                  realPrices={currentPrices}
-                  activePositions={filteredPositions}
-                  onRemoveSignal={handleRemoveSignal}
-                  actionConfig={actionConfig}
-                  onLog={onLog}
-                  strategyId={selectedStrategyId}
-                />
-              )}
-            </ErrorBoundary>
+              </ErrorBoundary>
+            </div>
 
-            <ErrorBoundary moduleName="5. 战场实况">
-              {isUnconfigured ? (
-                <UnconfiguredColumn
-                  title="5. 战场实况 (BATTLEFIELD)"
-                  description="当前自动选币属于全新创建，没有任何持仓。策略激活并生成交易信号开仓后，持仓将在此显示。"
-                />
-              ) : (
-                <LiveBattlefieldModule
-                  key={selectedStrategyId}
-                  positions={currentPositions}
-                  realPrices={currentPrices}
-                  setChartData={safeSetChartData}
-                  onClosePosition={handleClosePositionInternal}
-                  onStatsUpdate={handleLiveStatsUpdate}
-                />
-              )}
-            </ErrorBoundary>
+            <div id="module-list2" className="contents">
+              <ErrorBoundary moduleName="2. 均线穿越">
+                {isUnconfigured ? (
+                  <UnconfiguredColumn
+                    title="2. 均线穿越 (CROSSOVER)"
+                    description="当前自动选币属于全新创建。金叉/死叉与压缩区间监控参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                  />
+                ) : scannerMode === "BACKTEST" ? (
+                  <BacktestGrandCrossingModule
+                    candidates={list1Candidates}
+                    onResultsUpdate={handleList2Results}
+                    scanConfig={scanConfig}
+                    setScanConfig={setScanConfig}
+                    setChartData={safeSetChartData}
+                    directMode={directMode}
+                    onLog={onLog}
+                    onRemoveSignalReady={(fn) => {
+                      list2RemoveSignalRef.current = fn;
+                    }}
+                  />
+                ) : (
+                  <MemoizedGrandCrossingModule
+                    key={selectedStrategyId}
+                    networkStatus={networkStatus}
+                    candidates={list1Candidates}
+                    onResultsUpdate={handleList2Results}
+                    scanConfig={scanConfig}
+                    setScanConfig={setScanConfig}
+                    setChartData={safeSetChartData}
+                    directMode={directMode}
+                    onLog={onLog}
+                    onRemoveSignalReady={(fn) => {
+                      list2RemoveSignalRef.current = fn;
+                    }}
+                    strategyId={selectedStrategyId}
+                    activePositions={filteredPositions || currentPositions}
+                  />
+                )}
+              </ErrorBoundary>
+            </div>
 
-            <ErrorBoundary moduleName="6. 战术终端">
-              {isUnconfigured ? (
-                <UnconfiguredColumn
-                  title="6. 战术终端 (COMMAND)"
-                  description="当前自动选币属于全新创建。单仓金额、杠杆、自动/变量开仓、防爆熔断器等终端参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
-                />
-              ) : (
-                <TacticalCommandModule
-                  key={selectedStrategyId}
-                  currentStats={liveStats}
-                  onConfigUpdate={setActionConfig}
-                  onPanicSell={handlePanicSell}
-                  onSecureProfit={handleSecureProfit}
-                  onCutLosses={handleCutLosses}
-                  onCloseLongs={handleCloseLongs}
-                  onCloseShorts={handleCloseShorts}
-                  strategyId={selectedStrategyId}
-                />
-              )}
-            </ErrorBoundary>
+            <div id="module-list3" className="contents">
+              <ErrorBoundary moduleName="3. 结构审计">
+                {isUnconfigured ? (
+                  <UnconfiguredColumn
+                    title="3. 结构审计 (STRUCTURE)"
+                    description="当前自动选币属于全新创建。二次支撑、阻力与趋势审计参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                  />
+                ) : scannerMode === "BACKTEST" ? (
+                  <BacktestStructureAuditModule
+                    candidates={list2Results}
+                    onResultsUpdate={handleList3Results}
+                    onConfigUpdate={setList3Config}
+                    onRemoveSignalReady={handleRemoveSignalReady}
+                    realPrices={currentPrices}
+                    setChartData={safeSetChartData}
+                    executeTradeSafe={executeTradeSafe}
+                    activePositions={filteredPositions}
+                    directMode={directMode}
+                    actionConfig={actionConfig}
+                  />
+                ) : (
+                  <MemoizedStructureAuditModule
+                    key={selectedStrategyId}
+                    candidates={list2Results}
+                    onResultsUpdate={handleList3Results}
+                    onConfigUpdate={setList3Config}
+                    onRemoveSignalReady={handleRemoveSignalReady}
+                    realPrices={currentPrices}
+                    setChartData={safeSetChartData}
+                    executeTradeSafe={executeTradeSafe}
+                    activePositions={filteredPositions}
+                    directMode={directMode}
+                    actionConfig={actionConfig}
+                    strategyId={selectedStrategyId}
+                  />
+                )}
+              </ErrorBoundary>
+            </div>
+
+            <div id="module-list4" className="contents">
+              <ErrorBoundary moduleName="4. 动能审计">
+                {isUnconfigured ? (
+                  <UnconfiguredColumn
+                    title="4. 动能审计 (MOMENTUM)"
+                    description="当前自动选币属于全新创建。突破突破监控、防追高熔断与动态方向锁等监控参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                  />
+                ) : scannerMode === "BACKTEST" ? (
+                  <BacktestMomentumAuditModule
+                    candidates={list3Results}
+                    setChartData={safeSetChartData}
+                    executeTradeSafe={executeTradeSafe}
+                    list3Config={list3Config}
+                    realPrices={currentPrices}
+                    activePositions={filteredPositions}
+                    onRemoveSignal={handleRemoveSignal}
+                    actionConfig={actionConfig}
+                    onLog={onLog}
+                  />
+                ) : (
+                  <MemoizedMomentumAuditModule
+                    key={selectedStrategyId}
+                    candidates={list3Results}
+                    setChartData={safeSetChartData}
+                    executeTradeSafe={executeTradeSafe}
+                    list3Config={list3Config}
+                    realPrices={currentPrices}
+                    activePositions={filteredPositions}
+                    onRemoveSignal={handleRemoveSignal}
+                    actionConfig={actionConfig}
+                    onLog={onLog}
+                    strategyId={selectedStrategyId}
+                  />
+                )}
+              </ErrorBoundary>
+            </div>
+
+            <div id="module-battlefield" className="contents">
+              <ErrorBoundary moduleName="5. 战场实况">
+                {isUnconfigured ? (
+                  <UnconfiguredColumn
+                    title="5. 战场实况 (BATTLEFIELD)"
+                    description="当前自动选币属于全新创建，没有任何持仓。策略激活并生成交易信号开仓后，持仓将在此显示。"
+                  />
+                ) : (
+                  <LiveBattlefieldModule
+                    key={selectedStrategyId}
+                    positions={currentPositions}
+                    realPrices={currentPrices}
+                    setChartData={safeSetChartData}
+                    onClosePosition={handleClosePositionInternal}
+                    onStatsUpdate={handleLiveStatsUpdate}
+                  />
+                )}
+              </ErrorBoundary>
+            </div>
+
+            <div id="module-command" className="contents">
+              <ErrorBoundary moduleName="6. 战术终端">
+                {isUnconfigured ? (
+                  <UnconfiguredColumn
+                    title="6. 战术终端 (COMMAND)"
+                    description="当前自动选币属于全新创建。单仓金额、杠杆、自动/变量开仓、防爆熔断器等终端参数尚未载入。请导入配置，或在上方点击激活并载入基础运行参数。"
+                  />
+                ) : (
+                  <TacticalCommandModule
+                    key={selectedStrategyId}
+                    currentStats={liveStats}
+                    onConfigUpdate={setActionConfig}
+                    onPanicSell={handlePanicSell}
+                    onSecureProfit={handleSecureProfit}
+                    onCutLosses={handleCutLosses}
+                    onCloseLongs={handleCloseLongs}
+                    onCloseShorts={handleCloseShorts}
+                    strategyId={selectedStrategyId}
+                  />
+                )}
+              </ErrorBoundary>
+            </div>
           </div>
 
           {/* Bottom Log Panel */}
           {showLogPanel && (
-            <div className="h-32 border-t border-slate-800 bg-[#0b0e11] flex flex-col overflow-hidden">
+            <div id="module-system-logs" className="h-32 border-t border-slate-800 bg-[#0b0e11] flex flex-col overflow-hidden">
               <div className="flex items-center justify-between px-3 py-1 bg-slate-900/50 border-b border-slate-800">
                 <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1.5">
                   <Activity size={10} /> 系统运行日志
@@ -2437,7 +2456,7 @@ const ScannerDashboardInner: React.FC<
 
       {/* Background Multi-Strategy Runners */}
       {strategies.map((strat) => {
-        if (isVisible && strat.id === selectedStrategyId) return null; // Already rendered visibly in UI
+        if (isVisible && strat.id === selectedStrategyId) return null; // 当前策略已在主视图中常驻运行 (展开与最小化状态均保持 24 小时不停)
         if (strat.unconfigured) return null; // Don't run if unconfigured
         return (
           <BackgroundStrategyRunner

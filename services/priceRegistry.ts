@@ -42,7 +42,14 @@ class PriceRegistry {
 
     constructor() {
         if (typeof window !== 'undefined') {
-            setInterval(() => this.sweepZombieElements(), 10000);
+            setInterval(() => this.sweepZombieElements(), 5000);
+            if (typeof document !== 'undefined') {
+                document.addEventListener('visibilitychange', () => {
+                    if (!document.hidden) {
+                        this.refreshAllDomElements();
+                    }
+                });
+            }
         }
     }
 
@@ -154,11 +161,15 @@ class PriceRegistry {
                                 
                                 if (entry.flashColor && prevPrice !== undefined) {
                                     if (price > prevPrice) {
-                                        entry.element.classList.add('text-emerald-400');
-                                        entry.element.classList.remove('text-red-400');
+                                        if (!entry.element.classList.contains('text-emerald-400')) {
+                                            entry.element.classList.add('text-emerald-400');
+                                            entry.element.classList.remove('text-red-400');
+                                        }
                                     } else if (price < prevPrice) {
-                                        entry.element.classList.add('text-red-400');
-                                        entry.element.classList.remove('text-emerald-400');
+                                        if (!entry.element.classList.contains('text-red-400')) {
+                                            entry.element.classList.add('text-red-400');
+                                            entry.element.classList.remove('text-emerald-400');
+                                        }
                                     }
                                 }
                             }
@@ -421,6 +432,24 @@ class PriceRegistry {
     }
 
     /**
+     * 🛡️ Refreshes all currently connected DOM elements when tab regains focus or visibility
+     */
+    public refreshAllDomElements() {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        this.priceElements.forEach((entries, sym) => {
+            const price = this.getPrice(sym);
+            if (price === undefined || isNaN(price)) return;
+            entries.forEach(entry => {
+                try {
+                    if (entry.element && entry.element.isConnected) {
+                        entry.element.textContent = `${entry.prefix}${formatPrice(price)}${entry.suffix}`;
+                    }
+                } catch (_) {}
+            });
+        });
+    }
+
+    /**
      * 🛡️ Periodically purges unmounted elements and stale timers to prevent memory leaks
      */
     public sweepZombieElements(): { cleanedPrice: number; cleanedPnl: number } {
@@ -456,6 +485,14 @@ class PriceRegistry {
         });
 
         return { cleanedPrice, cleanedPnl };
+    }
+
+    public getRegistryStats(): { totalPriceRegistered: number; totalPnlRegistered: number } {
+        let totalPriceRegistered = 0;
+        let totalPnlRegistered = 0;
+        this.priceElements.forEach(set => { totalPriceRegistered += set.size; });
+        this.pnlElements.forEach(set => { totalPnlRegistered += set.size; });
+        return { totalPriceRegistered, totalPnlRegistered };
     }
 }
 

@@ -182,7 +182,10 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
         loadLatestReport();
     }, [activeTab]);
 
-    const activePositionsList = activeTab === 'BACKTEST' ? btPositions : livePositionsFiltered;
+    const activePositionsList = (activeTab === 'BACKTEST' ? btPositions : livePositionsFiltered).filter(p => {
+        const clean = normalizeSymbol(p.symbol);
+        return !manuallyClosedSymbols?.has(clean);
+    });
     
     const {
         sortedPositions,

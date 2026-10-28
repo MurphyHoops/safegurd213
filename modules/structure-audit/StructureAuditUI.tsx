@@ -47,7 +47,10 @@ const DEFAULT_CONFIG: List3Config = {
     filterKLinePeriod: '1h',
     filterEmaPeriod: 80,
     filterTimeParam: 100,
-    filterCrossingCount: 2
+    filterCrossingCount: 2,
+    enablePriorReverseDivergence: false,
+    priorReverseLookbackBars: 20,
+    priorReverseMode: 'BOTH'
 };
 
 export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpdate, onConfigUpdate, onRemoveSignalReady, realPrices, setChartData, executeTradeSafe, activePositions, directMode = false, actionConfig, strategyId, isBackground = false }) => {

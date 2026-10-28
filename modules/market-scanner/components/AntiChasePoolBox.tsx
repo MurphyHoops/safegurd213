@@ -11,6 +11,8 @@ interface Props {
     candidateSymbols?: string[];
 }
 
+import { applyDirectionSync } from '../../../utils/directionSync';
+
 export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, candidateSymbols }) => {
     const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('SCANNER_ANTI_CHASE_BOX_COLLAPSED', false);
     const [searchTerm, setSearchTerm] = useState('');
@@ -19,6 +21,8 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
     const [isScanning, setIsScanning] = useState(false);
     const [pool, setPool] = usePersistedState<AntiChasePoolItem[]>('SCANNER_ANTI_CHASE_FILTERED_POOL', []);
     const isMountedRef = useRef(true);
+
+    const isSyncLocked = scanConfig.majorTrend?.syncDirectionLock !== false;
 
     const [config, setConfig] = useState<AntiChaseFilterConfig>(() => {
         let storedCfg: any = null;
@@ -31,6 +35,23 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
             ...(scanConfig.antiChaseFilter || scanConfig.majorTrend?.antiChaseFilter || storedCfg || {})
         };
     });
+
+    // 🔒 响应外部 scanConfig 的全域多空同步变动
+    useEffect(() => {
+        const activeFilter = scanConfig.antiChaseFilter || scanConfig.majorTrend?.antiChaseFilter;
+        if (activeFilter) {
+            setConfig(prev => ({
+                ...prev,
+                ...activeFilter
+            }));
+        }
+    }, [
+        scanConfig.antiChaseFilter,
+        scanConfig.majorTrend?.antiChaseFilter,
+        scanConfig.majorTrend?.enableLong,
+        scanConfig.majorTrend?.enableShort,
+        scanConfig.majorTrend?.syncDirectionLock
+    ]);
 
     const configRef = useRef(config);
     useEffect(() => {
@@ -412,7 +433,16 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
                                     <input 
                                         type="checkbox" 
                                         checked={config.enableLong !== false} 
-                                        onChange={e => updateConfig(p => ({ ...p, enableLong: e.target.checked }))}
+                                        onChange={e => {
+                                            const newLong = e.target.checked;
+                                            if (isSyncLocked) {
+                                                const newShort = config.enableShort !== false;
+                                                const targetMode = (newLong && newShort) ? 'BOTH' : (newLong ? 'LONG_ONLY' : (newShort ? 'SHORT_ONLY' : 'LONG_ONLY'));
+                                                setScanConfig(p => applyDirectionSync(p, targetMode));
+                                            } else {
+                                                updateConfig(p => ({ ...p, enableLong: newLong }));
+                                            }
+                                        }}
                                         className="w-2.5 h-2.5 rounded bg-slate-800 text-emerald-500"
                                     />
                                     <span className="text-[9px] text-emerald-400">做多锁定</span>
@@ -421,7 +451,16 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
                                     <input 
                                         type="checkbox" 
                                         checked={config.enableShort !== false} 
-                                        onChange={e => updateConfig(p => ({ ...p, enableShort: e.target.checked }))}
+                                        onChange={e => {
+                                            const newShort = e.target.checked;
+                                            if (isSyncLocked) {
+                                                const newLong = config.enableLong !== false;
+                                                const targetMode = (newLong && newShort) ? 'BOTH' : (newShort ? 'SHORT_ONLY' : (newLong ? 'LONG_ONLY' : 'SHORT_ONLY'));
+                                                setScanConfig(p => applyDirectionSync(p, targetMode));
+                                            } else {
+                                                updateConfig(p => ({ ...p, enableShort: newShort }));
+                                            }
+                                        }}
                                         className="w-2.5 h-2.5 rounded bg-slate-800 text-red-500"
                                     />
                                     <span className="text-[9px] text-red-400">做空锁定</span>

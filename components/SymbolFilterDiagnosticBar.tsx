@@ -101,6 +101,8 @@ const DEFAULT_LIST2_CONFIG: List2Config = {
     sortMode: 'MOST',
     requireCrossing: true,
     requireAlignment: false,
+    requireMaCross: false,
+    maCrossLookbackBars: 15,
     crossingDivergenceLogic: 'AND',
     enableDivergenceCrossCheck: true,
     divergenceLookbackBars: 20,
@@ -360,14 +362,36 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
             }
 
             // Retrieve live effective configs with strategy ID fallback from localStorage
-            const selectedStrategyId = (typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '') || '';
+            let selectedStrategyId = '';
+            try {
+                const rawStrat = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+                if (rawStrat) {
+                    try {
+                        selectedStrategyId = JSON.parse(rawStrat);
+                    } catch (_) {
+                        selectedStrategyId = rawStrat;
+                    }
+                }
+            } catch (_) {}
+            selectedStrategyId = String(selectedStrategyId || '').replace(/['"]/g, '').trim();
 
             let effectiveList2Config: List2Config = { ...DEFAULT_LIST2_CONFIG };
             try {
-                const rawL2 = (selectedStrategyId ? localStorage.getItem(`SCANNER_LIST2_CONFIG_${selectedStrategyId}`) : null) ||
-                              localStorage.getItem('SCANNER_LIST2_CONFIG');
-                if (rawL2) {
-                    effectiveList2Config = { ...effectiveList2Config, ...JSON.parse(rawL2) };
+                const possibleL2Keys = [
+                    selectedStrategyId ? `SCANNER_LIST2_CONFIG_${selectedStrategyId}` : null,
+                    'SCANNER_LIST2_CONFIG_strat-1',
+                    'SCANNER_LIST2_CONFIG'
+                ].filter(Boolean) as string[];
+
+                for (const key of possibleL2Keys) {
+                    const rawL2 = localStorage.getItem(key);
+                    if (rawL2) {
+                        const parsed = JSON.parse(rawL2);
+                        if (parsed && typeof parsed === 'object') {
+                            effectiveList2Config = { ...effectiveList2Config, ...parsed };
+                            break;
+                        }
+                    }
                 }
             } catch (e) {}
             if (list2Config) {
@@ -376,10 +400,21 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
 
             let effectiveList3Config: List3Config = { ...DEFAULT_LIST3_CONFIG };
             try {
-                const rawL3 = (selectedStrategyId ? localStorage.getItem(`SCANNER_LIST3_CONFIG_${selectedStrategyId}`) : null) ||
-                              localStorage.getItem('SCANNER_LIST3_CONFIG');
-                if (rawL3) {
-                    effectiveList3Config = { ...effectiveList3Config, ...JSON.parse(rawL3) };
+                const possibleL3Keys = [
+                    selectedStrategyId ? `SCANNER_LIST3_CONFIG_${selectedStrategyId}` : null,
+                    'SCANNER_LIST3_CONFIG_strat-1',
+                    'SCANNER_LIST3_CONFIG'
+                ].filter(Boolean) as string[];
+
+                for (const key of possibleL3Keys) {
+                    const rawL3 = localStorage.getItem(key);
+                    if (rawL3) {
+                        const parsed = JSON.parse(rawL3);
+                        if (parsed && typeof parsed === 'object') {
+                            effectiveList3Config = { ...effectiveList3Config, ...parsed };
+                            break;
+                        }
+                    }
                 }
             } catch (e) {}
             if (list3Config) {
@@ -388,10 +423,21 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
 
             let effectiveList4Config: List4Config = { ...DEFAULT_LIST4_CONFIG };
             try {
-                const rawL4 = (selectedStrategyId ? localStorage.getItem(`SCANNER_LIST4_CONFIG_${selectedStrategyId}`) : null) ||
-                              localStorage.getItem('SCANNER_LIST4_CONFIG');
-                if (rawL4) {
-                    effectiveList4Config = { ...effectiveList4Config, ...JSON.parse(rawL4) };
+                const possibleL4Keys = [
+                    selectedStrategyId ? `SCANNER_LIST4_CONFIG_${selectedStrategyId}` : null,
+                    'SCANNER_LIST4_CONFIG_strat-1',
+                    'SCANNER_LIST4_CONFIG'
+                ].filter(Boolean) as string[];
+
+                for (const key of possibleL4Keys) {
+                    const rawL4 = localStorage.getItem(key);
+                    if (rawL4) {
+                        const parsed = JSON.parse(rawL4);
+                        if (parsed && typeof parsed === 'object') {
+                            effectiveList4Config = { ...effectiveList4Config, ...parsed };
+                            break;
+                        }
+                    }
                 }
             } catch (e) {}
             if (list4Config) {
@@ -926,6 +972,8 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
 
             const reqCrossing = Boolean(effectiveList2Config.requireCrossing);
             const reqAlignment = Boolean(effectiveList2Config.requireAlignment);
+            const reqMa = Boolean(effectiveList2Config.requireMaCross);
+            const maLookback = effectiveList2Config.maCrossLookbackBars || 15;
 
             // 1. K线穿越实体 (requireCrossing)
             if (reqCrossing) {
@@ -967,39 +1015,65 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
                 });
             }
 
-            // 3. 条件组合关系 (Logic)
+            // 3. EMA均线穿越 (requireMaCross)
+            if (reqMa) {
+                const isMaCrossOk = primaryL2 !== null;
+                l2Rows.push({
+                    name: 'EMA均线穿越',
+                    targetRange: `过去 ≤ ${maLookback} 根内 EMA10 顺次穿越 EMA20/30/40 且同向收盘`,
+                    actualValue: isMaCrossOk ? `EMA10 连续穿越 EMA20/30/40 且同向确认 (${primaryTf})` : `未检测到有效 EMA10 连续穿越 EMA20/30/40 (${primaryTf})`,
+                    passed: isMaCrossOk,
+                    statusText: isMaCrossOk ? '✅ 均线穿越达标' : '❌ 未达到均线穿越要求'
+                });
+                if (!isMaCrossOk) l2BlockReasons.push(`未满足EMA10连续穿越20/30/40(${primaryTf})`);
+            } else {
+                l2Rows.push({
+                    name: 'EMA均线穿越',
+                    targetRange: '未开启 (开关已关闭)',
+                    actualValue: '未开启 (无需检测均线穿越)',
+                    passed: 'NEUTRAL',
+                    statusText: '⚪ 开关未开启，直接放行 (无需检测均线穿越)'
+                });
+            }
+
+            // 4. 条件组合关系 (Logic)
             const crossingLogic = effectiveList2Config.crossingDivergenceLogic || 'AND';
             let logicConditionPassed = false;
             let logicActualDesc = '';
             let logicStatusDesc = '';
 
-            if (!reqCrossing && reqAlignment) {
+            if (primaryL2 !== null) {
+                logicConditionPassed = true;
+                logicActualDesc = `列表 2 完整规则与复合模式模式完全吻合通过 (${primaryTf})`;
+                logicStatusDesc = '✅ 列表 2 均线与穿越条件完美达成';
+            } else if (!reqCrossing && !reqMa && reqAlignment) {
                 logicConditionPassed = isEmaDivergent;
                 logicActualDesc = isEmaDivergent ? `均线发散已成立 (${primaryTf})` : `均线未发散 (${primaryTf})`;
                 logicStatusDesc = isEmaDivergent ? '✅ 均线发散达成 (仅开启发散)' : '❌ 均线未形成发散';
-            } else if (reqCrossing && !reqAlignment) {
+            } else if (reqCrossing && !reqAlignment && !reqMa) {
                 logicConditionPassed = isCrossingPresent;
                 logicActualDesc = isCrossingPresent ? '实体穿越已成立' : '未检测到实体穿越';
                 logicStatusDesc = isCrossingPresent ? '✅ 实体穿越达成 (仅开启穿越)' : '❌ 未检测到实体穿越';
-            } else if (reqCrossing && reqAlignment) {
+            } else if (reqMa && !reqCrossing && !reqAlignment) {
+                logicConditionPassed = primaryL2 !== null;
+                logicActualDesc = primaryL2 !== null ? '均线穿越已成立' : '未检测到均线穿越';
+                logicStatusDesc = primaryL2 !== null ? '✅ 均线穿越达成 (仅开启均线穿越)' : '❌ 未检测到均线穿越';
+            } else {
+                // Multi-mode combinations
                 if (crossingLogic === 'OR') {
                     logicConditionPassed = (primaryL2 !== null) || isCrossingPresent || isEmaDivergent;
-                    logicActualDesc = `穿越: ${isCrossingPresent ? '✅' : '❌'} / 发散: ${isEmaDivergent ? '✅' : '❌'}`;
-                    logicStatusDesc = logicConditionPassed ? '✅ 满足“或(OR)”组合关系' : '❌ 穿越与发散均未满足';
+                    logicActualDesc = `实体: ${isCrossingPresent ? '✅' : '❌'} / 发散: ${isEmaDivergent ? '✅' : '❌'} / 均线穿越: ${reqMa ? (primaryL2 !== null ? '✅' : '❌') : '⚪'}`;
+                    logicStatusDesc = logicConditionPassed ? '✅ 满足“或(OR)”组合关系' : '❌ 条件均未满足';
                 } else if (crossingLogic === 'WAIT') {
                     logicConditionPassed = (primaryL2 !== null) || isCrossingPresent || isEmaDivergent;
-                    logicActualDesc = `穿越: ${isCrossingPresent ? '✅' : '❌'} / 等待发散中`;
+                    logicActualDesc = `实体/均线穿越: ${primaryL2 !== null || isCrossingPresent ? '✅' : '❌'} / 等待发散中`;
                     logicStatusDesc = logicConditionPassed ? '✅ 满足“等待(WAIT)”组合关系' : '❌ 未进入等待或发散';
                 } else {
                     // AND
-                    logicConditionPassed = (primaryL2 !== null) || (isCrossingPresent && isEmaDivergent);
-                    logicActualDesc = `穿越: ${isCrossingPresent ? '✅' : '❌'} 且 发散: ${isEmaDivergent ? '✅' : '❌'}`;
-                    logicStatusDesc = logicConditionPassed ? '✅ 满足“且(AND)”组合关系' : '❌ 需同时满足穿越与发散';
+                    logicConditionPassed = primaryL2 !== null;
+                    logicActualDesc = `实体穿越: ${reqCrossing ? (isCrossingPresent ? '✅' : '❌') : '⚪'} | 发散: ${reqAlignment ? (isEmaDivergent ? '✅' : '❌') : '⚪'} | 均线穿越: ${reqMa ? (primaryL2 !== null ? '✅' : '❌') : '⚪'}`;
+                    logicStatusDesc = logicConditionPassed ? '✅ 满足“且(AND)”组合关系' : '❌ 需同时满足开启的必选条件';
                 }
-            } else {
-                logicConditionPassed = true;
-                logicActualDesc = '极度收窄模式';
-                logicStatusDesc = '⚪ 极度收窄模式直接放行';
             }
 
             l2Rows.push({

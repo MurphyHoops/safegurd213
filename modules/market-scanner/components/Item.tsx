@@ -43,6 +43,12 @@ export const List1Item: React.FC<Props> = ({
     const isSmart = mode === 'SMART' && item.smartScore !== undefined;
     const lookbackDays = scanConfig.majorTrend?.lookbackDays || 300;
 
+    const cached8am = getVolume8am(item.symbol);
+    const vol24h = Number(item.volume24h) || (Number(item.quoteVolume) ? Number(item.quoteVolume) / 1000000 : 0);
+    const vol8am = item.volume8am !== undefined && item.volume8am !== null ? Number(item.volume8am) : cached8am?.volume8am;
+    const chg8am = item.change8am !== undefined && item.change8am !== null ? Number(item.change8am) : cached8am?.change8am;
+    const chg24h = item.change !== undefined && item.change !== null ? Number(item.change) : 0;
+
     return (
         <div 
             onClick={() => setChartData({ 
@@ -65,7 +71,7 @@ export const List1Item: React.FC<Props> = ({
                     currentPrice: item.price
                 });
             }}
-            className={`bg-slate-800/50 p-1.5 px-2 rounded border text-[11px] group hover:bg-slate-800 transition-colors cursor-pointer relative ${item.isNew ? 'border-indigo-500/50 bg-indigo-900/10' : 'border-slate-700/50'} ${isSmart ? 'border-purple-500/30 shadow-lg shadow-purple-950/10 hover:border-purple-400/50' : ''}`}
+            className={`crypto-virtual-card flex items-center gap-1 font-mono text-[11px] bg-slate-800/50 p-1 px-1.5 rounded border group hover:bg-slate-800 transition-colors cursor-pointer relative shrink-0 ${item.isNew ? 'border-indigo-500/50 bg-indigo-900/10' : 'border-slate-700/50'} ${isSmart ? 'border-purple-500/30 shadow-lg shadow-purple-950/10 hover:border-purple-400/50' : ''}`}
         >
             {/* Absolute positioned hover Delete Button */}
             <button 
@@ -102,84 +108,71 @@ export const List1Item: React.FC<Props> = ({
                 </div>
             )}
 
-            {/* Premium Clean Horizontal Layout with strict vertical column alignment */}
-            <div className="flex items-center gap-1.5 font-mono py-1 px-1">
-                {/* Basic Info Row */}
-                <div className="flex items-center gap-1.5 shrink-0">
-                    <div className="flex items-center gap-0.5 shrink-0 w-[30px]">
-                        {showCheckbox && (
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); onToggleSymbol(item.symbol); }}
-                                className={`${isSmart ? 'text-purple-600 hover:text-purple-400' : 'text-slate-600 hover:text-cyan-400'} transition-colors shrink-0`}
-                            >
-                                {isChecked ? <CheckSquare size={10} className={isSmart ? "text-purple-400" : "text-cyan-400"} /> : <Square size={10} />}
-                            </button>
-                        )}
-                        <span className="text-[8.5px] text-slate-500 font-bold font-mono" title={`列表编号: ${idx + 1}`}>{idx + 1}.</span>
-                        {item.isNew && <span className="text-[6px] bg-indigo-600 text-white px-0.5 rounded font-bold animate-pulse shrink-0">N</span>}
-                        {isSmart && <span className="text-[6px] bg-purple-600 text-white px-0.5 rounded font-bold shrink-0">S</span>}
-                    </div>
+            {/* Checkbox button */}
+            {showCheckbox && (
+                <button 
+                    onClick={(e) => { e.stopPropagation(); onToggleSymbol(item.symbol); }}
+                    className={`${isSmart ? 'text-purple-600 hover:text-purple-400' : 'text-slate-600 hover:text-cyan-400'} transition-colors shrink-0 p-0.5`}
+                >
+                    {isChecked ? <CheckSquare size={10} className={isSmart ? "text-purple-400" : "text-cyan-400"} /> : <Square size={10} />}
+                </button>
+            )}
 
-                    {/* 币名 (已移除中文显示，固定宽度紧靠左侧，保证纵向对齐) */}
-                    <div className="w-[52px] shrink-0 font-black text-[11px] text-slate-100 truncate text-left flex items-center gap-1" title={item.symbol}>
-                        <span>{item.symbol.replace('USDT','')}</span>
-                        {pushRank !== undefined && pushRank > 0 && (
-                            <span 
-                                className="text-[7.5px] bg-amber-500/20 text-amber-300 border border-amber-500/50 px-0.5 rounded font-mono font-bold shrink-0 tracking-tight"
-                                title={`Top N截取: 第 ${pushRank} 名推入列表2`}
-                            >
-                                #{pushRank}
-                            </span>
-                        )}
-                    </div>
+            {/* Index number & badges */}
+            <span className="text-[8.5px] text-slate-500 font-bold font-mono shrink-0 w-[16px] text-left" title={`列表编号: ${idx + 1}`}>{idx + 1}.</span>
+            {item.isNew && <span className="text-[6px] bg-indigo-600 text-white px-0.5 rounded font-bold animate-pulse shrink-0">N</span>}
+            {isSmart && <span className="text-[6px] bg-purple-600 text-white px-0.5 rounded font-bold shrink-0">S</span>}
 
-                    {(() => {
-                        const cached8am = getVolume8am(item.symbol);
-                        const vol24h = Number(item.volume24h) || (Number(item.quoteVolume) ? Number(item.quoteVolume) / 1000000 : 0);
-                        const vol8am = item.volume8am !== undefined && item.volume8am !== null ? Number(item.volume8am) : cached8am?.volume8am;
-                        const chg8am = item.change8am !== undefined && item.change8am !== null ? Number(item.change8am) : cached8am?.change8am;
-                        const chg24h = item.change !== undefined && item.change !== null ? Number(item.change) : 0;
+            {/* Symbol Name & Rank */}
+            <span className="w-[52px] shrink-0 font-black text-[11px] text-slate-100 truncate text-left flex items-center gap-0.5" title={item.symbol}>
+                {item.symbol.replace('USDT','')}
+                {pushRank !== undefined && pushRank > 0 && (
+                    <span 
+                        className="text-[7.5px] bg-amber-500/20 text-amber-300 border border-amber-500/50 px-0.5 rounded font-mono font-bold shrink-0 tracking-tight"
+                        title={`Top N截取: 第 ${pushRank} 名推入列表2`}
+                    >
+                        #{pushRank}
+                    </span>
+                )}
+            </span>
 
-                        return (
-                            <div className="flex items-center gap-1 shrink-0 font-mono text-[9.5px]">
-                                {/* 前面：24小时数据 (涨跌幅 / 交易额，紧凑纵向对齐) */}
-                                <div className="flex items-center gap-0.5 shrink-0 w-[96px]" title={`24小时: 涨跌幅 ${(chg24h >= 0 ? '+' : '') + chg24h.toFixed(2)}% / 成交额 ${vol24h > 0 ? `${vol24h.toFixed(1)}M` : '-'} USDT`}>
-                                    <span 
-                                        className={`w-[52px] text-center font-extrabold text-[9.5px] px-0.5 py-0.5 rounded border inline-block tabular-nums shrink-0 ${chg24h >= 0 ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/20' : 'text-rose-400 bg-rose-950/40 border-rose-500/20'}`}
-                                    >
-                                        {(chg24h >= 0 ? '+' : '') + chg24h.toFixed(1)}%
-                                    </span>
-                                    <span className="text-slate-600 font-bold shrink-0">/</span>
-                                    <span className="w-[38px] text-right text-[9.5px] text-slate-300 font-bold tabular-nums shrink-0">
-                                        {vol24h > 0 ? `${vol24h >= 100 ? vol24h.toFixed(0) : vol24h.toFixed(1)}M` : '-'}
-                                    </span>
-                                </div>
+            {/* 24小时: 涨跌幅 */}
+            <span 
+                className={`w-[52px] text-center font-extrabold text-[9.5px] px-0.5 py-0.5 rounded border inline-block tabular-nums shrink-0 ${chg24h >= 0 ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/20' : 'text-rose-400 bg-rose-950/40 border-rose-500/20'}`}
+                title={`24小时: 涨跌幅 ${(chg24h >= 0 ? '+' : '') + chg24h.toFixed(2)}% / 成交额 ${vol24h > 0 ? `${vol24h.toFixed(1)}M` : '-'} USDT`}
+            >
+                {(chg24h >= 0 ? '+' : '') + chg24h.toFixed(1)}%
+            </span>
 
-                                <span className="text-slate-700 font-normal shrink-0 px-0.5">|</span>
+            <span className="text-slate-600 font-bold shrink-0 text-[9.5px]">/</span>
 
-                                {/* 后面：今早8点起数据 (涨跌幅 / 交易额，紧凑纵向对齐，全部显示完) */}
-                                <div className="flex items-center gap-0.5 shrink-0 w-[96px]" title={`今早8点起: 涨跌幅 ${chg8am !== undefined && !isNaN(chg8am) ? `${chg8am >= 0 ? '+' : ''}${chg8am.toFixed(2)}%` : '计算中...'} / 成交额 ${vol8am !== undefined && !isNaN(vol8am) ? `${vol8am.toFixed(1)}M` : '计算中...'} USDT`}>
-                                    <span 
-                                        className={`w-[52px] text-center font-extrabold text-[9.5px] px-0.5 py-0.5 rounded border inline-block tabular-nums shrink-0 ${
-                                            chg8am !== undefined && !isNaN(chg8am) 
-                                                ? (chg8am >= 0 ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/20' : 'text-rose-400 bg-rose-950/40 border-rose-500/20')
-                                                : 'text-slate-500 bg-slate-900 border-slate-800'
-                                        }`}
-                                    >
-                                        {chg8am !== undefined && !isNaN(chg8am) 
-                                            ? `${chg8am >= 0 ? '+' : ''}${chg8am.toFixed(1)}%` 
-                                            : '--'}
-                                    </span>
-                                    <span className="text-slate-600 font-bold shrink-0">/</span>
-                                    <span className="w-[38px] text-right text-[9.5px] text-blue-300/90 font-bold tabular-nums shrink-0">
-                                        {vol8am !== undefined && !isNaN(vol8am) ? `${vol8am >= 100 ? vol8am.toFixed(0) : vol8am.toFixed(1)}M` : '--'}
-                                    </span>
-                                </div>
-                            </div>
-                        );
-                    })()}
-                </div>
-            </div>
+            {/* 24小时: 成交额 */}
+            <span className="w-[38px] text-right text-[9.5px] text-slate-300 font-bold tabular-nums shrink-0" title={`24小时成交额`}>
+                {vol24h > 0 ? `${vol24h >= 100 ? vol24h.toFixed(0) : vol24h.toFixed(1)}M` : '-'}
+            </span>
+
+            <span className="text-slate-700 font-normal shrink-0 px-0.5 text-[9.5px]">|</span>
+
+            {/* 今早8点起: 涨跌幅 */}
+            <span 
+                className={`w-[52px] text-center font-extrabold text-[9.5px] px-0.5 py-0.5 rounded border inline-block tabular-nums shrink-0 ${
+                    chg8am !== undefined && !isNaN(chg8am) 
+                        ? (chg8am >= 0 ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/20' : 'text-rose-400 bg-rose-950/40 border-rose-500/20')
+                        : 'text-slate-500 bg-slate-900 border-slate-800'
+                }`}
+                title={`今早8点起: 涨跌幅 ${chg8am !== undefined && !isNaN(chg8am) ? `${chg8am >= 0 ? '+' : ''}${chg8am.toFixed(2)}%` : '计算中...'} / 成交额 ${vol8am !== undefined && !isNaN(vol8am) ? `${vol8am.toFixed(1)}M` : '计算中...'} USDT`}
+            >
+                {chg8am !== undefined && !isNaN(chg8am) 
+                    ? `${chg8am >= 0 ? '+' : ''}${chg8am.toFixed(1)}%` 
+                    : '--'}
+            </span>
+
+            <span className="text-slate-600 font-bold shrink-0 text-[9.5px]">/</span>
+
+            {/* 今早8点起: 成交额 */}
+            <span className="w-[38px] text-right text-[9.5px] text-blue-300/90 font-bold tabular-nums shrink-0" title={`今早8点起成交额`}>
+                {vol8am !== undefined && !isNaN(vol8am) ? `${vol8am >= 100 ? vol8am.toFixed(0) : vol8am.toFixed(1)}M` : '--'}
+            </span>
 
             {downloadProgress !== undefined && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-700 overflow-hidden rounded-b">
@@ -189,4 +182,3 @@ export const List1Item: React.FC<Props> = ({
         </div>
     );
 };
-

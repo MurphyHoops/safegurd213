@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { ScannerSettings, PositionSide, Position } from '../../../types';
-import { X, Crosshair, Minus, Activity, Maximize2 } from 'lucide-react';
+import { X, Crosshair, Minus, Activity, Maximize2, ArrowLeft } from 'lucide-react';
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { normalizeSymbol } from '../../../services/symbolUtils';
 
@@ -264,7 +264,15 @@ export const BacktestScannerDashboard: React.FC<Props> = ({
                       <div className="flex gap-2 text-[10px] text-slate-500 font-mono"><span>v5.0.1 (Historical Mode)</span></div>
                   </div>
                   <div className="flex items-center gap-3">
-                      <button onClick={onClose} className="p-2 hover:bg-red-900/50 rounded text-slate-400 hover:text-white"><X size={20}/></button>
+                      <button 
+                          onClick={onClose}
+                          className="px-3.5 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+                          title="退出回测扫描终端，返回实盘交易主界面"
+                      >
+                          <ArrowLeft size={14} />
+                          <span>返回主界面</span>
+                      </button>
+                      <button onClick={onClose} className="p-2 hover:bg-red-900/50 rounded text-slate-400 hover:text-white" title="关闭"><X size={20}/></button>
                   </div>
               </div>
 

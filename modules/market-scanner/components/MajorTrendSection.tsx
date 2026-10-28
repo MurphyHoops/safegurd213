@@ -7,6 +7,7 @@ import { ChevronDown, ChevronUp, Activity, Settings2, PlayCircle, Loader2, Check
 import { MajorTrendConfig, SidewaysRuleGroup } from '../../../components/Scanner/scannerTypes';
 import { SmartNumberInput } from '../../../components/Scanner/ScannerUIHelpers';
 import { usePersistedState } from '../../../hooks/usePersistedState';
+import { applyDirectionSync } from '../../../utils/directionSync';
 
 interface Props {
     config?: MajorTrendConfig;
@@ -102,16 +103,11 @@ export const MajorTrendSection: React.FC<Props> = ({
         const newVal = !currentVal;
 
         if (isSyncLocked) {
-            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步多头方向
-            setConfig({
-                ...activeConfig,
-                enableStartTrendLong: newVal,
-                enableStartTrend: newVal || !!activeConfig.enableStartTrendShort,
-                enableSidewaysLong: newVal,
-                enableSideways: newVal || (activeConfig.enableSidewaysShort !== false),
-                enableLong: newVal,
-                enableLookbackFilter: newVal || (activeConfig.enableShort !== false)
-            });
+            const currentShort = source === 'SIDEWAYS' ? (activeConfig.enableSidewaysShort !== false) : (activeConfig.enableShort !== false);
+            const nextMode = newVal ? (currentShort ? 'BOTH' : 'LONG_ONLY') : (currentShort ? 'SHORT_ONLY' : 'LONG_ONLY');
+            const dummyScanConfig = { majorTrend: activeConfig } as any;
+            const syncedConfig = applyDirectionSync(dummyScanConfig, nextMode);
+            setConfig(syncedConfig.majorTrend);
         } else {
             // 独立模式
             if (source === 'SIDEWAYS') {
@@ -129,16 +125,11 @@ export const MajorTrendSection: React.FC<Props> = ({
         const newVal = !currentVal;
 
         if (isSyncLocked) {
-            // 🔗 联动模式：三大过滤（行情启动、横盘蓄势、回溯周期）全域自动同步空头方向
-            setConfig({
-                ...activeConfig,
-                enableStartTrendShort: newVal,
-                enableStartTrend: !!activeConfig.enableStartTrendLong || newVal,
-                enableSidewaysShort: newVal,
-                enableSideways: (activeConfig.enableSidewaysLong !== false) || newVal,
-                enableShort: newVal,
-                enableLookbackFilter: (activeConfig.enableLong !== false) || newVal
-            });
+            const currentLong = source === 'SIDEWAYS' ? (activeConfig.enableSidewaysLong !== false) : (activeConfig.enableLong !== false);
+            const nextMode = newVal ? (currentLong ? 'BOTH' : 'SHORT_ONLY') : (currentLong ? 'LONG_ONLY' : 'SHORT_ONLY');
+            const dummyScanConfig = { majorTrend: activeConfig } as any;
+            const syncedConfig = applyDirectionSync(dummyScanConfig, nextMode);
+            setConfig(syncedConfig.majorTrend);
         } else {
             // 独立模式
             if (source === 'SIDEWAYS') {
@@ -150,46 +141,9 @@ export const MajorTrendSection: React.FC<Props> = ({
     };
 
     const handleQuickDirection = (mode: 'LONG_ONLY' | 'SHORT_ONLY' | 'BOTH') => {
-        if (mode === 'LONG_ONLY') {
-            setConfig({
-                ...activeConfig,
-                enableStartTrendLong: true,
-                enableStartTrendShort: false,
-                enableStartTrend: true,
-                enableSidewaysLong: true,
-                enableSidewaysShort: false,
-                enableSideways: true,
-                enableLong: true,
-                enableShort: false,
-                enableLookbackFilter: true
-            });
-        } else if (mode === 'SHORT_ONLY') {
-            setConfig({
-                ...activeConfig,
-                enableStartTrendLong: false,
-                enableStartTrendShort: true,
-                enableStartTrend: true,
-                enableSidewaysLong: false,
-                enableSidewaysShort: true,
-                enableSideways: true,
-                enableLong: false,
-                enableShort: true,
-                enableLookbackFilter: true
-            });
-        } else {
-            setConfig({
-                ...activeConfig,
-                enableStartTrendLong: true,
-                enableStartTrendShort: true,
-                enableStartTrend: true,
-                enableSidewaysLong: true,
-                enableSidewaysShort: true,
-                enableSideways: true,
-                enableLong: true,
-                enableShort: true,
-                enableLookbackFilter: true
-            });
-        }
+        const dummyScanConfig = { majorTrend: activeConfig } as any;
+        const syncedConfig = applyDirectionSync(dummyScanConfig, mode);
+        setConfig(syncedConfig.majorTrend);
     };
 
     const rawSidewaysGroups: SidewaysRuleGroup[] = activeConfig.sidewaysGroups && activeConfig.sidewaysGroups.length > 0
@@ -757,6 +711,27 @@ export const MajorTrendSection: React.FC<Props> = ({
                                             <span className="text-[8.5px] text-slate-500">天</span>
                                         </div>
                                     </div>
+
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="flex items-center justify-between text-[8px] text-slate-500 mb-0.5">
+                                            <span>最低点向右最高涨幅 ≤</span>
+                                            <input 
+                                                type="checkbox"
+                                                checked={activeConfig.enableExtremeRangeLimit ?? true}
+                                                onChange={e => updateField('enableExtremeRangeLimit', e.target.checked)}
+                                                className="w-3 h-3 rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                                                title="开启/关闭极值向右变幅限制"
+                                            />
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <SmartNumberInput 
+                                                value={activeConfig.maxLongRightIncreasePct ?? 5.0} 
+                                                onChange={v => updateField('maxLongRightIncreasePct', v)}
+                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-emerald-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">%</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
@@ -821,6 +796,27 @@ export const MajorTrendSection: React.FC<Props> = ({
                                                 className="w-10 bg-transparent text-[10px] text-left outline-none text-sky-400 font-bold"
                                             />
                                             <span className="text-[8.5px] text-slate-500">天</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-black/30 border border-slate-800/50 rounded p-1">
+                                        <div className="flex items-center justify-between text-[8px] text-slate-500 mb-0.5">
+                                            <span>最高点向右最低跌幅 ≤</span>
+                                            <input 
+                                                type="checkbox"
+                                                checked={activeConfig.enableExtremeRangeLimit ?? true}
+                                                onChange={e => updateField('enableExtremeRangeLimit', e.target.checked)}
+                                                className="w-3 h-3 rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                                                title="开启/关闭极值向右变幅限制"
+                                            />
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <SmartNumberInput 
+                                                value={activeConfig.maxShortRightDecreasePct ?? 5.0} 
+                                                onChange={v => updateField('maxShortRightDecreasePct', v)}
+                                                className="w-full bg-transparent font-mono text-[10px] text-left outline-none text-rose-400 font-bold"
+                                            />
+                                            <span className="text-[8.5px] text-slate-500">%</span>
                                         </div>
                                     </div>
                                 </div>

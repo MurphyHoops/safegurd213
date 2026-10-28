@@ -87,7 +87,36 @@ export function evaluateLookbackFilter(
         highDaysAgo = maxHighIdx !== -1 ? (periodKlines.length - 1 - maxHighIdx) : 0;
     }
 
-    const isLongMatch = enableLong && (
+    // 极值向右变幅限制：向右找最高/最低点变幅，超过阈值则过滤剔除
+    let longRightIncreaseValid = true;
+    if (cfg.enableExtremeRangeLimit) {
+        const minLowIdx = lows.indexOf(minPrice);
+        if (minLowIdx !== -1) {
+            const rightHighs = highs.slice(minLowIdx);
+            const maxHighAfterLow = rightHighs.length > 0 ? Math.max(...rightHighs) : minPrice;
+            const rightIncreasePct = minPrice > 0 ? ((maxHighAfterLow - minPrice) / minPrice) * 100 : 0;
+            const limit = cfg.maxLongRightIncreasePct !== undefined ? cfg.maxLongRightIncreasePct : 5.0;
+            if (rightIncreasePct > limit) {
+                longRightIncreaseValid = false;
+            }
+        }
+    }
+
+    let shortRightDecreaseValid = true;
+    if (cfg.enableExtremeRangeLimit) {
+        const maxHighIdx = highs.indexOf(maxPrice);
+        if (maxHighIdx !== -1) {
+            const rightLows = lows.slice(maxHighIdx);
+            const minLowAfterHigh = rightLows.length > 0 ? Math.min(...rightLows) : maxPrice;
+            const rightDecreasePct = maxPrice > 0 ? ((maxPrice - minLowAfterHigh) / maxPrice) * 100 : 0;
+            const limit = cfg.maxShortRightDecreasePct !== undefined ? cfg.maxShortRightDecreasePct : 5.0;
+            if (rightDecreasePct > limit) {
+                shortRightDecreaseValid = false;
+            }
+        }
+    }
+
+    const isLongMatch = enableLong && longRightIncreaseValid && (
         (dropFromMaxToMin >= cfg.minHistoryDrop) && 
         (distLong >= (cfg.minExtremeDistanceLong ?? 0)) && 
         (distLong <= (cfg.maxExtremeDistanceLong !== undefined ? cfg.maxExtremeDistanceLong : cfg.maxExtremeDistance)) &&
@@ -95,7 +124,7 @@ export function evaluateLookbackFilter(
         (lowDaysAgo <= (cfg.extremeDaysMaxLong ?? 300))
     );
 
-    const isShortMatch = enableShort && (
+    const isShortMatch = enableShort && shortRightDecreaseValid && (
         (pumpFromMinToMax >= cfg.minHistoryPump) && 
         (distShort >= (cfg.minExtremeDistanceShort ?? 0)) && 
         (distShort <= (cfg.maxExtremeDistanceShort !== undefined ? cfg.maxExtremeDistanceShort : cfg.maxExtremeDistance)) &&

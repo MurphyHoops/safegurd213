@@ -67,6 +67,9 @@ const List3_Structure: React.FC<Props> = ({
   const [showVisualizer, setShowVisualizer] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
+  // 🛡️ [方案 1: DOM 节点防爆与按需物理渲染上限 - 默认初始显示前 30 个信号卡片]
+  const [visibleCount, setVisibleCount] = useState(30);
+
   // --- DYNAMIC FILTERING LOGIC ---
   const filteredList = useMemo(() => {
     if (!list3) return [];
@@ -118,7 +121,24 @@ const List3_Structure: React.FC<Props> = ({
       }
     });
 
-    return Array.from(dedupedCoinsMap.values());
+    const resultList = Array.from(dedupedCoinsMap.values());
+    if (config?.sortModeList3 === 'STARS') {
+      resultList.sort((a, b) => {
+        const getStars = (item: ScannerItem) => Math.max(0, ...(item.list3Results || []).map(r => {
+          const st = r.structure;
+          if (!st) return 0;
+          let score = 0;
+          if (st.isColorValid) score++;
+          if (st.isStrictTrend) score++;
+          if ((st as any).resonancePassed !== false) score++;
+          if (st.isAdvancedFilterPassed !== false) score++;
+          if (st.isPriorReverseFound) score++;
+          return score;
+        }));
+        return getStars(b) - getStars(a);
+      });
+    }
+    return resultList;
   }, [list3, config]);
 
   useAutoHistoryLogger('LIST3', filteredList || [], activePositions || []);
@@ -225,26 +245,37 @@ const List3_Structure: React.FC<Props> = ({
       <div className="px-3 py-2 bg-slate-950/50 border-b border-slate-800 flex justify-between items-center sticky top-0">
         <div className="flex items-center gap-2">
           <div className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1">
-            <Activity size={12} /> 3. 爆发结构
+            <Activity size={12} /> 3. 结构审计
           </div>
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => setConfig(p => ({ ...p, sortModeList3: p.sortModeList3 === 'STARS' ? 'LATEST' : 'STARS' }))}
+              className={`px-1.5 py-0.5 rounded border text-[9px] font-bold transition-all ${
+                config?.sortModeList3 === 'STARS'
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-[0_0_6px_rgba(245,158,11,0.2)]'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}
+              title="切换排序模式: ⭐星级高低置顶 / 最新时间排序"
+            >
+              {config?.sortModeList3 === 'STARS' ? '⭐ 星级置顶' : '🕒 时间排序'}
+            </button>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onClearItems();
               }}
-              className="flex items-center gap-1.5 px-2 py-1 bg-red-900/20 hover:bg-red-900/40 rounded border border-red-500/30 text-red-400 transition-all text-[10px] font-bold mr-1"
+              className="flex items-center gap-1.5 px-2 py-1 bg-red-900/20 hover:bg-red-900/40 rounded border border-red-500/30 text-red-400 transition-all text-[10px] font-bold"
               title="清空审计列表"
             >
-              <Trash2 size={12} />
+              <Trash2 size={11} />
               <span>清空</span>
             </button>
             <button
               onClick={() => setShowHistory(true)}
-              className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-emerald-900/50 rounded border border-emerald-500/30 text-emerald-500 transition-all text-[10px] font-bold mr-1"
+              className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-emerald-900/50 rounded border border-emerald-500/30 text-emerald-500 transition-all text-[10px] font-bold"
               title="查看历史记录"
             >
-              <History size={12} />
+              <History size={11} />
               <span>历史</span>
             </button>
             <button
@@ -252,7 +283,7 @@ const List3_Structure: React.FC<Props> = ({
               className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-indigo-400 transition-all border border-transparent hover:border-indigo-500/30"
               title="放大查看 K 线大图"
             >
-              <Maximize2 size={12} />
+              <Maximize2 size={11} />
             </button>
           </div>
         </div>
@@ -283,7 +314,7 @@ const List3_Structure: React.FC<Props> = ({
             <span className="text-[10px]">等待符合条件的信号...</span>
           </div>
         )}
-        {filteredList.map((item, idx) => (
+        {filteredList.slice(0, visibleCount).map((item, idx) => (
           <List3Item
             key={`${item.symbol}-${idx}`}
             item={item}
@@ -294,6 +325,28 @@ const List3_Structure: React.FC<Props> = ({
             idx={idx}
           />
         ))}
+
+        {filteredList.length > visibleCount && (
+          <div className="py-2 px-3 bg-slate-900/80 border border-slate-800 rounded-lg flex items-center justify-between text-xs text-slate-400 mt-1 shadow-inner">
+            <span className="text-[10px]">已显示前 {visibleCount} 项 / 共 {filteredList.length} 项信号</span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setVisibleCount(prev => Math.min(prev + 30, filteredList.length))}
+                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded border border-slate-700 text-[10px] font-bold transition-all cursor-pointer"
+              >
+                更多 (+30)
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleCount(filteredList.length)}
+                className="px-2 py-0.5 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded border border-indigo-500/40 text-[10px] font-bold transition-all cursor-pointer"
+              >
+                展开全部
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

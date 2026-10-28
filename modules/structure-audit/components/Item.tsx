@@ -5,7 +5,7 @@
 import React from 'react';
 import { ScannerItem, List3SignalResult } from '../../../components/Scanner/scannerTypes';
 import { PositionSide } from '../../../types';
-import { AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Trash2, Zap } from 'lucide-react';
 import { getCoinChineseName } from '../../../services/coinNames';
 import { eventBus } from '../../../core/EventBus';
 
@@ -68,7 +68,7 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                     chineseName: getCoinChineseName(item.symbol)
                 });
             }}
-            className={`bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group relative ${borderColor} ${hoverColor}`}
+            className={`crypto-virtual-card bg-slate-800/50 p-2 rounded border text-[10px] cursor-pointer hover:bg-slate-800 transition-colors group relative ${borderColor} ${hoverColor}`}
         >
             {/* Individual Remove Button (Far Right) */}
             <button 
@@ -82,7 +82,7 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                 <Trash2 size={12} />
             </button>
 
-            <div className="flex justify-between font-bold text-slate-300 mb-1 border-b border-slate-700/50 pb-1 pr-6">
+            <div className="flex justify-between font-bold text-slate-300 mb-1 border-b border-slate-700/50 pb-1 pr-6 items-center">
                 <span className="flex items-center gap-1">
                     {idx !== undefined && (
                         <span className="text-[10px] text-slate-500 font-mono font-bold">{idx + 1}.</span>
@@ -91,6 +91,27 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                     {getCoinChineseName(item.symbol) && getCoinChineseName(item.symbol) !== item.symbol.replace('USDT', '') && (
                         <span className="text-[10px] text-amber-300/80 font-normal">({getCoinChineseName(item.symbol)})</span>
                     )}
+                    {/* ⭐ Max Star Score Badge for Item */}
+                    {(() => {
+                        const maxStars = Math.max(0, ...signals.map(s => {
+                            const st = s.structure;
+                            if (!st) return 0;
+                            let score = 0;
+                            if (st.isColorValid) score++;
+                            if (st.isStrictTrend) score++;
+                            if ((st as any).resonancePassed !== false) score++;
+                            if (st.isAdvancedFilterPassed !== false) score++;
+                            if (st.isPriorReverseFound) score++;
+                            return score;
+                        }));
+                        if (maxStars === 0) return null;
+                        return (
+                            <span className="ml-1 text-[9px] font-bold text-amber-300 bg-amber-950/60 px-1 py-0.2 rounded border border-amber-500/40 flex items-center gap-0.5 shadow-sm">
+                                <span>⭐</span>
+                                <span>{maxStars}星</span>
+                            </span>
+                        );
+                    })()}
                 </span>
                 <span className="text-slate-500">{item.price.toFixed(8)}</span>
             </div>
@@ -99,6 +120,23 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
             <div className="flex flex-wrap gap-1.5 mt-1">
                 {signals.map((res, rIdx) => {
                     const isL = res.direction === 'LONG';
+                    const st = res.structure;
+                    const colorPassed = st?.isColorValid !== false;
+                    const trendPassed = st?.isStrictTrend !== false;
+                    const resonancePassed = (st as any)?.resonancePassed !== false;
+                    const advPassed = st?.isAdvancedFilterPassed !== false;
+                    const priorRevPassed = !!st?.isPriorReverseFound;
+
+                    const badges = [
+                        { label: '色', passed: colorPassed, title: '同色交叉达标' },
+                        { label: '势', passed: trendPassed, title: '严格趋势达标' },
+                        { label: '共', passed: resonancePassed, title: '时空共振达标' },
+                        { label: '审', passed: advPassed, title: 'EMA80震荡审计达标' },
+                        { label: '反', passed: priorRevPassed, title: '前置洗盘V反达标' },
+                    ];
+
+                    const sigStars = badges.filter(b => b.passed).length;
+
                     return (
                         <div 
                             key={rIdx} 
@@ -111,22 +149,26 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                                     currentPrice: item.price
                                 });
                             }}
-                            className={`relative overflow-hidden flex flex-col items-center justify-between border rounded cursor-pointer transition-all px-2 py-1 min-w-[36px] ${isL ? 'bg-emerald-900/20 border-emerald-500/30 hover:bg-emerald-900/40' : 'bg-red-900/20 border-red-500/30 hover:bg-red-900/40'}`}
-                            title={`RSI: ${res.structure.rsi.toFixed(1)} | Strict: ${res.structure.isStrictTrend ? 'Yes' : 'No'}`}
+                            className={`relative overflow-hidden flex flex-col items-center justify-between border rounded cursor-pointer transition-all px-1.5 py-1 min-w-[50px] ${isL ? 'bg-emerald-900/20 border-emerald-500/30 hover:bg-emerald-900/40' : 'bg-red-900/20 border-red-500/30 hover:bg-red-900/40'}`}
+                            title={`RSI: ${res.structure.rsi.toFixed(1)} | ⭐${sigStars}星达成: ${badges.filter(b => b.passed).map(b => b.label).join('、') || '常规'}`}
                         >
-                            <div className="text-[9px] font-bold text-white">{res.tf}</div>
-                            <div className={`text-[8px] font-bold ${isL ? 'text-emerald-400' : 'text-red-400'}`}>{isL ? '↑' : '↓'}</div>
-                            
-                            {/* Indicators for Strict/Thrust */}
-                            <div className="absolute top-0 right-0 flex gap-0.5">
-                                {res.structure.isStrictTrend ? (
-                                    <CheckCircle2 size={8} className="text-emerald-500 bg-emerald-900/80 rounded-full" />
-                                ) : (
-                                    <AlertTriangle size={8} className="text-amber-500 bg-amber-900/80 rounded-full" />
-                                )}
-                                {res.structure.thrustValid && (
-                                    <div className="w-1.5 h-1.5 bg-orange-500 rounded-full shadow-sm" title={`5K爆发推进达标 (${res.structure.maxThrust ? res.structure.maxThrust + '%' : '≥1%'})`} />
-                                )}
+                            <div className="flex items-center gap-1">
+                                <span className="text-[9px] font-bold text-white">{res.tf}</span>
+                                <span className={`text-[8px] font-bold ${isL ? 'text-emerald-400' : 'text-red-400'}`}>{isL ? '↑' : '↓'}</span>
+                                <span className="text-[8px] font-bold text-amber-300">⭐{sigStars}</span>
+                            </div>
+
+                            {/* Badges Bar */}
+                            <div className="flex gap-0.5 mt-0.5">
+                                {badges.map((b, bIdx) => (
+                                    <span 
+                                        key={bIdx}
+                                        title={b.title}
+                                        className={`text-[7px] font-mono px-0.5 rounded ${b.passed ? 'bg-amber-400 text-black font-bold' : 'bg-slate-700/50 text-slate-600'}`}
+                                    >
+                                        {b.label}
+                                    </span>
+                                ))}
                             </div>
                         </div>
                     );

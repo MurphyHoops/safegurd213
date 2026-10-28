@@ -64,6 +64,9 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
         return list4; // Items are already latched upstream in useMomentumAudit
     }, [list4]);
 
+    // 🛡️ [方案 1: DOM 节点防爆与按需物理渲染上限 - 默认初始显示前 30 个信号卡片]
+    const [visibleWaitingCount, setVisibleWaitingCount] = useState(30);
+
     if (!list3Config) {
         return (
             <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 ${COLUMN_WIDTH_CLASS} items-center justify-center`}>
@@ -154,7 +157,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                             </span>
                         </div>
 
-                        {waitingList.map((item, idx) => (
+                        {waitingList.slice(0, visibleWaitingCount).map((item, idx) => (
                             <List4Item 
                                 key={`waiting-${item.symbol}-${item.tf}-${idx}`}
                                 item={item}
@@ -166,6 +169,28 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                                 tier="WAITING"
                             />
                         ))}
+
+                        {waitingList.length > visibleWaitingCount && (
+                            <div className="py-2 px-3 bg-slate-900/80 border border-slate-800 rounded-lg flex items-center justify-between text-xs text-slate-400 mt-1 shadow-inner">
+                                <span className="text-[10px]">已显示前 {visibleWaitingCount} 项 / 共 {waitingList.length} 项标的</span>
+                                <div className="flex items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => setVisibleWaitingCount(prev => Math.min(prev + 30, waitingList.length))}
+                                        className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded border border-slate-700 text-[10px] font-bold transition-all cursor-pointer"
+                                    >
+                                        更多 (+30)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setVisibleWaitingCount(waitingList.length)}
+                                        className="px-2 py-0.5 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded border border-indigo-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                                    >
+                                        展开全部
+                                    </button>
+                                </div>
+                            </div>
+                        )}
 
                         {waitingList.length === 0 && (
                             <div className="py-4 border border-dashed border-emerald-500/20 rounded bg-emerald-950/10 flex flex-col items-center justify-center text-slate-500 text-[10px]">

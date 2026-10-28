@@ -30,13 +30,15 @@ export function getList3SignalRejectReason(
     const s = signal.structure;
     if (!s) return null;
 
-    // 2. Strict Trend (严格趋势) - ONLY filter if switch is explicitly ON
-    if (config.strictTrend === true && !s.isStrictTrend) {
+    // 2. Strict Trend (严格趋势) - ONLY filter if enabled and mode is 'FILTER'
+    const isStrictTrendFilter = config.strictTrend === true && (config.strictTrendMode || 'FILTER') === 'FILTER';
+    if (isStrictTrendFilter && !s.isStrictTrend) {
         return '由列表3严格趋势过滤规则删除';
     }
 
-    // 3. Candle Color (同色交叉) - ONLY filter if switch is explicitly ON
-    if (config.checkCandleColor === true && !s.isColorValid) {
+    // 3. Candle Color (同色交叉) - ONLY filter if enabled and mode is 'FILTER'
+    const isColorFilter = config.checkCandleColor === true && (config.checkCandleColorMode || 'FILTER') === 'FILTER';
+    if (isColorFilter && !s.isColorValid) {
         return '由列表3同色交叉规则删除';
     }
 
@@ -70,9 +72,9 @@ export function getList3SignalRejectReason(
         }
     }
 
-    // 6. Multi-Resonance (时空共振) - ONLY filter if switch is explicitly ON
-    // 规则：信号K线向下的两个更小周期（小一级与小两级）均线必须同时呈相对应的发散形态，才能通过；取消大一级K线均线发散验证。
-    if (config.enableMultiResonance === true && adjacentStrictTrends) {
+    // 6. Multi-Resonance (时空共振) - ONLY filter if enabled and mode is 'FILTER'
+    const isResonanceFilter = config.enableMultiResonance === true && (config.multiResonanceMode || 'FILTER') === 'FILTER';
+    if (isResonanceFilter && adjacentStrictTrends) {
         const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
         const idx = ALL_TFS.indexOf(signal.tf);
         if (idx !== -1) {
@@ -88,14 +90,26 @@ export function getList3SignalRejectReason(
         }
     }
 
-    // 7. Advanced Filter (高级过滤 - EMA80 震荡结构审计)
-    if (config.enableAdvancedFilter === true && s) {
+    // 7. Advanced Filter (高级过滤 - EMA80 震荡结构审计) & Prior Reverse Divergence (前置洗盘反发散)
+    const hasAdvFilter = config.enableAdvancedFilter === true && (config.advancedFilterMode || 'FILTER') === 'FILTER';
+    const hasPriorRevFilter = config.enablePriorReverseDivergence === true && (config.priorReverseMode || 'FILTER') === 'FILTER';
+
+    if ((hasAdvFilter || hasPriorRevFilter) && s) {
         const maxIntersections = typeof config.filterCrossingCount === 'number' ? config.filterCrossingCount : 2;
-        const klineCount = config.filterTimeParam || 100;
-        const tfLabel = (config.filterPeriodMode === 'CUSTOM' && config.filterKLinePeriod) ? config.filterKLinePeriod : signal.tf;
-        
-        if (typeof s.ema80Intersections === 'number' && s.ema80Intersections > maxIntersections) {
+        const advPassed = (typeof s.ema80Intersections === 'number' && s.ema80Intersections <= maxIntersections);
+        const priorRevPassed = !!s.isPriorReverseFound;
+
+        if (hasAdvFilter && hasPriorRevFilter) {
+            // OR (逻辑或) 关系：只要符合其中一个过滤规则，即留在列表3
+            if (!advPassed && !priorRevPassed) {
+                return `由列表3高级过滤/前置洗盘反发散组合规则删除 [EMA80震荡审计与前置洗盘发散均未满足]`;
+            }
+        } else if (hasAdvFilter && !advPassed) {
+            const klineCount = config.filterTimeParam || 100;
+            const tfLabel = (config.filterPeriodMode === 'CUSTOM' && config.filterKLinePeriod) ? config.filterKLinePeriod : signal.tf;
             return `由列表3高级过滤规则删除 [最近 ${klineCount} 根 ${tfLabel} K线与EMA${config.filterEmaPeriod || 80}相交 ${s.ema80Intersections} 次 > 上限 ${maxIntersections} 次(震荡整理中)]`;
+        } else if (hasPriorRevFilter && !priorRevPassed) {
+            return `由列表3前置洗盘反发散规则删除 [未追溯到前置反向发散洗盘形态]`;
         }
     }
 
@@ -103,7 +117,7 @@ export function getList3SignalRejectReason(
 }
 
 export function analyzeList3Structure(
-    task: { symbol: string, tf: string, direction: 'LONG' | 'SHORT', time: number, price: number, periodChange?: number },
+    task: { symbol: string, tf: string, direction: 'LONG' | 'SHORT', time: number, price: number, periodChange?: number, isPriorReverseFound?: boolean },
     closes: number[],
     highs: number[],
     lows: number[],
@@ -437,6 +451,79 @@ export function analyzeList3Structure(
         }
     }
 
+    // --- METRIC 9: Prior Reverse Divergence Check (前置洗盘反发散 - 列表3独立结构审计) ---
+    let isPriorReverseFound = task.isPriorReverseFound ?? (task as any).isPriorReverseFound ?? false;
+
+    if (!isPriorReverseFound && closes.length >= 40) {
+        const priorLookback = (config.priorReverseLookbackBars !== undefined && !Number.isNaN(config.priorReverseLookbackBars))
+            ? Math.max(1, config.priorReverseLookbackBars)
+            : 20;
+
+        // 1. 追溯本轮发散形态的初生起爆原点 (Genesis Bar)
+        let genesisIdx = signalIdx;
+        if (task.direction === 'LONG') {
+            for (let g = signalIdx; g >= Math.max(39, signalIdx - 100); g--) {
+                const gE10 = getVal(ema10, g, 10);
+                const gE20 = getVal(ema20, g, 20);
+                const gE30 = getVal(ema30, g, 30);
+                const gE40 = getVal(ema40, g, 40);
+                if (gE10 !== -1 && gE20 !== -1 && gE30 !== -1 && gE40 !== -1) {
+                    if (gE10 > gE20 && gE20 > gE30 && gE30 > gE40) {
+                        genesisIdx = g;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        } else {
+            for (let g = signalIdx; g >= Math.max(39, signalIdx - 100); g--) {
+                const gE10 = getVal(ema10, g, 10);
+                const gE20 = getVal(ema20, g, 20);
+                const gE30 = getVal(ema30, g, 30);
+                const gE40 = getVal(ema40, g, 40);
+                if (gE10 !== -1 && gE20 !== -1 && gE30 !== -1 && gE40 !== -1) {
+                    if (gE10 < gE20 && gE20 < gE30 && gE30 < gE40) {
+                        genesisIdx = g;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // 2. 以 signalIdx 与起爆原点 (genesisIdx) 为基准向前深度追溯反向发散
+        const effectiveLookback = Math.max(priorLookback, 100); // 扩展历史探针最深100根K线，确保大周期(如4h)下跌洗盘不被遗漏
+        const searchStart = Math.max(39, signalIdx - 1);
+        const searchEnd = Math.max(39, Math.min(signalIdx, genesisIdx) - effectiveLookback);
+
+        for (let rIdx = searchStart; rIdx >= searchEnd; rIdx--) {
+            const rE10 = getVal(ema10, rIdx, 10);
+            const rE20 = getVal(ema20, rIdx, 20);
+            const rE30 = getVal(ema30, rIdx, 30);
+            const rE40 = getVal(ema40, rIdx, 40);
+
+            if (rE10 !== -1 && rE20 !== -1 && rE30 !== -1 && rE40 !== -1) {
+                if (task.direction === 'LONG') {
+                    // 做多信号追溯：起爆原点/信号前是否存在空头发散 (EMA10 < EMA20 < EMA30 < EMA40 或 EMA10 < EMA20 < EMA30 - 纯粹发散形态)
+                    if ((rE10 < rE20 && rE20 < rE30 && rE30 < rE40) || (rE10 < rE20 && rE20 < rE30)) {
+                        isPriorReverseFound = true;
+                        break;
+                    }
+                } else {
+                    // 做空信号追溯：起爆原点/信号前是否存在多头发散 (EMA10 > EMA20 > EMA30 > EMA40 或 EMA10 > EMA20 > EMA30 - 纯粹发散形态)
+                    if ((rE10 > rE20 && rE20 > rE30 && rE30 > rE40) || (rE10 > rE20 && rE20 > rE30)) {
+                        isPriorReverseFound = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // 8. Return Constructed Item with ALL Audit Data
     // We do NOT return null here. We return the full profile.
     return {
@@ -473,7 +560,8 @@ export function analyzeList3Structure(
             ema40: getVal(ema40, idx, 40),
             ema80: getVal(ema80, idx, 80),
             ema80Intersections,
-            isAdvancedFilterPassed: !(config.enableAdvancedFilter === true && ema80Intersections > filterMaxIntersections)
+            isAdvancedFilterPassed: !(config.enableAdvancedFilter === true && ema80Intersections > filterMaxIntersections),
+            isPriorReverseFound
         }
     };
 }

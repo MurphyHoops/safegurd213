@@ -34,16 +34,17 @@ class L234DataStoreService {
   // Registered symbols that have entered List 2/3/4
   private registeredSymbols: Set<string> = new Set();
 
+  // Active target timeframes per symbol: symbol -> Set<tf>
+  private registeredSymbolTfs: Map<string, Set<string>> = new Map();
+
   // Multi-timeframe Kline memory cache: symbol -> (tf -> KLine[])
   private klineCache: Map<string, Map<string, KLine[]>> = new Map();
 
   // Precomputed EMA cache: symbol -> (tf -> EMASet)
   private emaCache: Map<string, Map<string, EMASet>> = new Map();
 
-  // Active timeframes to auto-maintain
-  private activeTimeframes: Set<string> = new Set([
-    '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d'
-  ]);
+  // 5-Minute (300,000ms) Debounce Eviction Buffer Timers: symbol -> NodeJS.Timeout
+  private evictionTimers: Map<string, NodeJS.Timeout> = new Map();
 
   // Listeners for data store updates
   private listeners: Set<(symbol: string, tf: string) => void> = new Set();
@@ -57,8 +58,9 @@ class L234DataStoreService {
         if (Array.isArray(items)) {
           for (const item of items) {
             const sym = item.symbol || item.rawSymbol;
+            const tf = item.tf || item.period || '15m';
             if (sym) {
-              this.registerSymbol(sym);
+              this.registerSymbol(sym, tf);
             }
           }
         }
@@ -67,51 +69,113 @@ class L234DataStoreService {
   }
 
   /**
-   * Register a symbol into the L234 Data Store.
-   * Guarantees persistence and real-time subscription protection.
+   * Register a symbol and its signal timeframe into the L234 Data Store.
+   * Clears any pending 5-minute eviction timer instantly.
    */
-  public registerSymbol(rawSymbol: string): string {
+  public registerSymbol(rawSymbol: string, tf: string = '15m'): string {
     const symbol = normalizeSymbol(rawSymbol);
     if (!symbol) return '';
 
-    if (!this.registeredSymbols.has(symbol)) {
-      this.registeredSymbols.add(symbol);
-      if (!this.klineCache.has(symbol)) {
-        this.klineCache.set(symbol, new Map());
-      }
-      if (!this.emaCache.has(symbol)) {
-        this.emaCache.set(symbol, new Map());
-      }
-
-      // Prefetch 200 bars for standard timeframes in background
-      this.ensureKlinesPrefetched(symbol);
+    // Clear any 5-minute pending eviction timer
+    if (this.evictionTimers.has(symbol)) {
+      clearTimeout(this.evictionTimers.get(symbol)!);
+      this.evictionTimers.delete(symbol);
     }
+
+    let symbolTfs = this.registeredSymbolTfs.get(symbol);
+    if (!symbolTfs) {
+      symbolTfs = new Set<string>();
+      this.registeredSymbolTfs.set(symbol, symbolTfs);
+    }
+
+    symbolTfs.add(tf);
+    this.registeredSymbols.add(symbol);
+
+    if (!this.klineCache.has(symbol)) {
+      this.klineCache.set(symbol, new Map());
+    }
+    if (!this.emaCache.has(symbol)) {
+      this.emaCache.set(symbol, new Map());
+    }
+
+    // Prefetch 300 bars ONLY for the target List 2 signal timeframe
+    this.ensureKlinesPrefetched(symbol, [tf]);
     return symbol;
   }
 
   /**
-   * Unregister a symbol when it is naturally expired or evicted from List 2/3/4.
+   * Unregister a symbol when 5-minute eviction timer expires.
    */
   public unregisterSymbol(rawSymbol: string) {
     const symbol = normalizeSymbol(rawSymbol);
     if (!symbol) return;
     this.registeredSymbols.delete(symbol);
+    this.registeredSymbolTfs.delete(symbol);
     this.klineCache.delete(symbol);
     this.emaCache.delete(symbol);
+    if (this.evictionTimers.has(symbol)) {
+      clearTimeout(this.evictionTimers.get(symbol)!);
+      this.evictionTimers.delete(symbol);
+    }
   }
 
   /**
-   * Sync active candidates in Market Selection List / List 2.
-   * Evicts unselected symbols to immediately free memory.
+   * Sync active candidates in List 2/3/4 with a 5-minute (300秒) debounce eviction buffer.
+   * Protected active positions are permanently locked in memory until closed.
    */
-  public syncActiveCandidates(activeSymbols: string[]) {
-    if (!Array.isArray(activeSymbols)) return;
-    const activeSet = new Set(
-      activeSymbols.map(s => normalizeSymbol(s)).filter(Boolean)
-    );
-    for (const sym of Array.from(this.registeredSymbols)) {
-      if (!activeSet.has(sym)) {
-        this.unregisterSymbol(sym);
+  public syncActiveCandidates(activeItems: Array<string | { symbol: string; tf?: string }>, protectedPositions?: string[]) {
+    const activeMap = new Map<string, Set<string>>();
+    
+    if (Array.isArray(activeItems)) {
+      for (const item of activeItems) {
+        if (typeof item === 'string') {
+          const sym = normalizeSymbol(item);
+          if (!sym) continue;
+          if (!activeMap.has(sym)) activeMap.set(sym, new Set());
+          activeMap.get(sym)!.add('15m');
+        } else if (item && typeof item === 'object') {
+          const sym = normalizeSymbol(item.symbol);
+          if (!sym) continue;
+          const tf = item.tf || '15m';
+          if (!activeMap.has(sym)) activeMap.set(sym, new Set());
+          activeMap.get(sym)!.add(tf);
+        }
+      }
+    }
+
+    const protectedSet = new Set((protectedPositions || []).map(s => normalizeSymbol(s)).filter(Boolean));
+
+    // Register/reactivate all active candidates and cancel any pending 5m eviction
+    for (const [sym, activeTfs] of activeMap.entries()) {
+      if (this.evictionTimers.has(sym)) {
+        clearTimeout(this.evictionTimers.get(sym)!);
+        this.evictionTimers.delete(sym);
+      }
+      for (const tf of activeTfs) {
+        this.registerSymbol(sym, tf);
+      }
+    }
+
+    // Check currently registered symbols that no longer appear in active candidates
+    for (const registeredSym of Array.from(this.registeredSymbols)) {
+      if (protectedSet.has(registeredSym)) {
+        // Protected active position: permanently cancel eviction timer
+        if (this.evictionTimers.has(registeredSym)) {
+          clearTimeout(this.evictionTimers.get(registeredSym)!);
+          this.evictionTimers.delete(registeredSym);
+        }
+        continue;
+      }
+
+      if (!activeMap.has(registeredSym)) {
+        // Symbol disappeared from List 2 candidate list: Start 5-minute (300s) debounce eviction buffer
+        if (!this.evictionTimers.has(registeredSym)) {
+          const timer = setTimeout(() => {
+            this.evictionTimers.delete(registeredSym);
+            this.unregisterSymbol(registeredSym);
+          }, 5 * 60 * 1000); // 5 minutes debounce buffer
+          this.evictionTimers.set(registeredSym, timer);
+        }
       }
     }
   }
@@ -132,28 +196,63 @@ class L234DataStoreService {
   }
 
   /**
-   * Ensure 200 Klines exist in cache for requested timeframes
+   * Synthesize 10m Klines from 5m Klines
    */
-  public async ensureKlinesPrefetched(rawSymbol: string, timeframes?: string[]) {
+  public synthesize10mFrom5m(klines5m: KLine[]): KLine[] {
+    if (!klines5m || klines5m.length === 0) return [];
+    const map10m = new Map<number, KLine>();
+
+    for (const k of klines5m) {
+      const tenMinTime = Math.floor(k.time / 600) * 600; // 10m = 600 seconds
+      const existing = map10m.get(tenMinTime);
+
+      if (!existing) {
+        map10m.set(tenMinTime, {
+          time: tenMinTime,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume,
+        });
+      } else {
+        existing.high = Math.max(existing.high, k.high);
+        existing.low = Math.min(existing.low, k.low);
+        existing.close = k.close;
+        existing.volume += k.volume;
+      }
+    }
+
+    return Array.from(map10m.values()).sort((a, b) => a.time - b.time);
+  }
+
+  /**
+   * Ensure 300 Klines exist in cache ONLY for requested signal timeframes.
+   * If tf === '10m', fetches 5m data and synthesizes 10m Klines.
+   */
+  public async ensureKlinesPrefetched(rawSymbol: string, timeframes: string[]) {
     const symbol = normalizeSymbol(rawSymbol);
     if (!symbol) return;
 
-    const tfsToFetch = timeframes || Array.from(this.activeTimeframes);
     const symbolKlines = this.klineCache.get(symbol) || new Map();
     this.klineCache.set(symbol, symbolKlines);
 
-    for (const tf of tfsToFetch) {
-      // 1. Check if already in L234 store with >= 280 bars
-      const existing = symbolKlines.get(tf);
+    for (let targetTf of timeframes) {
+      const is10m = targetTf === '10m';
+      const fetchTf = is10m ? '5m' : targetTf;
+      const fetchLimit = is10m ? 600 : 300;
+
+      // 1. Check if target TF already exists with >= 280 bars
+      const existing = symbolKlines.get(targetTf);
       if (existing && existing.length >= 280) {
-        this.recalculateEMA(symbol, tf, existing);
+        this.recalculateEMA(symbol, targetTf, existing);
         continue;
       }
 
       // 2. Check klineMultiTfStore
-      const multiStoreKlines = klineMultiTfStore.getKlinesSync(symbol, tf, 300);
-      if (multiStoreKlines && multiStoreKlines.length >= 280) {
-        const converted: KLine[] = multiStoreKlines.map(k => ({
+      const multiStoreKlines = klineMultiTfStore.getKlinesSync(symbol, fetchTf, fetchLimit);
+      if (multiStoreKlines && multiStoreKlines.length >= 100) {
+        let converted: KLine[] = multiStoreKlines.map(k => ({
           time: k.time > 2000000000 ? Math.floor(k.time / 1000) : k.time,
           open: k.open,
           high: k.high,
@@ -161,17 +260,22 @@ class L234DataStoreService {
           close: k.close,
           volume: k.volume,
         }));
-        symbolKlines.set(tf, converted);
-        this.recalculateEMA(symbol, tf, converted);
+
+        if (is10m) {
+          converted = this.synthesize10mFrom5m(converted);
+        }
+
+        symbolKlines.set(targetTf, converted);
+        this.recalculateEMA(symbol, targetTf, converted);
         continue;
       }
 
-      // 3. REST API Fetch fallback (300 bars guaranteed)
+      // 3. REST API Fetch fallback (300 bars for target TF, 600 for 5m->10m)
       try {
         const binanceSymbol = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;
-        const res: any = await fetchWithFallback(`/fapi/v1/klines?symbol=${binanceSymbol}&interval=${tf}&limit=300`);
+        const res: any = await fetchWithFallback(`/fapi/v1/klines?symbol=${binanceSymbol}&interval=${fetchTf}&limit=${fetchLimit}`);
         if (Array.isArray(res) && res.length > 0) {
-          const parsed: KLine[] = res.map(row => ({
+          let parsed: KLine[] = res.map(row => ({
             time: Math.floor(Number(row[0]) / 1000),
             open: Number(row[1]),
             high: Number(row[2]),
@@ -180,9 +284,13 @@ class L234DataStoreService {
             volume: Number(row[5]),
           })).sort((a, b) => a.time - b.time);
 
-          symbolKlines.set(tf, parsed);
-          klineMultiTfStore.saveKlines(symbol, tf, parsed);
-          this.recalculateEMA(symbol, tf, parsed);
+          if (is10m) {
+            parsed = this.synthesize10mFrom5m(parsed);
+          }
+
+          symbolKlines.set(targetTf, parsed);
+          klineMultiTfStore.saveKlines(symbol, targetTf, parsed);
+          this.recalculateEMA(symbol, targetTf, parsed);
         }
       } catch (err) {
         // Fallback silently
@@ -203,22 +311,11 @@ class L234DataStoreService {
       this.klineCache.set(symbol, symbolMap);
     }
 
-    let klines = symbolMap.get(update.tf) || [];
-    if (klines.length === 0) {
-      // Fallback load from klineMultiTfStore
-      const multiStoreKlines = klineMultiTfStore.getKlinesSync(symbol, update.tf, 1);
-      if (multiStoreKlines && multiStoreKlines.length > 0) {
-        klines = multiStoreKlines.map(k => ({
-          time: k.time > 2000000000 ? Math.floor(k.time / 1000) : k.time,
-          open: k.open,
-          high: k.high,
-          low: k.low,
-          close: k.close,
-          volume: k.volume,
-        }));
-      }
-    }
+    const registeredTfs = this.registeredSymbolTfs.get(symbol);
+    const isTargetTf = registeredTfs ? (registeredTfs.has(update.tf) || (update.tf === '5m' && registeredTfs.has('10m'))) : true;
+    if (!isTargetTf) return;
 
+    let klines = symbolMap.get(update.tf) || [];
     const candle: KLine = {
       time: Math.floor(update.time / 1000),
       open: update.open,
@@ -233,10 +330,8 @@ class L234DataStoreService {
       const lastCandle = klines[lastIndex];
 
       if (lastCandle.time === candle.time) {
-        // Update current forming candle in-place
         klines[lastIndex] = candle;
       } else if (candle.time > lastCandle.time) {
-        // Append new completed/forming candle
         klines.push(candle);
         if (klines.length > 300) {
           klines.shift();
@@ -248,16 +343,23 @@ class L234DataStoreService {
 
     symbolMap.set(update.tf, klines);
     klineMultiTfStore.saveKlines(symbol, update.tf, klines);
-
-    // Recalculate EMAs instantly
     this.recalculateEMA(symbol, update.tf, klines);
+
+    // If 5m update received and 10m is registered for this symbol, synthesize 10m update instantly
+    if (update.tf === '5m' && registeredTfs && registeredTfs.has('10m')) {
+      const klines5m = symbolMap.get('5m') || [];
+      const klines10m = this.synthesize10mFrom5m(klines5m);
+      symbolMap.set('10m', klines10m);
+      this.recalculateEMA(symbol, '10m', klines10m);
+      this.notifyListeners(symbol, '10m');
+    }
 
     // Notify subscribers
     this.notifyListeners(symbol, update.tf);
   }
 
   /**
-   * Recalculate EMA10, 20, 30, 40 for instantaneous access
+   * Recalculate EMA10, 20, 30, 40, 80 for instantaneous access
    */
   private recalculateEMA(symbol: string, tf: string, klines: KLine[]) {
     if (klines.length < 10) return;
@@ -325,7 +427,6 @@ class L234DataStoreService {
     if (klines.length < 5) return klines;
 
     if (signalTimeSec && signalTimeSec > 0) {
-      // Find index of signal candle
       const signalIdx = klines.findIndex(k => k.time === signalTimeSec || Math.abs(k.time - signalTimeSec) < 60);
       if (signalIdx >= 0) {
         const start = Math.max(0, signalIdx - 2);
@@ -334,7 +435,6 @@ class L234DataStoreService {
       }
     }
 
-    // Default to last 5 candles
     return klines.slice(-5);
   }
 

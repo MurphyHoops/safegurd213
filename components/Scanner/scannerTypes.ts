@@ -33,6 +33,11 @@ export interface List2GroupedResult {
     kLow?: number; // 信号K线最低价
     signalTime?: number; // 信号K线时间戳
     genesisAge?: number; // 发散起爆原点距今K线根数
+    isPriorReverseFound?: boolean; // 新增：是否在近N根历史中找到反向发散形态 (洗盘V反)
+    priorReverseType?: 'V_REVERSAL_LONG' | 'V_REVERSAL_SHORT'; // 洗盘V反形态分类
+    isCandleCrossed?: boolean; // 新增：是否触发【K线穿越】
+    isMaCrossed?: boolean; // 新增：是否触发【均线穿越】
+    isFirstMaCross?: boolean; // 新增：是否属于【首发穿越】
 }
 
 export interface List3SignalResult {
@@ -73,6 +78,14 @@ export interface List3SignalResult {
         recentCloses?: number[];
         ema80Intersections?: number;
         isAdvancedFilterPassed?: boolean;
+        isPriorReverseFound?: boolean;
+        starScore?: number;
+        starBadges?: string[];
+        colorPassed?: boolean;
+        strictTrendPassed?: boolean;
+        resonancePassed?: boolean;
+        advFilterPassed?: boolean;
+        priorReversePassed?: boolean;
     };
 }
 
@@ -148,6 +161,7 @@ export interface ScannerItem {
         recentCloses?: number[];
         ema80Intersections?: number;
         isAdvancedFilterPassed?: boolean;
+        isPriorReverseFound?: boolean;
     };
     list3Results?: List3SignalResult[]; 
     momentum?: {
@@ -206,6 +220,8 @@ export interface ScannerItem {
     fuseEnteredAt?: number;
     fuseTotalMs?: number;
     fuseCountdownMs?: number;
+    starScore?: number;
+    starBadges?: string[];
 }
 
 export interface List2Config {
@@ -223,12 +239,17 @@ export interface List2Config {
     checkEma80Conflict: boolean;
     sortMode: 'LATEST' | 'MOST' | 'TIMEFRAME';
     tfSortOrder?: 'asc' | 'desc';
-    requireCrossing: boolean;
-    requireAlignment: boolean;
+    requireCrossing: boolean; // 旧版穿越兼容字段
+    requireCandleCross?: boolean; // 新增：【K线穿越】实体/影线穿越EMA均线簇
+    requireMaCross?: boolean; // 新增：【均线穿越】EMA10穿越EMA20/30/40
+    requireFirstMaCrossOnly?: boolean; // 新增：【仅限首次穿越】（均线穿越子开关，仅保留初生第一根穿越）
+    maCrossLookbackBars?: number;     // 新增：【均线穿越】回溯K线根数（默认15根）
+    requireAlignment: boolean; // 【均线发散】
     crossingDivergenceLogic?: 'AND' | 'OR' | 'WAIT';
     waitDivergenceBars?: number;          // 新增：先穿越等待发散K线根数（可自由配置，默认5根）
     enableDivergenceCrossCheck?: boolean; // 新增：发散前置穿越回溯开关
-    divergenceLookbackBars?: number;     // 新增：发散前置穿越回溯K线根数（可自由配置）
+    divergenceLookbackBars?: number;     // 新增：发散前置穿越回溯K线根数（可自由配置，默认20根）
+    divergenceCrossLookback?: number;    // 兼容别名
     enableSignalDeviationFilter?: boolean; // 新增：信号K线振幅偏离限制开关
     maxSignalDeviationPercent?: number;    // 新增：允许偏离信号K线振幅的百分比（%）
     strictFiltering: boolean;
@@ -238,6 +259,11 @@ export interface List2Config {
     consecutiveVolBars?: number;          // 新增：龙抬头连续放量递增根数（默认2根）
     viewMode?: 'ALL' | 'LONG' | 'SHORT';
     syncDirectionFilterToList3?: boolean;
+    enableAutoPopup?: boolean;
+    autoPopupDurationSeconds?: number;
+    enablePriorReverseDivergence?: boolean; // 新增：洗盘/V反倒钩前置反向发散功能开关
+    priorReverseLookbackBars?: number;     // 新增：追溯历史N根K线查询是否有反向发散
+    priorReverseMode?: 'FILTER' | 'BADGE' | 'BOTH'; // 新增：模式选择 (FILTER强门禁 / BADGE软角标 / BOTH过滤加角标)
     isStopped?: boolean;
 }
 
@@ -267,6 +293,19 @@ export interface List3Config {
     filterEmaPeriod?: number;
     filterTimeParam?: number;
     filterCrossingCount?: number;
+    // --- 洗盘/V反倒钩前置反向发散 ---
+    enablePriorReverseDivergence?: boolean;
+    priorReverseLookbackBars?: number;
+    priorReverseMode?: 'FILTER' | 'BADGE' | 'BOTH' | 'STAR';
+    
+    // --- 5大规则独立模式 ('FILTER' 强门禁 / 'STAR' 仅星标加分) ---
+    checkCandleColorMode?: 'FILTER' | 'STAR';
+    strictTrendMode?: 'FILTER' | 'STAR';
+    multiResonanceMode?: 'FILTER' | 'STAR';
+    advancedFilterMode?: 'FILTER' | 'STAR';
+    
+    // --- 排序模式 ---
+    sortModeList3?: 'LATEST' | 'STARS' | 'TIMEFRAME';
 }
 
 export interface List4Config {
@@ -387,6 +426,9 @@ export interface StartTrendGroup {
     minShort: number;
     maxShort: number;
     maxPullbackShort?: number; // 做空：当前价格距最低点最大涨幅% (正数表示，需小于该值)
+    enableExtremeRangeLimit?: boolean; // 使能开关：开启最低点向右/最高点向右极值变幅限制
+    maxLongRightIncreasePct?: number;  // 做多：最低点起向右最高价涨幅上限% (高于此值过滤，默认 5.0%)
+    maxShortRightDecreasePct?: number; // 做空：最高点起向右最低价跌幅上限% (高于此值过滤，默认 5.0%)
 }
 
 export interface SidewaysRuleGroup {
@@ -437,6 +479,11 @@ export interface MajorTrendConfig {
     extremeDaysMaxLong?: number;      // 多单最低点到当前天数小于等于 (设定值) 天
     extremeDaysMinShort?: number;     // 空单最高点到当前天数大于等于 (设定值) 天
     extremeDaysMaxShort?: number;     // 空单最高点到当前天数小于等于 (设定值) 天
+    
+    // 极值向右变幅限制 (极强/极弱蓄势过滤)
+    enableExtremeRangeLimit?: boolean; // 使能开关：开启最低点向右/最高点向右极值变幅限制
+    maxLongRightIncreasePct?: number;  // 做多：最低点起向右最高价涨幅上限% (高于此值过滤，默认 5.0%)
+    maxShortRightDecreasePct?: number; // 做空：最高点起向右最低价跌幅上限% (高于此值过滤，默认 5.0%)
 
     // Advanced Filters
     filterTimeParam?: number; // e.g., 300
