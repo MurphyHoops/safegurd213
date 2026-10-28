@@ -147,6 +147,21 @@ export function checkHedgingRules(
         }
     }
 
+    // D. 4. EMA10破EMA20 (EMA10 Cross EMA20 Baseline Breakout)
+    let emaCrossBreakTriggered = false;
+    const emaCrossBasePrice = position.ema10Cross20Price || position.entryEmas?.ema20;
+    if (combinedLossLimitMet && hedgeSettings.ema10Cross20BreakEnabled && emaCrossBasePrice) {
+        if (position.side === PositionSide.LONG) {
+            if (position.markPrice <= emaCrossBasePrice) {
+                emaCrossBreakTriggered = true;
+            }
+        } else {
+            if (position.markPrice >= emaCrossBasePrice) {
+                emaCrossBreakTriggered = true;
+            }
+        }
+    }
+
     // Compile triggers and construct transparent reason representation
     const triggeredReasonsList: string[] = [];
     if (lossHedgeTriggered) {
@@ -157,6 +172,9 @@ export function checkHedgingRules(
     }
     if (breakKLineTriggered) {
         triggeredReasonsList.push(`${position.side === PositionSide.LONG ? '跌破' : '突破'}信号K线振幅 ${hedgeSettings.breakKLineRatio}%`);
+    }
+    if (emaCrossBreakTriggered && emaCrossBasePrice) {
+        triggeredReasonsList.push(`[EMA10破EMA20] 价格${position.side === PositionSide.LONG ? '跌破' : '突破'}开仓基准防线(${emaCrossBasePrice.toFixed(4)})`);
     }
 
     if (triggeredReasonsList.length > 0) {

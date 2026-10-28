@@ -90,7 +90,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
         trendHedgeEnabled: false,
         trendHedgeEmaPeriod: 80,
         breakKLineEnabled: false,
-        breakKLineRatio: 20
+        breakKLineRatio: 20,
+        ema10Cross20BreakEnabled: false
     },
     stopLoss: {
         hedgeProfitClear: false,

@@ -1255,6 +1255,7 @@ export class MarketSimulator {
             signalTf: signalTf,
             signalCandle: finalSignalCandle,
             entryEmas: finalEntryEmas,
+            ema10Cross20Price: extraProps?.ema10Cross20Price || finalEntryEmas.ema20,
             leverage: extraProps?.leverage || 20,
             ...extraProps
         };
@@ -1972,7 +1973,8 @@ export class MarketSimulator {
             cumulativeHedgeProfit: 0,
             isAmputated: false,
             amputatedAmount: 0,
-            isHedged: false
+            isHedged: false,
+            ema10Cross20Price: pos.ema10Cross20Price || pos.entryEmas?.ema20
         };
 
         // 检查复开后是否达到熔断上限
@@ -4603,8 +4605,17 @@ export class MarketSimulator {
                 secondaryReason = `[二次防爆检测] 亏损达到 ${hedgeSettings.triggerLossPercent}% 强制触发`;
             }
 
+            // Shared combined loss limit check
+            let combinedLossLimitMet = true;
+            if (hedgeSettings.combinedLossLimitEnabled && hedgeSettings.combinedLossLimitPercent !== undefined) {
+                const combinedLossLimitValue = Number(hedgeSettings.combinedLossLimitPercent);
+                if (pnlPercent > -Math.abs(combinedLossLimitValue)) {
+                    combinedLossLimitMet = false;
+                }
+            }
+
             // B. Trend Firewall (趋势防火墙二次检测)
-            if (!secondaryTriggered && hedgeSettings.trendHedgeEnabled && position.entryEmas) {
+            if (!secondaryTriggered && combinedLossLimitMet && hedgeSettings.trendHedgeEnabled && position.entryEmas) {
                 let firewallPrice = 0;
                 const period = hedgeSettings.trendHedgeEmaPeriod || 80;
                 switch (period) {
@@ -4623,6 +4634,41 @@ export class MarketSimulator {
                     if (position.markPrice >= firewallPrice) {
                         secondaryTriggered = true;
                         secondaryReason = `[二次防爆检测] 价格突破 EMA${period} 防火墙 强制触发`;
+                    }
+                }
+            }
+
+            // C. Break K-Line (破位大K线二次检测)
+            if (!secondaryTriggered && combinedLossLimitMet && hedgeSettings.breakKLineEnabled && position.signalCandle) {
+                const signalHigh = position.signalCandle.high;
+                const signalLow = position.signalCandle.low;
+                const ratio = Number(hedgeSettings.breakKLineRatio ?? 20) / 100;
+                const triggerDistanceAbsolute = (signalHigh - signalLow) * (1 + ratio);
+                if (position.side === PositionSide.LONG) {
+                    if (position.markPrice <= signalHigh - triggerDistanceAbsolute) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 跌破信号K线振幅 ${hedgeSettings.breakKLineRatio}% 强制触发`;
+                    }
+                } else {
+                    if (position.markPrice >= signalLow + triggerDistanceAbsolute) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 突破信号K线振幅 ${hedgeSettings.breakKLineRatio}% 强制触发`;
+                    }
+                }
+            }
+
+            // D. EMA10破EMA20 (EMA10穿EMA20基准防线二次检测)
+            const secondaryEmaCrossPrice = position.ema10Cross20Price || position.entryEmas?.ema20;
+            if (!secondaryTriggered && combinedLossLimitMet && hedgeSettings.ema10Cross20BreakEnabled && secondaryEmaCrossPrice) {
+                if (position.side === PositionSide.LONG) {
+                    if (position.markPrice <= secondaryEmaCrossPrice) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 价格跌破开仓EMA10穿EMA20基准防线(${secondaryEmaCrossPrice.toFixed(4)}) 强制触发`;
+                    }
+                } else {
+                    if (position.markPrice >= secondaryEmaCrossPrice) {
+                        secondaryTriggered = true;
+                        secondaryReason = `[二次防爆检测] 价格突破开仓EMA10穿EMA20基准防线(${secondaryEmaCrossPrice.toFixed(4)}) 强制触发`;
                     }
                 }
             }

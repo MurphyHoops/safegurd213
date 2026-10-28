@@ -88,14 +88,59 @@ app.on('gpu-process-gone', (event, details) => {
   logCrashToFile('ELECTRON_GPU_GONE', `GPU驱动重置或进程异常: reason=${details.reason}, exitCode=${details.exitCode}`);
 });
 
-// 全局异常防护，阻止主进程异常退出并同步记录到黑匣子
+// 🛡️ [物理级进程退出日志 (Exit Logger)]: 同步落盘 process_exit.log，记录进程关闭元数据与信号来源
+const EXIT_LOG_FILE = path.join(process.cwd(), 'process_exit.log');
+function recordPhysicalExit(eventName, details) {
+  try {
+    const now = new Date();
+    const timeStr = now.toISOString().replace('T', ' ').replace('Z', '');
+    const mem = process.memoryUsage ? process.memoryUsage() : {};
+    const memSummary = `RSS: ${Math.round((mem.rss || 0) / 1024 / 1024)}MB, Heap: ${Math.round((mem.heapUsed || 0) / 1024 / 1024)}MB/${Math.round((mem.heapTotal || 0) / 1024 / 1024)}MB`;
+    const detailsStr = typeof details === 'object' ? JSON.stringify(details) : String(details);
+    const line = `[${timeStr}] [ELECTRON_MAIN] [PID:${process.pid}|PPID:${process.ppid}] [EVENT:${eventName}] ${detailsStr} | Uptime: ${Math.round(process.uptime())}s | Memory: ${memSummary}\n`;
+    fs.appendFileSync(EXIT_LOG_FILE, line, 'utf-8');
+  } catch (_) {}
+}
+
+// 全局底层退出与信号监听
+process.on('exit', (code) => {
+  recordPhysicalExit('exit', { code, reason: 'Node.js event loop terminated' });
+});
+
+process.on('beforeExit', (code) => {
+  recordPhysicalExit('beforeExit', { code, reason: 'Event loop empty, preparing to exit' });
+});
+
+process.on('SIGINT', () => {
+  recordPhysicalExit('SIGINT', { signal: 'SIGINT', source: 'Keyboard interrupt or terminal Ctrl+C' });
+});
+
+process.on('SIGTERM', () => {
+  recordPhysicalExit('SIGTERM', { signal: 'SIGTERM', source: 'Termination signal from OS or parent process' });
+});
+
+process.on('SIGHUP', () => {
+  recordPhysicalExit('SIGHUP', { signal: 'SIGHUP', source: 'Controlling terminal closed or session hung up' });
+});
+
+process.on('SIGBREAK', () => {
+  recordPhysicalExit('SIGBREAK', { signal: 'SIGBREAK', source: 'Windows Ctrl+Break event' });
+});
+
+process.on('message', (msg) => {
+  recordPhysicalExit('IPC_MESSAGE', { message: msg, source: 'Parent process IPC' });
+});
+
+// 全局异常防护，阻止主进程异常退出并同步记录到黑匣子与退出日志
 process.on('uncaughtException', (err) => {
   console.error('🛡️ [Electron Main] Uncaught Exception Isolated:', err);
   logCrashToFile('ELECTRON_MAIN_UNCAUGHT', err ? err.message : 'Uncaught Exception', err ? err.stack : '');
+  recordPhysicalExit('uncaughtException', { message: err?.message, stack: err?.stack });
 });
 process.on('unhandledRejection', (reason) => {
   console.error('🛡️ [Electron Main] Unhandled Rejection Isolated:', reason);
   logCrashToFile('ELECTRON_MAIN_REJECTION', typeof reason === 'string' ? reason : (reason && reason.message) || 'Unhandled Rejection');
+  recordPhysicalExit('unhandledRejection', { reason: typeof reason === 'string' ? reason : reason?.message });
 });
 
 let mainWindow = null;
@@ -104,7 +149,8 @@ let tray = null;
 let isExplicitQuitting = false;
 let isRecreatingWindow = false; // 🔒 关键生命周期守卫：防止销毁死窗口瞬间触发 window-all-closed 导致连环自杀退出
 
-app.on('before-quit', () => {
+app.on('before-quit', (e) => {
+  recordPhysicalExit('app:before-quit', { defaultPrevented: e ? e.defaultPrevented : false, isExplicitQuitting });
   isExplicitQuitting = true;
 });
 
@@ -382,6 +428,7 @@ function startBackendServer() {
     serverProcess.on('exit', (code, signal) => {
       console.log(`后台服务进程退出: code=${code}, signal=${signal}`);
       logCrashToFile('BACKEND_SERVER_EXIT', `后台交易服务进程退出: code=${code}, signal=${signal}`);
+      recordPhysicalExit('CHILD_SERVER_EXIT', { code, signal });
       if (stableRunTimer) clearTimeout(stableRunTimer);
       if (!isExplicitQuitting) {
         serverRestartAttempts++;
@@ -393,6 +440,7 @@ function startBackendServer() {
   } catch (err) {
     console.error('未能自动拉起后台服务:', err);
     logCrashToFile('BACKEND_SERVER_INIT_CRASH', err ? err.message : 'Init Exception', err ? err.stack : '');
+    recordPhysicalExit('CHILD_SERVER_INIT_CRASH', { message: err?.message });
     setTimeout(startBackendServer, 3000);
   }
 }
@@ -414,6 +462,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   // 🛡️ [交易永续铁律]: 即使前台所有窗口因任何原因关闭或崩溃，绝对不能杀死后台服务，绝对不能退出程序！
   console.log(`ℹ️ [Electron Guard] window-all-closed 触发: isExplicitQuitting=${isExplicitQuitting}, isRecreating=${isRecreatingWindow}`);
+  recordPhysicalExit('app:window-all-closed', { isExplicitQuitting, isRecreatingWindow });
   if (isExplicitQuitting) {
     if (serverProcess) {
       try { serverProcess.kill(); } catch (e) {}
@@ -429,8 +478,13 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('will-quit', () => {
+app.on('will-quit', (e) => {
+  recordPhysicalExit('app:will-quit', { defaultPrevented: e ? e.defaultPrevented : false });
   if (serverProcess) {
     try { serverProcess.kill(); } catch (e) {}
   }
+});
+
+app.on('quit', (event, exitCode) => {
+  recordPhysicalExit('app:quit', { exitCode });
 });

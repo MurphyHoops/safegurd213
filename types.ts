@@ -70,6 +70,7 @@ export interface Position {
         ema40: number;
         ema80: number;
     };
+    ema10Cross20Price?: number; // 4. EMA10破EMA20 基准防线价格
     currentEmaValue?: number;
     triggerReason?: string;
     isBacktestRecord?: boolean;
@@ -378,6 +379,7 @@ export interface HedgingSettings {
     trendHedgeEmaPeriod: number; // New: EMA Period (80, 40, 20, 10)
     breakKLineEnabled: boolean;
     breakKLineRatio: number;
+    ema10Cross20BreakEnabled?: boolean; // 4. EMA10破EMA20
     combinedLossLimitEnabled?: boolean;
     combinedLossLimitPercent?: number;
 }

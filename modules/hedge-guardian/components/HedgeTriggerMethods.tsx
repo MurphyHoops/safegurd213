@@ -101,7 +101,26 @@ export const HedgeTriggerMethods: React.FC<Props> = ({ settings, onChange }) => 
                 </div>
             </div>
 
-            {/* Method 4: Short-term Extreme Ratio Hedge */}
+            {/* Method 4: EMA10 Cross EMA20 Baseline Breakout */}
+            <div className="bg-slate-900/50 p-2 rounded border border-slate-700/50 space-y-1.5">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-300 font-medium">4. EMA10破EMA20</span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-indigo-950/60 text-indigo-300 border border-indigo-700/40 rounded">
+                            起爆原点防线
+                        </span>
+                    </div>
+                    <div 
+                        onClick={() => onChange('ema10Cross20BreakEnabled', !settings.ema10Cross20BreakEnabled)} 
+                        className={`w-8 h-4 rounded-full p-0.5 transition-colors cursor-pointer ${settings.ema10Cross20BreakEnabled ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                    >
+                        <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.ema10Cross20BreakEnabled ? 'translate-x-4' : 'translate-x-0'}`}/>
+                    </div>
+                </div>
+                <div className="text-[9px] text-slate-400 leading-tight pl-0.5">
+                    以开仓信号形成时 EMA10 穿越 EMA20 的基准价格为防线；多单跌破 / 空单涨破该价格且满足亏损限制时触发对冲开仓。
+                </div>
+            </div>
         </div>
     );
 };

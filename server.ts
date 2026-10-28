@@ -146,7 +146,10 @@ async function startServer() {
 
   app.get("/api/network/ip", async (req, res) => {
       try {
-          const response = await fetch("https://api.ipify.org?format=json");
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 4000);
+          const response = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+          clearTimeout(timeout);
           const data = await response.json();
           res.json({ ip: data.ip });
       } catch (error) {
@@ -814,7 +817,10 @@ async function startServer() {
         }
         try {
             console.log("🔄 Fetching Binance Futures exchangeInfo...");
-            const response = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo");
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            const response = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo", { signal: controller.signal });
+            clearTimeout(timeout);
             if (response.ok) {
                 const data = await response.json();
                 cachedExchangeInfo = data;
@@ -3055,15 +3061,65 @@ function persistFatalCrash(moduleName: string, message: string, stack?: string) 
   } catch (_) {}
 }
 
+// 🛡️ [物理级进程退出日志 (Exit Logger)]: 同步落盘 process_exit.log，记录进程退出元数据与所有系统信号
+const PROCESS_EXIT_LOG = path.join(process.cwd(), 'process_exit.log');
+
+function recordPhysicalServerExit(eventName: string, details: any) {
+  try {
+    const now = new Date();
+    const timeStr = now.toISOString().replace('T', ' ').replace('Z', '');
+    const mem = process.memoryUsage ? process.memoryUsage() : { rss: 0, heapUsed: 0, heapTotal: 0 };
+    const memSummary = `RSS: ${Math.round((mem.rss || 0) / 1024 / 1024)}MB, Heap: ${Math.round((mem.heapUsed || 0) / 1024 / 1024)}MB/${Math.round((mem.heapTotal || 0) / 1024 / 1024)}MB`;
+    const detailsStr = typeof details === 'object' ? JSON.stringify(details) : String(details);
+    const line = `[${timeStr}] [SERVER_TS] [PID:${process.pid}|PPID:${process.ppid}] [EVENT:${eventName}] ${detailsStr} | Uptime: ${Math.round(process.uptime())}s | Memory: ${memSummary}\n`;
+    fs.appendFileSync(PROCESS_EXIT_LOG, line, 'utf-8');
+  } catch (_) {}
+}
+
+// 物理级退出与信号监听
+process.on('exit', (code) => {
+  recordPhysicalServerExit('exit', { code, reason: 'Node.js event loop terminated' });
+});
+
+process.on('beforeExit', (code) => {
+  recordPhysicalServerExit('beforeExit', { code, reason: 'Event loop empty, preparing to exit' });
+});
+
+process.on('SIGINT', () => {
+  recordPhysicalServerExit('SIGINT', { signal: 'SIGINT', source: 'Keyboard interrupt or terminal Ctrl+C' });
+});
+
+process.on('SIGTERM', () => {
+  console.warn('⚠️ [Process Guard] SIGTERM signal received. Logging and keeping trading engine daemon alive...');
+  persistFatalCrash('SERVER_SIGNAL', '收到 SIGTERM 终止信号，已守护拦截');
+  recordPhysicalServerExit('SIGTERM', { signal: 'SIGTERM', source: 'Termination signal from OS or parent process' });
+});
+
+process.on('SIGHUP', () => {
+  console.warn('⚠️ [Process Guard] SIGHUP signal received (session hangup). Keeping trading engine daemon alive...');
+  recordPhysicalServerExit('SIGHUP', { signal: 'SIGHUP', source: 'Controlling terminal closed or session hung up' });
+});
+
+process.on('SIGBREAK', () => {
+  console.warn('⚠️ [Process Guard] SIGBREAK signal received (Windows break). Keeping trading engine daemon alive...');
+  recordPhysicalServerExit('SIGBREAK', { signal: 'SIGBREAK', source: 'Windows Ctrl+Break event' });
+});
+
+process.on('message', (msg) => {
+  recordPhysicalServerExit('IPC_MESSAGE', { message: msg, source: 'Parent process IPC' });
+});
+
 // High-level Node.js safety locks to prevent uncaught promise rejections or exceptions from terminating the server process
 process.on('uncaughtException', (err) => {
     console.error('🔥 CRITICAL ERROR: Uncaught Exception caught by savior guard:', err);
     persistFatalCrash('SERVER_UNCAUGHT_EXCEPTION', err ? err.message : 'Uncaught Exception', err ? err.stack : '');
+    recordPhysicalServerExit('uncaughtException', { message: err ? err.message : 'Uncaught Exception', stack: err ? err.stack : '' });
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('🔥 CRITICAL ERROR: Unhandled Promise Rejection at:', promise, 'reason:', reason);
     persistFatalCrash('SERVER_UNHANDLED_REJECTION', typeof reason === 'string' ? reason : (reason && (reason as any).message) || 'Unhandled Rejection');
+    recordPhysicalServerExit('unhandledRejection', { reason: typeof reason === 'string' ? reason : (reason && (reason as any).message) || 'Unhandled Rejection' });
 });
 
 // 🛡️ [EPIPE & BROKEN PIPE PROTECTION]: Prevent Node.js from crashing when stdout/stderr pipes break in background/GUI processes
@@ -3077,20 +3133,6 @@ if (process.stderr && typeof process.stderr.on === 'function') {
     if (err && err.code === 'EPIPE') return;
   });
 }
-
-// 🛡️ [SIGHUP & SIGBREAK IMMUNITY]: Prevent terminal disconnects / session locks from killing the trading daemon
-process.on('SIGHUP', () => {
-    console.warn('⚠️ [Process Guard] SIGHUP signal received (session hangup). Keeping trading engine daemon alive...');
-});
-
-process.on('SIGBREAK', () => {
-    console.warn('⚠️ [Process Guard] SIGBREAK signal received (Windows break). Keeping trading engine daemon alive...');
-});
-
-process.on('SIGTERM', () => {
-    console.warn('⚠️ [Process Guard] SIGTERM signal received. Logging and keeping trading engine daemon alive...');
-    persistFatalCrash('SERVER_SIGNAL', '收到 SIGTERM 终止信号，已守护拦截');
-});
 
 // 🛡️ [24/7 SERVER MEMORY HEALTH MONITOR & GC]: Periodically monitor RSS/Heap and trigger GC to eliminate OOM crashes
 setInterval(() => {

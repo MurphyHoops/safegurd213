@@ -1,94 +1,34 @@
-# List 3 Independent Rule Mode [Hard Filter vs. Star Rating] Implementation Plan
+# 强力防爆对冲新增「4. EMA10破EMA20」触发条件实施报告
 
-## 1. Goal Overview
-Upgrade List 3 (Structure Audit) so that each of the 5 core structural audit rules can be **independently configured** in either:
-1. **【强拦截 (HARD FILTER)】**: Drops coins from List 3 if they do not pass the rule (legacy behavior).
-2. **【仅星标 (STAR AUDIT)】**: Keeps coins in List 3 regardless, but awards a **⭐ Star Point & Badge** if satisfied.
+## 一、需求回顾与实现定义
+用户要求在系统 **模块 2 [强力防爆对冲 (Hedge Guardian)]** 的对冲触发方式中，紧跟在「3. 破位大K线」下方新增 **「4. EMA10破EMA20」** 条件：
+1. **基准价格捕获**：以开仓信号形成过程中 **EMA10 穿越 EMA20 时的价格**（即第一原点基准价 `ema10Cross20Price`）作为关键防守底线；
+2. **多空双向破位判定**：
+   - 多单主仓（LONG）：当实时标记价格跌破该基准价（`markPrice <= ema10Cross20Price`）时触发；
+   - 空单主仓（SHORT）：当实时标记价格涨破该基准价（`markPrice >= ema10Cross20Price`）时触发；
+3. **并联与门禁原则**：
+   - 与（2. 趋势防火墙）和（3. 破位大K线）完全并联使用，支持单选或多选；
+   - 严格遵循先到先得原则；
+   - 严格服从【亏损触发限制】（如浮亏达到设定阈值才允许启动对冲）；
+   - 严格遵守对冲必须处于浮亏状态（`pnlPercent < 0`）的基本原则。
 
----
+## 二、代码修改清单
+1. **类型定义 (`types.ts`)**：
+   - `Position` 接口新增 `ema10Cross20Price?: number;` 字段；
+   - `HedgingSettings` 接口新增 `ema10Cross20BreakEnabled?: boolean;` 开关。
+2. **默认配置 (`config/defaultSettings.ts`)**：
+   - 默认防爆对冲设置中加入 `ema10Cross20BreakEnabled: false`。
+3. **前端交互界面 (`modules/hedge-guardian/components/HedgeTriggerMethods.tsx`)**：
+   - 在「3. 破位大K线」正下方新增「4. EMA10破EMA20」卡片，包含开关切换与精准中文说明。
+4. **对冲撮合判定核心 (`services/rules/hedging_rules.ts`)**：
+   - 在 `checkHedgingRules` 中新增「D. 4. EMA10破EMA20」判定分支；
+   - 接入 `combinedLossLimitMet`（亏损触发限制）门禁与先到先得并联队列；
+   - 生成清晰明确的触发原因标签 `[EMA10破EMA20] 价格跌破/突破开仓基准防线(...)`。
+5. **模拟撮合与生命周期 (`services/marketSimulator.ts`)**：
+   - `openPosition` 挂接 `ema10Cross20Price`，确保所有持仓具备该基准防线；
+   - `reopenPosition` 完整继承基准防线价；
+   - 二次防爆检测看门狗中同步接入该条件并校验亏损门禁。
 
-## 2. Five Independent Structural Audit Dimensions
-
-| # | Rule Name | Field Key | Hard Filter Behavior | Star Audit Behavior |
-|---|---|---|---|---|
-| 1 | **同色交叉** | `checkCandleColor` / `checkCandleColorMode` | Drop coin if candle color is wrong | Award **⭐色** badge if candle color is correct |
-| 2 | **严格趋势** | `strictTrend` / `strictTrendMode` | Drop coin if EMAs are not strictly fan-shaped | Award **⭐势** badge if trend is strictly fan-shaped |
-| 3 | **时空共振** | `enableMultiResonance` / `multiResonanceMode` | Drop coin if sub-2-timeframes aren't aligned | Award **⭐共** badge if sub-2-timeframes aligned |
-| 4 | **高级过滤 (EMA80)** | `enableAdvancedFilter` / `advancedFilterMode` | Drop coin if EMA80 intersections > threshold | Award **⭐审** badge if EMA80 intersections <= threshold |
-| 5 | **前置洗盘 V 反** | `enablePriorReverseDivergence` / `priorReverseMode` | Drop coin if no prior reverse divergence found | Award **⭐反** badge if prior reverse divergence found |
-
----
-
-## 3. Data Structure & Config Enhancements
-
-### A. Config Extensions (`components/Scanner/scannerTypes.ts`)
-Add mode properties to `List3Config`:
-```typescript
-export interface List3Config {
-    // Rule Mode Selections ('FILTER' = Hard Filter, 'STAR' = Soft Star Audit)
-    checkCandleColorMode?: 'FILTER' | 'STAR';
-    strictTrendMode?: 'FILTER' | 'STAR';
-    multiResonanceMode?: 'FILTER' | 'STAR';
-    advancedFilterMode?: 'FILTER' | 'STAR';
-    priorReverseMode?: 'FILTER' | 'STAR' | 'BOTH' | 'BADGE';
-    
-    // Sort option
-    sortModeList3?: 'LATEST' | 'STARS' | 'TIMEFRAME';
-}
-```
-
-### B. Signal Result & Item Extensions
-Add star tracking to `List3SignalResult['structure']` and `ScannerItem`:
-```typescript
-export interface List3SignalResult {
-    structure: {
-        // ... existing fields
-        starScore?: number;        // 0 to 5 stars
-        starBadges?: string[];     // ['色', '势', '共', '审', '反']
-        colorPassed?: boolean;
-        strictTrendPassed?: boolean;
-        resonancePassed?: boolean;
-        advFilterPassed?: boolean;
-        priorReversePassed?: boolean;
-    }
-}
-```
-
----
-
-## 4. Evaluation Engine (`services/rules/list3_structure.ts`)
-
-1. **Calculate All 5 Statuses**:
-   Compute `colorPassed`, `strictTrendPassed`, `resonancePassed`, `advFilterPassed`, `priorReversePassed` regardless of filter modes.
-2. **Calculate Stars & Badges**:
-   - Count how many satisfied rules exist for this coin.
-   - Attach `starScore` (0~5) and `starBadges` array.
-3. **Hard Filter Check**:
-   - Only return a rejection reason (`getList3SignalRejectReason`) if a rule is:
-     - Enabled (`true`), AND
-     - Set to `'FILTER'` (Hard Filter), AND
-     - Not satisfied.
-   - Rules set to `'STAR'` (Soft Audit) will **NEVER** trigger rejection.
-
----
-
-## 5. UI & Control Panel Updates (`modules/structure-audit/`)
-
-1. **`Control.tsx`**:
-   - For each of the 5 rules, render an intuitive toggle pill next to the switch:
-     - `[强拦截]` (Red/Purple border)
-     - `[仅星标]` (Gold/Amber border)
-2. **`Item.tsx` / `List3_Structure.tsx`**:
-   - Display prominent **⭐ Star Rating** (e.g. `⭐⭐⭐⭐⭐ 5星` / `⭐⭐3星`).
-   - Display illuminated badges (`[色] [势] [共] [审] [反]`).
-   - Add sorting button: Sort by **Star Rating (⭐星级优先置顶)**.
-
----
-
-## 6. Execution & Verification Plan
-1. Update `scannerTypes.ts` with mode types and star rating fields.
-2. Update `list3_structure.ts` with 5-dimension star evaluation and mode-aware filtering logic.
-3. Update `useStructureAudit.ts` to preserve star scores and badges.
-4. Update `Control.tsx` with individual `[强拦截 / 仅星标]` pill controls for all 5 rules.
-5. Update `List3_Structure.tsx` and `Item.tsx` to render star ratings, illuminated badges, and star-sorting option.
-6. Verify via `compile_applet` and test with simulated signals.
+## 三、编译与验证
+- `lint_applet` (`tsc --noEmit`) 验证通过，0 错误。
+- `compile_applet` (`vite build`) 验证通过，0 错误。
