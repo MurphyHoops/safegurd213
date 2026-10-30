@@ -116,6 +116,39 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
         audioService.speak('已复制服务器 IP');
     };
 
+    const [isResettingRateLimit, setIsResettingRateLimit] = useState(false);
+
+    const handleResetRateLimit = async () => {
+        setIsResettingRateLimit(true);
+        audioService.speak("正在解除币安限频锁定...");
+        try {
+            const res = await fetch('/api/binance/reset-rate-limit', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                setValidationResult({
+                    show: true,
+                    success: true,
+                    message: "🟢 " + data.message
+                });
+                audioService.speak("已成功解除币安限频锁定");
+            } else {
+                setValidationResult({
+                    show: true,
+                    success: false,
+                    message: "❌ 解除限频失败: " + (data.error || '未知错误')
+                });
+            }
+        } catch (e: any) {
+            setValidationResult({
+                show: true,
+                success: false,
+                message: "❌ 解除限频请求异常: " + (e?.message || e)
+            });
+        } finally {
+            setIsResettingRateLimit(false);
+        }
+    };
+
     const handleValidate = async (silent = false) => {
         if (!settings.binanceApiKey || !settings.binanceApiSecret) {
             if (!silent) {
@@ -243,27 +276,37 @@ export const ApiConfigPanel: React.FC<Props> = ({ settings, onChange, onUpdateBi
                     </div>
                 </div>
                 <div className="col-span-4 flex flex-col h-full justify-end pt-4">
-                    <button
-                        onClick={() => handleValidate(false)}
-                        disabled={isValidating}
-                        className={`w-full py-4 px-2 rounded font-bold text-[11px] flex flex-col items-center justify-center gap-1.5 transition-all active:scale-95 border cursor-pointer
-                            ${isValidating 
-                                ? 'bg-indigo-900/30 border-indigo-700/50 text-indigo-300' 
-                                : 'bg-gradient-to-b from-indigo-900/40 to-indigo-900/10 hover:from-indigo-800/50 hover:to-indigo-800/20 border-indigo-500/30 hover:border-indigo-500/60 text-indigo-200'
-                            }`}
-                    >
-                        {isValidating ? (
-                            <>
-                                <Loader2 size={16} className="animate-spin text-indigo-400" />
-                                <span>正在校验</span>
-                            </>
-                        ) : (
-                            <>
-                                <ShieldCheck size={16} className="text-indigo-400" />
-                                <span>API 校验</span>
-                            </>
-                        )}
-                    </button>
+                    <div className="flex flex-col gap-1.5">
+                        <button
+                            onClick={() => handleValidate(false)}
+                            disabled={isValidating}
+                            className={`w-full py-3 px-2 rounded font-bold text-[11px] flex flex-col items-center justify-center gap-1 transition-all active:scale-95 border cursor-pointer
+                                ${isValidating 
+                                    ? 'bg-indigo-900/30 border-indigo-700/50 text-indigo-300' 
+                                    : 'bg-gradient-to-b from-indigo-900/40 to-indigo-900/10 hover:from-indigo-800/50 hover:to-indigo-800/20 border-indigo-500/30 hover:border-indigo-500/60 text-indigo-200'
+                                }`}
+                        >
+                            {isValidating ? (
+                                <>
+                                    <Loader2 size={16} className="animate-spin text-indigo-400" />
+                                    <span>正在校验</span>
+                                </>
+                            ) : (
+                                <>
+                                    <ShieldCheck size={16} className="text-indigo-400" />
+                                    <span>API 校验</span>
+                                </>
+                            )}
+                        </button>
+                        <button
+                            onClick={handleResetRateLimit}
+                            disabled={isResettingRateLimit}
+                            className="w-full py-2 px-1 bg-amber-950/40 hover:bg-amber-900/60 active:scale-95 text-amber-300 text-[10px] font-bold rounded border border-amber-800/50 transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
+                            title="一键解除由于 -1003 / 418 / 429 限频导致的挂起与暂停锁"
+                        >
+                            {isResettingRateLimit ? <Loader2 size={12} className="animate-spin" /> : '🔓 解除限频锁定'}
+                        </button>
+                    </div>
                 </div>
             </div>
 

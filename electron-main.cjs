@@ -112,13 +112,30 @@ if (process.env.ELECTRON_RUN_AS_NODE === '1') {
   }
 }
 
-// 🛡️ [双重阻止电脑休眠/断电挂起]: 24小时量化机器人交易核心，禁止系统待机/挂起/锁屏节能导致程序终止
-try {
-  powerSaveBlocker.start('prevent-app-suspension');
-  powerSaveBlocker.start('prevent-display-sleep');
-  console.log('🛡️ [Electron Guard] 已成功启用 prevent-app-suspension 与 prevent-display-sleep 双重防系统休眠挂起保护');
-} catch (e) {
-  console.warn('⚠️ powerSaveBlocker 启动失败:', e);
+// 🛡️ [操作系统物理防挂起休眠锁]: 24小时量化机器人交易核心，阻止 Windows/系统将进程挂起或睡眠网卡
+let powerBlockerId = null;
+
+function acquirePowerSaveBlocker() {
+  try {
+    if (powerBlockerId === null || !powerSaveBlocker.isStarted(powerBlockerId)) {
+      powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+      console.log(`🛡️ [PowerGuard] 已成功启用操作系统物理防挂起休眠锁 (powerBlockerId: ${powerBlockerId})，阻止系统挂起与睡眠网卡`);
+    }
+  } catch (e) {
+    console.warn('⚠️ [PowerGuard] powerSaveBlocker 启动失败:', e);
+  }
+}
+
+function releasePowerSaveBlocker() {
+  try {
+    if (powerBlockerId !== null && powerSaveBlocker.isStarted(powerBlockerId)) {
+      powerSaveBlocker.stop(powerBlockerId);
+      console.log(`🛡️ [PowerGuard] 已安全释放防休眠挂起锁 (powerBlockerId: ${powerBlockerId})`);
+      powerBlockerId = null;
+    }
+  } catch (e) {
+    console.warn('⚠️ [PowerGuard] releasePowerSaveBlocker 异常:', e);
+  }
 }
 
 // 🛡️ [Windows 系统级防休眠与夜间自动恢复配置]
@@ -277,7 +294,7 @@ function createTray() {
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: '🟢 显示看盘主界面',
+        label: '🟢 显示看盘主控制台',
         click: () => {
           if (!mainWindow || mainWindow.isDestroyed()) {
             createWindow();
@@ -288,31 +305,26 @@ function createTray() {
           }
         }
       },
-      {
-        label: '🔄 强制重建看盘窗口',
-        click: () => {
-          console.log('🔄 [系统托盘] 正在强制重建看盘界面窗口...');
-          try {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.destroy();
-            }
-          } catch (_) {}
-          mainWindow = null;
-          createWindow();
-        }
-      },
       { type: 'separator' },
       {
-        label: '🛡️ 后台量化交易服务: 持续运行中',
+        label: '🛡️ 量化引擎：运行中',
         enabled: false
       },
       { type: 'separator' },
       {
-        label: '⛔ 彻底退出程序 (终止量化交易)',
+        label: '⛔ 彻底退出程序',
         click: () => {
           isExplicitQuitting = true;
+          console.log('⛔ [Tray] 用户显式触发彻底退出程序...');
+          // 1. 安全释放防休眠挂起锁
+          releasePowerSaveBlocker();
+          // 2. 安全终止后台交易服务子进程
           if (serverProcess) {
             try { serverProcess.kill(); } catch (_) {}
+          }
+          // 3. 销毁主看盘窗口并退出程序
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try { mainWindow.destroy(); } catch (_) {}
           }
           app.quit();
         }
@@ -320,6 +332,22 @@ function createTray() {
     ]);
 
     tray.setContextMenu(contextMenu);
+
+    // 绑定单击托盘图标切换窗口显示/隐藏 (show / hide)
+    tray.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow();
+      } else if (mainWindow.isVisible()) {
+        mainWindow.hide();
+        console.log('🛡️ [Tray Click] 主窗口已切换为隐藏状态 (后台交易持续运行)');
+      } else {
+        mainWindow.show();
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+        console.log('🛡️ [Tray Click] 主窗口已唤醒并前台显示');
+      }
+    });
+
     tray.on('double-click', () => {
       if (!mainWindow || mainWindow.isDestroyed()) {
         createWindow();
@@ -357,14 +385,14 @@ function createWindow() {
     }
   });
 
-  // 🛡️ [防闪退/防自动退出守护]: 捕获渲染进程崩溃并平滑原地重启自愈
+  // 🛡️ [防闪退/防自动退出守护]: 捕获渲染进程崩溃并平滑原地重启自愈，杜绝主进程与后台交易陪葬
   mainWindow.webContents.on('render-process-gone', (event, details) => {
     console.error(`🛡️ [Electron Guard] 渲染窗口异常终止: reason=${details.reason}, exitCode=${details.exitCode}`);
     logCrashToFile('ELECTRON_RENDERER_GONE', `渲染窗口异常终止: reason=${details.reason}, exitCode=${details.exitCode}`);
     
     if (!isExplicitQuitting) {
-      console.log(`🔄 [Electron Guard] 渲染窗口异常终止 (${details.reason})，正在原地重启加载...`);
-      // 优先在现有窗口上原地执行 reload，杜绝直接 destroy 触发 window-all-closed 连锁反应
+      console.log(`🔄 [Electron Guard] 渲染窗口异常终止 (${details.reason})，正在原地恢复/静默拉起...`);
+      // 1. 优先尝试直接重载渲染页面，保持窗口句柄不丢失
       try {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.reload();
@@ -372,8 +400,16 @@ function createWindow() {
         }
       } catch (_) {}
 
+      // 2. 若窗口已不可用，清理旧引用并立即同步创建新看盘窗口，防止无窗口间隙引发进程终止
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy();
+        }
+      } catch (_) {}
       mainWindow = null;
-      setTimeout(() => {
+
+      // 立即拉起新窗口保障前台，后台交易引擎在此期间完全不中断持续运行
+      setImmediate(() => {
         try {
           if (!isExplicitQuitting && (!mainWindow || mainWindow.isDestroyed())) {
             createWindow();
@@ -381,7 +417,7 @@ function createWindow() {
         } catch (e) {
           console.error('❌ 重建看盘主窗口异常:', e);
         }
-      }, 500);
+      });
     }
   });
 
@@ -437,12 +473,12 @@ function createWindow() {
 
   checkAndLoad();
 
-  // 🛡️ [防误关与任务栏常驻]: 点击关闭按钮时最小化到任务栏，任务栏图标持续可见，避免用户误解为程序闪退
+  // 🛡️ [改造看盘窗口关闭行为]: 改“销毁重建”为“静默隐藏”，避免销毁窗口触发连锁反应，仅在显式退出时放行
   mainWindow.on('close', (e) => {
     if (!isExplicitQuitting) {
       e.preventDefault();
-      mainWindow.minimize();
-      console.log('🛡️ [Electron Guard] 窗口已最小化至任务栏，后台量化交易服务与持仓监控持续 100% 运行');
+      mainWindow.hide();
+      console.log('🛡️ [Electron Guard] 主看盘窗口已静默隐藏至后台/托盘，量化交易与网络心跳持续全速运行');
     }
   });
 
@@ -547,6 +583,7 @@ function startBackendServer() {
 }
 
 app.whenReady().then(() => {
+  acquirePowerSaveBlocker();
   startBackendServer();
   createWindow();
   createTray();
@@ -562,10 +599,14 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('window-all-closed', () => {
-  // 🛡️ [交易永续铁律]: 即使前台所有窗口因任何原因关闭或崩溃，绝对不能杀死后台服务，绝对不能退出程序！
+app.on('window-all-closed', (e) => {
+  // 🛡️ [交易永续铁律]: 严禁前台窗口全部关闭时杀死后台服务或退出程序！
+  if (e && typeof e.preventDefault === 'function') {
+    e.preventDefault();
+  }
   console.log(`ℹ️ [Electron Guard] window-all-closed 触发: isExplicitQuitting=${isExplicitQuitting}`);
   recordPhysicalExit('app:window-all-closed', { isExplicitQuitting });
+  
   if (isExplicitQuitting) {
     if (serverProcess) {
       try { serverProcess.kill(); } catch (e) {}
@@ -574,14 +615,14 @@ app.on('window-all-closed', () => {
     return;
   }
 
-  // 保持后台运行，若窗口已被销毁且非主动退出，自动拉起全新看盘窗口
+  // 绝不退出：保持后台交易服务 100% 运行，静默自动重建看盘前台窗口
   if (!mainWindow || mainWindow.isDestroyed()) {
-    console.warn('⚠️ [Electron Guard] 检测到前台窗口已被销毁且未处于退出态，立即自动拉起全新看盘窗口...');
-    setTimeout(() => {
+    console.warn('⚠️ [Electron Guard] 前台看盘窗口关闭/销毁，后台量化引擎持续运行中，正在静默重建窗口...');
+    setImmediate(() => {
       if (!isExplicitQuitting && (!mainWindow || mainWindow.isDestroyed())) {
         createWindow();
       }
-    }, 500);
+    });
   }
 });
 
@@ -589,8 +630,11 @@ app.on('will-quit', (e) => {
   recordPhysicalExit('app:will-quit', { defaultPrevented: e ? e.defaultPrevented : false });
   if (!isExplicitQuitting) {
     e.preventDefault();
-  } else if (serverProcess) {
-    try { serverProcess.kill(); } catch (e) {}
+  } else {
+    releasePowerSaveBlocker();
+    if (serverProcess) {
+      try { serverProcess.kill(); } catch (e) {}
+    }
   }
 });
 

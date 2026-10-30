@@ -7,6 +7,65 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
+// 🛡️ [进程第一前沿防护]: 在任何路由、网络与模块加载前挂载全局异常与信号拦截，确保单个路由或异步错误绝不导致 Node 退出
+function persistFatalCrash(moduleName: string, message: string, stack?: string) {
+  try {
+    const timestamp = Date.now();
+    const timeStr = new Date(timestamp).toLocaleString();
+    const entry = {
+      id: 'server_' + timestamp.toString(36) + '_' + Math.random().toString(36).substring(2, 6),
+      timestamp,
+      timeStr,
+      module: moduleName || 'SERVER_DAEMON',
+      message: String(message || '未知异常'),
+      stack: String(stack || ''),
+      type: 'SERVER_FATAL_ERROR'
+    };
+
+    const targetPath = path.join(process.cwd(), 'crash_reports.json');
+    let reports: any[] = [];
+    if (fs.existsSync(targetPath)) {
+      try {
+        const content = fs.readFileSync(targetPath, 'utf-8');
+        reports = JSON.parse(content);
+        if (!Array.isArray(reports)) reports = [];
+      } catch (_) {
+        reports = [];
+      }
+    }
+    reports.unshift(entry);
+    if (reports.length > 50) reports.length = 50;
+    fs.writeFileSync(targetPath, JSON.stringify(reports, null, 2), 'utf-8');
+  } catch (_) {}
+}
+
+const PROCESS_EXIT_LOG = path.join(process.cwd(), 'process_exit.log');
+
+function recordPhysicalServerExit(eventName: string, details: any) {
+  try {
+    const now = new Date();
+    const timeStr = now.toISOString().replace('T', ' ').replace('Z', '');
+    const mem = process.memoryUsage ? process.memoryUsage() : { rss: 0, heapUsed: 0, heapTotal: 0 };
+    const memSummary = `RSS: ${Math.round((mem.rss || 0) / 1024 / 1024)}MB, Heap: ${Math.round((mem.heapUsed || 0) / 1024 / 1024)}MB/${Math.round((mem.heapTotal || 0) / 1024 / 1024)}MB`;
+    const detailsStr = typeof details === 'object' ? JSON.stringify(details) : String(details);
+    const line = `[${timeStr}] [SERVER_TS] [PID:${process.pid}|PPID:${process.ppid}] [EVENT:${eventName}] ${detailsStr} | Uptime: ${Math.round(process.uptime())}s | Memory: ${memSummary}\n`;
+    fs.appendFileSync(PROCESS_EXIT_LOG, line, 'utf-8');
+  } catch (_) {}
+}
+
+// 🛡️ [顶级未捕获异常降级锁]: 拦截所有同步与异步未处理错误，避免 Exit Code 1 杀进程
+process.on('uncaughtException', (err) => {
+  console.error('🔥 CRITICAL ERROR: Uncaught Exception caught by savior guard (Process Kept Alive):', err);
+  persistFatalCrash('SERVER_UNCAUGHT_EXCEPTION', err ? err.message : 'Uncaught Exception', err ? err.stack : '');
+  recordPhysicalServerExit('uncaughtException', { message: err ? err.message : 'Uncaught Exception', stack: err ? err.stack : '' });
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔥 CRITICAL ERROR: Unhandled Promise Rejection at:', promise, 'reason (Process Kept Alive):', reason);
+  persistFatalCrash('SERVER_UNHANDLED_REJECTION', typeof reason === 'string' ? reason : (reason && (reason as any).message) || 'Unhandled Rejection');
+  recordPhysicalServerExit('unhandledRejection', { reason: typeof reason === 'string' ? reason : (reason && (reason as any).message) || 'Unhandled Rejection' });
+});
+
 // ⚡ [HTTP Keep-Alive 长连接预热连接池]: 复用发往 fapi.binance.com 的 TLS 通道，切断 300~600ms RTT 握手开销
 try {
   (https.globalAgent as any).keepAlive = true;
@@ -307,6 +366,17 @@ async function startServer() {
 
   // 🔒 全局币安 IP 限频/封禁状态守护（-1003 / 418 / 429 智能退避）
   let binanceBannedUntilTimestamp = 0;
+  const parseBinanceBanTimestamp = (text: string, defaultDurationMs = 30000): number => {
+      try {
+          const match = text.match(/banned until (\d+)/i);
+          if (match && match[1]) {
+              const raw = parseInt(match[1]);
+              const val = raw > 10000000000 ? raw : raw * 1000;
+              return Math.min(val, Date.now() + 60000);
+          }
+      } catch (e) {}
+      return Date.now() + defaultDurationMs;
+  };
 
   // 🛡️ [进程双轨制核心：服务端长效持仓与风控守护引擎]
   interface ServerMonitoredPosition {
@@ -1008,14 +1078,11 @@ async function startServer() {
                     try {
                         const clone = res.clone();
                         const text = await clone.text();
-                        const match = text.match(/banned until (\d+)/i);
-                        if (match && match[1]) {
-                            binanceBannedUntilTimestamp = parseInt(match[1]);
-                            console.error(`🚨 [Binance Ban Intercept] IP rate-limited until ${binanceBannedUntilTimestamp} (${Math.round((binanceBannedUntilTimestamp - Date.now()) / 1000)}s remaining).`);
-                        } else {
-                            binanceBannedUntilTimestamp = Date.now() + 60000;
-                        }
-                    } catch (e) {}
+                        binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, 60000);
+                        console.error(`🚨 [Binance Ban Intercept] IP rate-limited until ${binanceBannedUntilTimestamp} (${Math.round((binanceBannedUntilTimestamp - Date.now()) / 1000)}s remaining).`);
+                    } catch (e) {
+                        binanceBannedUntilTimestamp = Date.now() + 60000;
+                    }
                 }
                 return res;
             } catch (err: any) {
@@ -2182,13 +2249,8 @@ async function startServer() {
                         if (response.status === 429 || response.status === 418) {
                             isRateLimitHit = true;
                             const errText = await response.text();
-                            const match = errText.match(/banned until (\d+)/i);
-                            if (match && match[1]) {
-                                binanceBannedUntilTimestamp = parseInt(match[1]);
-                                console.error(`🚨 [Binance Rate Limit] IP banned until ${binanceBannedUntilTimestamp}`);
-                            } else {
-                                binanceBannedUntilTimestamp = Date.now() + 60000;
-                            }
+                            binanceBannedUntilTimestamp = parseBinanceBanTimestamp(errText, 60000);
+                            console.error(`🚨 [Binance Rate Limit] IP banned until ${binanceBannedUntilTimestamp}`);
                             lastError = `币安报错 (HTTP ${response.status}): ${errText}`;
                             // 🔒 立即跳出循环，绝不继续向其余节点重复发包冲击
                             break;
@@ -2553,11 +2615,11 @@ async function startServer() {
                             if (response.status === 429 || response.status === 418) {
                                 isRateLimited = true;
                                 try {
-                                    const match = (await response.text()).match(/banned until (\d+)/i);
-                                    if (match && match[1]) {
-                                        binanceBannedUntilTimestamp = parseInt(match[1]);
-                                    }
-                                } catch (e) {}
+                                    const text = await response.text();
+                                    binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, 60000);
+                                } catch (e) {
+                                    binanceBannedUntilTimestamp = Date.now() + 60000;
+                                }
                                 break;
                             }
                             const errText = await response.text();
@@ -2623,6 +2685,18 @@ async function startServer() {
             return res.json({ success: true, message: "已彻底清空交易对账缓存" });
         } catch (e: any) {
             return res.json({ success: true });
+        }
+    });
+
+    // 🔓 手动解除/重置币安 IP 限频/封禁状态 (POST /api/binance/reset-rate-limit)
+    app.post("/api/binance/reset-rate-limit", (req, res) => {
+        try {
+            binanceBannedUntilTimestamp = 0;
+            orderQueuePauseUntil = 0;
+            console.log("🔓 [Binance Rate Limit] 用户手动重置了解除币安 IP 限频/封禁锁定状态。");
+            return res.json({ success: true, message: "已成功解除币安 IP 限频锁定，您可以继续正常下单与查询。" });
+        } catch (e: any) {
+            return res.status(500).json({ success: false, error: e?.message || e });
         }
     });
 
@@ -3009,14 +3083,11 @@ async function startServer() {
                       try {
                           const clone = response.clone();
                           const text = await clone.text();
-                          const match = text.match(/banned until (\d+)/i);
-                          if (match && match[1]) {
-                              binanceBannedUntilTimestamp = parseInt(match[1]);
-                              console.error(`🚨 [Proxy Intercept] Binance IP rate-limited until ${binanceBannedUntilTimestamp}.`);
-                          } else {
-                              binanceBannedUntilTimestamp = Date.now() + 10 * 60 * 1000;
-                          }
-                      } catch (_) {}
+                          binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, 60000);
+                          console.error(`🚨 [Proxy Intercept] Binance IP rate-limited until ${binanceBannedUntilTimestamp}.`);
+                      } catch (_) {
+                          binanceBannedUntilTimestamp = Date.now() + 60000;
+                      }
                   }
                   const isMatchingTarget = targetUrl.includes("/fapi/") ? candidate.url.includes("/fapi/") : candidate.url.includes("/api/v3/");
                   if ((response.status === 400 || response.status === 404) && isMatchingTarget) {
@@ -3153,11 +3224,16 @@ async function startServer() {
   app.get('/api/download/winzip', (req, res) => handleBinaryDownload(req, res, '0211自动找币防爆仓救世之星-0.0.0-win.zip'));
   app.get('/api/download/exe', (req, res) => handleBinaryDownload(req, res, '0211自动找币防爆仓救世之星.exe'));
 
-  app.get(['/0211自动找币防爆仓救世之星.exe', '/0211自动找币防爆仓救世之星-0.0.0-win.zip', '/0211自动找币防爆仓救世之星-portable.zip'], (req, res, next) => {
-    const fileName = decodeURIComponent(req.path.substring(1));
-    if (fileName) {
-      return handleBinaryDownload(req, res, fileName);
-    }
+  // 🛡️ [Express 5 纯函数中间件安全匹配]: 杜绝 path-to-regexp 通配符解析异常，安全拦截所有 0211 相关安装包请求
+  app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    try {
+      const pathname = decodeURIComponent(req.path || '');
+      if (pathname.includes('0211') && (pathname.endsWith('.exe') || pathname.endsWith('.zip'))) {
+        const fileName = path.basename(pathname);
+        return handleBinaryDownload(req, res, fileName);
+      }
+    } catch (_) {}
     next();
   });
 
@@ -3207,53 +3283,6 @@ async function startServer() {
   });
 }
 
-// 🛡️ [持久化崩溃黑匣子写入工具]：同步落盘到工作目录，确保闪退原因永不丢失
-function persistFatalCrash(moduleName: string, message: string, stack?: string) {
-  try {
-    const timestamp = Date.now();
-    const timeStr = new Date(timestamp).toLocaleString();
-    const entry = {
-      id: 'server_' + timestamp.toString(36) + '_' + Math.random().toString(36).substring(2, 6),
-      timestamp,
-      timeStr,
-      module: moduleName || 'SERVER_DAEMON',
-      message: String(message || '未知异常'),
-      stack: String(stack || ''),
-      type: 'SERVER_FATAL_ERROR'
-    };
-
-    const targetPath = path.join(process.cwd(), 'crash_reports.json');
-    let reports: any[] = [];
-    if (fs.existsSync(targetPath)) {
-      try {
-        const content = fs.readFileSync(targetPath, 'utf-8');
-        reports = JSON.parse(content);
-        if (!Array.isArray(reports)) reports = [];
-      } catch (_) {
-        reports = [];
-      }
-    }
-    reports.unshift(entry);
-    if (reports.length > 50) reports.length = 50;
-    fs.writeFileSync(targetPath, JSON.stringify(reports, null, 2), 'utf-8');
-  } catch (_) {}
-}
-
-// 🛡️ [物理级进程退出日志 (Exit Logger)]: 同步落盘 process_exit.log，记录进程退出元数据与所有系统信号
-const PROCESS_EXIT_LOG = path.join(process.cwd(), 'process_exit.log');
-
-function recordPhysicalServerExit(eventName: string, details: any) {
-  try {
-    const now = new Date();
-    const timeStr = now.toISOString().replace('T', ' ').replace('Z', '');
-    const mem = process.memoryUsage ? process.memoryUsage() : { rss: 0, heapUsed: 0, heapTotal: 0 };
-    const memSummary = `RSS: ${Math.round((mem.rss || 0) / 1024 / 1024)}MB, Heap: ${Math.round((mem.heapUsed || 0) / 1024 / 1024)}MB/${Math.round((mem.heapTotal || 0) / 1024 / 1024)}MB`;
-    const detailsStr = typeof details === 'object' ? JSON.stringify(details) : String(details);
-    const line = `[${timeStr}] [SERVER_TS] [PID:${process.pid}|PPID:${process.ppid}] [EVENT:${eventName}] ${detailsStr} | Uptime: ${Math.round(process.uptime())}s | Memory: ${memSummary}\n`;
-    fs.appendFileSync(PROCESS_EXIT_LOG, line, 'utf-8');
-  } catch (_) {}
-}
-
 // 🛡️ [Node.js 永续生命线 Keep-Alive]: 维持主服务事件循环永不排空，杜绝 Windows / Linux 无活跃连接时事件循环耗尽自退
 const _serverKeepAliveTimer = setInterval(() => {
   // 维持事件循环持续活跃
@@ -3293,19 +3322,6 @@ process.on('SIGBREAK', () => {
 
 process.on('message', (msg) => {
   recordPhysicalServerExit('IPC_MESSAGE', { message: msg, source: 'Parent process IPC' });
-});
-
-// High-level Node.js safety locks to prevent uncaught promise rejections or exceptions from terminating the server process
-process.on('uncaughtException', (err) => {
-    console.error('🔥 CRITICAL ERROR: Uncaught Exception caught by savior guard:', err);
-    persistFatalCrash('SERVER_UNCAUGHT_EXCEPTION', err ? err.message : 'Uncaught Exception', err ? err.stack : '');
-    recordPhysicalServerExit('uncaughtException', { message: err ? err.message : 'Uncaught Exception', stack: err ? err.stack : '' });
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('🔥 CRITICAL ERROR: Unhandled Promise Rejection at:', promise, 'reason:', reason);
-    persistFatalCrash('SERVER_UNHANDLED_REJECTION', typeof reason === 'string' ? reason : (reason && (reason as any).message) || 'Unhandled Rejection');
-    recordPhysicalServerExit('unhandledRejection', { reason: typeof reason === 'string' ? reason : (reason && (reason as any).message) || 'Unhandled Rejection' });
 });
 
 // 🛡️ [EPIPE & BROKEN PIPE PROTECTION]: Prevent Node.js from crashing when stdout/stderr pipes break in background/GUI processes
