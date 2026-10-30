@@ -3123,8 +3123,46 @@ async function startServer() {
     res.json({ status: "ok", message: "Trading Engine is running" });
   });
 
-  // Vite middleware ONLY in explicit development mode
-  if (process.env.NODE_ENV === "development") {
+  // 🛡️ [二进制客户端软件下载直连服务]: 强行直接发送文件流，防止被 Vite SPA 降级回落到 index.html
+  const handleBinaryDownload = async (req: any, res: any, filePattern: string) => {
+    const path = await import('path');
+    const candidates = [
+      path.join(process.cwd(), 'public', filePattern),
+      path.join(process.cwd(), 'dist', filePattern),
+      path.join(process.cwd(), 'release', filePattern),
+      path.join(process.cwd(), 'release', 'win-unpacked', filePattern)
+    ];
+
+    for (const targetPath of candidates) {
+      if (fs.existsSync(targetPath)) {
+        const stat = fs.statSync(targetPath);
+        if (stat.isFile() && stat.size > 100000) { // 确认是完整的二进制包 (>100KB)
+          console.log(`📦 [Download Handler] 成功定位客户端软件: ${targetPath} (${(stat.size / 1024 / 1024).toFixed(2)} MB)`);
+          res.setHeader('Content-Type', 'application/octet-stream');
+          res.setHeader('Content-Length', stat.size);
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filePattern)}"`);
+          return res.sendFile(targetPath);
+        }
+      }
+    }
+
+    return res.status(404).json({ error: 'Download file not found or corrupted.' });
+  };
+
+  app.get('/api/download/zip', (req, res) => handleBinaryDownload(req, res, '0211自动找币防爆仓救世之星-portable.zip'));
+  app.get('/api/download/winzip', (req, res) => handleBinaryDownload(req, res, '0211自动找币防爆仓救世之星-0.0.0-win.zip'));
+  app.get('/api/download/exe', (req, res) => handleBinaryDownload(req, res, '0211自动找币防爆仓救世之星.exe'));
+
+  app.get(['/0211自动找币防爆仓救世之星.exe', '/0211自动找币防爆仓救世之星-0.0.0-win.zip', '/0211自动找币防爆仓救世之星-portable.zip'], (req, res, next) => {
+    const fileName = decodeURIComponent(req.path.substring(1));
+    if (fileName) {
+      return handleBinaryDownload(req, res, fileName);
+    }
+    next();
+  });
+
+  // Vite middleware in non-production mode
+  if (process.env.NODE_ENV !== "production") {
     try {
       const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({

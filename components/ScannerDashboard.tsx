@@ -220,6 +220,7 @@ const ScannerDashboardInner: React.FC<
   // --- UI STATE ---
   const [isMinimized, setIsMinimized] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [chartData, setChartData] = useState<any>(null);
   const [scannerMode, setScannerMode] = usePersistedState<
     "LIVE" | "BACKTEST" | "SMART"
@@ -2079,6 +2080,14 @@ const ScannerDashboardInner: React.FC<
             </div>
             <div className="flex items-center gap-3">
               <button
+                onClick={() => setShowDownloadModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-400/50 text-white rounded text-xs font-bold shadow-lg shadow-blue-950/50 transition-all cursor-pointer shrink-0 animate-pulse"
+                title="获取 Windows PC 桌面专属挂机客户端 (.exe)"
+              >
+                <Download size={13} />
+                <span>💻 客户端下载</span>
+              </button>
+              <button
                 onClick={() => setShowLogPanel(!showLogPanel)}
                 className={`p-2 rounded transition-colors ${showLogPanel ? "bg-indigo-600/20 text-indigo-400" : "hover:bg-slate-800 text-slate-400 hover:text-white"}`}
                 title="切换日志面板"
@@ -2452,6 +2461,77 @@ const ScannerDashboardInner: React.FC<
           onPrev={chartData.onPrev}
           onNext={chartData.onNext}
         />
+      )}
+
+      {showDownloadModal && (
+        <div className="fixed inset-0 z-[99999] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#0f172a] border border-blue-500/40 rounded-xl shadow-2xl max-w-lg w-full p-6 text-slate-200 relative animate-in fade-in zoom-in duration-200">
+            <button
+              onClick={() => setShowDownloadModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-3 bg-blue-600/20 border border-blue-500/40 rounded-lg text-blue-400">
+                <Download size={24} />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Windows 桌面客户端 (.exe) 挂机下载中心</h3>
+                <p className="text-xs text-slate-400">彻底远离浏览器网页休眠，实现 24 小时无人值守挂机交易</p>
+              </div>
+            </div>
+
+            <div className="space-y-4 my-5">
+              <div className="p-4 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2">
+                <div className="text-xs font-bold text-blue-400 flex items-center gap-1.5">
+                  <span>📦 方案一：Zip 绿色解压挂机版 (.zip)</span>
+                </div>
+                <p className="text-[11px] text-slate-400">包含完整的桌面二进制运行包，解压后直接双击运行。</p>
+                <a
+                  href="/api/download/zip"
+                  download="0211自动找币防爆仓救世之星-portable.zip"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all w-full justify-center shadow-lg shadow-blue-900/40 cursor-pointer"
+                >
+                  <Download size={14} /> 点击下载免安装 Zip 包 (31MB)
+                </a>
+              </div>
+
+              <div className="p-4 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2">
+                <div className="text-xs font-bold text-indigo-400 flex items-center gap-1.5">
+                  <span>📦 方案二：压缩包镜像二 (.zip)</span>
+                </div>
+                <p className="text-[11px] text-slate-400">镜像备用压缩包，同样包含完整的 24 小时无人值守挂机程序。</p>
+                <a
+                  href="/api/download/winzip"
+                  download="0211自动找币防爆仓救世之星-0.0.0-win.zip"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition-all w-full justify-center shadow-lg shadow-indigo-900/40 cursor-pointer"
+                >
+                  <Download size={14} /> 点击下载备用 Zip 包 (24MB)
+                </a>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
+              <button
+                onClick={() => {
+                  const url = window.location.origin + "/api/download/zip";
+                  navigator.clipboard.writeText(url);
+                  alert("已成功将 Zip 解压挂机包下载链接复制到剪贴板！可粘贴到浏览器地址栏或迅雷下载。");
+                }}
+                className="text-xs text-slate-400 hover:text-blue-400 transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                🔗 复制直连下载链接
+              </button>
+              <button
+                onClick={() => setShowDownloadModal(false)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-bold transition-colors cursor-pointer"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Background Multi-Strategy Runners */}
