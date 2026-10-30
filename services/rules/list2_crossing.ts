@@ -1487,6 +1487,122 @@ export function analyzeList2Crossing(
         }
     }
 
+    // =========================================================================
+    // ⚡ [USER MANDATORY RULE - EMA10穿越EMA30前置折叠等待蓄势区]
+    // 核心逻辑：若常规发散/穿越尚未正式成立 (或EMA40尚未穿越)，检查过去设定根数 (ema30PreWaitBars) 内
+    // 是否发生过 EMA10 穿越 EMA30 且当前均线未被破坏。
+    // 若满足，则进入列表2折叠等待区域，提前纳入毫秒级VIP监听池！
+    // 一旦EMA40穿越完成且对应K线收盘，直接无缝晋升为正式信号！
+    // =========================================================================
+    const enableEma30PreWait = config.enableEma30PreWait !== undefined ? !!config.enableEma30PreWait : true;
+    const ema30PreWaitBars = (config.ema30PreWaitBars !== undefined && !Number.isNaN(config.ema30PreWaitBars))
+        ? Math.max(1, config.ema30PreWaitBars)
+        : 5;
+
+    if (results.length === 0 && enableEma30PreWait && closes.length >= 40) {
+        // 从当前K线往前追溯 EMA10 穿越 EMA30
+        const maxCheckLag = Math.min(ema30PreWaitBars, closes.length - 35);
+        let foundPreWaitL = false;
+        let foundPreWaitS = false;
+        let preWaitLagL = 0;
+        let preWaitLagS = 0;
+
+        // 当前 EMA 状态
+        const curE10 = getEmaVal(ema10, idx, 10);
+        const curE30 = getEmaVal(ema30, idx, 30);
+        const curE40 = getEmaVal(ema40, idx, 40);
+
+        if (curE10 !== null && curE30 !== null && curE40 !== null) {
+            // 多头检查：当前 EMA10 > EMA30，但尚未完成 EMA40 穿越 (如 curE10 <= curE40)
+            if (curE10 > curE30 && curE10 <= curE40) {
+                for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
+                    const cIdx = idx - pLag;
+                    const pE10 = getEmaVal(ema10, cIdx, 10);
+                    const pE30 = getEmaVal(ema30, cIdx, 30);
+                    const prevE10 = getEmaVal(ema10, cIdx - 1, 10);
+                    const prevE30 = getEmaVal(ema30, cIdx - 1, 30);
+                    if (pE10 !== null && pE30 !== null && prevE10 !== null && prevE30 !== null) {
+                        // 发生金叉穿越
+                        if ((prevE10 <= prevE30 && pE10 > pE30) || (prevE10 < prevE30 && pE10 >= pE30)) {
+                            foundPreWaitL = true;
+                            preWaitLagL = pLag;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 空头检查：当前 EMA10 < EMA30，但尚未完成 EMA40 穿越 (如 curE10 >= curE40)
+            if (curE10 < curE30 && curE10 >= curE40) {
+                for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
+                    const cIdx = idx - pLag;
+                    const pE10 = getEmaVal(ema10, cIdx, 10);
+                    const pE30 = getEmaVal(ema30, cIdx, 30);
+                    const prevE10 = getEmaVal(ema10, cIdx - 1, 10);
+                    const prevE30 = getEmaVal(ema30, cIdx - 1, 30);
+                    if (pE10 !== null && pE30 !== null && prevE10 !== null && prevE30 !== null) {
+                        // 发生死叉穿越
+                        if ((prevE10 >= prevE30 && pE10 < pE30) || (prevE10 > prevE30 && pE10 <= pE30)) {
+                            foundPreWaitS = true;
+                            preWaitLagS = pLag;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (foundPreWaitL) {
+            results.push({
+                tf,
+                lag: preWaitLagL,
+                crossingCount: 1,
+                isSqueeze: false,
+                direction: 'LONG',
+                crossingLags: [preWaitLagL],
+                crossingTimes: [timestamps[idx - preWaitLagL] || timestamps[idx]],
+                bodyRatio: 100,
+                ampValid: true,
+                volValid: true,
+                bodyValid: true,
+                isAligned: false,
+                isPreWaitEma30: true,
+                preWaitElapsedBars: preWaitLagL,
+                preWaitTotalBars: ema30PreWaitBars,
+                isClosed: false,
+                kOpen: opens[idx],
+                kClose: closes[idx],
+                kHigh: highs[idx],
+                kLow: lows[idx],
+                signalTime: timestamps[idx - preWaitLagL] || timestamps[idx]
+            });
+        } else if (foundPreWaitS) {
+            results.push({
+                tf,
+                lag: preWaitLagS,
+                crossingCount: 1,
+                isSqueeze: false,
+                direction: 'SHORT',
+                crossingLags: [preWaitLagS],
+                crossingTimes: [timestamps[idx - preWaitLagS] || timestamps[idx]],
+                bodyRatio: 100,
+                ampValid: true,
+                volValid: true,
+                bodyValid: true,
+                isAligned: false,
+                isPreWaitEma30: true,
+                preWaitElapsedBars: preWaitLagS,
+                preWaitTotalBars: ema30PreWaitBars,
+                isClosed: false,
+                kOpen: opens[idx],
+                kClose: closes[idx],
+                kHigh: highs[idx],
+                kLow: lows[idx],
+                signalTime: timestamps[idx - preWaitLagS] || timestamps[idx]
+            });
+        }
+    }
+
     // Final filter: If we found nothing relevant to the trigger mode, return empty
     if (results.length === 0) return [];
 

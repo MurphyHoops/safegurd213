@@ -76,6 +76,39 @@ export const ConfigSection: React.FC<Props> = ({ config, setConfig }) => {
                 </div>
             </div>
 
+            {/* ROW 1.6: ⚡ EMA10穿EMA30前置折叠等待区 (Pre-Wait Standby Buffer) */}
+            <div className="bg-slate-800/50 p-2 rounded border border-cyan-500/40 flex items-center justify-between shadow-[0_0_8px_rgba(6,182,212,0.1)]">
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-1 text-[10px] text-cyan-300 font-bold whitespace-nowrap">
+                        <Zap size={11} className="text-cyan-400 shrink-0" /> EMA10穿EMA30折叠等待区
+                    </div>
+                    {(config.enableEma30PreWait ?? true) && (
+                        <div className="flex items-center gap-1 animate-in fade-in slide-in-from-left-2 ml-1">
+                            <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">有效寿命</span>
+                            <div className="flex items-center gap-1 bg-slate-900/90 px-1.5 py-0.5 rounded border border-cyan-500/40">
+                                <input 
+                                    type="number" 
+                                    min={1}
+                                    max={50}
+                                    value={Number.isNaN(config.ema30PreWaitBars) ? '' : (config.ema30PreWaitBars ?? 5)} 
+                                    onChange={(e) => { e.stopPropagation(); setConfig(p => ({...p, ema30PreWaitBars: Math.max(1, parseInt(e.target.value) || 1)})); }} 
+                                    className="w-8 bg-transparent text-center text-[10px] font-bold text-cyan-300 outline-none p-0 border-b border-cyan-500/40 focus:border-cyan-400" 
+                                    title="进入折叠区后，最多等待多少根K线完成EMA40穿越"
+                                />
+                                <span className="text-[9px] text-cyan-400 font-bold whitespace-nowrap">根K线</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+                <div 
+                    onClick={() => setConfig(p => ({...p, enableEma30PreWait: p.enableEma30PreWait !== undefined ? !p.enableEma30PreWait : false}))} 
+                    className={`w-7 h-3.5 rounded-full p-0.5 cursor-pointer transition-colors shrink-0 ml-2 ${(config.enableEma30PreWait ?? true) ? 'bg-cyan-600' : 'bg-slate-700'}`}
+                    title={(config.enableEma30PreWait ?? true) ? "已开启：EMA10穿越EMA30时进入折叠等待区并启动毫秒级高频定向盯盘" : "已关闭：直接按传统模式全量大轮询"}
+                >
+                    <div className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${(config.enableEma30PreWait ?? true) ? 'translate-x-3.5' : ''}`} />
+                </div>
+            </div>
+
             {/* ROW 2: EMA80 Trend */}
             <div className="flex items-center justify-between bg-slate-800/50 p-2 rounded border border-slate-700/50">
                 <div className="flex items-center gap-1.5 text-[10px] text-blue-400 font-bold"><GitMerge size={11} className="text-blue-500" /> EMA80 趋势过滤 (主线趋势保护)</div>

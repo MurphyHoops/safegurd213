@@ -54,6 +54,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
     const [showVisualizer, setShowVisualizer] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
     const [isHoldingStandbyExpanded, setIsHoldingStandbyExpanded] = useState(true);
+    const [isPreWaitExpanded, setIsPreWaitExpanded] = useState(true);
 
     // --- 🖥️ LIST 2 AUTO K-LINE POPUP STATE & TIMER (5-Minute Inactivity Countdown) ---
     const [enableAutoPopup, setEnableAutoPopup] = useState<boolean>(() => {
@@ -287,20 +288,28 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
         return set;
     }, [activePositions]);
 
-    // Separate displayList into normalList and holdingStandbyList
-    const { normalList, holdingStandbyList } = useMemo(() => {
+    // Separate displayList into normalList, holdingStandbyList and preWaitList (EMA10穿EMA30折叠等待蓄势区)
+    const { normalList, holdingStandbyList, preWaitList } = useMemo(() => {
         const norm: ScannerItem[] = [];
         const hold: ScannerItem[] = [];
+        const preWait: ScannerItem[] = [];
+
         (displayList || []).forEach(item => {
             if (!item || !item.symbol) return;
             const normSym = normalizeSymbol(item.symbol);
             if (openPositionSymbols.has(normSym)) {
                 hold.push(item);
+                return;
+            }
+            // 若全部周期结果均为 EMA10穿EMA30折叠等待蓄势状态，则归入 preWaitList
+            const isAllPreWait = item.groupedResults && item.groupedResults.length > 0 && item.groupedResults.every(r => !!r.isPreWaitEma30);
+            if (isAllPreWait) {
+                preWait.push(item);
             } else {
                 norm.push(item);
             }
         });
-        return { normalList: norm, holdingStandbyList: hold };
+        return { normalList: norm, holdingStandbyList: hold, preWaitList: preWait };
     }, [displayList, openPositionSymbols]);
 
     // Defensive: Handle missing config
@@ -551,6 +560,60 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar bg-slate-950/20">
+                {/* ⚡ [EMA10穿EMA30前置折叠等待蓄势区 - 毫秒级定向盯盘] */}
+                {preWaitList.length > 0 && (
+                    <div className="mb-2.5 animate-in fade-in">
+                        <button
+                            type="button"
+                            onClick={() => setIsPreWaitExpanded(p => !p)}
+                            className="w-full bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-500/40 p-2 rounded-lg flex items-center justify-between transition-all cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.15)] mb-1.5"
+                        >
+                            <div className="flex items-center gap-1.5 text-[10px] font-bold text-cyan-300">
+                                <Zap size={13} className="text-cyan-400 animate-pulse" />
+                                <span>⚡ EMA10穿EMA30蓄势折叠区 (预警待命)</span>
+                                <span className="px-1.5 py-0.2 bg-cyan-500/30 text-cyan-200 rounded text-[9px] font-mono font-bold border border-cyan-400/40 shadow-sm">
+                                    {preWaitList.length}
+                                </span>
+                            </div>
+                            <span className="text-[9px] text-cyan-400/90 font-mono">
+                                {isPreWaitExpanded ? '点击折叠 ▲' : '点击展开 ▼'}
+                            </span>
+                        </button>
+
+                        {isPreWaitExpanded && (
+                            <div className="space-y-1.5 pl-1.5 border-l-2 border-cyan-500/40 mb-2">
+                                <div className="text-[8.5px] text-cyan-400/80 px-1 mb-1 font-mono flex items-center gap-1">
+                                    <span>※</span>
+                                    <span>EMA10已穿越EMA30，正处于毫秒级高频定向盯盘中；一旦穿越EMA40且当根收盘立即正式晋升</span>
+                                </div>
+                                {preWaitList.map((item, idx) => (
+                                    item ? (
+                                        <div key={`prewait-${item.symbol}-${idx}`} className="relative rounded-lg border border-cyan-500/40 bg-cyan-950/20 p-1 shadow-sm">
+                                            <div className="flex items-center justify-between text-[8.5px] font-bold text-cyan-300 bg-cyan-900/40 px-2 py-0.5 rounded mb-1 border border-cyan-500/30">
+                                                <span className="flex items-center gap-1">
+                                                    <Zap size={9} className="text-cyan-400" />
+                                                    <span>EMA10&gt;30 蓄势待命</span>
+                                                </span>
+                                                <span className="text-cyan-200/90 font-mono">
+                                                    已等待 {item.groupedResults?.[0]?.preWaitElapsedBars ?? 1} / 限 {config?.ema30PreWaitBars ?? 5} 根
+                                                </span>
+                                            </div>
+                                            <List2Item 
+                                                item={item}
+                                                config={config}
+                                                activeFilterTf={activeFilterTf}
+                                                setChartData={setChartData}
+                                                onRemove={() => onRemoveItem(item.symbol)}
+                                                idx={idx}
+                                            />
+                                        </div>
+                                    ) : null
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {normalList.slice(0, visibleCount).map((item, idx) => (
                     item ? (
                         <List2Item 
@@ -587,7 +650,7 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                     </div>
                 )}
 
-                {normalList.length === 0 && holdingStandbyList.length === 0 && (
+                {normalList.length === 0 && holdingStandbyList.length === 0 && preWaitList.length === 0 && (
                     <div className="flex flex-col items-center justify-center h-24 text-slate-600 opacity-50">
                         <span className="text-[10px]">该方向暂无信号</span>
                     </div>

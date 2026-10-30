@@ -1,21 +1,25 @@
 {
-  "name": "0211自动找币防爆仓救世之星",
+  "name": "safegurd213-desktop",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
     "dev": "NODE_OPTIONS='--max-old-space-size=4096 --expose-gc' tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
     "start": "node --max-old-space-size=4096 dist/server.cjs",
     "lint": "tsc --noEmit",
     "electron:dev": "concurrently \"NODE_OPTIONS='--max-old-space-size=4096 --expose-gc' tsx server.ts\" \"wait-on http://localhost:3000 && electron .\"",
-    "dist:win": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs && electron-builder --win",
-    "dist:mac": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs && electron-builder --mac"
+    "dist:win": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --outfile=dist/server.cjs && npx --yes electron-builder --win",
+    "dist:mac": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --outfile=dist/server.cjs && electron-builder --mac"
   },
+  "description": "0211自动找币防爆仓救世之星",
+  "author": "TradingMaster",
   "build": {
+    "electronVersion": "33.2.0",
     "appId": "com.cryptotrading.savior",
     "productName": "0211自动找币防爆仓救世之星",
+    "asar": false,
     "directories": {
       "output": "release"
     },
@@ -26,8 +30,8 @@
     ],
     "win": {
       "target": [
-        "nsis",
-        "portable"
+        "dir",
+        "zip"
       ]
     },
     "mac": {

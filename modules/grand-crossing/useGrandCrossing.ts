@@ -166,6 +166,15 @@ export const useGrandCrossing = (
   // 🔍 [DIAGNOSTICS TELEMETRY]: Real-time multi-period data and rejection audit records
   const [diagnostics, setDiagnostics] = useState<Record<string, TimeframeDiagnosticRecord>>({});
   const diagnosticsRef = useRef<Record<string, TimeframeDiagnosticRecord>>({});
+  const diagnosticsThrottleTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const triggerDiagnosticsSync = useCallback(() => {
+    if (!diagnosticsThrottleTimerRef.current) {
+      diagnosticsThrottleTimerRef.current = setTimeout(() => {
+        diagnosticsThrottleTimerRef.current = null;
+        setDiagnostics({ ...diagnosticsRef.current });
+      }, 1500);
+    }
+  }, []);
   // ⚡ Short-term in-memory K-line cache (3s TTL) to prevent duplicate network hits across concurrent timeframes
   const klineMemCacheRef = useRef<Map<string, { data: KLine[]; time: number }>>(new Map());
 
@@ -358,6 +367,8 @@ export const useGrandCrossing = (
   const cacheRef = useRef<Map<string, ScannerItem>>(new Map());
   const tfLastScanRef = useRef<Record<string, number>>({});
   const symbolTfLastFetchRef = useRef<Map<string, number>>(new Map()); // symbol-tf -> timestamp
+  // ⚡ [VIP 极速优先通道]: 记录当前处于【EMA10穿EMA30折叠等待蓄势区】的币种及其周期，调度器每轮优先定向盯盘
+  const preWaitVipSetRef = useRef<Map<string, { symbol: string; tf: string; enteredAt: number }>>(new Map());
 
   // --- PERFORMANCE REFS ---
   const lastUpdateTimestampRef = useRef<number>(0);
@@ -1248,7 +1259,7 @@ export const useGrandCrossing = (
           timestamp: Date.now(),
         };
         diagnosticsRef.current[diagKey] = record;
-        setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
+        triggerDiagnosticsSync();
         return;
       }
 
@@ -1461,10 +1472,11 @@ export const useGrandCrossing = (
         latestCrossingTime,
         latestDivergenceBarsAgo,
         latestDivergenceTime,
-        historyOccurrences: historyOccurrences.reverse(), // 倒序排列：最新K线在最前
+        historyOccurrences: historyOccurrences.reverse().slice(0, 30), // ⚡ 仅保留最新 30 根历史记录，避免几百个对象造成巨大堆内存与渲染负担
       };
       diagnosticsRef.current[diagKey] = record;
-      setDiagnostics((prev) => ({ ...prev, [diagKey]: record }));
+      // ⚡ [诊断数据定时节流同步]: 避免每次 evaluateKlines 都触发 React state 昂贵重绘，每 1500ms 批量合并同步一次
+      triggerDiagnosticsSync();
 
       // 🔒 [突破偏离过大·本轮周期锁过滤门禁]: 
       // 铁律：同一K线周期在这一轮（EMA10再次穿越203040之前）里不再出现
@@ -1517,36 +1529,6 @@ export const useGrandCrossing = (
         mergedResults.push(...filteredResults);
 
         filteredResults.forEach((res) => {
-          const signalTime =
-            res.crossingTimes && res.crossingTimes.length > 0
-              ? Math.max(...res.crossingTimes)
-              : 0;
-          const id = `${symbol}-${tf}-${res.direction}-${signalTime}`;
-
-          const prefix = `${symbol}-${tf}-${res.direction}-`;
-          Array.from(capturedSignalsRef.current).forEach((existingId) => {
-            if (existingId.startsWith(prefix) && existingId !== id) {
-              capturedSignalsRef.current.delete(existingId);
-            }
-          });
-
-          if (!capturedSignalsRef.current.has(id)) {
-            capturedSignalsRef.current.add(id);
-            console.log(
-              `[List2 Captured] ${symbol} ${tf} ${res.direction} at ${new Date(signalTime).toLocaleTimeString()}`,
-            );
-            try {
-              const cleanSym = symbol.replace('USDT', '');
-              const patternName = res.isAligned ? '发散' : '穿越';
-              const dirText = res.direction === 'LONG' ? '多头' : '空头';
-              const speechText = `${cleanSym}出现${dirText}${patternName}结构，请及时关注，祝你把握机会每次交易都多赢喔`;
-              audioService.speak(speechText, true);
-            } catch (speechErr) {
-              console.warn("Speech synthesis error inside List 2", speechErr);
-            }
-          }
-        });
-        results.forEach((res) => {
           const signalTime =
             res.crossingTimes && res.crossingTimes.length > 0
               ? Math.max(...res.crossingTimes)
@@ -1656,6 +1638,16 @@ export const useGrandCrossing = (
           price: livePrice !== undefined && livePrice > 0 ? Number(livePrice) : Number(item.price),
           lastUpdated: Date.now(),
         });
+
+        // 维护 VIP 预警优先盯盘池
+        const hasPreWait = finalResults.some(r => r.isPreWaitEma30);
+        const vipKey = `${normSym}-${tf}`;
+        if (hasPreWait) {
+          preWaitVipSetRef.current.set(vipKey, { symbol, tf, enteredAt: Date.now() });
+        } else {
+          preWaitVipSetRef.current.delete(vipKey);
+        }
+
         try {
           l234DataStore.registerSymbol(symbol);
         } catch (_) {}
@@ -1666,6 +1658,7 @@ export const useGrandCrossing = (
         cacheRef.current.delete(`${safeSym}-FULL`);
         cacheRef.current.delete(symbol);
         cacheRef.current.delete(normSym);
+        preWaitVipSetRef.current.delete(`${normSym}-${tf}`);
         setList2((prev) => prev.filter((i) => normalizeSymbol(i.symbol) !== normSym));
         scheduleUpdate();
       }
@@ -1684,6 +1677,8 @@ export const useGrandCrossing = (
       }
     }
     binanceKlineWs.syncSubscriptions(pairs);
+
+    const lastWsEvalTimeMap = new Map<string, number>();
 
     const unsubscribe = binanceKlineWs.addListener((update: WsKlineUpdate) => {
       if (configRef.current.isStopped) return;
@@ -1744,8 +1739,13 @@ export const useGrandCrossing = (
         }
       }
 
-      // Instantaneous local mathematical evaluation
-      evaluateKlines(symbol, tf, updated, 0);
+      // ⚡ [WebSocket 计算高频防抖节流]: 同一币种同一周期 150ms 内只重新评估一次，避免毫秒级密集计算把主线程打满
+      const now = Date.now();
+      const lastEval = lastWsEvalTimeMap.get(key) || 0;
+      if (now - lastEval >= 150) {
+        lastWsEvalTimeMap.set(key, now);
+        evaluateKlines(symbol, tf, updated, 0);
+      }
     });
 
     return () => {
@@ -1948,6 +1948,23 @@ export const useGrandCrossing = (
             tfCoinPointersRef.current[selectedTf] = (curPtr + 1) % candidates.length;
             if (target && target.symbol) {
               batchTargets.push({ target, tf: selectedTf });
+            }
+          }
+
+          // ⚡ [VIP 极速优先通道]: 优先调度处于【EMA10穿EMA30折叠等待蓄势区】的预警币种，绝不等待大周期排队！
+          if (preWaitVipSetRef.current.size > 0) {
+            const vipEntries = Array.from(preWaitVipSetRef.current.values());
+            // 每次提取 1 个预警币插入本次扫描并发通道，实现毫秒级定向盯盘
+            const vipEntry = vipEntries[Math.floor(Math.random() * vipEntries.length)];
+            if (vipEntry) {
+              const matchedCand = candidates.find(c => normalizeSymbol(c.symbol) === normalizeSymbol(vipEntry.symbol));
+              if (matchedCand) {
+                // 确保不重复添加
+                const alreadyInBatch = batchTargets.some(b => normalizeSymbol(b.target.symbol) === normalizeSymbol(vipEntry.symbol) && b.tf === vipEntry.tf);
+                if (!alreadyInBatch) {
+                  batchTargets.unshift({ target: matchedCand, tf: vipEntry.tf });
+                }
+              }
             }
           }
 

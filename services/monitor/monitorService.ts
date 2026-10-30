@@ -434,7 +434,8 @@ export const initCrashWatchdog = () => {
                 const prev = JSON.parse(rawRecorder);
                 const timeDiff = now - (prev.timestamp || 0);
 
-                // 只要前后会话时间差合理，且属于非正常退出，100% 完整录入死因黑匣子
+                // 只有当有明确的致命征兆（内存 >80% 或主线程卡死或超大 DOM 泄漏）时，才作为崩溃录入黑匣子
+                // 正常的页面刷新、导航或正常切出标签页绝不能误报为“系统强杀”
                 if (timeDiff > 2000 && timeDiff < 48 * 3600 * 1000) {
                     const usedMB = prev.memory?.usedMB || 0;
                     const limitMB = prev.memory?.limitMB || 4096;
@@ -442,47 +443,61 @@ export const initCrashWatchdog = () => {
                     const lastAction = prev.lastAction || 'UNKNOWN';
                     const domNodes = prev.domNodes || 0;
 
-                    let inferredReason = '系统强杀/显卡驱动重置/进程异常终止 (Abnormal Process Exit)';
+                    let isRealCrash = false;
+                    let inferredReason = '';
                     let crashType: CrashBlackboxEntry['type'] = 'BROWSER_TAB_KILL';
 
                     if (memPct > 80 || usedMB > 2000) {
+                        isRealCrash = true;
                         inferredReason = `V8 堆内存溢出 (OOM) 崩溃 - 崩溃前已使用: ${usedMB}MB / ${limitMB}MB (${memPct}%)`;
                         crashType = 'OOM_ALERT';
                     } else if (prev.isEventLoopBlocked) {
+                        isRealCrash = true;
                         inferredReason = '主线程事件循环无限死循环阻塞 (Event Loop Freeze)';
                         crashType = 'EVENT_LOOP_FREEZE';
                     } else if (domNodes > 35000 && memPct > 65) {
+                        isRealCrash = true;
                         inferredReason = `DOM 节点过度堆积导致渲染瓦解 (DOM Leaked: ${domNodes} 节点)`;
                         crashType = 'RENDER_CRASH';
                     }
 
-                    recordCrashToBlackbox({
-                        module: 'BROWSER_AUTOPSY',
-                        message: `${inferredReason} [最后心跳时间: ${new Date(prev.timestamp).toLocaleTimeString()}, 最后执行动作: ${lastAction}, 内存: ${usedMB}MB(${memPct}%), DOM节点: ${domNodes}]`,
-                        type: crashType,
-                        memory: prev.memory,
-                        domNodes,
-                        lastAction,
-                        details: {
-                            autopsyTimestamp: now,
-                            prevFlightData: prev
-                        }
-                    });
+                    if (isRealCrash) {
+                        recordCrashToBlackbox({
+                            module: 'BROWSER_AUTOPSY',
+                            message: `${inferredReason} [最后心跳时间: ${new Date(prev.timestamp).toLocaleTimeString()}, 最后执行动作: ${lastAction}, 内存: ${usedMB}MB(${memPct}%), DOM节点: ${domNodes}]`,
+                            type: crashType,
+                            memory: prev.memory,
+                            domNodes,
+                            lastAction,
+                            details: {
+                                autopsyTimestamp: now,
+                                prevFlightData: prev
+                            }
+                        });
+                    }
                 }
             } catch (parseErr) {
                 console.warn('[CrashWatchdog] Autopsy parse error:', parseErr);
             }
         }
 
-        // 2. MARK CURRENT SESSION AS ACTIVE (NOT CLEAN EXIT UNTIL USER LEGITIMATELY CLOSES/NAVIGATES)
+        // 2. MARK CURRENT SESSION AS ACTIVE
         localStorage.setItem(CLEAN_EXIT_KEY, 'false');
 
         // Clean exit hooks
-        window.addEventListener('beforeunload', () => {
-            localStorage.setItem(CLEAN_EXIT_KEY, 'true');
-        });
-        window.addEventListener('pagehide', () => {
-            localStorage.setItem(CLEAN_EXIT_KEY, 'true');
+        const markClean = () => {
+            try {
+                localStorage.setItem(CLEAN_EXIT_KEY, 'true');
+            } catch (_) {}
+        };
+        window.addEventListener('beforeunload', markClean);
+        window.addEventListener('pagehide', markClean);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                markClean();
+            } else {
+                try { localStorage.setItem(CLEAN_EXIT_KEY, 'false'); } catch (_) {}
+            }
         });
 
         // 3. START 4-SECOND TELEMETRY FLIGHT RECORDER (Lightweight, non-blocking disk sync)

@@ -1,0 +1,23 @@
+{
+  "name": "safegurd213-desktop",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "electron-main.cjs",
+  "description": "0211自动找币防爆仓救世之星",
+  "author": "TradingMaster",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "firebase": "^12.12.0",
+    "lightweight-charts": "^5.2.1",
+    "lucide-react": "^0.555.0",
+    "motion": "^12.38.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.11.0",
+    "recharts": "^3.8.1",
+    "ws": "^8.19.0",
+    "zustand": "^5.0.14"
+  }
+}

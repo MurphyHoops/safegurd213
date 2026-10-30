@@ -49,7 +49,9 @@ const DEFAULT_CONFIG: List2Config = {
     enableConsecutiveVolRise: true,
     consecutiveVolBars: 2,
     viewMode: 'ALL',
-    syncDirectionFilterToList3: false
+    syncDirectionFilterToList3: false,
+    enableEma30PreWait: true,
+    ema30PreWaitBars: 5
 };
 
 export const GrandCrossingModule: React.FC<Props> = ({ 
@@ -143,10 +145,10 @@ export const GrandCrossingModule: React.FC<Props> = ({
             return !openPositionSymbols.has(norm);
         });
 
-        // 🔒 [USER MANDATORY RULE] 列表3承接列表2所有“非待定”数据 (非灰色待定态 !isPendingGray)
+        // 🔒 [USER MANDATORY RULE] 列表3承接列表2所有“非待定且非折叠等待”数据 (正式完成EMA40穿越并收盘确立)
         outputList = outputList.map(item => {
             if (!item || !item.groupedResults || item.groupedResults.length === 0) return null;
-            const validResults = item.groupedResults.filter(r => !r.isPendingGray);
+            const validResults = item.groupedResults.filter(r => !r.isPendingGray && !r.isPreWaitEma30);
             if (validResults.length === 0) return null;
             return {
                 ...item,

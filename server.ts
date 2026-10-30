@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
 import https from "https";
@@ -252,6 +251,16 @@ async function startServer() {
       res.json({ success: true });
     } catch (_) {
       res.status(500).json({ error: "Failed to append log" });
+    }
+  });
+
+  // 📦 [WINDOWS 桌面端免安装最新版直接下载通道]
+  app.get("/api/download/desktop-windows", (req, res) => {
+    const zipPath = path.join(process.cwd(), 'public', '0211自动找币防爆仓救世之星_Windows最新版.zip');
+    if (fs.existsSync(zipPath)) {
+      res.download(zipPath, '0211自动找币防爆仓救世之星_Windows最新版.zip');
+    } else {
+      res.status(404).json({ error: "桌面安装包未找到" });
     }
   });
 
@@ -643,6 +652,9 @@ async function startServer() {
 
   // Initialize WebSocket server instance
   const wss = new WebSocketServer({ server });
+  wss.on('error', (err: any) => {
+    console.warn('⚠️ [WebSocketServer] Internal error caught and isolated:', err);
+  });
 
   wss.on("connection", (ws, req) => {
     const clientUrl = req.url || '';
@@ -1101,27 +1113,62 @@ async function startServer() {
         }
 
         try {
+            // 确保与币安服务器时间毫秒级对齐，杜绝由于时钟偏差导致的 -1021 错误
+            const timeOffset = await syncBinanceServerTime();
+
+            const setLeverageFn = async (lev: number) => {
+                const levTimestamp = Date.now() + timeOffset;
+                const levQueryString = `leverage=${lev}&symbol=${formattedSymbol}&timestamp=${levTimestamp}&recvWindow=10000`;
+                const levSignature = crypto
+                    .createHmac("sha256", apiSecret)
+                    .update(levQueryString)
+                    .digest("hex");
+                return await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverage?${levQueryString}&signature=${levSignature}`, {
+                    method: "POST",
+                    headers: { "X-MBX-APIKEY": apiKey }
+                });
+            };
+
+            const getSafeLeverageForNotional = async (notional: number, preferredLev: number): Promise<number | null> => {
+                try {
+                    const bracketTimestamp = Date.now() + timeOffset;
+                    const bracketQuery = `symbol=${formattedSymbol}&timestamp=${bracketTimestamp}&recvWindow=10000`;
+                    const bracketSig = crypto.createHmac("sha256", apiSecret).update(bracketQuery).digest("hex");
+                    const bracketRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverageBracket?${bracketQuery}&signature=${bracketSig}`, {
+                        method: "GET",
+                        headers: { "X-MBX-APIKEY": apiKey }
+                    });
+                    if (bracketRes.ok) {
+                        const bracketData = await bracketRes.json();
+                        const symBracket = Array.isArray(bracketData) ? (bracketData.find((b: any) => b.symbol === formattedSymbol) || bracketData[0]) : bracketData;
+                        if (symBracket && Array.isArray(symBracket.brackets) && symBracket.brackets.length > 0) {
+                            const sorted = [...symBracket.brackets].sort((a: any, b: any) => (b.initialLeverage || 0) - (a.initialLeverage || 0));
+                            for (const b of sorted) {
+                                const cap = parseFloat(b.notionalCap || "0");
+                                const lev = parseInt(b.initialLeverage || "0");
+                                if (cap >= notional && lev <= preferredLev) {
+                                    return lev;
+                                }
+                            }
+                            for (const b of sorted) {
+                                const cap = parseFloat(b.notionalCap || "0");
+                                const lev = parseInt(b.initialLeverage || "0");
+                                if (cap >= notional) {
+                                    return lev;
+                                }
+                            }
+                        }
+                    }
+                } catch (_) {}
+                return null;
+            };
+
             // 1. Set leverage ONLY if action is OPEN and NOT an auto-hedge order
             // (Skipping for CLOSE/amputation and hedge orders: on Binance Futures, symbol leverage is already set by the main position)
             if (action === "OPEN" && !req.body.isHedge) {
                 const targetLeverage = parseInt(leverage || "20");
                 appliedLeverage = targetLeverage;
                 try {
-                    // 确保与币安服务器时间毫秒级对齐，杜绝由于时钟偏差导致的 -1021 错误
-                    const timeOffset = await syncBinanceServerTime();
-
-                    const setLeverageFn = async (lev: number) => {
-                        const levTimestamp = Date.now() + timeOffset;
-                        const levQueryString = `leverage=${lev}&symbol=${formattedSymbol}&timestamp=${levTimestamp}&recvWindow=10000`;
-                        const levSignature = crypto
-                            .createHmac("sha256", apiSecret)
-                            .update(levQueryString)
-                            .digest("hex");
-                        return await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverage?${levQueryString}&signature=${levSignature}`, {
-                            method: "POST",
-                            headers: { "X-MBX-APIKEY": apiKey }
-                        });
-                    };
 
                     // 先检查该币种已知最大杠杆缓存 (12小时有效)
                     let initialTargetLev = targetLeverage;
@@ -1342,6 +1389,21 @@ async function startServer() {
                         success: false, 
                         error: `交易数量 ${finalQty} 低于该币种的最小下单量限制 (${minQty})。请增加开仓金额。` 
                     });
+                }
+            }
+
+            // 🛡️ [币安杠杆分层持仓限额预核验]: 防止杠杆过高导致超过币安当前名义持仓上限 (-2027)
+            if (action === "OPEN" && currentPrice > 0 && finalQty > 0 && !req.body.isHedge) {
+                const notionalValue = finalQty * currentPrice;
+                const safeLev = await getSafeLeverageForNotional(notionalValue, appliedLeverage);
+                if (safeLev && safeLev < appliedLeverage) {
+                    console.log(`[Binance Order] 🛡️ 预检发现当前 ${appliedLeverage}x 杠杆对于名义价值 ${notionalValue.toFixed(1)} USDT 额度不足，自动预先下调为 ${safeLev}x 杠杆...`);
+                    const levRetryRes = await setLeverageFn(safeLev);
+                    if (levRetryRes.ok) {
+                        const rJson = await levRetryRes.json().catch(() => null);
+                        appliedLeverage = (rJson && rJson.leverage) ? rJson.leverage : safeLev;
+                        console.log(`[Binance Order] 成功将杠杆安全调整为 ${appliedLeverage}x (满足持仓上限要求)`);
+                    }
                 }
             }
 
@@ -1841,6 +1903,62 @@ async function startServer() {
                         }
                     } catch (e) {
                         console.warn(`[Binance Order] Error re-checking position on -2022:`, e);
+                    }
+                }
+
+                // 🛡️ [自愈重试 -2027]: 捕获超出当前杠杆最大持仓限额，自动向币安下调杠杆并就地重试发单
+                if (errorCode === -2027 && action === "OPEN" && !req.body.isHedge) {
+                    console.warn(`[Binance Order] ⚠️ 收到币安 -2027 报错 (Exceeded max allowable position at current leverage)，启动自愈降杠杆重试...`);
+                    const notionalValue = finalQty * currentPrice;
+                    const currentL = appliedLeverage || parseInt(leverage || "20");
+                    const safeLev = (await getSafeLeverageForNotional(notionalValue, currentL - 1)) || Math.max(1, Math.floor(currentL / 2));
+                    
+                    if (safeLev < currentL) {
+                        console.log(`[Binance Order] 正在尝试将 ${formattedSymbol} 杠杆下调至 ${safeLev}x 并重试下单...`);
+                        const levRes = await setLeverageFn(safeLev);
+                        if (levRes.ok) {
+                            const rJson = await levRes.json().catch(() => null);
+                            appliedLeverage = (rJson && rJson.leverage) ? rJson.leverage : safeLev;
+                            console.log(`[Binance Order] 杠杆已成功下调至 ${appliedLeverage}x，正在重新提交订单...`);
+                            
+                            const retryClientOrderId = `savior_${Date.now()}_r2027`;
+                            const retryParams: any = { ...orderParams, newClientOrderId: retryClientOrderId };
+                            const retryQueryString = Object.keys(retryParams).sort().map(k => `${k}=${encodeURIComponent(retryParams[k])}`).join("&");
+                            const retrySig = crypto.createHmac("sha256", apiSecret).update(retryQueryString).digest("hex");
+                            const retryUrl = `https://fapi.binance.com/fapi/v1/order?${retryQueryString}&signature=${retrySig}`;
+                            
+                            const retryOrderRes = await fetchWithFallback(retryUrl, {
+                                method: "POST",
+                                headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" }
+                            }, 10000);
+                            
+                            if (retryOrderRes.ok) {
+                                const retryOrderData = await retryOrderRes.json().catch(() => null);
+                                if (retryOrderData && (retryOrderData.orderId || retryOrderData.status === "FILLED" || retryOrderData.status === "NEW")) {
+                                    console.log(`⚡ [Binance Order] 降杠杆自愈重试下单成功！OrderId=${retryOrderData.orderId}, Leverage=${appliedLeverage}x`);
+                                    if (!isRefillOrHedge) {
+                                        serverRecentOpenedPositions.set(openSymbolLockKey, Date.now());
+                                    }
+                                    return res.json({
+                                        success: true,
+                                        orderId: retryOrderData.orderId,
+                                        clientOrderId: retryOrderData.clientOrderId || retryClientOrderId,
+                                        symbol: formattedSymbol,
+                                        side: binanceSide,
+                                        positionSide: binancePositionSide,
+                                        qty: finalQty,
+                                        price: currentPrice,
+                                        leverage: appliedLeverage,
+                                        trades: [],
+                                        latestTrade: null,
+                                        message: `成功在币安下单 (自适应调整至 ${appliedLeverage}x 杠杆以满足持仓限额): 开仓 ${side} ${formattedSymbol} ${finalQty} 手！`
+                                    });
+                                }
+                            } else {
+                                const rErr = await retryOrderRes.text().catch(() => "");
+                                console.warn(`[Binance Order] 降杠杆自愈重发失败: ${rErr}`);
+                            }
+                        }
                     }
                 }
                 
@@ -3005,24 +3123,46 @@ async function startServer() {
     res.json({ status: "ok", message: "Trading Engine is running" });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-      },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+  // Vite middleware ONLY in explicit development mode
+  if (process.env.NODE_ENV === "development") {
+    try {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: false,
+        },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+      console.log("🛠️ [Trading Engine Server] Vite development middleware mounted");
+    } catch (viteErr) {
+      console.warn("⚠️ [Trading Engine Server] Vite dev middleware unavailable, serving static dist:", viteErr);
+    }
   } else {
     const path = await import('path');
-    const distPath = path.join(process.cwd(), 'dist');
+    // 🛡️ [高保真路径解析]: 优先检测 __dirname (dist目录本身) 或 process.cwd() 下的 dist，彻底根绝桌面快捷方式启动时 cwd 偏差导致的 404
+    let distPath = typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'dist');
+    if (!fs.existsSync(path.join(distPath, 'index.html'))) {
+      if (fs.existsSync(path.join(process.cwd(), 'dist', 'index.html'))) {
+        distPath = path.join(process.cwd(), 'dist');
+      } else if (fs.existsSync(path.join(__dirname, '..', 'dist', 'index.html'))) {
+        distPath = path.join(__dirname, '..', 'dist');
+      }
+    }
     app.use(express.static(distPath));
     app.use((req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  server.on('error', (err: any) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.warn(`⚠️ [Trading Engine Server] 端口 ${PORT} 已被绑定，复用现有服务端口`);
+    } else {
+      console.error('🔥 [Trading Engine Server] HTTP Server 异常:', err);
+    }
+  });
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Trading Engine Server running on http://localhost:${PORT}`);
@@ -3076,17 +3216,25 @@ function recordPhysicalServerExit(eventName: string, details: any) {
   } catch (_) {}
 }
 
+// 🛡️ [Node.js 永续生命线 Keep-Alive]: 维持主服务事件循环永不排空，杜绝 Windows / Linux 无活跃连接时事件循环耗尽自退
+const _serverKeepAliveTimer = setInterval(() => {
+  // 维持事件循环持续活跃
+}, 15000);
+
 // 物理级退出与信号监听
 process.on('exit', (code) => {
   recordPhysicalServerExit('exit', { code, reason: 'Node.js event loop terminated' });
 });
 
 process.on('beforeExit', (code) => {
-  recordPhysicalServerExit('beforeExit', { code, reason: 'Event loop empty, preparing to exit' });
+  recordPhysicalServerExit('beforeExit', { code, reason: 'Event loop empty, preventing termination' });
+  // 立即注入持久化定时器，强制打断退出，保持交易引擎永续运行
+  setTimeout(() => {}, 5000);
 });
 
 process.on('SIGINT', () => {
-  recordPhysicalServerExit('SIGINT', { signal: 'SIGINT', source: 'Keyboard interrupt or terminal Ctrl+C' });
+  console.warn('⚠️ [Process Guard] SIGINT signal received. Keeping trading engine daemon alive...');
+  recordPhysicalServerExit('SIGINT', { signal: 'SIGINT', source: 'Keyboard interrupt or terminal Ctrl+C, intercepted by daemon guard' });
 });
 
 process.on('SIGTERM', () => {

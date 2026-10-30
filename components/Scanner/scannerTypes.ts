@@ -38,6 +38,9 @@ export interface List2GroupedResult {
     isCandleCrossed?: boolean; // 新增：是否触发【K线穿越】
     isMaCrossed?: boolean; // 新增：是否触发【均线穿越】
     isFirstMaCross?: boolean; // 新增：是否属于【首发穿越】
+    isPreWaitEma30?: boolean; // ⚡ 新增：是否处于【EMA10穿越EMA30折叠等待蓄势区】
+    preWaitElapsedBars?: number; // ⚡ 新增：前置折叠等待区已等待根数
+    preWaitTotalBars?: number; // ⚡ 新增：前置折叠等待区最大允许等待根数
 }
 
 export interface List3SignalResult {
@@ -264,6 +267,8 @@ export interface List2Config {
     enablePriorReverseDivergence?: boolean; // 新增：洗盘/V反倒钩前置反向发散功能开关
     priorReverseLookbackBars?: number;     // 新增：追溯历史N根K线查询是否有反向发散
     priorReverseMode?: 'FILTER' | 'BADGE' | 'BOTH'; // 新增：模式选择 (FILTER强门禁 / BADGE软角标 / BOTH过滤加角标)
+    enableEma30PreWait?: boolean;         // ⚡ 新增：EMA10穿越EMA30前置折叠等待区开关 (开启后先入折叠等待区)
+    ema30PreWaitBars?: number;            // ⚡ 新增：折叠等待区中有效等待寿命根数 (用户可自定义设置，默认5根)
     isStopped?: boolean;
 }
 

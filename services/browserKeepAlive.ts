@@ -20,17 +20,41 @@ class BrowserKeepAlive {
     // 1. 尝试请求 Web Screen Wake Lock 防休眠
     this.requestWakeLock();
 
-    // 2. 监听页面可见性变动，切回时恢复 WakeLock
+    // 2. 尝试请求 Chromium Web Locks 锁，防止标签页被系统作为非活动页丢弃 (Tab Discard Protection)
+    this.requestWebLock();
+
+    // 3. 监听页面可见性与生命周期变动，切回时恢复 WakeLock 与音频
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
           this.requestWakeLock();
+          this.resumeAudioContext();
           this.pingBackend();
         }
       });
+      // 监听 Page Lifecycle API
+      document.addEventListener('freeze', () => {
+        console.warn('⚠️ [BrowserKeepAlive] 浏览器试图挂起标签页，保持 Worker 与网络心跳...');
+      });
+      document.addEventListener('resume', () => {
+        console.log('✅ [BrowserKeepAlive] 标签页自挂起状态恢复');
+        this.requestWakeLock();
+        this.resumeAudioContext();
+        this.pingBackend();
+      });
     }
 
-    // 3. 创建内联 Web Worker (Worker 线程不受 Chrome 标签页冻结限制)
+    // 4. 用户交互时恢复音频上下文 (解决浏览器自动播放与静音音频策略)
+    if (typeof window !== 'undefined') {
+      const unlockAudio = () => {
+        this.resumeAudioContext();
+      };
+      window.addEventListener('click', unlockAudio, { passive: true });
+      window.addEventListener('keydown', unlockAudio, { passive: true });
+      window.addEventListener('touchstart', unlockAudio, { passive: true });
+    }
+
+    // 5. 创建内联 Web Worker (Worker 线程不受 Chrome 标签页冻结限制)
     try {
       const workerCode = `
         let timer = null;
@@ -63,8 +87,20 @@ class BrowserKeepAlive {
       setInterval(() => this.pingBackend(), 8000);
     }
 
-    // 4. 初始化静音音频流（保持 Web Audio 激活，阻止 V8 彻底挂起引擎）
+    // 6. 初始化静音音频流（保持 Web Audio 激活，阻止 V8 彻底挂起引擎）
     this.initAudioKeepAlive();
+  }
+
+  private async requestWebLock() {
+    if (typeof navigator !== 'undefined' && 'locks' in navigator && (navigator as any).locks?.request) {
+      try {
+        (navigator as any).locks.request('savior_trading_daemon_lock', { mode: 'shared' }, async () => {
+          console.log('🛡️ [BrowserKeepAlive] Chromium Web Lock 已持有，免疫系统自动休眠回收');
+          // 维持持久挂起 Promise，阻止浏览器 Tab Discard
+          await new Promise(() => {});
+        }).catch(() => {});
+      } catch (_) {}
+    }
   }
 
   private async requestWakeLock() {
@@ -78,15 +114,22 @@ class BrowserKeepAlive {
     }
   }
 
+  private resumeAudioContext() {
+    try {
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+    } catch (_) {}
+  }
+
   private initAudioKeepAlive() {
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioContextClass) {
         this.audioCtx = new AudioContextClass();
-        // 创建极微弱静音振荡器，确保音频图维持在 Running 状态
         const osc = this.audioCtx.createOscillator();
         const gain = this.audioCtx.createGain();
-        gain.gain.value = 0.00001; // 静音
+        gain.gain.value = 0.00001; // 微量静音，维持音频管线激活
         osc.connect(gain);
         gain.connect(this.audioCtx.destination);
         osc.start();
@@ -97,11 +140,8 @@ class BrowserKeepAlive {
   private pingBackend() {
     if (typeof fetch === 'undefined') return;
     try {
-      // 向后端 API 发送轻量心跳，强制证明活跃流量的存在
       fetch('/api/health?t=' + Date.now(), { cache: 'no-store', priority: 'low' })
-        .then(() => {
-          // Keep container warm
-        })
+        .then(() => {})
         .catch(() => {});
     } catch (_) {}
   }
