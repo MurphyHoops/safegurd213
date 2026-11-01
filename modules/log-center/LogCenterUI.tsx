@@ -218,9 +218,33 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
 
     if (!matches) return message;
 
-    // Try to extract price if it's an "Opened" or "Closed" log
-    const priceMatch = message.match(/at (\d+\.?\d*)/);
-    const price = priceMatch ? parseFloat(priceMatch[1]) : undefined;
+    // Try to extract price from Chinese and English trade log messages
+    let price: number | undefined = undefined;
+    const pricePatterns = [
+      /(?:成交均价|最新成交价|成交价|开仓价|入场价|成本价|价格|成本)[:：\s]*(\d+\.?\d*)/i,
+      /@\s*(\d+\.?\d*)/,
+      /at\s+(\d+\.?\d*)/i,
+      /(\d+\.?\d*)\s*USDT/i
+    ];
+    for (const pat of pricePatterns) {
+      const pm = message.match(pat);
+      if (pm && pm[1]) {
+        const parsed = parseFloat(pm[1]);
+        if (!isNaN(parsed) && parsed > 0) {
+          price = parsed;
+          break;
+        }
+      }
+    }
+
+    // Try to extract trade direction from log message
+    let extractedSide: 'LONG' | 'SHORT' | undefined = undefined;
+    if (/做多|买入|LONG|BUY/i.test(message)) {
+      extractedSide = 'LONG';
+    } else if (/做空|卖出|SHORT|SELL/i.test(message)) {
+      extractedSide = 'SHORT';
+    }
+
     const time = timestamp ? new Date(timestamp).getTime() : undefined;
 
     return (
@@ -230,7 +254,7 @@ export const LogCenterModule: React.FC<LogCenterProps> = ({ logs, onOpenChart, o
             {part}
             {matches[i] && (
               <button
-                onClick={() => onOpenChart && onOpenChart(matches[i], price, time)}
+                onClick={() => onOpenChart && onOpenChart(matches[i], price, time, '15m', extractedSide)}
                 className="text-indigo-400 hover:text-indigo-300 hover:underline inline-flex items-center gap-0.5 mx-1 font-bold"
               >
                 <span>{matches[i]}</span>

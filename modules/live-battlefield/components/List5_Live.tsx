@@ -1,12 +1,13 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Position, PositionSide } from '../../../types';
-import { Activity, ArrowUp, ArrowDown, Filter, Layers, TrendingUp, TrendingDown, CheckCircle2, AlertCircle, RefreshCw, Plus } from 'lucide-react';
+import { Activity, ArrowUp, ArrowDown, Filter, Layers, TrendingUp, TrendingDown, CheckCircle2, AlertCircle, RefreshCw, Plus, Maximize2 } from 'lucide-react';
 import { COLUMN_WIDTH_CLASS } from '../../../components/Scanner/scannerTypes';
 import { normalizeSymbol, resolvePrice, isMajorCoin } from '../../../services/symbolUtils';
 import { LivePositionRow } from './PositionRow';
 import { fetchWithFallback } from '../../../services/apiService';
 import { resolveSymbolFromInput, CHINESE_TO_SYMBOL_MAP as CHINESE_COIN_MAP } from '../../../services/coinNames';
+import { ScannerVisualizerModal } from '../../../components/ScannerVisualizerModal';
 export { CHINESE_COIN_MAP, resolveSymbolFromInput };
 
 /**
@@ -40,6 +41,7 @@ const List5_Live: React.FC<List5Props> = ({
     const [filterSide, setFilterSide] = useState<'ALL' | 'LONG' | 'SHORT'>('ALL');
     const [filterPnL, setFilterPnL] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
     const [serverIp, setServerIp] = useState<string>("Loading...");
+    const [showVisualizer, setShowVisualizer] = useState(false);
 
     useEffect(() => {
         fetch("/api/network/ip")
@@ -594,6 +596,15 @@ const List5_Live: React.FC<List5Props> = ({
                         <div className="text-[10px] font-bold text-emerald-500 uppercase flex items-center gap-1">
                             <Filter size={10} /> 筛选与排序
                         </div>
+                        <button 
+                            type="button"
+                            onClick={() => setShowVisualizer(true)}
+                            className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-800 hover:bg-emerald-900/50 rounded border border-slate-700 hover:border-emerald-500/40 text-slate-300 hover:text-emerald-400 transition-all text-[10px] font-bold cursor-pointer"
+                            title="放大查看 K 线大图"
+                        >
+                            <Maximize2 size={11} />
+                            <span>放大查看K线大图</span>
+                        </button>
                     </div>
                     {/* Tri-Sort buttons */}
                     <div className="grid grid-cols-3 gap-1 bg-slate-950/60 p-0.5 rounded border border-slate-800">
@@ -694,6 +705,31 @@ const List5_Live: React.FC<List5Props> = ({
                     />
                 ))}
             </div>
+
+            {showVisualizer && (
+                <ScannerVisualizerModal 
+                    title="5. 战场实况 (LIVE)"
+                    items={filteredList.map(p => ({
+                        symbol: p.symbol,
+                        timeframe: '15m',
+                        direction: p.side,
+                        side: p.side,
+                        entryPrice: p.entryPrice,
+                        entryTime: p.entryTime,
+                        currentPrice: p.currentPrice || realPrices[p.symbol] || p.entryPrice,
+                        extraLines: p.entryPrice ? [{
+                            price: p.entryPrice,
+                            label: `开仓信号线(${p.side === 'SHORT' ? '空' : '多'})`,
+                            color: p.side === 'SHORT' ? '#ef4444' : '#10b981',
+                            style: 'dashed'
+                        }] : undefined,
+                        source: 'list5',
+                        viewMode: 'TRADE'
+                    }))}
+                    defaultTf="15m"
+                    onClose={() => setShowVisualizer(false)}
+                />
+            )}
         </div>
     );
 };

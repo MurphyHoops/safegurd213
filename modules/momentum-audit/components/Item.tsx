@@ -466,12 +466,10 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
             entryTime: item.structure?.signalTime,
             currentPrice: item.price,
             highlightTime: item.enterList4Time,
-            showAuditLines: true,
+            showAuditLines: false,
             list4Config: config,
-            extraLines: [
-                { price: m.entryTrigger, label: `${isLong ? '多单' : '空单'}进攻突破 (${config?.breakoutThreshold ?? 10}%)`, color: isLong ? "#0ECB81" : "#F6465D", style: "dashed" },
-                { price: m.midPoint, label: `${isLong ? '多单' : '空单'}中轴防守 (${config?.midlineThreshold ?? 80}%)`, color: "#fbbf24", style: "dashed" }
-            ]
+            source: 'list4',
+            viewMode: 'SIGNAL'
         });
     };
 

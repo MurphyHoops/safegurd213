@@ -117,8 +117,35 @@ const AppContent: React.FC = () => {
             const fallbackKey = 'SAVIOR_POSITIONS';
             const saved = loadState<Position[]>(key, loadState<Position[]>(fallbackKey, []));
             if (!Array.isArray(saved)) return [];
+
+            // Read recently closed graveyard keys to prevent ghost resurrection at boot
+            let recentlyClosedSet = new Set<string>();
+            try {
+                const closedSaved = localStorage.getItem('SAVIOR_RECENTLY_CLOSED_KEYS');
+                if (closedSaved) {
+                    const parsed = JSON.parse(closedSaved);
+                    if (Array.isArray(parsed)) {
+                        const now = Date.now();
+                        parsed.forEach(([k, ts]: [string, number]) => {
+                            if (now - ts < 43200000) { // 12 hours graveyard memory
+                                recentlyClosedSet.add(k);
+                            }
+                        });
+                    }
+                }
+            } catch (e) {}
+
             return saved
                 .filter(p => p && typeof p === 'object' && p.symbol && (p.amount || 0) > 0.0001)
+                .filter(p => {
+                    const cleanSym = normalizeSymbol(p.symbol);
+                    const lookupKey = `${cleanSym}_${p.side}`;
+                    if (recentlyClosedSet.has(lookupKey) || recentlyClosedSet.has(cleanSym)) {
+                        console.log(`[Boot Filter] Suppressing recently closed position ${cleanSym} (${p.side})`);
+                        return false;
+                    }
+                    return true;
+                })
                 .map(p => ({
                     ...p,
                     symbol: normalizeSymbol(p.symbol || ''),
@@ -3875,21 +3902,33 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
 
             audioService.speak("实盘批量平仓完成");
             
-            // Sync real-time positions instantly after order placement to show it immediately
+            if (simulatorRef.current) {
+                simulatorRef.current.batchCloseAllPositions('一键全量批量平仓');
+            }
+            try {
+                localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
+                localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
+                localStorage.setItem('SAVIOR_POSITIONS', '[]');
+            } catch (e) {}
+            positionsRef.current = [];
+            setPositions([]);
+            setBinanceRealPositions([]);
+
+            // Sync real-time positions instantly after order placement
             if (typeof (window as any).triggerApiSync === "function") {
                 (window as any).triggerApiSync(true);
             }
         } else {
             // Simulated Batch Close
-            simulatorRef.current?.batchCloseAllPositions();
-            if (simulatorRef.current) {
-                const currentPositions = simulatorRef.current.getPositions();
-                const isReal = settingsRef.current.system.realTrading;
-                const key = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
-                localStorage.setItem(key, JSON.stringify(currentPositions));
-                localStorage.setItem('SAVIOR_POSITIONS', JSON.stringify(currentPositions));
-            }
+            simulatorRef.current?.batchCloseAllPositions('一键全量批量平仓');
+            try {
+                localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
+                localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
+                localStorage.setItem('SAVIOR_POSITIONS', '[]');
+            } catch (e) {}
+            positionsRef.current = [];
             setPositions([]);
+            setBinanceRealPositions([]);
             audioService.speak("全部持仓已平仓", true);
         }
     }, [combinedPositions, binanceRealPositions]);

@@ -149,15 +149,23 @@ export function checkHedgingRules(
 
     // D. 4. EMA10破EMA20 (EMA10 Cross EMA20 Baseline Breakout)
     let emaCrossBreakTriggered = false;
-    const emaCrossBasePrice = position.ema10Cross20Price || position.entryEmas?.ema20;
-    if (combinedLossLimitMet && hedgeSettings.ema10Cross20BreakEnabled && emaCrossBasePrice) {
-        if (position.side === PositionSide.LONG) {
-            if (position.markPrice <= emaCrossBasePrice) {
-                emaCrossBreakTriggered = true;
-            }
-        } else {
-            if (position.markPrice >= emaCrossBasePrice) {
-                emaCrossBreakTriggered = true;
+    const emaCrossBasePrice = position.ema10Cross20Price || position.entryEmas?.ema20 || position.entryEmas?.ema10 || position.entryPrice;
+    if (hedgeSettings.ema10Cross20BreakEnabled && emaCrossBasePrice && emaCrossBasePrice > 0) {
+        // Enforce loss limit threshold for Method 4 (defaults to combinedLossLimitPercent or 2.0%)
+        const lossLimitPercent = (hedgeSettings.combinedLossLimitPercent !== undefined && !Number.isNaN(hedgeSettings.combinedLossLimitPercent))
+            ? Math.abs(Number(hedgeSettings.combinedLossLimitPercent))
+            : 2.0;
+        const isLossLimitMet = pnlPercent <= -lossLimitPercent + 0.001;
+
+        if (isLossLimitMet) {
+            if (position.side === PositionSide.LONG) {
+                if (position.markPrice <= emaCrossBasePrice) {
+                    emaCrossBreakTriggered = true;
+                }
+            } else {
+                if (position.markPrice >= emaCrossBasePrice) {
+                    emaCrossBreakTriggered = true;
+                }
             }
         }
     }

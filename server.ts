@@ -1421,8 +1421,11 @@ async function startServer() {
                 }
             }
 
-            // Round down to stepSize initially
+            // Round down to stepSize initially, ensuring quantity does not drop to 0 if original finalQty > 0
             let roundedQty = Math.floor(finalQty / stepSize) * stepSize;
+            if (roundedQty <= 0 && finalQty > 0) {
+                roundedQty = Math.max(stepSize, minQty);
+            }
             finalQty = parseFloat(roundedQty.toFixed(qtyPrecision));
 
             // Ensure notional requirement (MIN_NOTIONAL) for OPEN orders

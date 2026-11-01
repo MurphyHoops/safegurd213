@@ -408,7 +408,16 @@ export const PositionItem: React.FC<Props> = React.memo(({
             {/* 3. PnL & Stats */}
             <div className="w-[20%] flex items-center justify-end gap-3 pr-4">
                 <div className="flex items-center gap-0.5 text-[10px] font-mono bg-slate-800/80 px-1.5 py-0.5 rounded-sm border border-slate-700 shrink-0">
-                    <span className="font-bold text-slate-200">{((p.amount || 0) * (livePrice || 0)).toFixed(0)}</span>
+                    <span className="font-bold text-slate-200">
+                        {(() => {
+                            const val = (p.amount || 0) * (livePrice || p.entryPrice || 0);
+                            if (val <= 0) return '0';
+                            if (val < 0.01) return val.toFixed(4);
+                            if (val < 1) return val.toFixed(2);
+                            if (val < 10) return val.toFixed(1);
+                            return val.toFixed(0);
+                        })()}
+                    </span>
                     <span className="text-slate-500">U</span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">

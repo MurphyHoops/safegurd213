@@ -130,12 +130,10 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                                 entryTime: i.structure?.signalTime,
                                 currentPrice: i.price,
                                 highlightTime: i.enterList4Time,
-                                showAuditLines: true,
+                                showAuditLines: false,
                                 list4Config: config,
-                                extraLines: [
-                                    { price: m.entryTrigger, label: "TRIGGER (攻)", color: "#fbbf24", style: "dashed" },
-                                    { price: m.midPoint, label: "DEFENSE (守)", color: "#f87171", style: "dashed" }
-                                ]
+                                source: 'list4',
+                                viewMode: 'SIGNAL'
                             };
                         })}
                         defaultTf="15m"

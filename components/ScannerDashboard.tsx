@@ -2444,6 +2444,7 @@ const ScannerDashboardInner: React.FC<
           appearedTime={chartData.appearedTime}
           disappearedTime={chartData.disappearedTime}
           source={chartData.source}
+          viewMode={chartData.viewMode}
           onClose={() => setChartData(null)}
           onSymbolChange={(newSymbol, newTf) => {
             setChartData((prev: any) => prev ? {

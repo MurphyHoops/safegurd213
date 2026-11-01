@@ -108,6 +108,7 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
             side: targetDirection,
             entryPrice: position.entryPrice, 
             entryTime: position.entryTime, 
+            extraLines: extraLines,
             signals: [{
                 time: position.entryTime || Date.now(),
                 type: targetDirection,
@@ -117,8 +118,9 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
                 source: 'LIST5'
             }], 
             currentPrice: currentPrice,
-            showAuditLines: true,
-            extraLines: extraLines.length > 0 ? extraLines : undefined
+            showAuditLines: false,
+            source: 'list5',
+            viewMode: 'TRADE'
         });
     };
 

@@ -213,8 +213,54 @@ export class MarketSimulator {
             }
         } catch (e) {}
 
+        // Load persisted recently closed graveyard keys
+        this.loadRecentlyClosedKeys();
+
         // Load persisted pending auto opens (Rule A)
         this.loadPendingAutoOpens();
+    }
+
+    private loadRecentlyClosedKeys() {
+        try {
+            const saved = localStorage.getItem('SAVIOR_RECENTLY_CLOSED_KEYS');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed)) {
+                    const now = Date.now();
+                    parsed.forEach(([key, timestamp]: [string, number]) => {
+                        if (now - timestamp < 43200000) { // 12 hours graveyard memory
+                            this.recentlyClosedKeys.set(key, timestamp);
+                        }
+                    });
+                }
+            }
+        } catch (e) {}
+    }
+
+    public saveRecentlyClosedKeys() {
+        try {
+            const now = Date.now();
+            for (const [key, ts] of this.recentlyClosedKeys.entries()) {
+                if (now - ts > 43200000) {
+                    this.recentlyClosedKeys.delete(key);
+                }
+            }
+            const arr = Array.from(this.recentlyClosedKeys.entries());
+            localStorage.setItem('SAVIOR_RECENTLY_CLOSED_KEYS', JSON.stringify(arr));
+        } catch (e) {}
+    }
+
+    public markKeyRecentlyClosed(symbol: string, side?: PositionSide) {
+        const cleanSymbol = normalizeSymbol(symbol);
+        const now = Date.now();
+        if (side) {
+            this.recentlyClosedKeys.set(`${cleanSymbol}_${side}`, now);
+        } else {
+            this.recentlyClosedKeys.set(`${cleanSymbol}_${PositionSide.LONG}`, now);
+            this.recentlyClosedKeys.set(`${cleanSymbol}_${PositionSide.SHORT}`, now);
+            this.recentlyClosedKeys.set(cleanSymbol, now);
+        }
+        this.saveRecentlyClosedKeys();
     }
 
     private savePendingAutoOpens() {
@@ -1025,6 +1071,7 @@ export class MarketSimulator {
             this.recentlyClosedKeys.set(`${cleanSymbol}_${PositionSide.LONG}`, now);
             this.recentlyClosedKeys.set(`${cleanSymbol}_${PositionSide.SHORT}`, now);
         }
+        this.saveRecentlyClosedKeys();
         this.positions.forEach(p => {
             if (normalizeSymbol(p.symbol) === cleanSymbol && (!side || p.side === side)) {
                 p.isBeingClosed = true;
@@ -1240,6 +1287,11 @@ export class MarketSimulator {
         const finalAmount = extraProps?.amount !== undefined ? extraProps.amount : (amount / executionPrice);
         const finalCostUsdt = extraProps?.amount !== undefined ? (extraProps.amount * executionPrice) : amount;
 
+        if (!finalAmount || isNaN(finalAmount) || finalAmount <= 0) {
+            this.addLog('DANGER', `拒绝开仓 ${upperSymbol}: 算出的开仓数量非法或为0 (${finalAmount})`);
+            return;
+        }
+
         const newPos: Position = {
             symbol: upperSymbol,
             side,
@@ -1255,7 +1307,7 @@ export class MarketSimulator {
             signalTf: signalTf,
             signalCandle: finalSignalCandle,
             entryEmas: finalEntryEmas,
-            ema10Cross20Price: extraProps?.ema10Cross20Price || finalEntryEmas.ema20,
+            ema10Cross20Price: extraProps?.ema10Cross20Price || finalEntryEmas?.ema20 || finalEntryEmas?.ema10 || executionPrice,
             leverage: extraProps?.leverage || 20,
             ...extraProps
         };
@@ -1974,7 +2026,7 @@ export class MarketSimulator {
             isAmputated: false,
             amputatedAmount: 0,
             isHedged: false,
-            ema10Cross20Price: pos.ema10Cross20Price || pos.entryEmas?.ema20
+            ema10Cross20Price: pos.ema10Cross20Price || pos.entryEmas?.ema20 || pos.entryEmas?.ema10 || refPrice
         };
 
         // 检查复开后是否达到熔断上限
@@ -4658,17 +4710,24 @@ export class MarketSimulator {
             }
 
             // D. EMA10破EMA20 (EMA10穿EMA20基准防线二次检测)
-            const secondaryEmaCrossPrice = position.ema10Cross20Price || position.entryEmas?.ema20;
-            if (!secondaryTriggered && combinedLossLimitMet && hedgeSettings.ema10Cross20BreakEnabled && secondaryEmaCrossPrice) {
-                if (position.side === PositionSide.LONG) {
-                    if (position.markPrice <= secondaryEmaCrossPrice) {
-                        secondaryTriggered = true;
-                        secondaryReason = `[二次防爆检测] 价格跌破开仓EMA10穿EMA20基准防线(${secondaryEmaCrossPrice.toFixed(4)}) 强制触发`;
-                    }
-                } else {
-                    if (position.markPrice >= secondaryEmaCrossPrice) {
-                        secondaryTriggered = true;
-                        secondaryReason = `[二次防爆检测] 价格突破开仓EMA10穿EMA20基准防线(${secondaryEmaCrossPrice.toFixed(4)}) 强制触发`;
+            const secondaryEmaCrossPrice = position.ema10Cross20Price || position.entryEmas?.ema20 || position.entryEmas?.ema10 || position.entryPrice;
+            if (!secondaryTriggered && hedgeSettings.ema10Cross20BreakEnabled && secondaryEmaCrossPrice && secondaryEmaCrossPrice > 0) {
+                const lossLimitPercent = (hedgeSettings.combinedLossLimitPercent !== undefined && !Number.isNaN(hedgeSettings.combinedLossLimitPercent))
+                    ? Math.abs(Number(hedgeSettings.combinedLossLimitPercent))
+                    : 2.0;
+                const isLossLimitMet = position.unrealizedPnLPercentage <= -lossLimitPercent + 0.001;
+
+                if (isLossLimitMet) {
+                    if (position.side === PositionSide.LONG) {
+                        if (position.markPrice <= secondaryEmaCrossPrice) {
+                            secondaryTriggered = true;
+                            secondaryReason = `[二次防爆检测] 价格跌破开仓EMA10穿EMA20基准防线(${secondaryEmaCrossPrice.toFixed(4)}) 且亏损超 ${lossLimitPercent}% 强制触发`;
+                        }
+                    } else {
+                        if (position.markPrice >= secondaryEmaCrossPrice) {
+                            secondaryTriggered = true;
+                            secondaryReason = `[二次防爆检测] 价格突破开仓EMA10穿EMA20基准防线(${secondaryEmaCrossPrice.toFixed(4)}) 且亏损超 ${lossLimitPercent}% 强制触发`;
+                        }
                     }
                 }
             }
@@ -4836,25 +4895,34 @@ export class MarketSimulator {
     }
 
     public batchCloseAllPositions(reason: string | boolean = 'Manual Batch Close') {
-        if (this.positions.length === 0) return;
-        
         const isSilent = reason === true;
         const reasonStr = isSilent ? 'Hard Reset Clear' : (reason as string);
-        
         const totalPnL = this.positions.reduce((sum, p) => sum + p.unrealizedPnL, 0);
         const now = Date.now();
 
-        // Create trade logs for all positions (if not silent)
+        // Create trade logs for all positions and register graveyard keys
         this.positions.forEach(p => {
             if (!isSilent) {
                 this.recordTradeLog(p, reasonStr);
             }
+            const cleanSym = normalizeSymbol(p.symbol);
+            this.recentlyClosedKeys.set(`${cleanSym}_${p.side}`, now);
+            this.recentlyClosedKeys.set(cleanSym, now);
             // Add to cooldown to prevent immediate re-open if scanner finds same signal
-            this.cooldowns[`${p.symbol}_${p.side}`] = now + 120000; // Increase to 2 minutes for batch close
+            this.cooldowns[`${p.symbol}_${p.side}`] = now + 120000;
         });
         
+        this.saveRecentlyClosedKeys();
         this.saveCooldowns();
         this.positions = [];
+
+        // 🔒 强制清理 localStorage 中的所有持仓缓存
+        try {
+            localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
+            localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
+            localStorage.setItem('SAVIOR_POSITIONS', '[]');
+        } catch (e) {}
+
         this.addLog('WARNING', `全部平仓: ${reasonStr}${!isSilent ? ` (总盈亏: ${totalPnL.toFixed(2)})` : ''}`);
         this.emitUpdate(true);
     }

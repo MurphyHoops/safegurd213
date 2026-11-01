@@ -20,6 +20,10 @@ interface VisualizerItem {
   disappearedTime?: number;
   lookbackDays?: number;
   sidewaysDays?: number;
+  direction?: string;
+  side?: string;
+  source?: string;
+  viewMode?: string;
 }
 
 interface Props {
@@ -74,6 +78,8 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
     if (!selectedItem) return false;
     return selectedItem.symbol === item.symbol && selectedItem.timeframe === item.timeframe;
   };
+
+  const isList5Mode = title.includes('5') || title.includes('战场') || title.includes('持仓');
 
   return createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/98 backdrop-blur-xl p-4">
@@ -205,21 +211,30 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   initialTimeframe={currentItem?.timeframe || defaultTf}
                   highlightTf={currentItem?.timeframe}
                   limit={defaultLimit}
-                  list2Config={list2Config}
-                  list4Config={currentItem?.list4Config}
+                  list2Config={isList5Mode ? undefined : list2Config}
+                  list4Config={isList5Mode ? undefined : currentItem?.list4Config}
                   disablePortal={true}
                   onClose={() => setSelectedItem(null)}
                   signals={currentItem?.signals || []}
+                  direction={currentItem?.direction || currentItem?.side}
+                  side={currentItem?.side || currentItem?.direction}
                   entryPrice={currentItem?.entryPrice}
                   entryTime={currentItem?.entryTime}
                   currentPrice={currentItem?.currentPrice}
                   highlightTime={currentItem?.highlightTime}
-                  showAuditLines={currentItem?.showAuditLines || false}
-                  extraLines={currentItem?.extraLines}
+                  showAuditLines={isList5Mode ? false : (currentItem?.showAuditLines || false)}
+                  extraLines={currentItem?.extraLines || (currentItem?.entryPrice ? [{
+                    price: currentItem.entryPrice,
+                    label: `开仓信号线(${(currentItem.direction === 'SHORT' || currentItem.side === 'SHORT' || currentItem.side === '空') ? '空' : '多'})`,
+                    color: (currentItem.direction === 'SHORT' || currentItem.side === 'SHORT' || currentItem.side === '空') ? '#ef4444' : '#10b981',
+                    style: 'dashed'
+                  }] : undefined)}
                   appearedTime={currentItem?.appearedTime}
                   disappearedTime={currentItem?.disappearedTime}
                   lookbackDays={currentItem?.lookbackDays}
                   sidewaysDays={currentItem?.sidewaysDays}
+                  source={currentItem?.source || (isList5Mode ? 'list5' : undefined)}
+                  viewMode={currentItem?.viewMode || (isList5Mode ? 'TRADE' : undefined)}
                 />
               </div>
             ) : (

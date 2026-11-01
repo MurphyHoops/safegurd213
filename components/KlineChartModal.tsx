@@ -601,10 +601,13 @@ const KlineChartModal: React.FC<Props> = ({
   // - 列表 1, 2, 3, 4 进入：信号分析模式（不标记开仓、补仓、砍仓、平仓、清仓等交易流水信息，只标记策略信号/突破/防守/等待开仓决策框）
   // - 列表 5、当前持仓列表、交易日志进入：实盘/持仓交易模式（不标记策略信号/等待开仓框，只标记开仓、补仓、砍仓、平仓、清仓及持仓开仓线）
   const isTradeViewMode = useMemo(() => {
-    if (viewMode === 'TRADE') return true;
     if (viewMode === 'SIGNAL') return false;
+    if (viewMode === 'TRADE') return true;
     const s = (source || '').toString().toLowerCase();
     if (s === 'list1' || s === 'list2' || s === 'list3' || s === 'list4') {
+      return false;
+    }
+    if (list2Config || propList4Config) {
       return false;
     }
     if (s === 'list5' || s === 'positions' || s === 'tradelogs' || s === 'trade_logs' || s === 'trades' || s === 'history') {
@@ -613,14 +616,8 @@ const KlineChartModal: React.FC<Props> = ({
     // Infer if source not explicitly passed
     if (signals && signals.length > 0 && (signals[0] as any).source) {
       const sigSrc = String((signals[0] as any).source).toLowerCase();
-      if (sigSrc.includes('list5')) return true;
       if (sigSrc.includes('list1') || sigSrc.includes('list2') || sigSrc.includes('list3') || sigSrc.includes('list4')) return false;
-    }
-    if (list2Config || propList4Config) {
-      return false;
-    }
-    if (entryPrice || entryTime || showAuditLines) {
-      return true;
+      if (sigSrc.includes('list5')) return true;
     }
     return false;
   }, [viewMode, source, signals, list2Config, propList4Config, entryPrice, entryTime, showAuditLines]);
@@ -2103,7 +2100,7 @@ const KlineChartModal: React.FC<Props> = ({
           const latest = signalsToShow[signalsToShow.length - 1];
           focalIdx = latest.signalIdx ?? getCandleIdxFast(latest.time, fullData);
       }
-      if (focalIdx === -1 && showAuditLines && fullData.length > 0) {
+      if (focalIdx === -1 && (showAuditLines || source === 'list4' || propList4Config) && fullData.length > 0) {
           focalIdx = fullData.length - 1;
       }
 
@@ -2161,12 +2158,25 @@ const KlineChartModal: React.FC<Props> = ({
       }
 
       // 🎯 通用标记空间布局与避障计算函数 (纵向保留1~3厘米距离，避开K线及EMA均线，多在下方，空在上方)
+      const placedLongMarkerLabels: { x: number; tier: number }[] = [];
+      const placedShortMarkerLabels: { x: number; tier: number }[] = [];
+
+      const getLabelTierForX = (x: number, isLong: boolean) => {
+          const arr = isLong ? placedLongMarkerLabels : placedShortMarkerLabels;
+          const colliding = arr.filter(p => Math.abs(x - p.x) < 45);
+          const tier = colliding.length > 0 ? Math.max(...colliding.map(p => p.tier)) + 1 : 0;
+          arr.push({ x, tier });
+          return tier;
+      };
+
       const getMarkerLayout = (
           candleIdx: number,
           dir: 'LONG' | 'SHORT',
-          candle: { high: number; low: number }
+          candle: { high: number; low: number },
+          tier: number = 0
       ) => {
           const gap1to3cm = 48; // 纵向靠近K线的一端保留1~3厘米(~48px)距离
+          const tierSpacing = tier * 38; // 每多一层预留 1 厘米 (~38px) 的避障间距
           const yHigh = getY(candle.high);
           const yLow = getY(candle.low);
 
@@ -2191,8 +2201,8 @@ const KlineChartModal: React.FC<Props> = ({
                   }
               });
 
-              const dashStartY = yLow + gap1to3cm;
-              const labelY = Math.min(chartHeight - 12, Math.max(dashStartY + 26, lowestEmaY + 28));
+              const dashStartY = yLow + gap1to3cm + tierSpacing;
+              const labelY = Math.min(chartHeight - 12, Math.max(dashStartY + 26, lowestEmaY + 28 + tierSpacing));
               const dashEndY = Math.max(dashStartY, labelY - 6);
 
               return {
@@ -2222,8 +2232,8 @@ const KlineChartModal: React.FC<Props> = ({
                   }
               });
 
-              const dashStartY = yHigh - gap1to3cm;
-              const labelY = Math.max(padding.top + 12, Math.min(dashStartY - 26, highestEmaY - 28));
+              const dashStartY = yHigh - gap1to3cm - tierSpacing;
+              const labelY = Math.max(padding.top + 12, Math.min(dashStartY - 26, highestEmaY - 28 - tierSpacing));
               const dashEndY = Math.min(dashStartY, labelY + 6);
 
               return {
@@ -2235,294 +2245,7 @@ const KlineChartModal: React.FC<Props> = ({
           }
       };
 
-      // Render all signal markers (无背景框，无边框，多在下方，空在上方，虚线指引端保留1~3cm距离)
-      // 🔒 铁律规则：从列表 5、当前持仓列表、交易日志进入的 K 线图，不要标记信号相关的信息
-      if (!isTradeViewMode) {
-          signalsToShow.forEach((sig, idx) => {
-          const signalIdx = sig.signalIdx ?? -1;
-          if (signalIdx === -1 || signalIdx < startIndex || signalIdx >= startIndex + visibleCount) return;
-
-          const i = signalIdx - startIndex;
-          const d = fullData[signalIdx];
-          if (!d) return;
-
-          const x = getX(i) + candleWidth / 2;
-          const isFocal = signalIdx === focalIdx;
-          const isLong = isFocal ? focalIsLong : (sig.type === 'LONG');
-          const guideColor = isLong ? '#0ECB81' : '#F6465D';
-          const layout = getMarkerLayout(signalIdx, isLong ? 'LONG' : 'SHORT', d);
-
-          if (isFocal) {
-              const isNativeTf = !initialTimeframe || timeframe === initialTimeframe;
-              const badgeText = isLong 
-                  ? (isNativeTf ? '做多信号K线' : `做多信号 (${initialTimeframe}原生映射)`) 
-                  : (isNativeTf ? '做空信号K线' : `做空信号 (${initialTimeframe}原生映射)`);
-
-              signalMarkers.push(
-                  <g key={`sig-focal-anchor-${idx}`} pointerEvents="none">
-                      {/* 纵向指引虚线 (靠近K线的一端保留1~3cm距离) */}
-                      {layout.hasDashedLine && (
-                          <line 
-                              x1={x} 
-                              y1={layout.dashStartY} 
-                              x2={x} 
-                              y2={layout.dashEndY} 
-                              stroke={guideColor} 
-                              strokeWidth={1.5} 
-                              strokeDasharray="4 2" 
-                              opacity={0.85} 
-                          />
-                      )}
-                      {/* 指引小三角 */}
-                      {isLong ? (
-                          <polygon 
-                              points={`${x},${layout.dashStartY - 3} ${x - 3.5},${layout.dashStartY + 3} ${x + 3.5},${layout.dashStartY + 3}`} 
-                              fill={guideColor} 
-                          />
-                      ) : (
-                          <polygon 
-                              points={`${x},${layout.dashStartY + 3} ${x - 3.5},${layout.dashStartY - 3} ${x + 3.5},${layout.dashStartY - 3}`} 
-                              fill={guideColor} 
-                          />
-                      )}
-                      {/* 纯文字标记 (无背景、无边框) */}
-                      <text 
-                          x={x} 
-                          y={isLong ? layout.labelY + 2 : layout.labelY - 2} 
-                          fill={guideColor} 
-                          fontSize="10.5" 
-                          fontWeight="bold" 
-                          textAnchor="middle" 
-                          fontFamily="monospace"
-                      >
-                          {badgeText}
-                      </text>
-                  </g>
-              );
-          } else {
-              // 历史非焦点信号 (无背景、无边框，多在下方，空在上方)
-              signalMarkers.push(
-                  <g key={`sig-historical-${idx}`} pointerEvents="none">
-                      {layout.hasDashedLine && (
-                          <line 
-                              x1={x} 
-                              y1={layout.dashStartY} 
-                              x2={x} 
-                              y2={layout.dashEndY} 
-                              stroke={guideColor} 
-                              strokeWidth={1.2} 
-                              strokeDasharray="3 2" 
-                              opacity={0.65} 
-                          />
-                      )}
-                      {isLong ? (
-                          <polygon 
-                              points={`${x},${layout.dashStartY - 2} ${x - 3},${layout.dashStartY + 3} ${x + 3},${layout.dashStartY + 3}`} 
-                              fill={guideColor} 
-                              opacity={0.8}
-                          />
-                      ) : (
-                          <polygon 
-                              points={`${x},${layout.dashStartY + 2} ${x - 3},${layout.dashStartY - 3} ${x + 3},${layout.dashStartY - 3}`} 
-                              fill={guideColor} 
-                              opacity={0.8}
-                          />
-                      )}
-                      <text 
-                          x={x} 
-                          y={isLong ? layout.labelY + 2 : layout.labelY - 2} 
-                          fill={guideColor} 
-                          fontSize="9.5" 
-                          textAnchor="middle" 
-                          fontWeight="bold" 
-                          fontFamily="monospace"
-                      >
-                          {isLong ? '▲ 多' : '▼ 空'}
-                      </text>
-                  </g>
-              );
-          }
-      });
-      }
-
-      // Render the Stepped Orthogonal Lines for 进攻突破线 & 中轴防守线
-      // Layout faithfully matches the user's diagram:
-      // - Dashed lines start shifted 2 candles to the right (不接触信号K线)
-      // - Upper line extends horizontally, then turns UPWARDS with vertical dashed line and 2-row label above
-      // - Lower line extends horizontally, then turns DOWNWARDS with vertical dashed line and 2-row label below
-      // - Labels stacked vertically directly without border/background: Line 1 Title, Line 2 Price & Ratio
-      let focalLinesVisual: React.ReactNode = null;
-      if (!isTradeViewMode && focalBreakoutPrice !== null && focalDefensePrice !== null) {
-          const yBreakout = getY(focalBreakoutPrice);
-          const yDefense = getY(focalDefensePrice);
-          const xStart = focalX !== null ? focalX : 0;
-          const xEnd = width - padding.right;
-
-          // Colors
-          const breakoutColor = focalIsLong ? '#10B981' : '#F43F5E';
-          const defenseColor = '#F59E0B';
-
-          if (!isNaN(yBreakout) && !isNaN(yDefense)) {
-              // Stepped branch X position:
-              // 1. Start point is shifted 2 candles to the right from the signal candle (不接触信号K线)
-              const candleStep = (width - padding.right) / (effectiveCount || 1);
-              const shift2Candles = candleStep * 2;
-              const xLineStart = focalX !== null ? Math.min(xEnd - 50, focalX + shift2Candles) : 0;
-
-              // Stepped branch turn position:
-              const branchDist = Math.max(80, Math.min(180, candleWidth * 7));
-              const xTurn = Math.min(xEnd - 75, Math.max(xLineStart + 45, xLineStart + branchDist));
-
-              // Vertical offsets: Breakout turns UP (or DOWN if short), Defense turns DOWN (or UP if short)
-              const vOffset = 42;
-              
-              const yBreakoutVertical = focalIsLong 
-                  ? Math.max(padding.top + 36, yBreakout - vOffset) 
-                  : Math.min(chartHeight - 36, yBreakout + vOffset);
-
-              const yDefenseVertical = focalIsLong 
-                  ? Math.min(chartHeight - 36, yDefense + vOffset) 
-                  : Math.max(padding.top + 36, yDefense - vOffset);
-
-              const breakoutTitle = `${focalIsLong ? '多' : '空'}进攻突破线`;
-              const breakoutValue = `${formatPrice(focalBreakoutPrice)} (${focalIsLong ? '+' : '-'}${focalBreakoutPct}%)`;
-
-              const defenseTitle = '中轴防守线';
-              const defenseValue = `${formatPrice(focalDefensePrice)} (${focalMidlinePct}%)`;
-
-              focalLinesVisual = (
-                  <g key="focal-defense-breakout-stepped-group" pointerEvents="none">
-                      {/* --- 1. 进攻突破线 (Breakout Line) --- */}
-                      {/* Horizontal dashed line: starts 2 candles to the right of signal candle (does NOT touch signal K-line) */}
-                      <line 
-                          x1={xLineStart} 
-                          y1={yBreakout} 
-                          x2={xTurn} 
-                          y2={yBreakout} 
-                          stroke={breakoutColor} 
-                          strokeWidth={1.8} 
-                          strokeDasharray="5 3" 
-                          opacity={0.95} 
-                      />
-                      {/* Faint continuation across to right edge for reference */}
-                      <line 
-                          x1={xTurn} 
-                          y1={yBreakout} 
-                          x2={xEnd} 
-                          y2={yBreakout} 
-                          stroke={breakoutColor} 
-                          strokeWidth={1} 
-                          strokeDasharray="2 3" 
-                          opacity={0.25} 
-                      />
-                      {/* Corner joint anchor */}
-                      <circle cx={xTurn} cy={yBreakout} r={3} fill={breakoutColor} />
-                      {/* Vertical line branching UP (for Long) or DOWN (for Short) */}
-                      <line 
-                          x1={xTurn} 
-                          y1={yBreakout} 
-                          x2={xTurn} 
-                          y2={yBreakoutVertical} 
-                          stroke={breakoutColor} 
-                          strokeWidth={1.8} 
-                          strokeDasharray="4 2" 
-                          opacity={0.95} 
-                      />
-                      {/* Breakout Label: Stacked vertically without border/background */}
-                      <g transform={`translate(${xTurn}, ${yBreakoutVertical})`}>
-                          {/* Line 1: Title */}
-                          <text 
-                              x={0} 
-                              y={focalIsLong ? -18 : 13} 
-                              fill={breakoutColor} 
-                              fontSize="10.5" 
-                              fontWeight="bold" 
-                              textAnchor="middle" 
-                          >
-                              {breakoutTitle}
-                          </text>
-                          {/* Line 2: Price & Pct */}
-                          <text 
-                              x={0} 
-                              y={focalIsLong ? -5 : 26} 
-                              fill={breakoutColor} 
-                              fontSize="10" 
-                              fontWeight="bold" 
-                              textAnchor="middle" 
-                              fontFamily="monospace"
-                          >
-                              {breakoutValue}
-                          </text>
-                      </g>
-
-                      {/* --- 2. 中轴防守线 (Defense Line) --- */}
-                      {/* Horizontal dashed line: starts 2 candles to the right of signal candle (does NOT touch signal K-line) */}
-                      <line 
-                          x1={xLineStart} 
-                          y1={yDefense} 
-                          x2={xTurn} 
-                          y2={yDefense} 
-                          stroke={defenseColor} 
-                          strokeWidth={1.8} 
-                          strokeDasharray="5 3" 
-                          opacity={0.95} 
-                      />
-                      {/* Faint continuation across to right edge for reference */}
-                      <line 
-                          x1={xTurn} 
-                          y1={yDefense} 
-                          x2={xEnd} 
-                          y2={yDefense} 
-                          stroke={defenseColor} 
-                          strokeWidth={1} 
-                          strokeDasharray="2 3" 
-                          opacity={0.25} 
-                      />
-                      {/* Corner joint anchor */}
-                      <circle cx={xTurn} cy={yDefense} r={3} fill={defenseColor} />
-                      {/* Vertical line branching DOWN (for Long) or UP (for Short) */}
-                      <line 
-                          x1={xTurn} 
-                          y1={yDefense} 
-                          x2={xTurn} 
-                          y2={yDefenseVertical} 
-                          stroke={defenseColor} 
-                          strokeWidth={1.8} 
-                          strokeDasharray="4 2" 
-                          opacity={0.95} 
-                      />
-                      {/* Defense Label: Stacked vertically without border/background */}
-                      <g transform={`translate(${xTurn}, ${yDefenseVertical})`}>
-                          {/* Line 1: Title */}
-                          <text 
-                              x={0} 
-                              y={focalIsLong ? 13 : -18} 
-                              fill={defenseColor} 
-                              fontSize="10.5" 
-                              fontWeight="bold" 
-                              textAnchor="middle" 
-                          >
-                              {defenseTitle}
-                          </text>
-                          {/* Line 2: Price & Pct */}
-                          <text 
-                              x={0} 
-                              y={focalIsLong ? 26 : -5} 
-                              fill={defenseColor} 
-                              fontSize="10" 
-                              fontWeight="bold" 
-                              textAnchor="middle" 
-                              fontFamily="monospace"
-                          >
-                              {defenseValue}
-                          </text>
-                      </g>
-                  </g>
-              );
-          }
-      }
-
-      // List 2 Divergence (发散) Visual Markers - ONLY rendered on the 1st candle of each divergence onset
+      // 1. List 2 Divergence (发散) Visual Markers - Processed first to occupy Tier 0 (closer to K-line)
       const divergenceVisuals: React.ReactNode[] = [];
       if (!isTradeViewMode && showDivergenceMarkers && divergenceMarkers.length > 0) {
           divergenceMarkers.forEach((m, idx) => {
@@ -2533,7 +2256,8 @@ const KlineChartModal: React.FC<Props> = ({
                   if (!d) return;
 
                   const isLong = m.direction === 'LONG';
-                  const layout = getMarkerLayout(m.index, isLong ? 'LONG' : 'SHORT', d);
+                  const tier = getLabelTierForX(x, isLong);
+                  const layout = getMarkerLayout(m.index, isLong ? 'LONG' : 'SHORT', d, tier);
                   const color = isLong ? '#10B981' : '#F43F5E';
                   const textLabel = isLong ? '▲ 多发散' : '▼ 空发散';
 
@@ -2581,6 +2305,273 @@ const KlineChartModal: React.FC<Props> = ({
               }
           });
       }
+
+      // 2. Render all signal markers - Processed second to occupy Tier 1 (1cm below/above Tier 0)
+      signalsToShow.forEach((sig, idx) => {
+          const signalIdx = sig.signalIdx ?? -1;
+          if (signalIdx === -1 || signalIdx < startIndex || signalIdx >= startIndex + visibleCount) return;
+
+          const i = signalIdx - startIndex;
+          const d = fullData[signalIdx];
+          if (!d) return;
+
+          const x = getX(i) + candleWidth / 2;
+          const isFocal = signalIdx === focalIdx;
+          const isLong = isFocal ? focalIsLong : (sig.type === 'LONG');
+          const guideColor = isLong ? '#0ECB81' : '#F6465D';
+          const tier = getLabelTierForX(x, isLong);
+          const layout = getMarkerLayout(signalIdx, isLong ? 'LONG' : 'SHORT', d, tier);
+
+          if (isFocal) {
+              const isNativeTf = !initialTimeframe || timeframe === initialTimeframe;
+              const badgeText = isLong 
+                  ? (isNativeTf ? '做多信号' : `做多信号 (${initialTimeframe}原生)`) 
+                  : (isNativeTf ? '做空信号' : `做空信号 (${initialTimeframe}原生)`);
+
+              signalMarkers.push(
+                  <g key={`sig-focal-anchor-${idx}`} pointerEvents="none">
+                      {/* 纵向指引虚线 */}
+                      {layout.hasDashedLine && (
+                          <line 
+                              x1={x} 
+                              y1={layout.dashStartY} 
+                              x2={x} 
+                              y2={layout.dashEndY} 
+                              stroke={guideColor} 
+                              strokeWidth={1.5} 
+                              strokeDasharray="4 2" 
+                              opacity={0.85} 
+                          />
+                      )}
+                      {/* 箭头指引 (做多指向K线底部↑，做空指向K线顶部↓) */}
+                      {isLong ? (
+                          <polygon 
+                              points={`${x},${layout.dashStartY - 3} ${x - 3.5},${layout.dashStartY + 3} ${x + 3.5},${layout.dashStartY + 3}`} 
+                              fill={guideColor} 
+                          />
+                      ) : (
+                          <polygon 
+                              points={`${x},${layout.dashStartY + 3} ${x - 3.5},${layout.dashStartY - 3} ${x + 3.5},${layout.dashStartY - 3}`} 
+                              fill={guideColor} 
+                          />
+                      )}
+                      {/* 纯文字标记 (做多在下方，做空在上方) */}
+                      <text 
+                          x={x} 
+                          y={isLong ? layout.labelY + 2 : layout.labelY - 2} 
+                          fill={guideColor} 
+                          fontSize="10.5" 
+                          fontWeight="bold" 
+                          textAnchor="middle" 
+                          fontFamily="monospace"
+                      >
+                          {badgeText}
+                      </text>
+                  </g>
+              );
+          } else {
+              // 历史非焦点信号 (做多在下方，做空在上方)
+              signalMarkers.push(
+                  <g key={`sig-historical-${idx}`} pointerEvents="none">
+                      {layout.hasDashedLine && (
+                          <line 
+                              x1={x} 
+                              y1={layout.dashStartY} 
+                              x2={x} 
+                              y2={layout.dashEndY} 
+                              stroke={guideColor} 
+                              strokeWidth={1.2} 
+                              strokeDasharray="3 2" 
+                              opacity={0.65} 
+                          />
+                      )}
+                      {isLong ? (
+                          <polygon 
+                              points={`${x},${layout.dashStartY - 2} ${x - 3},${layout.dashStartY + 3} ${x + 3},${layout.dashStartY + 3}`} 
+                              fill={guideColor} 
+                              opacity={0.8}
+                          />
+                      ) : (
+                          <polygon 
+                              points={`${x},${layout.dashStartY + 2} ${x - 3},${layout.dashStartY - 3} ${x + 3},${layout.dashStartY - 3}`} 
+                              fill={guideColor} 
+                              opacity={0.8}
+                          />
+                      )}
+                      <text 
+                          x={x} 
+                          y={isLong ? layout.labelY + 2 : layout.labelY - 2} 
+                          fill={guideColor} 
+                          fontSize="9.5" 
+                          textAnchor="middle" 
+                          fontWeight="bold" 
+                          fontFamily="monospace"
+                      >
+                          {isLong ? '▲ 多' : '▼ 空'}
+                      </text>
+                  </g>
+              );
+          }
+      });
+
+      // 根据手绘图格式渲染 进攻突破线 & 中轴防守线 阶梯折弯结构
+      // 做多形态: 上方为 进攻突破线 (向上折弯)，下方为 中轴防守线 (向下折弯)
+      // 做空形态: 上方为 中轴防守线 (向上折弯)，下方为 进攻突破线 (向下折弯)
+      let focalLinesVisual: React.ReactNode = null;
+      if (focalBreakoutPrice !== null) {
+          const yBreakout = getY(focalBreakoutPrice);
+          const yDefense = focalDefensePrice !== null ? getY(focalDefensePrice) : NaN;
+          const xEnd = width - padding.right;
+
+          // Colors
+          const breakoutColor = focalIsLong ? '#10B981' : '#F43F5E';
+          const defenseColor = '#F59E0B';
+
+          if (!isNaN(yBreakout)) {
+              // 水平线起笔位置: 从信号K线右侧平移 1 根 K 线开始
+              const candleStep = (width - padding.right) / (effectiveCount || 1);
+              const shift1Candle = candleStep * 1;
+              const xLineStart = focalX !== null ? Math.min(xEnd - 60, focalX + shift1Candle) : 0;
+
+              // 折弯拐点位置: 向右精准平移 20 根 K 线位置才向上和向下折弯
+              const shift20Candles = candleStep * 20;
+              const xTurn = focalX !== null ? Math.min(xEnd - 50, focalX + shift20Candles) : (xLineStart + candleStep * 19);
+
+              // 垂直折弯延长高度 (约 2 厘米视觉高度 ~38-40px)
+              const vOffset = 38;
+
+              // 确定进攻突破线折弯方向:
+              const yBreakoutVertical = focalIsLong 
+                  ? Math.max(padding.top + 32, yBreakout - vOffset) 
+                  : Math.min(chartHeight - 32, yBreakout + vOffset);
+
+              const breakoutTitle = `${focalIsLong ? '多' : '空'}进攻突破线`;
+              const breakoutValue = `${formatPrice(focalBreakoutPrice)} (${focalIsLong ? '+' : '-'}${focalBreakoutPct}%)`;
+
+              // 中轴防守线 (仅在非 List 5 界面展示)
+              let defenseVisual = null;
+              if (!isTradeViewMode && !isNaN(yDefense)) {
+                  const yDefenseVertical = focalIsLong 
+                      ? Math.min(chartHeight - 32, yDefense + vOffset) 
+                      : Math.max(padding.top + 32, yDefense - vOffset);
+
+                  const defenseTitle = '中轴防守线';
+                  const defenseValue = `${formatPrice(focalDefensePrice!)} (${focalMidlinePct}%)`;
+
+                  defenseVisual = (
+                      <g key="focal-defense-line">
+                          {/* 从信号K线右侧起的水平虚线 */}
+                          <line 
+                              x1={xLineStart} 
+                              y1={yDefense} 
+                              x2={xTurn} 
+                              y2={yDefense} 
+                              stroke={defenseColor} 
+                              strokeWidth={1.8} 
+                              strokeDasharray="5 3" 
+                              opacity={0.95} 
+                          />
+                          {/* 拐点圆点 */}
+                          <circle cx={xTurn} cy={yDefense} r={3} fill={defenseColor} />
+                          {/* 垂直折弯虚线 */}
+                          <line 
+                              x1={xTurn} 
+                              y1={yDefense} 
+                              x2={xTurn} 
+                              y2={yDefenseVertical} 
+                              stroke={defenseColor} 
+                              strokeWidth={1.8} 
+                              strokeDasharray="4 2" 
+                              opacity={0.95} 
+                          />
+                          {/* 防守线两行纯文字文本 (第一行名称，第二行价格与比例) */}
+                          <g transform={`translate(${xTurn}, ${yDefenseVertical})`}>
+                              <text 
+                                  x={0} 
+                                  y={focalIsLong ? 14 : -16} 
+                                  fill={defenseColor} 
+                                  fontSize="10.5" 
+                                  fontWeight="bold" 
+                                  textAnchor="middle" 
+                              >
+                                  {defenseTitle}
+                              </text>
+                              <text 
+                                  x={0} 
+                                  y={focalIsLong ? 27 : -3} 
+                                  fill={defenseColor} 
+                                  fontSize="10" 
+                                  fontWeight="bold" 
+                                  textAnchor="middle" 
+                                  fontFamily="monospace"
+                              >
+                                  {defenseValue}
+                              </text>
+                          </g>
+                      </g>
+                  );
+              }
+
+              focalLinesVisual = (
+                  <g key="focal-defense-breakout-handdrawn-stepped-group" pointerEvents="none">
+                      {/* --- 1. 进攻突破线 --- */}
+                      {/* 从信号K线右侧起的水平虚线 */}
+                      <line 
+                          x1={xLineStart} 
+                          y1={yBreakout} 
+                          x2={xTurn} 
+                          y2={yBreakout} 
+                          stroke={breakoutColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="5 3" 
+                          opacity={0.95} 
+                      />
+                      {/* 拐点圆点 */}
+                      <circle cx={xTurn} cy={yBreakout} r={3} fill={breakoutColor} />
+                      {/* 垂直折弯虚线 */}
+                      <line 
+                          x1={xTurn} 
+                          y1={yBreakout} 
+                          x2={xTurn} 
+                          y2={yBreakoutVertical} 
+                          stroke={breakoutColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="4 2" 
+                          opacity={0.95} 
+                      />
+                      {/* 突破线两行纯文字文本 (第一行名称，第二行价格与比例) */}
+                      <g transform={`translate(${xTurn}, ${yBreakoutVertical})`}>
+                          <text 
+                              x={0} 
+                              y={focalIsLong ? -16 : 14} 
+                              fill={breakoutColor} 
+                              fontSize="10.5" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                          >
+                              {breakoutTitle}
+                          </text>
+                          <text 
+                              x={0} 
+                              y={focalIsLong ? -3 : 27} 
+                              fill={breakoutColor} 
+                              fontSize="10" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                              fontFamily="monospace"
+                          >
+                              {breakoutValue}
+                          </text>
+                      </g>
+
+                      {/* --- 2. 中轴防守线 (仅在非列表 5 界面渲染) --- */}
+                      {defenseVisual}
+                  </g>
+              );
+          }
+      }
+
+
 
       // 🔒 LOCKED_MODULE: TRADE_MARKERS_RENDER
       // Render Trade Markers (严格空间几何：箭头距离最高/最低价1.5~2cm，虚线另一端距汉字0.5cm，时序早的靠近K线，每层上下间距0.5cm，右侧附带执行价格)
@@ -3053,134 +3044,113 @@ const KlineChartModal: React.FC<Props> = ({
           }
       }
 
-      // ENTRY PRICE & TIME VISUALIZATION (开仓信号线与开仓位置标注 - 仅在持仓/交易流水视角显示)
+      // ENTRY PRICE & TIME VISUALIZATION (开仓信号线与开仓位置标注 - 仅在实盘/持仓/交易模式 List 5 下展示)
       let entryVisuals = null;
       if (isTradeViewMode && entryPrice && entryPrice > 0) {
           const yEntry = getY(entryPrice);
           if (!isNaN(yEntry)) {
-              const entryColor = "#22d3ee"; // Cyan-400
+              const isLongSide = propDirection === 'LONG' || propSide === 'LONG' || (propSide as any) === 'BUY';
+              const isShortSide = propDirection === 'SHORT' || propSide === 'SHORT' || (propSide as any) === 'SELL';
+              const entryColor = isLongSide ? '#10b981' : isShortSide ? '#ef4444' : '#22d3ee';
               
               let entryX = -1;
-              let candleHighY = NaN;
-              let candleLowY = NaN;
 
               // Find Entry Candle X if visible
               if (entryTime) {
                   const eIdx = getCandleIdxFast(entryTime, fullData);
                   if (eIdx !== -1 && eIdx >= startIndex && eIdx < startIndex + visibleCount) {
                       entryX = getX(eIdx - startIndex) + candleWidth / 2;
-                      const candle = fullData[eIdx];
-                      if (candle) {
-                          candleHighY = getY(candle.high);
-                          candleLowY = getY(candle.low);
-                      }
                   }
               }
 
-              let entryMarkerVisual = null;
-              if (entryX !== -1 && !isNaN(entryX)) {
-                  // Place badge in clear space above or below K-lines & EMAs without overlap
-                  const topSafe = !isNaN(candleHighY) ? candleHighY : yEntry;
-                  const bottomSafe = !isNaN(candleLowY) ? candleLowY : yEntry;
-                  
-                  const isPlaceAbove = topSafe > (padding.top + 48);
-                  const badgeWidth = 84;
-                  const badgeHeight = 20;
-                  const badgeX = Math.max(10, Math.min(width - padding.right - badgeWidth - 5, entryX - badgeWidth / 2));
-                  
-                  let badgeY = 0;
-                  let lineStartY = 0;
-                  let lineEndY = 0;
+              const xEnd = width - padding.right;
+              const candleStep = (width - padding.right) / (effectiveCount || 1);
+              
+              // 45 度斜线起笔位置: 若开仓信号K线在视口内则以 entryX 为准，否则从左边缘 (padding.left) 开始
+              const xLineStart = (entryX !== -1 && !isNaN(entryX)) ? entryX : padding.left;
 
-                  if (isPlaceAbove) {
-                      // Badge placed safely above the highest point of the candle & EMAs
-                      badgeY = Math.max(padding.top + 6, topSafe - 32);
-                      lineStartY = badgeY + badgeHeight;
-                      lineEndY = yEntry;
-                  } else {
-                      // Badge placed safely below the lowest point of the candle & EMAs
-                      badgeY = Math.min(chartHeight - badgeHeight - 6, bottomSafe + 16);
-                      lineStartY = badgeY;
-                      lineEndY = yEntry;
-                  }
+              // 折弯拐点 X 位置: 从起笔点向右平移 20 根 K 线距离
+              const shift20Candles = candleStep * 20;
+              const xTurn = Math.min(xEnd - 50, xLineStart + shift20Candles);
 
-                  entryMarkerVisual = (
-                      <g>
-                          {/* Dashed Guideline from badge to exact entry price point */}
-                          <line 
-                              x1={entryX} 
-                              y1={lineStartY} 
-                              x2={entryX} 
-                              y2={lineEndY} 
-                              stroke={entryColor} 
-                              strokeWidth={1.2} 
-                              strokeDasharray="3 3" 
-                              opacity={0.85} 
-                          />
-                          
-                          {/* Pinpoint Target at Entry Point (Small, Precise, Non-intrusive) */}
-                          <circle cx={entryX} cy={yEntry} r={3} fill={entryColor} />
-                          <circle cx={entryX} cy={yEntry} r={6} stroke={entryColor} strokeWidth={1} fill="none" opacity={0.7} />
-                          
-                          {/* Small directional pointer at target */}
-                          {isPlaceAbove ? (
-                              <polygon 
-                                  points={`${entryX - 3},${yEntry - 5} ${entryX + 3},${yEntry - 5} ${entryX},${yEntry - 1}`} 
-                                  fill={entryColor} 
-                              />
-                          ) : (
-                              <polygon 
-                                  points={`${entryX - 3},${yEntry + 5} ${entryX + 3},${yEntry + 5} ${entryX},${yEntry + 1}`} 
-                                  fill={entryColor} 
-                              />
-                          )}
+              // 45 度斜向右延伸的 X 轴增量 dx
+              const dx = Math.max(0, xTurn - xLineStart);
 
-                          {/* Badge Tag placed safely in clear space outside K-line/EMA zone */}
-                          <rect 
-                              x={badgeX} 
-                              y={badgeY} 
-                              width={badgeWidth} 
-                              height={badgeHeight} 
-                              rx={4} 
-                              fill="#0a192f" 
-                              stroke={entryColor} 
-                              strokeWidth={1} 
-                              opacity={0.95} 
-                          />
+              // 45 度斜线 Y 轴拐点计算 (画布坐标系统中 Y 轴向下递增)：
+              // 做多：45度斜向右上方 (yEntry - dx)
+              // 做空：45度斜向右下方 (yEntry + dx)
+              const rawYTurn = isLongSide ? (yEntry - dx) : (yEntry + dx);
+              const yTurn = Math.max(padding.top + 20, Math.min(chartHeight - 20, rawYTurn));
+
+              // 垂直折弯延长高度 (约 2 厘米视觉高度 ~38px)
+              const vOffset = 38;
+
+              // 拐点处与横向水平线垂直折弯方向: 做多向下折弯 (yTurn + vOffset)，做空向上折弯 (yTurn - vOffset)
+              const yEntryVertical = isLongSide 
+                  ? Math.min(chartHeight - 32, yTurn + vOffset)
+                  : Math.max(padding.top + 32, yTurn - vOffset);
+
+              const entryTitle = `${isLongSide ? '做多' : isShortSide ? '做空' : ''}开仓`;
+              const entryValue = formatPrice(entryPrice);
+
+              entryVisuals = (
+                  <g key="trade-entry-stepped-45deg-group" pointerEvents="none">
+                      {/* 若开仓K线在屏幕内，展示精准开仓点锚点 */}
+                      {entryX !== -1 && !isNaN(entryX) && (
+                          <g>
+                              <circle cx={entryX} cy={yEntry} r={4} fill={entryColor} />
+                              <circle cx={entryX} cy={yEntry} r={8} stroke={entryColor} strokeWidth={1.2} fill="none" opacity={0.75} />
+                          </g>
+                      )}
+
+                      {/* 从开仓价格点 (entryX, yEntry) 出发，呈 45 度斜向右延伸 20 根 K 线距离到达拐点 xTurn */}
+                      <line 
+                          x1={xLineStart} 
+                          y1={yEntry} 
+                          x2={xTurn} 
+                          y2={yTurn} 
+                          stroke={entryColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="5 3" 
+                          opacity={0.95} 
+                      />
+                      {/* 45 度斜线拐点圆点 */}
+                      <circle cx={xTurn} cy={yTurn} r={3} fill={entryColor} />
+                      {/* 在拐点处垂直折弯 2 厘米 (~38px) (多向下、空向上折弯) */}
+                      <line 
+                          x1={xTurn} 
+                          y1={yTurn} 
+                          x2={xTurn} 
+                          y2={yEntryVertical} 
+                          stroke={entryColor} 
+                          strokeWidth={1.8} 
+                          strokeDasharray="4 2" 
+                          opacity={0.95} 
+                      />
+                      {/* 在垂直端点处呈现两行纯文本标记：第一行做多/空开仓，第二行开仓价格 */}
+                      <g transform={`translate(${xTurn}, ${yEntryVertical})`}>
                           <text 
-                              x={badgeX + badgeWidth / 2} 
-                              y={badgeY + 14} 
+                              x={0} 
+                              y={isLongSide ? 14 : -16} 
                               fill={entryColor} 
-                              fontSize="9.5" 
+                              fontSize="10.5" 
+                              fontWeight="bold" 
+                              textAnchor="middle" 
+                          >
+                              {entryTitle}
+                          </text>
+                          <text 
+                              x={0} 
+                              y={isLongSide ? 27 : -3} 
+                              fill={entryColor} 
+                              fontSize="10" 
                               fontWeight="bold" 
                               textAnchor="middle" 
                               fontFamily="monospace"
                           >
-                              🎯 开仓信号点
+                              {entryValue}
                           </text>
                       </g>
-                  );
-              }
-
-              entryVisuals = (
-                  <g pointerEvents="none">
-                      {/* Full Width Horizontal Entry Line */}
-                      <line x1={0} y1={yEntry} x2={width - padding.right} y2={yEntry} stroke={entryColor} strokeWidth={1.5} strokeDasharray="5 3" opacity={0.9} />
-                      
-                      {/* Left Anchor Label */}
-                      <rect x={10} y={yEntry - 10} width={135} height={20} fill="#083344" stroke={entryColor} strokeWidth={1} rx={3} opacity={0.95} />
-                      <text x={18} y={yEntry + 4} fill={entryColor} fontSize="10" fontWeight="bold" fontFamily="monospace">
-                          🎯 开仓信号线: {formatPrice(entryPrice)}
-                      </text>
-
-                      {/* Right Axis Label */}
-                      <rect x={width - 80} y={yEntry - 10} width={80} height={20} fill="#0e7490" rx={2} opacity={0.9} />
-                      <text x={width - 76} y={yEntry + 4} fill="#ffffff" fontSize="10" fontWeight="bold" fontFamily="monospace">
-                          开仓: {formatPrice(entryPrice)}
-                      </text>
-
-                      {/* Specific Entry Marker with Dashed Guideline */}
-                      {entryMarkerVisual}
                   </g>
               );
           }
