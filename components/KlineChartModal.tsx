@@ -1448,9 +1448,10 @@ const KlineChartModal: React.FC<Props> = ({
             return;
         }
 
-        // Fix missing USDT issue and strip Chinese parenthesis
-        const cleanSym = formatToBinanceSymbol(symbol) || (symbol.endsWith('USDT') ? symbol : `${symbol}USDT`);
-        const safeSymbol = cleanSym.replace(/[\(（][^\)）]*[\)）]/g, '').trim();
+        // Fix missing USDT issue and strip Chinese parenthesis & direction suffixes
+        const cleanRawSym = symbol.replace(/_(LONG|SHORT|多|空)$/i, '').replace(/[\(（][^\)）]*[\)）]/g, '').trim();
+        const cleanSym = formatToBinanceSymbol(cleanRawSym) || (cleanRawSym.endsWith('USDT') ? cleanRawSym : `${cleanRawSym}USDT`);
+        const safeSymbol = cleanSym.trim();
 
         // 🚀 0ms 瞬间秒开直调本地缓存通道 (Zero-Latency In-Memory Fast-Path)
         let cachedLocalKlines: any[] | null = klineMultiTfStore.getKlinesSync(safeSymbol, timeframe, 20) ||

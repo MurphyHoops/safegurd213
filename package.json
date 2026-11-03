@@ -5,9 +5,10 @@
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
-    "dev": "NODE_OPTIONS='--max-old-space-size=4096 --expose-gc' tsx server.ts",
+    "dev": "NODE_OPTIONS='--expose-gc' tsx server.ts",
+    "daemon": "tsx src/daemon/daemon_engine.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
-    "start": "node --max-old-space-size=4096 dist/server.cjs",
+    "start": "node --expose-gc --max-old-space-size=4096 dist/server.cjs",
     "lint": "tsc --noEmit",
     "electron:dev": "concurrently \"NODE_OPTIONS='--max-old-space-size=4096 --expose-gc' tsx server.ts\" \"wait-on http://localhost:3000 && electron .\"",
     "dist:win": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --outfile=dist/server.cjs && npx --yes electron-builder --win",
@@ -38,7 +39,11 @@
       "oneClick": true,
       "perMachine": false,
       "allowToChangeInstallationDirectory": false,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "0211自动找币防爆仓救世之星",
+      "runAfterFinish": true
     },
     "mac": {
       "target": [
@@ -47,12 +52,16 @@
     }
   },
   "dependencies": {
+    "@types/nodemailer": "^8.0.2",
+    "axios": "^1.21.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "firebase": "^12.12.0",
+    "https-proxy-agent": "^9.1.0",
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^0.555.0",
     "motion": "^12.38.0",
+    "nodemailer": "^10.3.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.11.0",

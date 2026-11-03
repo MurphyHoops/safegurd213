@@ -5,12 +5,14 @@ process.env.PORT = '3000';
 const { app, BrowserWindow, shell, powerSaveBlocker, Tray, Menu, nativeImage, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const { spawn } = require('child_process');
 
 // 🛡️ [安全硬件加速与纯净渲染配置]
-// 彻底禁用 GPU 硬件加速与 GPU 合成，规避 Windows 锁屏/夜间息屏导致显卡驱动重置引起的闪退
+// 彻底禁用 GPU 硬件加速与 GPU 合成，规避 Windows 锁屏/夜间息屏导致显卡驱动重置引起的闪退 (-1073741819)
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-software-rasterizer');
 app.commandLine.appendSwitch('disable-gpu-compositing');
 app.commandLine.appendSwitch('disable-gpu-rasterization');
 app.commandLine.appendSwitch('disable-gpu-sandbox');
@@ -21,18 +23,39 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HighEfficiencyModeAvailable,AudioServiceOutOfProcess');
 
-// 🛡️ [Node.js 永续生命线 Keep-Alive]: 维持主进程事件循环永不排空，杜绝 Windows 无窗口或窗口隐藏时事件循环耗尽自退
+// 🛡️ [Node.js 永续生命线 Keep-Alive]: 维持主进程事件循环永不排空
 const _daemonKeepAliveTimer = setInterval(() => {
   // 保持主进程事件循环持续活跃
 }, 15000);
 
-// 🛡️ [持久化崩溃黑匣子写入工具]：同步落盘到工作目录与 userData 目录，确保闪退原因永不丢失
-function logCrashToFile(moduleName, message, stack) {
+/**
+ * 🛡️ [无阻塞原子写 JSON 算法]
+ * 写入 .tmp -> fsyncSync 刷盘 -> renameSync 替换，带坏文件回滚
+ */
+function atomicWriteJsonSync(filePath, data) {
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).substring(2, 7)}.tmp`;
+    const fd = fs.openSync(tmpPath, 'w');
+    fs.writeFileSync(fd, JSON.stringify(data, null, 2), 'utf-8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (e) {
+    console.error(`❌ Atomic write error for ${filePath}:`, e);
+  }
+}
+
+// 🛡️ [持久化崩溃黑匣子写入工具]：使用原子写入落盘到工作目录与 userData 目录
+function logCrashToFile(moduleName, message, stack, traceId) {
   try {
     const timestamp = Date.now();
     const timeStr = new Date(timestamp).toLocaleString();
+    const tid = traceId || `tr_main_${timestamp.toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
     const entry = {
       id: 'electron_' + timestamp.toString(36) + '_' + Math.random().toString(36).substring(2, 6),
+      traceId: tid,
       timestamp,
       timeStr,
       module: moduleName || 'ELECTRON_CORE',
@@ -62,19 +85,19 @@ function logCrashToFile(moduleName, message, stack) {
         }
         reports.unshift(entry);
         if (reports.length > 50) reports.length = 50;
-        fs.writeFileSync(targetPath, JSON.stringify(reports, null, 2), 'utf-8');
+        atomicWriteJsonSync(targetPath, reports);
       } catch (_) {}
     }
 
-    // 同时追加写入纯文本日志
-    const txtLog = `[${timeStr}] [${moduleName}] ${message}\n${stack ? stack + '\n' : ''}`;
+    // 追加写入纯文本日志
+    const txtLog = `[${timeStr}] [TraceID:${tid}] [${moduleName}] ${message}\n${stack ? stack + '\n' : ''}`;
     try {
       fs.appendFileSync(path.join(process.cwd(), 'electron_crash.log'), txtLog, 'utf-8');
     } catch (_) {}
   } catch (_) {}
 }
 
-// 🛡️ [物理级进程退出日志 (Exit Logger)]: 同步落盘 process_exit.log，记录进程关闭元数据与信号来源
+// 🛡️ [物理级进程退出日志 (Exit Logger)]
 function recordPhysicalExit(eventName, details) {
   try {
     const now = new Date();
@@ -112,14 +135,14 @@ if (process.env.ELECTRON_RUN_AS_NODE === '1') {
   }
 }
 
-// 🛡️ [操作系统物理防挂起休眠锁]: 24小时量化机器人交易核心，阻止 Windows/系统将进程挂起或睡眠网卡
+// 🛡️ [操作系统物理防挂起休眠锁]
 let powerBlockerId = null;
 
 function acquirePowerSaveBlocker() {
   try {
     if (powerBlockerId === null || !powerSaveBlocker.isStarted(powerBlockerId)) {
       powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
-      console.log(`🛡️ [PowerGuard] 已成功启用操作系统物理防挂起休眠锁 (powerBlockerId: ${powerBlockerId})，阻止系统挂起与睡眠网卡`);
+      console.log(`🛡️ [PowerGuard] 已成功启用操作系统物理防挂起休眠锁 (powerBlockerId: ${powerBlockerId})`);
     }
   } catch (e) {
     console.warn('⚠️ [PowerGuard] powerSaveBlocker 启动失败:', e);
@@ -138,17 +161,16 @@ function releasePowerSaveBlocker() {
   }
 }
 
-// 🛡️ [Windows 系统级防休眠与夜间自动恢复配置]
+// 🛡️ [Windows 系统级防休眠]
 if (process.platform === 'win32') {
   try {
     const { exec } = require('child_process');
-    // 设置 Windows 电源策略：接通电源时不自动睡眠/休眠
     exec('powercfg /change standby-timeout-ac 0', () => {});
     exec('powercfg /change hibernate-timeout-ac 0', () => {});
   } catch (_) {}
 }
 
-// 🛡️ [Windows 夜间系统更新/重启后自启动恢复交易守护]:
+// 🛡️ [Windows 自启动恢复]
 if (app && typeof app.setLoginItemSettings === 'function') {
   try {
     app.setLoginItemSettings({
@@ -161,15 +183,25 @@ if (app && typeof app.setLoginItemSettings === 'function') {
   }
 }
 
-// 🛡️ [Windows 会话与电源事件完整免疫守护]
+// 通知后台守护引擎强制重置底层僵尸 WebSocket
+function notifyBackendPowerResume() {
+  try {
+    const req = http.request('http://127.0.0.1:8089/api/reconnect-ws', { method: 'GET', timeout: 3000 }, () => {});
+    req.on('error', () => {});
+    req.end();
+  } catch (_) {}
+}
+
+// 🛡️ [Windows 会话与电源事件完整免疫守护 & 休眠恢复 Socket 重置]
 if (powerMonitor) {
   powerMonitor.on('suspend', () => {
     console.log('🛡️ [PowerMonitor] 系统挂起事件，保持后台交易引擎运行');
     recordPhysicalExit('powerMonitor:suspend', {});
   });
   powerMonitor.on('resume', () => {
-    console.log('🛡️ [PowerMonitor] 系统恢复，恢复看盘窗口刷新');
+    console.log('🛡️ [PowerMonitor] 系统恢复，强制清理僵尸 Socket 并刷盘重连');
     recordPhysicalExit('powerMonitor:resume', {});
+    notifyBackendPowerResume();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.reload();
       if (!mainWindow.isVisible()) mainWindow.show();
@@ -186,7 +218,7 @@ if (powerMonitor) {
   });
 }
 
-// 拦截 Windows 会话注销/关闭信号，防止远程桌面断开杀死程序
+// 拦截 Windows 会话注销/关闭信号
 app.on('session-end', (e) => {
   console.warn('🛡️ [Electron Guard] 收到 Windows session-end 会话信号，拦截退出保护交易');
   if (e && typeof e.preventDefault === 'function') {
@@ -195,9 +227,9 @@ app.on('session-end', (e) => {
   recordPhysicalExit('app:session-end', {});
 });
 
-// 捕获 GPU 进程崩溃并优雅恢复，防止显卡重置引发程序自退
+// 捕获 GPU 进程崩溃并优雅恢复
 app.on('gpu-process-gone', (event, details) => {
-  console.warn('⚠️ [Electron Guard] GPU 渲染引擎瞬时异常或驱动重置 (自动平滑隔离，保障交易运行):', details);
+  console.warn('⚠️ [Electron Guard] GPU 渲染引擎瞬时异常或驱动重置:', details);
   logCrashToFile('ELECTRON_GPU_GONE', `GPU驱动重置或进程异常: reason=${details.reason}, exitCode=${details.exitCode}`);
 });
 
@@ -219,28 +251,28 @@ process.on('SIGTERM', () => {
   recordPhysicalExit('SIGTERM', { signal: 'SIGTERM', source: 'Termination signal from OS or parent process, intercepted' });
 });
 
-process.on('SIGHUP', () => {
-  recordPhysicalExit('SIGHUP', { signal: 'SIGHUP', source: 'Controlling terminal closed or session hung up' });
-});
-
-process.on('SIGBREAK', () => {
-  recordPhysicalExit('SIGBREAK', { signal: 'SIGBREAK', source: 'Windows Ctrl+Break event' });
-});
-
-process.on('message', (msg) => {
-  recordPhysicalExit('IPC_MESSAGE', { message: msg, source: 'Parent process IPC' });
-});
-
-// 全局异常防护，阻止主进程异常退出并同步记录到黑匣子与退出日志
+// 🛡️ [uncaughtException 紧急安全通道及看门狗自愈重启]
 process.on('uncaughtException', (err) => {
-  console.error('🛡️ [Electron Main] Uncaught Exception Isolated:', err);
-  logCrashToFile('ELECTRON_MAIN_UNCAUGHT', err ? err.message : 'Uncaught Exception', err ? err.stack : '');
-  recordPhysicalExit('uncaughtException', { message: err?.message, stack: err?.stack });
+  const traceId = `tr_uncaught_${Date.now().toString(36)}`;
+  console.error(`🚨 [Electron Main] Fatal Uncaught Exception (${traceId}):`, err);
+  logCrashToFile('ELECTRON_MAIN_UNCAUGHT', err ? err.message : 'Uncaught Exception', err ? err.stack : '', traceId);
+  recordPhysicalExit('uncaughtException', { traceId, message: err?.message, stack: err?.stack });
+
+  // 紧急安全通道：释放防休眠锁，平滑自愈重启
+  try {
+    releasePowerSaveBlocker();
+    app.relaunch({ args: process.argv.slice(1).concat(['--relaunched']) });
+    app.exit(0);
+  } catch (_) {
+    process.exit(1);
+  }
 });
+
 process.on('unhandledRejection', (reason) => {
-  console.error('🛡️ [Electron Main] Unhandled Rejection Isolated:', reason);
-  logCrashToFile('ELECTRON_MAIN_REJECTION', typeof reason === 'string' ? reason : (reason && reason.message) || 'Unhandled Rejection');
-  recordPhysicalExit('unhandledRejection', { reason: typeof reason === 'string' ? reason : reason?.message });
+  const traceId = `tr_rejection_${Date.now().toString(36)}`;
+  console.error(`⚠️ [Electron Main] Unhandled Rejection (${traceId}):`, reason);
+  logCrashToFile('ELECTRON_MAIN_REJECTION', typeof reason === 'string' ? reason : (reason && reason.message) || 'Unhandled Rejection', '', traceId);
+  recordPhysicalExit('unhandledRejection', { traceId, reason: typeof reason === 'string' ? reason : reason?.message });
 });
 
 let mainWindow = null;
@@ -251,9 +283,8 @@ let isExplicitQuitting = false;
 app.on('before-quit', (e) => {
   recordPhysicalExit('app:before-quit', { defaultPrevented: e ? e.defaultPrevented : false, isExplicitQuitting });
   if (!isExplicitQuitting) {
-    // 🛡️ [终极防退出护盾]: 拦截系统会话注销、RDP断开、误触快捷键等非托盘显式退出的所有 quit 信号
     e.preventDefault();
-    console.warn('🛡️ [Electron Guard] 拦截到非用户显式退出信号 (before-quit)，系统保持 24/7 量化后台永续运行！如需彻底退出请右键系统托盘选择退出。');
+    console.warn('🛡️ [Electron Guard] 拦截到非用户显式退出信号 (before-quit)，系统保持 24/7 量化后台永续运行！');
   }
 });
 
@@ -276,7 +307,6 @@ app.on('second-instance', () => {
   }
 });
 
-// 🛡️ [系统托盘常驻守护]: 避免关闭窗口导致整个程序/后台交易服务被杀
 function createTray() {
   if (tray) return;
   try {
@@ -316,13 +346,10 @@ function createTray() {
         click: () => {
           isExplicitQuitting = true;
           console.log('⛔ [Tray] 用户显式触发彻底退出程序...');
-          // 1. 安全释放防休眠挂起锁
           releasePowerSaveBlocker();
-          // 2. 安全终止后台交易服务子进程
           if (serverProcess) {
             try { serverProcess.kill(); } catch (_) {}
           }
-          // 3. 销毁主看盘窗口并退出程序
           if (mainWindow && !mainWindow.isDestroyed()) {
             try { mainWindow.destroy(); } catch (_) {}
           }
@@ -333,24 +360,11 @@ function createTray() {
 
     tray.setContextMenu(contextMenu);
 
-    // 绑定单击托盘图标切换窗口显示/隐藏 (show / hide)
     tray.on('click', () => {
       if (!mainWindow || mainWindow.isDestroyed()) {
         createWindow();
       } else if (mainWindow.isVisible()) {
         mainWindow.hide();
-        console.log('🛡️ [Tray Click] 主窗口已切换为隐藏状态 (后台交易持续运行)');
-      } else {
-        mainWindow.show();
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.focus();
-        console.log('🛡️ [Tray Click] 主窗口已唤醒并前台显示');
-      }
-    });
-
-    tray.on('double-click', () => {
-      if (!mainWindow || mainWindow.isDestroyed()) {
-        createWindow();
       } else {
         mainWindow.show();
         if (mainWindow.isMinimized()) mainWindow.restore();
@@ -380,19 +394,38 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      webSecurity: false, // 允许本地网络访问和交易所跨域请求
-      backgroundThrottling: false // 🔒 关键加固：严禁后台/最小化时限频挂起定时器与WebSocket
+      webSecurity: false,
+      backgroundThrottling: false
     }
   });
 
-  // 🛡️ [防闪退/防自动退出守护]: 捕获渲染进程崩溃并平滑原地重启自愈，杜绝主进程与后台交易陪葬
+  // 🛡️ [全链路 Electron 渲染崩溃钩子 (区分 OOM, crashed, killed)]
+  let rendererCrashTimes = [];
   mainWindow.webContents.on('render-process-gone', (event, details) => {
-    console.error(`🛡️ [Electron Guard] 渲染窗口异常终止: reason=${details.reason}, exitCode=${details.exitCode}`);
-    logCrashToFile('ELECTRON_RENDERER_GONE', `渲染窗口异常终止: reason=${details.reason}, exitCode=${details.exitCode}`);
+    const traceId = `tr_render_${Date.now().toString(36)}`;
+    const reasonCat = details.reason === 'oom' ? 'OOM内存溢出' : details.reason === 'crashed' ? '显卡/内核崩溃' : details.reason === 'killed' ? '系统强杀' : details.reason;
+    console.error(`🛡️ [Electron Guard] 渲染进程异常终止 (${reasonCat}): reason=${details.reason}, exitCode=${details.exitCode}`);
+    logCrashToFile('ELECTRON_RENDERER_GONE', `渲染进程异常 (${reasonCat}): reason=${details.reason}, exitCode=${details.exitCode}`, '', traceId);
     
     if (!isExplicitQuitting) {
-      console.log(`🔄 [Electron Guard] 渲染窗口异常终止 (${details.reason})，正在原地恢复/静默拉起...`);
-      // 1. 优先尝试直接重载渲染页面，保持窗口句柄不丢失
+      const now = Date.now();
+      rendererCrashTimes.push(now);
+      rendererCrashTimes = rendererCrashTimes.filter(t => now - t < 60000);
+
+      // 看门狗阈值：1 分钟 3 次崩溃触发 app.relaunch() 自愈重启
+      if (rendererCrashTimes.length >= 3) {
+        console.warn('🚨 [Watchdog Guard] 检测到渲染窗口高频崩溃，触发 app.relaunch() 全局重新拉起！');
+        logCrashToFile('WATCHDOG_RELAUNCH_TRIGGERED', '渲染窗口高频崩溃，触发 app.relaunch() 自愈重启', '', traceId);
+        try {
+          app.relaunch({ args: process.argv.slice(1).concat(['--relaunched']) });
+          app.exit(0);
+          return;
+        } catch (err) {
+          console.error('❌ app.relaunch 异常:', err);
+        }
+      }
+
+      console.log(`🔄 [Electron Guard] 正在尝试原地 reload 恢复渲染窗口...`);
       try {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.reload();
@@ -400,20 +433,14 @@ function createWindow() {
         }
       } catch (_) {}
 
-      // 2. 若窗口已不可用，清理旧引用并立即同步创建新看盘窗口，防止无窗口间隙引发进程终止
       try {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.destroy();
-        }
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
       } catch (_) {}
       mainWindow = null;
 
-      // 立即拉起新窗口保障前台，后台交易引擎在此期间完全不中断持续运行
       setImmediate(() => {
         try {
-          if (!isExplicitQuitting && (!mainWindow || mainWindow.isDestroyed())) {
-            createWindow();
-          }
+          if (!isExplicitQuitting && (!mainWindow || mainWindow.isDestroyed())) createWindow();
         } catch (e) {
           console.error('❌ 重建看盘主窗口异常:', e);
         }
@@ -421,16 +448,24 @@ function createWindow() {
     }
   });
 
+  // 🛡️ [webContents 无响应与插件崩溃钩子]
   mainWindow.webContents.on('unresponsive', () => {
-    console.warn('⚠️ [Electron Guard] 渲染窗口瞬时计算负载高 (unresponsive: 并发计算K线/行情中)，保持界面存活...');
-    logCrashToFile('ELECTRON_RENDERER_UNRESPONSIVE', '渲染窗口瞬时计算负载高 (unresponsive)');
+    const traceId = `tr_unresponsive_${Date.now().toString(36)}`;
+    console.warn('⚠️ [Electron Guard] 渲染窗口无响应挂起 (unresponsive)，系统维持运行...');
+    logCrashToFile('ELECTRON_RENDERER_UNRESPONSIVE', '渲染窗口无响应挂起 (unresponsive)', '', traceId);
+  });
+
+  mainWindow.webContents.on('plugin-crashed', (event, name, version) => {
+    const traceId = `tr_plugin_${Date.now().toString(36)}`;
+    console.warn(`⚠️ [Electron Guard] 插件崩溃: ${name} (${version})`);
+    logCrashToFile('ELECTRON_PLUGIN_CRASHED', `插件崩溃: ${name} v${version}`, '', traceId);
   });
 
   mainWindow.webContents.on('responsive', () => {
-    console.log('✅ [Electron Guard] 渲染窗口已恢复响应');
+    console.log('✅ [Electron Guard] 渲染窗口恢复响应');
   });
 
-  // 🛡️ [防窗口隐形兜底]: 优先等待 ready-to-show，若 1.5 秒内未触发则强制显示窗口
+  // 防假死显示兜底
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
@@ -439,13 +474,11 @@ function createWindow() {
   });
   setTimeout(() => {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      console.log('🛡️ [Electron Guard] 触发防假死显示兜底，确保主窗口处于可见状态');
       mainWindow.show();
       mainWindow.focus();
     }
   }, 1500);
 
-  // 打开外部链接用默认浏览器
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https:') || url.startsWith('http:')) {
       shell.openExternal(url);
@@ -454,17 +487,13 @@ function createWindow() {
     return { action: 'allow' };
   });
 
-  // 连接本地服务
   const targetUrl = process.env.ELECTRON_START_URL || 'http://localhost:3000';
-  
-  // 延迟轮询直到本地服务就绪
   let checkAndLoadTimer = null;
   const checkAndLoad = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     try {
       mainWindow.loadURL(targetUrl).catch(() => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
-        console.log('等待本地后台服务启动中...');
         if (checkAndLoadTimer) clearTimeout(checkAndLoadTimer);
         checkAndLoadTimer = setTimeout(checkAndLoad, 1000);
       });
@@ -473,12 +502,10 @@ function createWindow() {
 
   checkAndLoad();
 
-  // 🛡️ [改造看盘窗口关闭行为]: 改“销毁重建”为“静默隐藏”，避免销毁窗口触发连锁反应，仅在显式退出时放行
   mainWindow.on('close', (e) => {
     if (!isExplicitQuitting) {
       e.preventDefault();
       mainWindow.hide();
-      console.log('🛡️ [Electron Guard] 主看盘窗口已静默隐藏至后台/托盘，量化交易与网络心跳持续全速运行');
     }
   });
 
@@ -491,10 +518,16 @@ function createWindow() {
   });
 }
 
-// 捕获子进程崩溃
+// 🛡️ [捕获子进程/GPU 异常并记录物理退出码]
 app.on('child-process-gone', (event, details) => {
-  console.warn('⚠️ [Electron Guard] 子进程退出:', details);
-  logCrashToFile('ELECTRON_CHILD_PROCESS_GONE', `子进程退出: type=${details.type}, reason=${details.reason}, name=${details.name}, exitCode=${details.exitCode}`);
+  const traceId = `tr_child_${Date.now().toString(36)}`;
+  console.warn('⚠️ [Electron Guard] 子进程或 GPU 引擎终止:', details);
+  logCrashToFile('ELECTRON_CHILD_PROCESS_GONE', `子进程/GPU退出: type=${details.type}, reason=${details.reason}, name=${details.name}, exitCode=${details.exitCode}`, '', traceId);
+  if (details.type === 'GPU' || details.reason === 'crashed') {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    } catch (_) {}
+  }
 });
 
 // 启动本地后台服务 (server.ts / server.cjs)
@@ -503,35 +536,25 @@ let serverRestartAttempts = 0;
 let stableRunTimer = null;
 
 function startBackendServer() {
-  if (serverStarted) {
-    console.log('ℹ️ [Electron Guard] 后台服务已就绪，跳过重复启动');
-    return;
-  }
+  if (serverStarted) return;
 
   try {
     const isDev = !app.isPackaged && process.env.NODE_ENV === 'development';
     if (isDev) {
-      console.log('开发模式：由 npm run dev 管理后台服务');
       serverStarted = true;
       return;
     }
 
     const serverScript = path.join(__dirname, 'dist', 'server.cjs');
-    console.log(`🚀 [Electron Guard] 启动生产环境后台交易引擎: ${serverScript}`);
-
-    // 🛡️ [零损耗内嵌优先模式]:
-    // 在 Electron 主进程中直接 require 运行 server.cjs，同处一个 Node.js 运行时，彻底规避 Windows 子进程被杀、管道断裂或 PATH 问题！
     try {
       require(serverScript);
       serverStarted = true;
-      console.log('✅ [Electron Guard] 后台量化服务已成功内嵌至主进程，24小时永续运行');
+      console.log('✅ [Electron Guard] 后台量化服务已成功内嵌至主进程');
       return;
     } catch (inProcessErr) {
-      console.warn('⚠️ [Electron Guard] 主进程直接加载失败，降级为独立子进程启动:', inProcessErr);
       logCrashToFile('BACKEND_SERVER_INPROCESS_FALLBACK', inProcessErr ? inProcessErr.message : '');
     }
 
-    // 降级：若直接 require 失败，使用 spawn 拉起独立子进程守护 (带 ELECTRON_RUN_AS_NODE 模式放行)
     serverProcess = spawn(process.execPath, [serverScript], {
       cwd: __dirname,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_ENV: 'production', PORT: '3000' },
@@ -539,43 +562,32 @@ function startBackendServer() {
     });
 
     if (serverProcess.stdout) {
-      serverProcess.stdout.on('data', (d) => {
-        try { process.stdout.write(d); } catch (_) {}
-      });
+      serverProcess.stdout.on('data', (d) => { try { process.stdout.write(d); } catch (_) {} });
     }
-
     if (serverProcess.stderr) {
-      serverProcess.stderr.on('data', (d) => {
-        try { process.stderr.write(d); } catch (_) {}
-      });
+      serverProcess.stderr.on('data', (d) => { try { process.stderr.write(d); } catch (_) {} });
     }
 
     serverProcess.on('error', (err) => {
-      console.error('后台服务启动异常:', err);
       logCrashToFile('BACKEND_SERVER_SPAWN_ERROR', err ? err.message : 'Spawn Error', err ? err.stack : '');
     });
 
     if (stableRunTimer) clearTimeout(stableRunTimer);
     stableRunTimer = setTimeout(() => {
-      if (serverProcess && !serverProcess.killed) {
-        serverRestartAttempts = 0;
-      }
+      if (serverProcess && !serverProcess.killed) serverRestartAttempts = 0;
     }, 30000);
 
     serverProcess.on('exit', (code, signal) => {
-      console.log(`后台服务进程退出: code=${code}, signal=${signal}`);
       logCrashToFile('BACKEND_SERVER_EXIT', `后台交易服务进程退出: code=${code}, signal=${signal}`);
       recordPhysicalExit('CHILD_SERVER_EXIT', { code, signal });
       if (stableRunTimer) clearTimeout(stableRunTimer);
       if (!isExplicitQuitting) {
         serverRestartAttempts++;
         const retryDelay = Math.min(1000 * Math.pow(1.3, Math.min(serverRestartAttempts, 10)), 15000);
-        console.log(`🔄 [守护系统] 正在重新拉起后台服务 (第 ${serverRestartAttempts} 次重试，${Math.round(retryDelay / 1000)}秒后执行)...`);
         setTimeout(startBackendServer, retryDelay);
       }
     });
   } catch (err) {
-    console.error('未能自动拉起后台服务:', err);
     logCrashToFile('BACKEND_SERVER_INIT_CRASH', err ? err.message : 'Init Exception', err ? err.stack : '');
     recordPhysicalExit('CHILD_SERVER_INIT_CRASH', { message: err?.message });
     setTimeout(startBackendServer, 3000);
@@ -600,28 +612,18 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', (e) => {
-  // 🛡️ [交易永续铁律]: 严禁前台窗口全部关闭时杀死后台服务或退出程序！
-  if (e && typeof e.preventDefault === 'function') {
-    e.preventDefault();
-  }
-  console.log(`ℹ️ [Electron Guard] window-all-closed 触发: isExplicitQuitting=${isExplicitQuitting}`);
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
   recordPhysicalExit('app:window-all-closed', { isExplicitQuitting });
   
   if (isExplicitQuitting) {
-    if (serverProcess) {
-      try { serverProcess.kill(); } catch (e) {}
-    }
+    if (serverProcess) { try { serverProcess.kill(); } catch (e) {} }
     app.quit();
     return;
   }
 
-  // 绝不退出：保持后台交易服务 100% 运行，静默自动重建看盘前台窗口
   if (!mainWindow || mainWindow.isDestroyed()) {
-    console.warn('⚠️ [Electron Guard] 前台看盘窗口关闭/销毁，后台量化引擎持续运行中，正在静默重建窗口...');
     setImmediate(() => {
-      if (!isExplicitQuitting && (!mainWindow || mainWindow.isDestroyed())) {
-        createWindow();
-      }
+      if (!isExplicitQuitting && (!mainWindow || mainWindow.isDestroyed())) createWindow();
     });
   }
 });
@@ -632,9 +634,7 @@ app.on('will-quit', (e) => {
     e.preventDefault();
   } else {
     releasePowerSaveBlocker();
-    if (serverProcess) {
-      try { serverProcess.kill(); } catch (e) {}
-    }
+    if (serverProcess) { try { serverProcess.kill(); } catch (e) {} }
   }
 });
 

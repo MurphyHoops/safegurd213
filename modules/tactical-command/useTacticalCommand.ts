@@ -38,5 +38,9 @@ const DEFAULT_CONFIG: ActionConfig = {
 export const useTacticalCommand = (strategyId?: string) => {
     const suffix = strategyId ? `_${strategyId}` : '';
     const [config, setConfig] = usePersistedState<ActionConfig>(`SCANNER_ACTION_CONFIG${suffix}`, DEFAULT_CONFIG);
-    return { config, setConfig };
+    
+    // 强制确保 autoExecute 始终为 true，由前面的列表3和列表4开仓开关全权控制
+    const normalizedConfig = config.autoExecute !== true ? { ...config, autoExecute: true } : config;
+    
+    return { config: normalizedConfig, setConfig };
 };

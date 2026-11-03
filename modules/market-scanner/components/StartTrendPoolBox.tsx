@@ -440,9 +440,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             // 🏛️ 中央日K总线后台平滑预热，确保候选币种日K无缝直读
             klineDailyStore.syncAllDailyKlines(candidates).catch(() => {});
 
-            // 🚀【本地数据库超高速通道 - 行情启动趋势】:
-            // 24 协程高并发批处理，全量本地数据库直读，秒级极速扫描计算完毕
-            const BATCH_SIZE = 24;
+            // 🚀【低内存平滑平稳并发扫描 - 行情启动趋势】:
+            // 限制并发数为 5，平滑并发，彻底切断底层 C++ 网络栈 Buffer 堆积
+            const BATCH_SIZE = 5;
             const scanStageStart = Date.now();
 
             for (let i = 0; i < candidates.length; i += BATCH_SIZE) {

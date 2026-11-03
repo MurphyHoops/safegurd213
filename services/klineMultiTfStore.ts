@@ -30,15 +30,18 @@ class KlineMultiTfStore {
 
     private getKeys(symbol: string, tf: string): string[] {
         if (!symbol || !tf) return [];
-        const norm = normalizeSymbol(symbol).toUpperCase().replace(/[\/_]/g, '').trim();
-        const safe = formatToBinanceSymbol(symbol).toUpperCase();
-        const raw = symbol.toUpperCase().replace(/[\/_]/g, '').trim();
+        const cleanRaw = symbol.toUpperCase().replace(/[\/_]/g, '').replace(/_(LONG|SHORT|多|空)$/i, '').trim();
+        const norm = normalizeSymbol(cleanRaw).toUpperCase();
+        const safe = formatToBinanceSymbol(cleanRaw).toUpperCase();
         const tfClean = tf.toLowerCase().trim();
+        const base = norm.replace(/USDT$/, '');
 
         return Array.from(new Set([
             `${norm}-${tfClean}`,
             `${safe}-${tfClean}`,
-            `${raw}-${tfClean}`,
+            `${cleanRaw}-${tfClean}`,
+            `${base}-${tfClean}`,
+            `${base}USDT-${tfClean}`,
             `${norm}USDT-${tfClean}`
         ]));
     }

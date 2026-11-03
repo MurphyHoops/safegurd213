@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- macOS Launchd 服务唯一标识符 -->
+    <key>Label</key>
+    <string>com.trading.daemon</string>
+
+    <!-- 可执行程序命令与参数数组 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/node</string>
+        <string>--import</string>
+        <string>tsx</string>
+        <string>src/daemon/daemon_engine.ts</string>
+    </array>
+
+    <!-- 工作目录：项目当前绝对根路径 -->
+    <key>WorkingDirectory</key>
+    <string>/Users/mac/savior_trading_app</string>
+
+    <!-- 登录加载时立即自动启动服务 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 7x24 常驻与崩溃后自动拉起保活 (KeepAlive) -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- 崩溃重启退避延迟 (3 秒) -->
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <!-- 标准输出日志与错误日志重定向路径 -->
+    <key>StandardOutPath</key>
+    <string>/tmp/com.trading.daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.trading.daemon.err.log</string>
+
+    <!-- 环境变量 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NODE_ENV</key>
+        <string>production</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>

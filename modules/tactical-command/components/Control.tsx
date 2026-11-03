@@ -108,22 +108,6 @@ export const List6Control: React.FC<{
             )}
         </div>
 
-        {/* Auto Switch */}
-        <div 
-            onClick={() => setConfig(p => ({...p, autoExecute: !p.autoExecute}))}
-            className={`flex items-center justify-between px-3 py-2 rounded border cursor-pointer transition-all ${config.autoExecute ? 'bg-emerald-900/20 border-emerald-500/40' : 'bg-slate-800 border-slate-700 hover:border-slate-600'}`}
-        >
-            <div className="flex items-center gap-2">
-                {config.autoExecute ? <ShieldCheck size={14} className="text-emerald-400"/> : <ZapOff size={14} className="text-slate-500"/>}
-                <span className={`text-xs font-bold ${config.autoExecute ? 'text-emerald-400' : 'text-slate-400'}`}>
-                    {config.autoExecute ? '自动开仓已激活' : '仅手动确认模式'}
-                </span>
-            </div>
-            <div className={`w-2 h-2 rounded-full ${config.autoExecute ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
-        </div>
-
-
-
         {/* 开仓限制模块 */}
         <div className="bg-slate-800/30 p-2 rounded border border-slate-700/50 space-y-1.5">
             <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between border-b border-slate-700/40 pb-1">

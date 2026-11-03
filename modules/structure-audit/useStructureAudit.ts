@@ -595,10 +595,12 @@ export const useStructureAudit = (
 
       try {
         let hasChanges = false;
-
-        // Process all priority items concurrently for maximum speed
-        await Promise.all(
-          itemsToScan.map(async (item) => {
+        // 🔒 [CONCURRENCY POOL]: 限制优先审计并发数最多为 4，切断全网多币种突发并发撑爆底层 C++ Socket Buffer 内存
+        const BATCH_SIZE_PRIORITY = 4;
+        for (let batchIdx = 0; batchIdx < itemsToScan.length; batchIdx += BATCH_SIZE_PRIORITY) {
+          const batchItems = itemsToScan.slice(batchIdx, batchIdx + BATCH_SIZE_PRIORITY);
+          await Promise.all(
+            batchItems.map(async (item) => {
             if (!item.symbol || item.symbol === "USDT" || item.symbol.trim() === "") return;
             if (!item.groupedResults) return;
 
@@ -865,6 +867,7 @@ export const useStructureAudit = (
             structureHashRef.current.set(item.symbol, getStructureHash(item));
           })
         );
+      }
 
         if (hasChanges) {
           updateList3FromCache();

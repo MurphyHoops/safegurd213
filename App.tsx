@@ -25,6 +25,7 @@ import { browserKeepAlive } from './services/browserKeepAlive';
 import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
 import { IpChangeAlertModal, IpChangeAlertData } from './components/IpChangeAlertModal';
+import IpOutageAlertModal from './components/IpOutageAlertModal';
 import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock, AlertTriangle, Trash2 } from 'lucide-react'; 
 import { 
     setBinanceLogSink, 
@@ -265,8 +266,8 @@ const AppContent: React.FC = () => {
         logsPendingRef.current = [];
         lastLogUpdateRef.current = Date.now();
 
-        // 🔒 [500条硬上限 Ring Buffer]: 内存中仅保留最近 500 条日志，大幅度削减内存开销与虚拟DOM调和压力
-        setLogs(prev => [...batch, ...prev].slice(0, 500));
+        // 🔒 [100条硬上限 Ring Buffer]: 内存中仅保留最近 100 条日志，大幅度削减内存开销与 DOM 调和压力
+        setLogs(prev => [...batch, ...prev].slice(0, 100));
     }, []);
 
     const handleLog = useCallback((type: 'INFO' | 'SUCCESS' | 'WARNING' | 'DANGER', message: string, immediate = false, extraMeta?: Partial<LogEntry>) => {
@@ -309,7 +310,6 @@ const AppContent: React.FC = () => {
         streamLogToDisk(newEntry);
 
         // 2. 区分【真正成交/开平仓动作】与【高频未触发/常规巡检日志】
-        // 排除“对冲未触发”等高频巡检提示，避免每秒密集同步调用 setLogs 打死主线程
         const isRoutineCheck = message.includes('未触发') || message.includes('巡检') || message.includes('心跳');
         const isRealTradeExecution = !isRoutineCheck && (
             immediate || 
@@ -327,8 +327,8 @@ const AppContent: React.FC = () => {
         );
 
         if (isRealTradeExecution) {
-            // 🔒 [真实交易穿透] 关键成交动作直推 UI，限制在 500 条 Ring Buffer
-            setLogs(prev => [newEntry, ...prev].slice(0, 500));
+            // 🔒 [真实交易穿透] 关键成交动作直推 UI，限制在 100 条 Ring Buffer
+            setLogs(prev => [newEntry, ...prev].slice(0, 100));
             lastLogUpdateRef.current = Date.now();
             return;
         }
@@ -336,8 +336,8 @@ const AppContent: React.FC = () => {
         // 常规审计日志进入微批次缓冲队列，250ms 批量合并更新一次
         logsPendingRef.current.unshift(newEntry);
         // 🔒 [硬上限内存队列]: 防止短时间内大量日志瞬间挤占 V8 堆内存
-        if (logsPendingRef.current.length > 500) {
-            logsPendingRef.current.length = 500;
+        if (logsPendingRef.current.length > 100) {
+            logsPendingRef.current.length = 100;
         }
         
         const now = Date.now();
@@ -906,11 +906,11 @@ const AppContent: React.FC = () => {
                 }
             }
 
-            // 4. THROTTLE UI UPDATE: Max 4 times per second (250ms) when visible, 3000ms when hidden
-            // rAF 帧率对齐与批量合并，彻底杜绝高频行情频繁触发 React Reconciliation 占满渲染主线程
+            // 4. THROTTLE UI UPDATE: Max 2 times per second (500ms) when visible, 3000ms when hidden
+            // 🔒 按照生产规范，增加 500ms 节流，避免每个 Tick 都触发全界面 setState 渲染
             const now = Date.now();
             const isTabHidden = typeof document !== 'undefined' && document.hidden;
-            const throttleLimit = isTabHidden ? 3000 : 250;
+            const throttleLimit = isTabHidden ? 3000 : 500;
             if (now - lastUiUpdateRef.current > throttleLimit) {
                 lastUiUpdateRef.current = now;
                 const schedule = typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame : (fn: () => void) => setTimeout(fn, 0);
@@ -4899,6 +4899,9 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     }}
                 />
             )}
+
+            {/* 🛡️ 全局 IP 漂移受控锁与断网熔断热自愈全屏悬浮面板 */}
+            <IpOutageAlertModal />
         </div>
     );
 };

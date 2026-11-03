@@ -1,4 +1,6 @@
 /**
+ * 🔒 LOCKED_MODULE: Browser KeepAlive Guard
+ * @LOCKED: 浏览器网页端专属防挂起与云端保活系统。已完全固化锁定，未经用户明确的专属书面指令，绝对严禁触碰、修改、重构或变动。
  * 🛡️ [BROWSER KEEPALIVE GUARD]: 浏览器网页端专属防挂起与云端保活系统
  * 
  * 解决问题：

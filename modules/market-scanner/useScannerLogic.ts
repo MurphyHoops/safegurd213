@@ -696,34 +696,38 @@ export const useScannerLogic = (
                 data = localTickers;
                 lastFetchFinishedTimeRef.current = Date.now();
             } else {
-                const baseUrl = 'https://fapi.binance.com/fapi/v1/ticker';
-                const endpoint = `${baseUrl}/24hr?_t=${Date.now()}`;
-                
-                const res = await fetchWithFallback(
-                    endpoint, 
-                    { cache: 'no-store', timeout: 8000 }, 
-                    (d) => Array.isArray(d) && d.length > 0, 
-                    directModeRef.current
-                );
-                
-                if (!isMountedRef.current) return; 
+                try {
+                    const baseUrl = 'https://fapi.binance.com/fapi/v1/ticker';
+                    const endpoint = `${baseUrl}/24hr?_t=${Date.now()}`;
+                    
+                    const res = await fetchWithFallback(
+                        endpoint, 
+                        { cache: 'no-store', timeout: 8000 }, 
+                        (d) => Array.isArray(d) && d.length > 0, 
+                        directModeRef.current
+                    );
+                    
+                    if (!isMountedRef.current) return; 
 
-                if (scanSessionIdRef.current !== sessionId) return;
-                
-                const rawParsed = await res.json();
-                lastFetchFinishedTimeRef.current = Date.now();
+                    if (scanSessionIdRef.current !== sessionId) return;
+                    
+                    const rawParsed = await res.json();
+                    lastFetchFinishedTimeRef.current = Date.now();
 
-                if (Array.isArray(rawParsed)) {
-                    data = rawParsed;
-                } else if (rawParsed && typeof rawParsed === 'object') {
-                    if (Array.isArray((rawParsed as any).data)) {
-                        data = (rawParsed as any).data;
+                    if (Array.isArray(rawParsed)) {
+                        data = rawParsed;
+                    } else if (rawParsed && typeof rawParsed === 'object') {
+                        if (Array.isArray((rawParsed as any).data)) {
+                            data = (rawParsed as any).data;
+                        }
                     }
-                }
 
-                // 同步喂入中央数据总线
-                if (data.length > 0) {
-                    klineDailyStore.save24hTickers(data);
+                    // 同步喂入中央数据总线
+                    if (data.length > 0) {
+                        klineDailyStore.save24hTickers(data);
+                    }
+                } catch (fetchErr: any) {
+                    console.warn("[Scanner] 24H 行情接口网络拉取波动/异常，平滑降级至本地或备用缓存:", fetchErr?.message || fetchErr);
                 }
             }
 
@@ -904,7 +908,11 @@ export const useScannerLogic = (
                                          errMsg.includes('aborted') || 
                                          errMsg.includes('AbortError') ||
                                          errMsg.includes('timed out') ||
-                                         errMsg.includes('TimeoutError');
+                                         errMsg.includes('TimeoutError') ||
+                                         errMsg.includes('Received HTML') ||
+                                         errMsg.includes('HTML instead of JSON') ||
+                                         errMsg.includes('502') ||
+                                         errMsg.includes('504');
             
             if (!isBenignNetworkNoise) {
                 console.error("Scanner Fetch Failed:", errMsg); 
@@ -1285,9 +1293,9 @@ export const useScannerLogic = (
             return wasCacheHit;
         };
 
-        // 🚀【本地数据库超高速并发扫描 - Stage 1 横盘蓄势过滤】:
-        // 全量基于本地日K数据库，20 协程并发毫秒级批处理，整轮 300+ 币种瞬间完成
-        const BATCH_SIZE_S1 = 20;
+        // 🚀【低内存平滑平稳并发扫描 - Stage 1 横盘蓄势过滤】:
+        // 限制并发数为 5，防止撑爆底层 C++ 网络栈 Buffer
+        const BATCH_SIZE_S1 = 5;
         for (let i = 0; i < targetSymbols.length; i += BATCH_SIZE_S1) {
             if (!isMountedRef.current || !majorTrendConfigRef.current?.enabled || majorScanAbortRef.current) break;
 

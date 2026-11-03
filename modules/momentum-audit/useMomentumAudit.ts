@@ -244,23 +244,37 @@ export const useMomentumAudit = (
 
         const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
 
-        // 🔒 [上游淘汰联动同步]: 收集上游列表3/列表2当前放行的合法 uniqueId。若上游（如列表2寿命根数到期）剔除，列表4缓存必须零延迟同步彻底删除！
+        // 🔒 [上游淘汰联动同步]: 收集上游列表3当前放行的合法 uniqueId
         const validIncomingIds = new Set<string>();
         currentCandidates.forEach(item => {
-            if (item.list3Results) {
+            if (item.list3Results && item.list3Results.length > 0) {
                 item.list3Results.forEach(res => {
-                    const isLatched = res.latched !== false && (res.latched === true || (list3Config ? checkList3SignalPasses(res, list3Config, item.adjacentStrictTrends) : true));
+                    const isLatched = currentConfig.enableThresholds === false ||
+                                      res.latched === true || 
+                                      (list3Config ? checkList3SignalPasses(res, list3Config) : true) ||
+                                      true;
                     if (isLatched) {
                         const cleanSym = normalizeSymbol(item.symbol);
                         validIncomingIds.add(`${cleanSym}-${res.tf}-${res.direction}`);
                     }
                 });
+            } else if (item.groupedResults && item.groupedResults.length > 0) {
+                item.groupedResults.forEach(gr => {
+                    const cleanSym = normalizeSymbol(item.symbol);
+                    validIncomingIds.add(`${cleanSym}-${gr.tf}-${gr.direction}`);
+                });
+            } else if (item.tf && item.direction) {
+                const cleanSym = normalizeSymbol(item.symbol);
+                validIncomingIds.add(`${cleanSym}-${item.tf}-${item.direction}`);
             }
         });
 
-        for (const key of Array.from(list4CacheRef.current.keys())) {
-            if (!validIncomingIds.has(key)) {
-                list4CacheRef.current.delete(key);
+        // 仅在当前有上游候选流入且已放行时剔除已被上游物理清空的数据，避免界面抖动或全清
+        if (currentCandidates.length > 0 && validIncomingIds.size > 0) {
+            for (const key of Array.from(list4CacheRef.current.keys())) {
+                if (!validIncomingIds.has(key)) {
+                    list4CacheRef.current.delete(key);
+                }
             }
         }
 
@@ -268,17 +282,24 @@ export const useMomentumAudit = (
         currentCandidates.forEach(item => {
             const livePrice = resolvePrice(item.symbol, currentPrices, item.price);
 
-            if (item.list3Results) {
+            if (item.list3Results && item.list3Results.length > 0) {
                 item.list3Results.forEach(res => {
-                    // 🎯 列表3放行信号全量进入列表4候选池：兼容 res.latched 判定与列表3配置合法性校验
-                    const isLatched = res.latched !== false && (res.latched === true || (list3Config ? checkList3SignalPasses(res, list3Config, item.adjacentStrictTrends) : true));
+                    // 🎯 列表3放行信号全量进入列表4候选池：只要位于 list3Results 中即视为合法放行流入
+                    const isLatched = currentConfig.enableThresholds === false ||
+                                      res.latched === true || 
+                                      (list3Config ? checkList3SignalPasses(res, list3Config) : true) ||
+                                      true;
                     if (!isLatched) return;
                     
                     const cleanSym = normalizeSymbol(item.symbol);
                     const uniqueId = `${cleanSym}-${res.tf}-${res.direction}`;
                     
-                    // If already permanently expired, skip
-                    if (expiredSignalCacheRef.current.has(uniqueId)) return;
+                    // 当上游列表3有活跃信号流入时，物理清除该信号的过期黑名单，防止历史残余锁死
+                    expiredSignalCacheRef.current.delete(uniqueId);
+                    if (currentConfig.enableThresholds === false) {
+                        fuseAuditLatchRef.current.delete(uniqueId);
+                        fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                    }
                     
                     const klineKey = `${cleanSym}-${res.tf}`;
 
@@ -334,23 +355,69 @@ export const useMomentumAudit = (
                         }
                     }
                     
-                    // LATCH LOGIC: If previously determined as permanently BLOCKED by fuse, retain latch
                     const latchedAudit = fuseAuditLatchRef.current.get(uniqueId);
                     const existing = list4CacheRef.current.get(uniqueId);
 
                     list4CacheRef.current.set(uniqueId, {
                         ...item,
-                        price: livePrice, // Inject fresh live price for dynamic anti-chase evaluation
+                        price: livePrice,
                         direction: res.direction,
                         tf: res.tf,
                         lag: structureEnriched?.lag ?? item.lag,
                         structure: structureEnriched,
                         historyExtremes: item.historyExtremes,
-                        fuseBlocked: existing?.fuseBlocked ?? (isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false),
-                        fuseReason: existing?.fuseReason ?? ((isAnyFuseEnabled && latchedAudit) ? (latchedAudit?.reason || '') : ''),
-                        fuseDetails: existing?.fuseDetails ?? latchedAudit?.details,
+                        fuseBlocked: isAnyFuseEnabled ? (existing?.fuseBlocked ?? latchedAudit?.blocked ?? false) : false,
+                        fuseReason: isAnyFuseEnabled ? (existing?.fuseReason ?? latchedAudit?.reason ?? '') : '',
+                        fuseDetails: isAnyFuseEnabled ? (existing?.fuseDetails ?? latchedAudit?.details) : undefined,
                         fuseLatched: isAnyFuseEnabled ? (latchedAudit?.blocked || false) : false
                     });
+                });
+            } else if (item.groupedResults && item.groupedResults.length > 0) {
+                item.groupedResults.forEach((gr: any) => {
+                    const cleanSym = normalizeSymbol(item.symbol);
+                    const grTf = gr.tf || '15m';
+                    const grDir = gr.direction || 'LONG';
+                    const uniqueId = `${cleanSym}-${grTf}-${grDir}`;
+                    
+                    expiredSignalCacheRef.current.delete(uniqueId);
+                    if (currentConfig.enableThresholds === false) {
+                        fuseAuditLatchRef.current.delete(uniqueId);
+                        fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                    }
+                    
+                    const existing = list4CacheRef.current.get(uniqueId);
+                    list4CacheRef.current.set(uniqueId, {
+                        ...item,
+                        price: livePrice,
+                        direction: grDir,
+                        tf: grTf,
+                        structure: item.structure,
+                        historyExtremes: item.historyExtremes,
+                        fuseBlocked: isAnyFuseEnabled ? (existing?.fuseBlocked ?? false) : false,
+                        fuseReason: isAnyFuseEnabled ? (existing?.fuseReason ?? '') : '',
+                        fuseLatched: false
+                    });
+                });
+            } else if (item.tf && item.direction) {
+                const cleanSym = normalizeSymbol(item.symbol);
+                const uniqueId = `${cleanSym}-${item.tf}-${item.direction}`;
+                
+                expiredSignalCacheRef.current.delete(uniqueId);
+                if (currentConfig.enableThresholds === false) {
+                    fuseAuditLatchRef.current.delete(uniqueId);
+                    fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                }
+                
+                list4CacheRef.current.set(uniqueId, {
+                    ...item,
+                    price: livePrice,
+                    direction: item.direction,
+                    tf: item.tf,
+                    structure: item.structure,
+                    historyExtremes: item.historyExtremes,
+                    fuseBlocked: isAnyFuseEnabled ? (item.fuseBlocked || false) : false,
+                    fuseReason: isAnyFuseEnabled ? item.fuseReason : '',
+                    fuseLatched: isAnyFuseEnabled ? (item.fuseLatched || false) : false
                 });
             }
         });
@@ -422,10 +489,14 @@ export const useMomentumAudit = (
             const cleanSym = normalizeSymbol(item.symbol);
             const uniqueId = `${cleanSym}-${item.tf}-${item.direction}`;
             
-            // If already permanently expired, skip
+            // If already permanently expired, skip (unless enableThresholds is OFF, in which case we clear cache and allow passthrough)
             if (expiredSignalCacheRef.current.has(uniqueId)) {
-                list4CacheRef.current.delete(uniqueId);
-                return;
+                if (currentConfig.enableThresholds === false) {
+                    expiredSignalCacheRef.current.delete(uniqueId);
+                } else {
+                    list4CacheRef.current.delete(uniqueId);
+                    return;
+                }
             }
             
             let shouldKeep = true;
@@ -435,10 +506,11 @@ export const useMomentumAudit = (
             // 🎯 核心铁律：破中轴且EMA10穿越EMA30、达到寿命根数、或突破偏离过大超出上限，当机立断直接彻底清除！
             if (item.momentum?.status === 'INVALID') {
                 const reason = item.momentum.invalidReason || '';
-                const isTerminalClear = reason.includes('中轴防守瓦解') || 
+                const isTerminalClear = currentConfig.enableThresholds !== false && (
+                                        reason.includes('中轴防守瓦解') || 
                                         reason.includes('信号寿命耗尽') || 
                                         reason.includes('彻底清除') || 
-                                        reason.includes('突破偏离过大拦截');
+                                        reason.includes('突破偏离过大拦截'));
 
                 if (isTerminalClear) {
                     shouldKeep = false;

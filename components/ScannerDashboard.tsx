@@ -1302,8 +1302,9 @@ const ScannerDashboardInner: React.FC<
       };
 
       const isManual = reason.includes("Manual") || reason.includes("手动") || reason.includes("快速开仓");
-      const isAuto = reason.includes("Auto") && !reason.includes("List1 Auto");
-      if (!config.enabled && !isManual) {
+      const isList4 = reason.includes("列表4");
+      const isAuto = (reason.includes("Auto") || isList4) && !reason.includes("List1 Auto");
+      if (!config.enabled && !isManual && !isList4) {
         if (onLog)
           onLog(
             "WARNING",
@@ -1313,7 +1314,7 @@ const ScannerDashboardInner: React.FC<
         return false;
       }
 
-      if (isAuto && !config.autoExecute) {
+      if (isAuto && !isList4 && !config.autoExecute) {
         if (onLog)
           onLog(
             "WARNING",
@@ -1330,9 +1331,9 @@ const ScannerDashboardInner: React.FC<
           ? backtestPositionsRef.current
           : livePositionsRef.current;
 
-      // 🛡️ [Anti-Double Open Safety Check]
+      // 🛡️ [Anti-Double Open Safety Check] (自动策略生效，手动开仓与复开允许透传)
       const existingPos = activePositions.find(p => normalizeSymbol(p.symbol) === cleanSymbol);
-      if (existingPos) {
+      if (existingPos && !isManual && !(extraProps as any)?.isReopened) {
         if (onLog) {
           onLog(
             "WARNING",
@@ -1367,6 +1368,7 @@ const ScannerDashboardInner: React.FC<
       const currentSymbolCount = currentSymbols.size;
       // Allow opening opposite direction (or adding to position) if symbol is already in portfolio
       if (
+        !isManual &&
         !currentSymbols.has(cleanSymbol) &&
         currentSymbolCount >= (config.maxOpenSymbols || 200)
       ) {
@@ -1391,7 +1393,7 @@ const ScannerDashboardInner: React.FC<
               )
             : (typeof config.openAmount === "number" && config.openAmount > 0 ? config.openAmount : 10));
 
-      // List 6: Total Capital Limit Check
+      // List 6: Total Capital Limit Check (仅对自动策略校验，手动开仓放行)
       const currentTotalValue = activePositions.reduce((sum, p) => {
         const pPrice =
           currentPricesRef.current[normalizeSymbol(p.symbol)] ||
@@ -1401,12 +1403,13 @@ const ScannerDashboardInner: React.FC<
       }, 0);
 
       // Breaker Guard
-      if (side === PositionSide.SHORT && config.breakerConfig?.enabled && isBreakerActive) {
+      if (!isManual && side === PositionSide.SHORT && config.breakerConfig?.enabled && isBreakerActive) {
           if (onLog) onLog("DANGER", `交易拦截 (${cleanSymbol}): 触发防恐慌机制，禁止开空。`);
           return false;
       }
 
       if (
+        !isManual &&
         config.maxTotalValue > 0 &&
         currentTotalValue + amount > config.maxTotalValue
       ) {
@@ -1428,7 +1431,7 @@ const ScannerDashboardInner: React.FC<
           ? ((currentTotalValue + amount) / config.maxTotalValue) * 100
           : 0;
       const exposureLimit = config.maxExposurePercent || 95;
-      if (usagePct > exposureLimit) {
+      if (!isManual && usagePct > exposureLimit) {
         if (onLog)
           onLog(
             "DANGER",
@@ -1441,7 +1444,7 @@ const ScannerDashboardInner: React.FC<
       }
 
       // Check Health % (List 6 Health Limit: 当健康度低于 minHealthPercent 时不开仓)
-      if (typeof config.minHealthPercent === "number" && config.minHealthPercent > 0) {
+      if (!isManual && typeof config.minHealthPercent === "number" && config.minHealthPercent > 0) {
         const CONTRACT_LEVERAGE = 20;
         const currentTotalPnL = activePositions.reduce((sum, p) => sum + (p.unrealizedPnL || 0), 0);
         const availableMarginWithLeverage = Math.max(0, (balance + currentTotalPnL) - (currentTotalValue / CONTRACT_LEVERAGE));

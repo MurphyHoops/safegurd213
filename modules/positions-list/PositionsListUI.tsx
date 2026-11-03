@@ -16,6 +16,7 @@ import { binanceWs } from '../../services/binanceWs';
 import { audioService } from '../../services/audioService';
 import { backtestDb } from '../../services/backtest/db';
 import { NetworkWidget } from '../../components/NetworkWidget';
+import { SystemDiagnosticsModal } from '../../components/SystemDiagnosticsModal';
 
 // @LOCKED: PositionsListUI logic
 export const PositionsListModule: React.FC<PositionsListProps> = ({
@@ -47,6 +48,7 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     const [positionFilter, setPositionFilter] = useState<'ALL' | 'STD_LONG_WIN' | 'STD_LONG_LOSS' | 'STD_SHORT_WIN' | 'STD_SHORT_LOSS' | 'HEDGE'>('ALL');
     const [confirmClear, setConfirmClear] = useState(false);
     const [confirmClearRecords, setConfirmClearRecords] = useState(false);
+    const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
     const [settingsTargetPosition, setSettingsTargetPosition] = useState<Position | null>(null);
     const [addPositionTarget, setAddPositionTarget] = useState<Position | null>(null);
     const [isHoveredOnList, setIsHoveredOnList] = useState(false);
@@ -389,6 +391,16 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                     
                     <div className="flex items-center gap-2">
                         {/* 控制按钮 */}
+
+                        <button 
+                            type="button"
+                            onClick={() => setShowDiagnosticsModal(true)}
+                            className="flex items-center gap-1.5 text-[10px] font-bold bg-emerald-950/60 hover:bg-emerald-900/80 border border-emerald-500/40 text-emerald-300 hover:text-emerald-100 px-2.5 py-1 rounded transition-all shadow-sm active:scale-95"
+                            title="点击开启一键全系统健康自检与隐患排查 (1-2秒内输出巡检诊断报告)"
+                        >
+                            <Activity size={12} className="text-emerald-400 animate-pulse" />
+                            <span>一键全系统体检</span>
+                        </button>
 
                         <button 
                             onClick={onOpenTradeModal} 
@@ -780,6 +792,11 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                     }}
                 />
             )}
+
+            <SystemDiagnosticsModal 
+                isOpen={showDiagnosticsModal} 
+                onClose={() => setShowDiagnosticsModal(false)} 
+            />
         </div>
     );
 };

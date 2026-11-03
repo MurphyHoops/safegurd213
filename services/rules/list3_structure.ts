@@ -1,273 +1,160 @@
-
 // 🔒 LOCKED_MODULE: LIST 3 [结构深度审计 & 过滤规则]
-// @LOCKED: 严格原子化单独锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何算法与流转逻辑。
+// @LOCKED: 严格原子化单独锁定。包含结构审计、同色交叉、波幅限制等全部规则。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何算法与流转逻辑。
 
-import { calculateEMA, calculateRSI, calculateBollingerBands } from '../indicators';
+import { calculateEMA, calculateRSI } from '../indicators';
 import { List3Config, ScannerItem } from '../../components/Scanner/scannerTypes';
 
-/**
- * Centrally check whether a List 3 signal passes the currently active filter configurations.
- * If a filter switch is turned OFF (false), that filter rule is completely bypassed.
- */
-export function checkList3SignalPasses(
-    signal: { tf: string; direction: 'LONG' | 'SHORT'; structure?: any; latched?: boolean },
-    config: List3Config,
-    adjacentStrictTrends?: Record<string, boolean>
-): boolean {
-    return getList3SignalRejectReason(signal, config, adjacentStrictTrends) === null;
+export interface StructureAuditTask {
+    symbol: string;
+    price: number;
+    direction: 'LONG' | 'SHORT';
+    tf: string;
+    time: number;
+    periodChange?: number; // Pass-through for 8am change / 24h change
 }
 
-export function getList3SignalRejectReason(
-    signal: { tf: string; direction: 'LONG' | 'SHORT'; structure?: any; latched?: boolean },
-    config: List3Config,
-    adjacentStrictTrends?: Record<string, boolean>
-): string | null {
-    // 1. Timeframe filter: If specific timeframes are configured, check inclusion
-    if (config.timeframes && config.timeframes.length > 0 && !config.timeframes.includes(signal.tf)) {
-        return `由列表3周期过滤规则删除 [未选中${signal.tf}周期]`;
-    }
-
-    const s = signal.structure;
-    if (!s) return null;
-
-    // 2. Strict Trend (严格趋势) - ONLY filter if enabled and mode is 'FILTER'
-    const isStrictTrendFilter = config.strictTrend === true && (config.strictTrendMode || 'FILTER') === 'FILTER';
-    if (isStrictTrendFilter && !s.isStrictTrend) {
-        return '由列表3严格趋势过滤规则删除';
-    }
-
-    // 3. Candle Color (同色交叉) - ONLY filter if enabled and mode is 'FILTER'
-    const isColorFilter = config.checkCandleColor === true && (config.checkCandleColorMode || 'FILTER') === 'FILTER';
-    if (isColorFilter && !s.isColorValid) {
-        return '由列表3同色交叉规则删除';
-    }
-
-    // 4. Amplitude Audit (波幅审计) - ONLY filter if switch is explicitly ON
-    if (config.enableAmplitudeAudit === true) {
-        if (typeof config.maxLocation === 'number' && !isNaN(config.maxLocation) && s.locationPct > config.maxLocation) {
-            return `由列表3波幅审计规则删除 [通道位置 ${s.locationPct.toFixed(1)}% > ${config.maxLocation}%]`;
-        }
-        if (typeof config.minCrossCount === 'number' && !isNaN(config.minCrossCount) && s.crossCount < config.minCrossCount) {
-            return `由列表3波幅审计规则删除 [穿越次数 ${s.crossCount} < ${config.minCrossCount}]`;
-        }
-        if (typeof config.maxBBW === 'number' && !isNaN(config.maxBBW) && s.bbw > config.maxBBW) {
-            return `由列表3波幅审计规则删除 [布林带宽 ${(s.bbw * 100).toFixed(1)}% > ${(config.maxBBW * 100).toFixed(1)}%]`;
-        }
-    }
-
-    // 5. RSI Filter (RSI 动能过滤) - ONLY filter if switch is explicitly ON (enableRsi === true)
-    if (config.enableRsi === true) {
-        if (signal.direction === 'LONG') {
-            const min = (typeof config.rsiLongMin === 'number' && !isNaN(config.rsiLongMin)) ? config.rsiLongMin : 40;
-            const max = (typeof config.rsiLongMax === 'number' && !isNaN(config.rsiLongMax)) ? config.rsiLongMax : 90;
-            if (s.rsi < min || s.rsi > max) {
-                return `由列表3RSI过滤规则删除 [多单RSI: ${typeof s.rsi === 'number' ? s.rsi.toFixed(1) : '--'}, 范围: ${min}-${max}]`;
-            }
-        } else {
-            const min = (typeof config.rsiShortMin === 'number' && !isNaN(config.rsiShortMin)) ? config.rsiShortMin : 10;
-            const max = (typeof config.rsiShortMax === 'number' && !isNaN(config.rsiShortMax)) ? config.rsiShortMax : 60;
-            if (s.rsi < min || s.rsi > max) {
-                return `由列表3RSI过滤规则删除 [空单RSI: ${typeof s.rsi === 'number' ? s.rsi.toFixed(1) : '--'}, 范围: ${min}-${max}]`;
-            }
-        }
-    }
-
-    // 6. Multi-Resonance (时空共振) - ONLY filter if enabled and mode is 'FILTER'
-    const isResonanceFilter = config.enableMultiResonance === true && (config.multiResonanceMode || 'FILTER') === 'FILTER';
-    if (isResonanceFilter && adjacentStrictTrends) {
-        const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '8h', '1d', '3d'];
-        const idx = ALL_TFS.indexOf(signal.tf);
-        if (idx !== -1) {
-            const sub1Tf = idx > 0 ? ALL_TFS[idx - 1] : null;
-            const sub2Tf = idx > 1 ? ALL_TFS[idx - 2] : null;
-            const dir = signal.direction;
-            const sub1Ok = sub1Tf ? !!adjacentStrictTrends[`${sub1Tf}-${dir}`] : true;
-            const sub2Ok = sub2Tf ? !!adjacentStrictTrends[`${sub2Tf}-${dir}`] : true;
-            if (!sub1Ok || !sub2Ok) {
-                const subLabels = [sub1Tf, sub2Tf].filter(Boolean).join('、');
-                return `由列表3时空共振规则删除 [小两级(${subLabels})未同时呈${dir === 'LONG' ? '多头' : '空头'}发散]`;
-            }
-        }
-    }
-
-    // 7. Advanced Filter (高级过滤 - EMA80 震荡结构审计) & Prior Reverse Divergence (前置洗盘反发散)
-    const hasAdvFilter = config.enableAdvancedFilter === true && (config.advancedFilterMode || 'FILTER') === 'FILTER';
-    const hasPriorRevFilter = config.enablePriorReverseDivergence === true && (config.priorReverseMode || 'FILTER') === 'FILTER';
-
-    if ((hasAdvFilter || hasPriorRevFilter) && s) {
-        const maxIntersections = typeof config.filterCrossingCount === 'number' ? config.filterCrossingCount : 2;
-        const advPassed = (typeof s.ema80Intersections === 'number' && s.ema80Intersections <= maxIntersections);
-        const priorRevPassed = !!s.isPriorReverseFound;
-
-        if (hasAdvFilter && hasPriorRevFilter) {
-            // OR (逻辑或) 关系：只要符合其中一个过滤规则，即留在列表3
-            if (!advPassed && !priorRevPassed) {
-                return `由列表3高级过滤/前置洗盘反发散组合规则删除 [EMA80震荡审计与前置洗盘发散均未满足]`;
-            }
-        } else if (hasAdvFilter && !advPassed) {
-            const klineCount = config.filterTimeParam || 100;
-            const tfLabel = (config.filterPeriodMode === 'CUSTOM' && config.filterKLinePeriod) ? config.filterKLinePeriod : signal.tf;
-            return `由列表3高级过滤规则删除 [最近 ${klineCount} 根 ${tfLabel} K线与EMA${config.filterEmaPeriod || 80}相交 ${s.ema80Intersections} 次 > 上限 ${maxIntersections} 次(震荡整理中)]`;
-        } else if (hasPriorRevFilter && !priorRevPassed) {
-            return `由列表3前置洗盘反发散规则删除 [未追溯到前置反向发散洗盘形态]`;
-        }
-    }
-
-    return null;
-}
-
-export function analyzeList3Structure(
-    task: { symbol: string, tf: string, direction: 'LONG' | 'SHORT', time: number, price: number, periodChange?: number, isPriorReverseFound?: boolean },
+export function performStructureAudit(
+    task: StructureAuditTask,
     closes: number[],
     highs: number[],
     lows: number[],
     opens: number[],
     volumes: number[],
     config: List3Config,
-    rawKlines: any[] // Needed for timestamp checks
+    klines?: any[]
 ): ScannerItem | null {
-    
+
+    if (!closes || closes.length < 30) return null;
+
     const idx = closes.length - 1;
-    if (idx < 0) return null; 
+    const currentClose = closes[idx];
+    
+    // --- METRIC 1: RSI Level & Momentum ---
+    const rsiArr = calculateRSI(closes, config.rsiPeriod || 14);
+    const currentRsi = rsiArr.length > 0 ? rsiArr[rsiArr.length - 1] : 50;
 
-    // 0. FIND THE SIGNAL INDEX
-    // Locate the exact candle index where the List 2 signal occurred using the timestamp
-    let signalIdx = -1;
-    if (task.time && rawKlines && rawKlines.length > 0) {
-        // Calculate timeframe duration in milliseconds
-        const tfUnit = task.tf ? task.tf.slice(-1) : 'm';
-        const tfVal = task.tf ? parseInt(task.tf) || 15 : 15;
-        let tfMs = 15 * 60 * 1000;
-        if (tfUnit === 'm') tfMs = tfVal * 60 * 1000;
-        else if (tfUnit === 'h') tfMs = tfVal * 60 * 60 * 1000;
-        else if (tfUnit === 'd') tfMs = tfVal * 24 * 60 * 60 * 1000;
-
-        // Primary Match: Check if signal timestamp falls within the candle interval [openTime, openTime + tfMs)
-        signalIdx = rawKlines.findIndex((k: any) => task.time >= k[0] && task.time < k[0] + tfMs);
-        
-        // Secondary Match: If exact interval missed, find the candle with the smallest timestamp difference
-        if (signalIdx === -1) {
-             let minDiff = Infinity;
-             let closestIdx = -1;
-             rawKlines.forEach((k: any, i: number) => {
-                 const diff = Math.abs(k[0] - task.time);
-                 if (diff < minDiff) {
-                     minDiff = diff;
-                     closestIdx = i;
-                 }
-             });
-             
-             if (closestIdx !== -1) { 
-                 signalIdx = closestIdx;
-             }
+    // --- METRIC 2: Bollinger Band Width (BBW) Volatility ---
+    let bbw = 0;
+    const bbPeriod = 20;
+    if (closes.length >= bbPeriod) {
+        const slice = closes.slice(-bbPeriod);
+        const sum = slice.reduce((a, b) => a + b, 0);
+        const mean = sum / bbPeriod;
+        const variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / bbPeriod;
+        const stdDev = Math.sqrt(variance);
+        const upper = mean + 2 * stdDev;
+        const lower = mean - 2 * stdDev;
+        if (mean > 0) {
+            bbw = ((upper - lower) / mean) * 100;
         }
     }
-    
-    // If still not found, default to current index as last resort (assuming fresh signal)
-    if (signalIdx === -1) {
-        signalIdx = idx;
-    }
 
-    // --- METRIC 1: TREND CHECK (AUDIT EMA ALIGNMENT) ---
-    // Check both signal time and current time. If either satisfies, we consider it a trend pass.
-    let isSignalTrendValid = false;
-    let isCurrentTrendValid = false;
-    
-    // Always calculate EMAs 
-    let ema10 = calculateEMA(closes, 10);
-    let ema20 = calculateEMA(closes, 20);
-    let ema30 = calculateEMA(closes, 30);
-    let ema40 = calculateEMA(closes, 40);
-    let ema80 = calculateEMA(closes, 80);
+    // --- METRIC 3: Pure EMAs Alignment & Strict Trend Check ---
+    const ema10 = calculateEMA(closes, 10);
+    const ema20 = calculateEMA(closes, 20);
+    const ema30 = calculateEMA(closes, 30);
+    const ema40 = calculateEMA(closes, 40);
+    const ema80 = calculateEMA(closes, 80);
 
     const getVal = (arr: number[], index: number, period: number) => {
         const offset = index - (period - 1);
-        if (offset < 0 || offset >= arr.length) return -1;
-        const val = arr[offset];
-        return (isNaN(val)) ? -1 : val;
+        return (offset >= 0 && offset < arr.length) ? arr[offset] : undefined;
     };
 
-    const checkFan = (index: number) => {
-        // Need at least 40 candles for a valid trend (EMA10-40)
-        if (index < 39) return false; 
-        
-        const c10 = getVal(ema10, index, 10);
-        const c20 = getVal(ema20, index, 20);
-        const c30 = getVal(ema30, index, 30);
-        const c40 = getVal(ema40, index, 40);
+    const e10 = getVal(ema10, idx, 10);
+    const e20 = getVal(ema20, idx, 20);
+    const e30 = getVal(ema30, idx, 30);
+    const e40 = getVal(ema40, idx, 40);
+    const e80 = getVal(ema80, idx, 80);
 
-        // Required: at least EMAs 10, 20, 30, 40 must be available
-        if (c10 === -1 || c20 === -1 || c30 === -1 || c40 === -1) return false;
-
+    let isStrictTrend = true;
+    if (e10 !== undefined && e20 !== undefined && e30 !== undefined) {
         if (task.direction === 'LONG') {
-            return (c10 > c20 && c20 > c30 && c30 > c40);
+            isStrictTrend = e10 > e20 && e20 > e30;
+            if (e40 !== undefined) isStrictTrend = isStrictTrend && e30 > e40;
         } else {
-            return (c10 < c20 && c20 < c30 && c30 < c40);
+            isStrictTrend = e10 < e20 && e20 < e30;
+            if (e40 !== undefined) isStrictTrend = isStrictTrend && e30 < e40;
         }
-    };
-
-    isSignalTrendValid = checkFan(signalIdx);
-    isCurrentTrendValid = checkFan(idx);
-    // 方案A：只要当前最新 K 线（isCurrentTrendValid）满足严格趋势即可进入列表3
-    const isStrictTrend = isCurrentTrendValid;
-
-    // --- METRIC 2: Candle Color Check ---
-    const sClose = closes[signalIdx];
-    const sOpen = opens[signalIdx];
-    const isGreen = sClose >= sOpen;
-    const isColorValid = task.direction === 'LONG' ? isGreen : !isGreen;
-
-    // --- METRIC 3: Post-Signal Extreme (DEFENSE & BREAKOUT PURITY BACKTRACE) ---
-    const signalClose = closes[signalIdx];
-    const signalHigh = highs[signalIdx];
-    const signalLow = lows[signalIdx];
-
-    let postSignalExtreme = task.price; 
-    let postSignalMaxHigh = -Infinity;
-    let postSignalMinLow = Infinity;
-    
-    if (signalIdx < idx) {
-        const checkStart = signalIdx + 1; 
-        if (task.direction === 'LONG') {
-            let minL = Infinity;
-            for(let i = checkStart; i <= idx; i++) if(lows[i] < minL) minL = lows[i];
-            postSignalExtreme = Math.min(minL, task.price); 
-
-            // 检查信号之后、当前K线之前的历史已完成K线最高价，判断是否曾发生过历史突破
-            let maxH = -Infinity;
-            for(let i = checkStart; i < idx; i++) {
-                if(highs[i] > maxH) maxH = highs[i];
-            }
-            postSignalMaxHigh = maxH;
-        } else {
-            let maxH = -Infinity;
-            for(let i = checkStart; i <= idx; i++) if(highs[i] > maxH) maxH = highs[i];
-            postSignalExtreme = Math.max(maxH, task.price);
-
-            // 检查信号之后、当前K线之前的历史已完成K线最低价，判断是否曾发生过历史突破
-            let minL = Infinity;
-            for(let i = checkStart; i < idx; i++) {
-                if(lows[i] < minL) minL = lows[i];
-            }
-            postSignalMinLow = minL;
-        }
-    } else {
-        postSignalExtreme = task.price;
-        postSignalMaxHigh = -Infinity;
-        postSignalMinLow = Infinity;
     }
 
-    // --- METRIC 4: 5K 爆发推进 (5-Candle Window & 6 Combos containing K3: 123, 23, 234, 3, 34, 345) ---
-    // 规则：以信号K线为第3根(K3, 即 signalIdx)，前面两根为1(S-2)和2(S-1)，后面两根为4(S+1)和5(S+2)。
-    // 必须包含信号K线K3在内的6种组合：
-    // - 组合 123: [K1, K2, K3] (S-2 至 S)
-    // - 组合 23:  [K2, K3]     (S-1 至 S)
-    // - 组合 234: [K2, K3, K4] (S-1 至 S+1)
-    // - 组合 3:   [K3]         (S 单根信号K)
-    // - 组合 34:  [K3, K4]     (S 至 S+1)
-    // - 组合 345: [K3, K4, K5] (S 至 S+2)
-    // 判定：做多涨幅 (Close - Open) / Open，做空跌幅 (Open - Close) / Open。
-    // 只要包含第3根K线在内的任意组合涨/跌幅达到设定阈值 (默认 1.0%) 即算达标通过。
+    // --- METRIC 4: Signal Candle Validation & Color Alignment ---
+    let signalIdx = idx;
+    if (task.time && task.time > 0) {
+        signalIdx = idx;
+    }
+
+    const signalClose = closes[signalIdx] || currentClose;
+    const signalOpen = opens[signalIdx] || signalClose;
+    const signalHigh = highs[signalIdx] || signalClose;
+    const signalLow = lows[signalIdx] || signalClose;
+
+    const isColorValid = task.direction === 'LONG'
+        ? signalClose > signalOpen
+        : signalClose < signalOpen;
+
+    // Post-signal Extreme & Tracking
+    let postSignalExtreme = task.direction === 'LONG' ? Infinity : -Infinity;
+    let postSignalMaxHigh = -Infinity;
+    let postSignalMinLow = Infinity;
+
+    for (let i = signalIdx; i <= idx; i++) {
+        const cHigh = highs[i] || closes[i];
+        const cLow = lows[i] || closes[i];
+        if (cHigh > postSignalMaxHigh) postSignalMaxHigh = cHigh;
+        if (cLow < postSignalMinLow) postSignalMinLow = cLow;
+
+        if (task.direction === 'LONG') {
+            if (cLow < postSignalExtreme) postSignalExtreme = cLow;
+        } else {
+            if (cHigh > postSignalExtreme) postSignalExtreme = cHigh;
+        }
+    }
+
+    // --- 前 NK 突破/反转门禁逻辑 (Dynamic N-Candle Breakout Gate) ---
+    const revCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
+    let isReverse3K = false;
+    let isBreakout3K = false;
+    let maxClose3 = 0;
+    let minClose3 = 0;
+
+    if (signalIdx > 0) {
+        const startRevIdx = Math.max(0, signalIdx - revCount);
+        const sliceCloses = closes.slice(startRevIdx, signalIdx);
+        if (sliceCloses.length > 0) {
+            maxClose3 = Math.max(...sliceCloses);
+            minClose3 = Math.min(...sliceCloses);
+            
+            if (task.direction === 'LONG') {
+                isBreakout3K = signalClose > maxClose3;
+                isReverse3K = signalClose < minClose3;
+            } else {
+                isBreakout3K = signalClose < minClose3;
+                isReverse3K = signalClose > maxClose3;
+            }
+        }
+    }
+
+    // 🔒【高级过滤相交限制】: 在最近 N 根 K 线内，K 线 High/Low 与 EMA80 相交次数计算
+    let ema80Intersections = 0;
+    const filterKlines = config.filterTimeParam || 100;
+    const filterMaxIntersections = config.filterCrossingCount || 3;
+    const startFilterIdx = Math.max(0, idx - filterKlines + 1);
+
+    if (ema80 && ema80.length > 0) {
+        for (let k = startFilterIdx; k <= idx; k++) {
+            const h = highs[k];
+            const l = lows[k];
+            const eVal = getVal(ema80, k, 80);
+            if (eVal !== undefined && l !== undefined && h !== undefined) {
+                if (l < eVal && h > eVal) {
+                    ema80Intersections++;
+                }
+            }
+        }
+    }
+
+    // 🔒 [5K 爆发推进物理算法重构 - 严格基于 5K 组合内最低开盘价到最高收盘价的真实幅度]
     let thrustThreshold = 1.0;
     try {
         const activeId = typeof window !== 'undefined' ? localStorage.getItem("SCANNER_SELECTED_STRATEGY_ID") : null;
@@ -287,41 +174,31 @@ export function analyzeList3Structure(
     let isThrustValid = false;
     let maxThrust = -Infinity;
 
-    const combos = [
-        { name: '123', s: signalIdx - 2, e: signalIdx },
-        { name: '23',  s: signalIdx - 1, e: signalIdx },
-        { name: '234', s: signalIdx - 1, e: signalIdx + 1 },
-        { name: '3',   s: signalIdx,     e: signalIdx },
-        { name: '34',  s: signalIdx,     e: signalIdx + 1 },
-        { name: '345', s: signalIdx,     e: signalIdx + 2 }
-    ];
+    if (signalIdx >= 0 && opens.length > 0 && closes.length > 0) {
+        const winStart = Math.max(0, signalIdx - 2);
+        const winEnd = Math.min(closes.length - 1, signalIdx + 2);
 
-    for (const c of combos) {
-        if (c.s >= 0 && c.e < closes.length && c.e >= c.s) {
-            const o = opens[c.s];
-            const cl = closes[c.e];
-            if (o > 0) {
-                const pushPct = task.direction === 'LONG'
-                    ? ((cl - o) / o) * 100
-                    : ((o - cl) / o) * 100;
-                if (pushPct > maxThrust) {
-                    maxThrust = pushPct;
+        // 遍历所有开盘位置 i 与其后的收盘位置 j (保证时间顺向)
+        for (let i = winStart; i <= winEnd; i++) {
+            for (let j = i; j <= winEnd; j++) {
+                if (i <= signalIdx && j >= signalIdx) {
+                    const openPrice = opens[i];
+                    const closePrice = closes[j];
+                    if (openPrice > 0 && closePrice > 0) {
+                        const pushPct = task.direction === 'LONG'
+                            ? ((closePrice - openPrice) / openPrice) * 100
+                            : ((openPrice - closePrice) / openPrice) * 100;
+                        if (pushPct > maxThrust) {
+                            maxThrust = pushPct;
+                        }
+                    }
                 }
             }
         }
     }
 
-    // 边界容错：若信号K位于最左端(signalIdx < 2)导致无完整3根组合，则兜底检查已有区间的位移
-    if (maxThrust === -Infinity && signalIdx >= 0) {
-        const o = opens[0];
-        const cl = closes[Math.min(closes.length - 1, signalIdx + 2)];
-        if (o > 0) {
-            maxThrust = task.direction === 'LONG'
-                ? ((cl - o) / o) * 100
-                : ((o - cl) / o) * 100;
-        } else {
-            maxThrust = 0;
-        }
+    if (maxThrust === -Infinity || isNaN(maxThrust)) {
+        maxThrust = 0;
     }
 
     if (maxThrust >= thrustThreshold) {
@@ -332,189 +209,51 @@ export function analyzeList3Structure(
     let locationPct = 50;
     let crossCount = 0;
 
-    // Always calculate these metrics, don't gate behind 'config.enableResonance'
     const lb = config.lookback || 80;
     const startCheck = Math.max(0, idx - lb);
     
     let periodHigh = -Infinity;
     let periodLow = Infinity;
-    
+
     for (let i = startCheck; i <= idx; i++) {
         if (highs[i] > periodHigh) periodHigh = highs[i];
         if (lows[i] < periodLow) periodLow = lows[i];
-    }
-
-    const range = periodHigh - periodLow;
-    const currentPrice = closes[idx];
-    
-    locationPct = range > 0 ? ((currentPrice - periodLow) / range) * 100 : 50;
-
-    const ema20Arr = ema20.length > 0 ? ema20 : calculateEMA(closes, 20);
-    for (let i = startCheck; i <= idx; i++) {
-        const e20Idx = i - 19;
-        if (e20Idx >= 0 && e20Idx < ema20Arr.length) {
-            const e20Val = ema20Arr[e20Idx];
-            if (lows[i] < e20Val && highs[i] > e20Val) {
-                crossCount++;
-            }
-        }
-    }
-
-    // --- METRIC 6: RSI & BBW ---
-    const rsiArr = calculateRSI(closes, 14);
-    const currentRsi = rsiArr[rsiArr.length - 1] || 50;
-
-    const { upper, lower } = calculateBollingerBands(closes, 20, 2);
-    const curUp = upper[upper.length - 1];
-    const curLow = lower[lower.length - 1];
-    const curMid = (curUp + curLow) / 2;
-    const bbw = curMid !== 0 ? (curUp - curLow) / curMid : 0;
-
-    // --- METRIC 7: 3K Breakout Check (前三K突破: 严格以当前K线为锚点向左看前3根收盘价极值) ---
-    let isBreakout3K = false;
-    let maxClose3: number | undefined = undefined;
-    let minClose3: number | undefined = undefined;
-    if (idx >= 3) {
-        const c1 = closes[idx - 1];
-        const c2 = closes[idx - 2];
-        const c3 = closes[idx - 3];
-        maxClose3 = Math.max(c1, c2, c3);
-        minClose3 = Math.min(c1, c2, c3);
-        if (task.direction === 'LONG') {
-            if (task.price > maxClose3) {
-                isBreakout3K = true;
-            }
-        } else {
-            if (task.price < minClose3) {
-                isBreakout3K = true;
-            }
-        }
-    } else {
-        isBreakout3K = true;
-    }
-    const isReverse3K = !isBreakout3K;
-
-    // --- METRIC 8: Advanced Filter (高级过滤 - EMA80 震荡结构审计) ---
-    let ema80Intersections = 0;
-    const filterEmaPeriod = config.filterEmaPeriod || 80;
-    const filterKlineCount = config.filterTimeParam || 100;
-    const filterMaxIntersections = typeof config.filterCrossingCount === 'number' ? config.filterCrossingCount : 2;
-
-    let targetHighs = highs;
-    let targetLows = lows;
-    let targetCloses = closes;
-
-    // CUSTOM mode: If user chooses a fixed timeframe and historyExtremes is present
-    if (config.filterPeriodMode === 'CUSTOM' && config.filterKLinePeriod && (task as any).historyExtremes) {
-        const { highs1h, lows1h } = (task as any).historyExtremes;
-        let hoursPerPeriod = 1;
-        switch (config.filterKLinePeriod) {
-            case '15m': hoursPerPeriod = 0.25; break;
-            case '1h': hoursPerPeriod = 1; break;
-            case '4h': hoursPerPeriod = 4; break;
-            case '1d': hoursPerPeriod = 24; break;
-            case '1w': hoursPerPeriod = 168; break;
-            case '1M': hoursPerPeriod = 720; break;
-            case '1Q': hoursPerPeriod = 2160; break;
-        }
-        if (highs1h && lows1h && highs1h.length > 0 && hoursPerPeriod >= 1) {
-            const hT: number[] = [];
-            const lT: number[] = [];
-            for (let i = 0; i < highs1h.length; i += hoursPerPeriod) {
-                const chunkH = highs1h.slice(i, Math.min(highs1h.length, i + hoursPerPeriod));
-                const chunkL = lows1h.slice(i, Math.min(lows1h.length, i + hoursPerPeriod));
-                if (chunkH.length > 0) {
-                    hT.push(Math.max(...chunkH));
-                    lT.push(Math.min(...chunkL));
-                }
-            }
-            targetHighs = hT;
-            targetLows = lT;
-            targetCloses = hT.map((h, i2) => (h + lT[i2]) / 2);
-        }
-    }
-
-    if (targetCloses.length >= filterEmaPeriod) {
-        const fullEma = calculateEMA(targetCloses, filterEmaPeriod);
-        const slicedHighs = targetHighs.slice(-filterKlineCount);
-        const slicedLows = targetLows.slice(-filterKlineCount);
-        const slicedCloses = targetCloses.slice(-filterKlineCount);
-        const slicedEma = fullEma.slice(-filterKlineCount);
-
-        for (let i = 0; i < slicedCloses.length; i++) {
-            const low = slicedLows[i];
-            const high = slicedHighs[i];
-            const emaVal = slicedEma[i];
-            if (emaVal !== undefined && low < emaVal && high > emaVal) {
-                ema80Intersections++;
-            }
-        }
-    }
-
-    // --- METRIC 9: Prior Reverse Divergence Check (前置洗盘反发散 - 列表3独立结构审计) ---
-    let isPriorReverseFound = task.isPriorReverseFound ?? (task as any).isPriorReverseFound ?? false;
-
-    if (!isPriorReverseFound && closes.length >= 40) {
-        const priorLookback = (config.priorReverseLookbackBars !== undefined && !Number.isNaN(config.priorReverseLookbackBars))
-            ? Math.max(1, config.priorReverseLookbackBars)
-            : 20;
-
-        // 1. 追溯本轮发散形态的初生起爆原点 (Genesis Bar)
-        let genesisIdx = signalIdx;
-        if (task.direction === 'LONG') {
-            for (let g = signalIdx; g >= Math.max(39, signalIdx - 100); g--) {
-                const gE10 = getVal(ema10, g, 10);
-                const gE20 = getVal(ema20, g, 20);
-                const gE30 = getVal(ema30, g, 30);
-                const gE40 = getVal(ema40, g, 40);
-                if (gE10 !== -1 && gE20 !== -1 && gE30 !== -1 && gE40 !== -1) {
-                    if (gE10 > gE20 && gE20 > gE30 && gE30 > gE40) {
-                        genesisIdx = g;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        } else {
-            for (let g = signalIdx; g >= Math.max(39, signalIdx - 100); g--) {
-                const gE10 = getVal(ema10, g, 10);
-                const gE20 = getVal(ema20, g, 20);
-                const gE30 = getVal(ema30, g, 30);
-                const gE40 = getVal(ema40, g, 40);
-                if (gE10 !== -1 && gE20 !== -1 && gE30 !== -1 && gE40 !== -1) {
-                    if (gE10 < gE20 && gE20 < gE30 && gE30 < gE40) {
-                        genesisIdx = g;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
+        
+        if (i > startCheck) {
+            const prevC = closes[i - 1];
+            const currC = closes[i];
+            const e10Val = getVal(ema10, i, 10);
+            if (e10Val) {
+                if ((prevC <= e10Val && currC > e10Val) || (prevC >= e10Val && currC < e10Val)) {
+                    crossCount++;
                 }
             }
         }
+    }
 
-        // 2. 以 signalIdx 与起爆原点 (genesisIdx) 为基准向前深度追溯反向发散
-        const effectiveLookback = Math.max(priorLookback, 100); // 扩展历史探针最深100根K线，确保大周期(如4h)下跌洗盘不被遗漏
-        const searchStart = Math.max(39, signalIdx - 1);
-        const searchEnd = Math.max(39, Math.min(signalIdx, genesisIdx) - effectiveLookback);
+    if (periodHigh > periodLow) {
+        locationPct = ((currentClose - periodLow) / (periodHigh - periodLow)) * 100;
+    }
 
-        for (let rIdx = searchStart; rIdx >= searchEnd; rIdx--) {
+    // --- 🔒 [USER MANDATORY RULE - 前置洗盘/诱多/诱空反发散追溯透传] ---
+    let isPriorReverseFound = false;
+    const priorReverseLookbackBars = 80;
+    const searchEnd = Math.max(0, signalIdx - priorReverseLookbackBars);
+
+    if (ema10 && ema20 && ema30 && ema40) {
+        for (let rIdx = signalIdx - 1; rIdx >= searchEnd; rIdx--) {
             const rE10 = getVal(ema10, rIdx, 10);
             const rE20 = getVal(ema20, rIdx, 20);
             const rE30 = getVal(ema30, rIdx, 30);
             const rE40 = getVal(ema40, rIdx, 40);
 
-            if (rE10 !== -1 && rE20 !== -1 && rE30 !== -1 && rE40 !== -1) {
+            if (rE10 !== undefined && rE20 !== undefined && rE30 !== undefined && rE40 !== undefined) {
                 if (task.direction === 'LONG') {
-                    // 做多信号追溯：起爆原点/信号前是否存在空头发散 (EMA10 < EMA20 < EMA30 < EMA40 或 EMA10 < EMA20 < EMA30 - 纯粹发散形态)
                     if ((rE10 < rE20 && rE20 < rE30 && rE30 < rE40) || (rE10 < rE20 && rE20 < rE30)) {
                         isPriorReverseFound = true;
                         break;
                     }
                 } else {
-                    // 做空信号追溯：起爆原点/信号前是否存在多头发散 (EMA10 > EMA20 > EMA30 > EMA40 或 EMA10 > EMA20 > EMA30 - 纯粹发散形态)
                     if ((rE10 > rE20 && rE20 > rE30 && rE30 > rE40) || (rE10 > rE20 && rE20 > rE30)) {
                         isPriorReverseFound = true;
                         break;
@@ -524,8 +263,6 @@ export function analyzeList3Structure(
         }
     }
 
-    // 8. Return Constructed Item with ALL Audit Data
-    // We do NOT return null here. We return the full profile.
     return {
         symbol: task.symbol,
         price: task.price,
@@ -548,12 +285,13 @@ export function analyzeList3Structure(
             postSignalExtreme: postSignalExtreme,
             postSignalMaxHigh: postSignalMaxHigh,
             postSignalMinLow: postSignalMinLow,
-            periodChange: task.periodChange, // Pass-through
+            periodChange: task.periodChange,
             isReverse3K,
             isBreakout3K,
             maxClose3,
             minClose3,
-            recentCloses: idx > 0 ? closes.slice(Math.max(0, idx - 50), idx) : [],
+            recentCloses: idx > 0 ? closes.slice(Math.max(0, idx - 50), idx + 1) : [],
+            recentOpens: idx > 0 ? opens.slice(Math.max(0, idx - 50), idx + 1) : [],
             ema10: getVal(ema10, idx, 10),
             ema20: getVal(ema20, idx, 20),
             ema30: getVal(ema30, idx, 30),
@@ -564,4 +302,31 @@ export function analyzeList3Structure(
             isPriorReverseFound
         }
     };
+}
+
+// Export primary alias and helper methods required by other modules
+export const analyzeList3Structure = performStructureAudit;
+
+export function checkList3SignalPasses(item: ScannerItem, config: List3Config): boolean {
+    if (!item || !item.structure) return false;
+    if (config.enableStrictTrend && !item.structure.isStrictTrend) return false;
+    if (config.enableColorAlign && !item.structure.isColorValid) return false;
+    if (config.enableRsiFilter) {
+        const rsi = item.structure.rsi ?? 50;
+        if (item.direction === 'LONG' && rsi < (config.minRsi ?? 50)) return false;
+        if (item.direction === 'SHORT' && rsi > (config.maxRsi ?? 50)) return false;
+    }
+    return true;
+}
+
+export function getList3SignalRejectReason(item: ScannerItem, config: List3Config): string {
+    if (!item || !item.structure) return '缺少结构审计数据';
+    if (config.enableStrictTrend && !item.structure.isStrictTrend) return '均线严格趋势未达标';
+    if (config.enableColorAlign && !item.structure.isColorValid) return 'K线同色对齐未达标';
+    if (config.enableRsiFilter) {
+        const rsi = item.structure.rsi ?? 50;
+        if (item.direction === 'LONG' && rsi < (config.minRsi ?? 50)) return `RSI动能未达标 (${rsi.toFixed(1)} < ${config.minRsi})`;
+        if (item.direction === 'SHORT' && rsi > (config.maxRsi ?? 50)) return `RSI动能未达标 (${rsi.toFixed(1)} > ${config.maxRsi})`;
+    }
+    return '';
 }

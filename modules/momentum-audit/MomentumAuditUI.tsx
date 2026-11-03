@@ -71,35 +71,48 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
     const activePositionsRef = useRef(activePositions);
     const executeTradeSafeRef = useRef(executeTradeSafe);
     const onLogRef = useRef(onLog);
+    const configRef = useRef(config);
+    const realPricesRef = useRef(realPrices);
+    const actionConfigRef = useRef(actionConfig);
     
     useEffect(() => { list4Ref.current = list4; }, [list4]);
     useEffect(() => { activePositionsRef.current = activePositions; }, [activePositions]);
     useEffect(() => { executeTradeSafeRef.current = executeTradeSafe; }, [executeTradeSafe]);
     useEffect(() => { onLogRef.current = onLog; }, [onLog]);
+    useEffect(() => { configRef.current = config; }, [config]);
+    useEffect(() => { realPricesRef.current = realPrices; }, [realPrices]);
+    useEffect(() => { actionConfigRef.current = actionConfig; }, [actionConfig]);
 
-    // --- AUTO EXECUTION EFFECT ---
-    useEffect(() => {
-        // MUST have local auto-ON AND Master Switch ON
-        const isMasterAutoOn = actionConfig?.autoExecute ?? true;
+    // 🔒 [列表4核心驱动] 极速判定并执行开仓逻辑
+    const checkAndExecuteList4Trades = useRef(() => {
+        const curConfig = configRef.current;
+        const curActionConfig = actionConfigRef.current;
+        const isMasterAutoOn = curActionConfig?.autoExecute ?? true;
         
-        if (!config.autoExecute || !isMasterAutoOn) {
+        // 必须开启列表4自身的自动开仓开关 (默认为 true)
+        if (curConfig.autoExecute === false || !isMasterAutoOn) {
             return;
         }
 
         const now = Date.now();
-        const currentList4 = list4;
-        const currentPositions = activePositions;
+        const currentList4 = list4Ref.current;
+        const currentPositions = activePositionsRef.current;
 
         currentList4.forEach(item => {
-            // Logic: Must be TRIGGERED
+            // 必须达到突破触发状态 TRIGGERED
             if (item.momentum?.status === 'TRIGGERED') {
                 const cleanSym = normalizeSymbol(item.symbol);
-                // Construct Unique Signal ID
                 const signalTime = item.structure?.signalTime || 0;
                 const uniqueId = `${cleanSym}-${item.tf}-${item.direction}-${signalTime}`;
                 
+                // 方向过滤校验
+                if (curConfig.directionFilter && curConfig.directionFilter !== 'BOTH') {
+                    if (curConfig.directionFilter === 'LONG' && item.direction !== 'LONG') return;
+                    if (curConfig.directionFilter === 'SHORT' && item.direction !== 'SHORT') return;
+                }
+
+                // 熔断拦截排队中标的直接跳过
                 if (item.fuseBlocked) {
-                    // Log once per unique signal to avoid flooding, but informative enough
                     if (executionStatusRef.current.get(uniqueId + '-fused') !== 'SUCCESS') {
                         console.warn(`[List4 Auto] ${cleanSym} (${item.tf}) 突破确认! 但被熔断拦截: ${item.fuseReason}`);
                         executionStatusRef.current.set(uniqueId + '-fused', 'SUCCESS');
@@ -107,14 +120,14 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     return;
                 }
 
-                const rawLive = priceRegistry.getPrice(cleanSym) || realPrices[cleanSym] || item.price;
+                const rawLive = priceRegistry.getPrice(cleanSym) || realPricesRef.current[cleanSym] || item.price;
                 const livePrice = (typeof rawLive === 'number' && rawLive > 0) ? rawLive : item.price;
 
-                // 🔒 【双重核心锁 1：进攻突破线必须由当前实时价格达成，且在信号K线振幅偏离限制内】
+                // 🔒 【核心锁 1：进攻突破线核验】
                 const entryTrigger = item.momentum?.entryTrigger || 0;
                 const triggerEpsilon = (livePrice || 1) * 0.00001;
-                const maxDevPct = (typeof config.maxBreakoutDeviation === 'number' && !isNaN(config.maxBreakoutDeviation))
-                    ? config.maxBreakoutDeviation
+                const maxDevPct = (typeof curConfig.maxBreakoutDeviation === 'number' && !isNaN(curConfig.maxBreakoutDeviation))
+                    ? curConfig.maxBreakoutDeviation
                     : 100;
 
                 const rawRange = typeof item.structure?.signalHeight === 'number' && item.structure.signalHeight > 0
@@ -128,8 +141,9 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     if (item.direction === 'LONG') {
                         const isBreakoutReached = livePrice >= (entryTrigger - triggerEpsilon);
                         const maxAllowedPrice = entryTrigger + (price_range * (maxDevPct / 100));
-                        if (!isBreakoutReached || livePrice > maxAllowedPrice) {
-                            if (livePrice > maxAllowedPrice) {
+                        // 🎯 仅在开启防追高熔断时进行偏离上限拦截，严禁未开启防追高时误拦截正常突破
+                        if (!isBreakoutReached || (curConfig.enableAntiChase === true && livePrice > maxAllowedPrice)) {
+                            if (curConfig.enableAntiChase === true && livePrice > maxAllowedPrice) {
                                 console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 超出上限 ${maxAllowedPrice.toFixed(6)} (+${maxDevPct}% 振幅)`);
                             }
                             return;
@@ -137,8 +151,9 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     } else {
                         const isBreakoutReached = livePrice <= (entryTrigger + triggerEpsilon);
                         const minAllowedPrice = entryTrigger - (price_range * (maxDevPct / 100));
-                        if (!isBreakoutReached || livePrice < minAllowedPrice) {
-                            if (livePrice < minAllowedPrice) {
+                        // 🎯 仅在开启防追高熔断时进行偏离上限拦截，严禁未开启防追高时误拦截正常突破
+                        if (!isBreakoutReached || (curConfig.enableAntiChase === true && livePrice < minAllowedPrice)) {
+                            if (curConfig.enableAntiChase === true && livePrice < minAllowedPrice) {
                                 console.warn(`[List4 Auto] ❌ ${cleanSym} 突破偏离过大拦截: 现价 ${livePrice} 低于下限 ${minAllowedPrice.toFixed(6)} (-${maxDevPct}% 振幅)`);
                             }
                             return;
@@ -146,9 +161,9 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     }
                 }
 
-                // 🔒 【双重核心锁 2：前 NK 突破必须由当前实时价格达成且必须具备该周期真实K线切片】
-                const kCount = Math.max(1, Math.min(50, config.rev3KCandles ?? 3));
-                if (config.enableRev3K === true) {
+                // 🔒 【核心锁 2：前 NK 突破 - 仅在开启前NK突破开关时生效】
+                const kCount = Math.max(1, Math.min(50, curConfig.rev3KCandles ?? 3));
+                if (curConfig.enableRev3K === true) {
                     if (!item.structure) return;
                     let maxClose: number | undefined = undefined;
                     let minClose: number | undefined = undefined;
@@ -174,28 +189,32 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     }
                 }
                 
-                // Check 1: Execution Status
-                const status = executionStatusRef.current.get(uniqueId);
-                if (status === 'SUCCESS') return; // Already success, skip forever
+                // 检查当前是否已有该币种同方向持仓
+                const alreadyHasPosition = currentPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === item.direction);
 
-                // Check Cooldown: If it failed before, wait 10 seconds before retrying
+                // 若已无持仓，重置该信号之前的历史成功标记，避免平仓后永久锁死
+                if (!alreadyHasPosition && executionStatusRef.current.get(uniqueId) === 'SUCCESS') {
+                    executionStatusRef.current.delete(uniqueId);
+                }
+
+                // 检查执行状态与重试冷却 (失败后 10 秒冷却)
+                const status = executionStatusRef.current.get(uniqueId);
+                if (status === 'SUCCESS') return;
                 if (typeof status === 'number' && now - status < 10000) {
                     return;
                 }
-                
-                // Check 2: Do we ALREADY have an open position for this symbol + direction?
-                const alreadyHasPosition = currentPositions.some(p => normalizeSymbol(p.symbol) === cleanSym && p.side === item.direction);
 
-                // Check 3: 🔒 [单币多周期防并发锁] 该币种在 10 秒内是否已有周期触发过开仓
+                // 🔒 [单币多周期防并发锁] 该币种在 10 秒内是否已有周期触发过开仓
                 const lastExecutedTime = symbolLastExecutedRef.current.get(cleanSym) || 0;
                 if (now - lastExecutedTime < 10000) {
                     return;
                 }
 
                 if (!alreadyHasPosition) {
-                    const tradeReason = `[列表4突破] ${item.direction === 'LONG' ? '多' : '空'}进攻突破${config.enableRev3K ? `+前${kCount}K确认` : ''} (${item.tf})`;
-                    console.log(`[List4 Auto] 🚀 突破双重确认！立即开仓 ${cleanSym} @ ${livePrice} Reason: ${tradeReason}`);
-                    // 立即对该币种加锁，阻断同一轮遍历中后续周期（如 15m/30m/1h）的并发穿透
+                    const tradeReason = `[列表4突破] [Auto] ${item.direction === 'LONG' ? '多' : '空'}进攻突破${curConfig.enableRev3K ? `+前${kCount}K确认` : ''} (${item.tf})`;
+                    console.log(`[List4 Auto] 🚀 突破条件达成！立即执行开仓 ${cleanSym} @ ${livePrice} 原因: ${tradeReason}`);
+                    
+                    // 立即对该币种加锁，阻断同一轮遍历中后续周期并发穿透
                     symbolLastExecutedRef.current.set(cleanSym, now);
                     
                     const signalCandle = item.structure ? {
@@ -217,16 +236,38 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     
                     if (success) {
                         executionStatusRef.current.set(uniqueId, 'SUCCESS');
-                        console.log(`[List4 Auto] ✅ ${cleanSym} 开仓指令已送达`);
+                        console.log(`[List4 Auto] ✅ ${cleanSym} 开仓指令已送达并成功执行`);
                     } else {
-                        // Mark as failed with current timestamp to allow retry later
+                        // 记录失败时间，进入 10 秒冷却后自动重试
                         executionStatusRef.current.set(uniqueId, now);
-                        console.warn(`[List4 Auto] ❌ ${cleanSym} 开仓执行失败 (执行器拒绝)`);
+                        console.warn(`[List4 Auto] ❌ ${cleanSym} 开仓执行受阻 (执行器拒绝)`);
                     }
                 }
             }
         });
-    }, [list4, activePositions, config.autoExecute, actionConfig?.autoExecute]);
+    });
+
+    // --- 极速双保险驱动体系 ---
+    // 1. WebSocket 价格直通监听
+    useEffect(() => {
+        const unsubscribe = priceRegistry.registerListener(() => {
+            checkAndExecuteList4Trades.current();
+        });
+        // 2. 500ms 兜底安全脉冲
+        const pulseTimer = setInterval(() => {
+            checkAndExecuteList4Trades.current();
+        }, 500);
+
+        return () => {
+            unsubscribe();
+            clearInterval(pulseTimer);
+        };
+    }, []);
+
+    // 3. 当 list4 列表刷新、持仓更新或开关变动时同步核验
+    useEffect(() => {
+        checkAndExecuteList4Trades.current();
+    }, [list4, activePositions, config.autoExecute, config.directionFilter, actionConfig?.autoExecute]);
 
     if (isBackground) {
         return null;

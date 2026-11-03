@@ -243,6 +243,17 @@ export const fetchWithFallback = async (
             status: 200,
             headers: { 'Content-Type': 'application/json' }
         });
+    } catch (err: any) {
+        // 🛡️ Stale Cache Fallback: If network fails or receives HTML/error, serve stale cache if available
+        const staleCached = clientSideCache.get(cacheKey);
+        if (staleCached && (!validator || validator(staleCached.data))) {
+            console.warn(`[API] Network error (${err?.message || err}), serving stale cache for ${url}`);
+            return new Response(JSON.stringify(staleCached.data), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json', 'X-Cache': 'STALE_FALLBACK' }
+            });
+        }
+        throw err;
     } finally {
         inflightRequests.delete(cacheKey);
     }

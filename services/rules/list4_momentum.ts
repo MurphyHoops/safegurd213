@@ -19,17 +19,18 @@ export function analyzeList4Momentum(
 ): ScannerItem[] {
     
     return items.map(item => {
-        if (!item.structure) return null;
+        if (!item) return null;
 
-        const currentPrice = item.price;
-        
-        const extreme = item.direction === 'LONG'
-            ? Math.min(item.structure.postSignalExtreme ?? currentPrice, currentPrice)
-            : Math.max(item.structure.postSignalExtreme ?? currentPrice, currentPrice);
-        
-        const bestPrice = item.direction === 'LONG'
-            ? Math.max(item.structure.postSignalMaxHigh ?? currentPrice, currentPrice)
-            : Math.min(item.structure.postSignalMinLow ?? currentPrice, currentPrice);
+        const currentPrice = item.price || 0;
+        const structure = item.structure || {
+            signalHigh: currentPrice * 1.01,
+            signalLow: currentPrice * 0.99,
+            signalPrice: currentPrice,
+            lag: item.lag ?? 0,
+            rsi: 50,
+            isStrictTrend: true,
+            isColorValid: true,
+        };
         
         // 最高价与最低价基准 (high, low, price_range)
         const rawHigh = typeof item.structure?.signalHigh === 'number' && item.structure.signalHigh > 0
@@ -162,7 +163,7 @@ export function analyzeList4Momentum(
 
         if (config.enableThresholds === true) {
             if (item.direction === 'LONG') {
-                const isDefenseBroken = currentPrice < midPoint || extreme < midPoint;
+                const isDefenseBroken = currentPrice < midPoint;
                 const isEmaTrendDead = hasEmas && ema10 < ema30;
                 const maxAllowedLongPrice = entryTrigger + (price_range * (maxDevPct / 100));
                 const isLongOverDeviated = currentPrice > maxAllowedLongPrice;
@@ -229,17 +230,15 @@ export function analyzeList4Momentum(
                         momentumStatus = 'TRIGGERED';
                     }
                 } else {
-                    if (isLongEmaDead || lag >= list2Retention) {
+                    if (isLongEmaDead) {
                         momentumStatus = 'INVALID';
-                        invalidReason = lag >= list2Retention
-                            ? `【规则 1 - 信号寿命耗尽】已达到列表2寿命根数(${Math.floor(lag)} >= ${list2Retention})彻底清除`
-                            : `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
+                        invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 下穿 EMA20/30]`;
                     } else {
                         momentumStatus = 'PENDING';
                     }
                 }
             } else {
-                const isDefenseBroken = currentPrice > midPoint || extreme > midPoint;
+                const isDefenseBroken = currentPrice > midPoint;
                 const isEmaTrendDead = hasEmas && ema10 > ema30;
                 const minAllowedShortPrice = entryTrigger - (price_range * (maxDevPct / 100));
                 const isShortOverDeviated = currentPrice < minAllowedShortPrice;
@@ -306,67 +305,75 @@ export function analyzeList4Momentum(
                         momentumStatus = 'TRIGGERED';
                     }
                 } else {
-                    if (isShortEmaDead || lag >= list2Retention) {
+                    if (isShortEmaDead) {
                         momentumStatus = 'INVALID';
-                        invalidReason = lag >= list2Retention
-                            ? `【规则 1 - 信号寿命耗尽】已达到列表2寿命根数(${Math.floor(lag)} >= ${list2Retention})彻底清除`
-                            : `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
+                        invalidReason = `【规则 1 - 中轴防守瓦解】等待突破期间均线形态瓦解彻底清除 [EMA10(${ema10?.toFixed(4)}) 上穿 EMA20/30]`;
                     } else {
                         momentumStatus = 'PENDING';
                     }
                 }
             }
         } else {
-            // When enableThresholds is OFF (false), check lifespan expiration and breakout
-            if (lag >= list2Retention) {
-                momentumStatus = 'INVALID';
-                invalidReason = `【规则 1 - 信号寿命耗尽】已达到列表2寿命根数(${Math.floor(lag)} >= ${list2Retention})彻底清除`;
-            } else {
-                const isBreakout = item.direction === 'LONG'
-                    ? (currentPrice >= (entryTrigger - triggerEpsilon))
-                    : (currentPrice <= (entryTrigger + triggerEpsilon));
+            // When enableThresholds is OFF (false), allow smooth passthrough from List 3
+            const isBreakout = item.direction === 'LONG'
+                ? (currentPrice >= (entryTrigger - triggerEpsilon))
+                : (currentPrice <= (entryTrigger + triggerEpsilon));
 
-                if (isBreakout) {
-                    const maxAllowedLongPrice = entryTrigger + (price_range * (maxDevPct / 100));
-                    const minAllowedShortPrice = entryTrigger - (price_range * (maxDevPct / 100));
-                    const isOverDeviated = item.direction === 'LONG'
-                        ? currentPrice > maxAllowedLongPrice
-                        : currentPrice < minAllowedShortPrice;
+            if (isBreakout) {
+                const maxAllowedLongPrice = entryTrigger + (price_range * (maxDevPct / 100));
+                const minAllowedShortPrice = entryTrigger - (price_range * (maxDevPct / 100));
+                const isOverDeviated = item.direction === 'LONG'
+                    ? currentPrice > maxAllowedLongPrice
+                    : currentPrice < minAllowedShortPrice;
 
-                    if (isOverDeviated) {
-                        if (config.enableAntiChase === true) {
-                            momentumStatus = 'INVALID';
-                            invalidReason = item.direction === 'LONG'
-                                ? `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，当机立断直接清除淘汰`
-                                : `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，当机立断直接清除淘汰`;
-                        } else {
-                            momentumStatus = 'TRIGGERED';
-                        }
-                    } else if (!is3KPassed) {
-                        momentumStatus = 'PENDING';
-                        invalidReason = item.direction === 'LONG'
-                            ? `等待前${kCount}K突破 (未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`
-                            : `等待前${kCount}K突破 (未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
-                    } else {
-                        momentumStatus = 'TRIGGERED';
-                    }
+                if (isOverDeviated && config.enableAntiChase === true) {
+                    momentumStatus = 'INVALID';
+                    invalidReason = item.direction === 'LONG'
+                        ? `【规则 4 - 突破偏离过大拦截】当前价格超出进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} > 上限 ${maxAllowedLongPrice.toFixed(6)}]，当机立断直接清除淘汰`
+                        : `【规则 4 - 突破偏离过大拦截】当前价格跌破进攻突破线 ${maxDevPct}% 振幅缓冲区 [现价 ${currentPrice.toFixed(6)} < 下限 ${minAllowedShortPrice.toFixed(6)}]，当机立断直接清除淘汰`;
+                } else if (!is3KPassed && config.enableRev3K === true) {
+                    momentumStatus = 'PENDING';
+                    invalidReason = item.direction === 'LONG'
+                        ? `等待前${kCount}K突破 (未越过前${kCount}K收盘最高价: ${formatN(maxCloseN)})`
+                        : `等待前${kCount}K突破 (未越过前${kCount}K收盘最低价: ${formatN(minCloseN)})`;
+                } else {
+                    momentumStatus = 'TRIGGERED';
                 }
+            } else {
+                momentumStatus = 'PENDING';
             }
         }
 
-        // 🎯 [5K爆发推进门禁]: 启用时，若推进振幅未达到阈值(默认1.0%)，保持为 PENDING (等待开仓) 状态，不触发熔断与清除，彻底解决卡片闪烁问题
+        // 🎯 [5K爆发推进门禁]: 严格计算包含信号K在内的 5K 组合内最低开盘价到最高收盘价的净变幅
         if (config.enableThrust === true && item.structure && momentumStatus === 'TRIGGERED') {
             const threshold = (typeof config.thrustThreshold === 'number' && !isNaN(config.thrustThreshold) && config.thrustThreshold > 0)
                 ? config.thrustThreshold
                 : 1.0;
-            const thrustPass = typeof item.structure.maxThrust === 'number'
-                ? (item.structure.maxThrust >= threshold)
-                : !!item.structure.thrustValid;
+
+            let calculatedThrust = typeof item.structure.maxThrust === 'number' ? item.structure.maxThrust : 0;
+
+            // ⚡ 结合实时价格 currentPrice 动态校验 5K 组合内最低开盘价到最高收盘价的真实变幅
+            if (item.structure.recentOpens && item.structure.recentOpens.length > 0) {
+                const opensSlice = item.structure.recentOpens.slice(-5);
+                if (opensSlice.length > 0) {
+                    const minOpen = Math.min(...opensSlice);
+                    const maxOpen = Math.max(...opensSlice);
+                    if (item.direction === 'LONG' && minOpen > 0) {
+                        const livePush = ((currentPrice - minOpen) / minOpen) * 100;
+                        if (livePush > calculatedThrust) calculatedThrust = livePush;
+                    } else if (item.direction === 'SHORT' && maxOpen > 0) {
+                        const livePush = ((maxOpen - currentPrice) / maxOpen) * 100;
+                        if (livePush > calculatedThrust) calculatedThrust = livePush;
+                    }
+                }
+            }
+
+            const thrustPass = calculatedThrust >= threshold;
 
             if (!thrustPass) {
                 momentumStatus = 'PENDING';
-                const actualThrustNum = typeof item.structure.maxThrust === 'number' ? parseFloat(item.structure.maxThrust.toFixed(2)) : 0;
-                invalidReason = `【5K爆发推进等待】包含信号K(K3)的组合净振幅未达标 (${actualThrustNum}% < ${threshold}%)，等待开仓中`;
+                const actualThrustNum = parseFloat(calculatedThrust.toFixed(2));
+                invalidReason = `【5K爆发推进等待】包含信号K的5K组合最低开盘价到最高收盘价涨幅未达标 (${actualThrustNum}% < ${threshold}%)，等待开仓中`;
             }
         }
 
@@ -698,7 +705,7 @@ export function analyzeList4Momentum(
             }
         }
 
-        if (config.directionFilter !== 'BOTH') {
+        if (config.enableThresholds === true && config.directionFilter && config.directionFilter !== 'BOTH') {
             if (config.directionFilter === 'LONG' && item.direction !== 'LONG') return null;
             if (config.directionFilter === 'SHORT' && item.direction !== 'SHORT') return null;
         }
