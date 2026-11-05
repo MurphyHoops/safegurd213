@@ -1347,7 +1347,7 @@ export const useStructureAudit = (
                 tf: r.tf,
                 direction: r.direction || 'LONG',
                 structure: defaultStructure,
-                latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, configRef.current),
+                latched: checkList3SignalPasses({ symbol: matchingCandidate.symbol, price: matchingCandidate.price, tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure } as any, configRef.current),
               };
             });
             cleaned = true;
@@ -1431,7 +1431,7 @@ export const useStructureAudit = (
             tf: r.tf,
             direction: r.direction || 'LONG',
             structure: defaultStructure,
-            latched: checkList3SignalPasses({ tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure }, cfg),
+            latched: checkList3SignalPasses({ symbol: c.symbol, price: c.price, tf: r.tf, direction: r.direction || 'LONG', structure: defaultStructure } as any, cfg),
           };
         }).filter((r) => {
           const uniqueId = `${c.symbol}-${r.tf}-${r.direction}`;

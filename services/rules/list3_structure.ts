@@ -2,7 +2,7 @@
 // @LOCKED: 严格原子化单独锁定。包含结构审计、同色交叉、波幅限制等全部规则。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何算法与流转逻辑。
 
 import { calculateEMA, calculateRSI } from '../indicators';
-import { List3Config, ScannerItem } from '../../components/Scanner/scannerTypes';
+import { List3Config, ScannerItem, List3SignalResult } from '../../components/Scanner/scannerTypes';
 
 export interface StructureAuditTask {
     symbol: string;
@@ -11,6 +11,7 @@ export interface StructureAuditTask {
     tf: string;
     time: number;
     periodChange?: number; // Pass-through for 8am change / 24h change
+    isPriorReverseFound?: boolean;
 }
 
 export function performStructureAudit(
@@ -307,7 +308,7 @@ export function performStructureAudit(
 // Export primary alias and helper methods required by other modules
 export const analyzeList3Structure = performStructureAudit;
 
-export function checkList3SignalPasses(item: ScannerItem, config: List3Config): boolean {
+export function checkList3SignalPasses(item: ScannerItem | List3SignalResult | any, config: List3Config, adjacentStrictTrends?: Record<string, boolean>): boolean {
     if (!item || !item.structure) return false;
     if (config.enableStrictTrend && !item.structure.isStrictTrend) return false;
     if (config.enableColorAlign && !item.structure.isColorValid) return false;
@@ -319,7 +320,7 @@ export function checkList3SignalPasses(item: ScannerItem, config: List3Config): 
     return true;
 }
 
-export function getList3SignalRejectReason(item: ScannerItem, config: List3Config): string {
+export function getList3SignalRejectReason(item: ScannerItem | List3SignalResult | any, config: List3Config, adjacentStrictTrends?: Record<string, boolean>): string | null {
     if (!item || !item.structure) return '缺少结构审计数据';
     if (config.enableStrictTrend && !item.structure.isStrictTrend) return '均线严格趋势未达标';
     if (config.enableColorAlign && !item.structure.isColorValid) return 'K线同色对齐未达标';
@@ -328,5 +329,5 @@ export function getList3SignalRejectReason(item: ScannerItem, config: List3Confi
         if (item.direction === 'LONG' && rsi < (config.minRsi ?? 50)) return `RSI动能未达标 (${rsi.toFixed(1)} < ${config.minRsi})`;
         if (item.direction === 'SHORT' && rsi > (config.maxRsi ?? 50)) return `RSI动能未达标 (${rsi.toFixed(1)} > ${config.maxRsi})`;
     }
-    return '';
+    return null;
 }

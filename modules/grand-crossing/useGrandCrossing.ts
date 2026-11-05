@@ -26,6 +26,7 @@ import { klineDailyStore } from "../../services/klineDailyStore";
 import { klineMultiTfStore } from "../../services/klineMultiTfStore";
 import { l234DataStore } from "../../services/l234DataStore";
 import { eventBus } from "../../core/EventBus";
+import { list2FastScanner } from "../../services/list2FastScanner";
 
 // Helper to calculate aligned EMA array matching each candle index
 const getAlignedEMA = (prices: number[], period: number): (number | null)[] => {
@@ -813,7 +814,7 @@ export const useGrandCrossing = (
     const now = Date.now();
     const lastUpdate = lastUpdateTimestampRef.current || 0;
     const timeSinceLast = now - lastUpdate;
-    const throttleMs = 150; // Millisecond-level pipeline propagation into downstream modules
+    const throttleMs = 500; // 🔒 [500ms UI 节流机制]: 固定每 500ms 将数据批量更新至 React 视图，保持 60 帧极速流畅
 
     if (timeSinceLast > throttleMs) {
       performUpdate();
@@ -868,6 +869,9 @@ export const useGrandCrossing = (
       // Reset hash so performUpdate will force-trigger setList2 and re-evaluate stats
       lastListSignalsHashRef.current = "";
       lastListLengthRef.current = -1;
+
+      // 释放极速扫描锁
+      list2FastScanner.releaseLock(symbol);
 
       performUpdate();
       onLog?.(
@@ -973,6 +977,7 @@ export const useGrandCrossing = (
 
   const clearItems = useCallback(() => {
     const count = cacheRef.current.size;
+    list2FastScanner.clearAll();
     cacheRef.current.clear();
     capturedSignalsRef.current.clear();
     symbolTfLastFetchRef.current.clear();
@@ -1170,6 +1175,9 @@ export const useGrandCrossing = (
   useEffect(() => {
     candidatesRef.current = candidates;
 
+    // ⚡ 同步 300 币初筛池至 list2FastScanner 0ms 内存极速索引
+    list2FastScanner.syncList1Pool(candidates);
+
     // 🔒 [USER MANDATORY RULE - 列表1仅作为发现新币源，不控制列表2存续币的删减]:
     // 只要币进入列表2，其生命周期严格由自身设置的寿命根数(retention)控制。
     // 列表1 candidates 刷新时，严禁清退已入驻列表2的币种和捕获信号。
@@ -1186,6 +1194,18 @@ export const useGrandCrossing = (
     // Rapid response for candidates
     performUpdate();
   }, [candidates, performUpdate]);
+
+  // ⚡ 订阅毫秒级 Tick 价格流：直接推动 list2FastScanner 执行 0ms 判定与直通派发
+  useEffect(() => {
+    const unsubscribe = priceRegistry.registerListener((prices) => {
+      for (const [sym, price] of Object.entries(prices)) {
+        list2FastScanner.onPriceUpdate(sym, price);
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const lastCandidatesPulseRef = useRef("");
   useEffect(() => {
@@ -1667,15 +1687,27 @@ export const useGrandCrossing = (
     }
   }, [scheduleUpdate]);
 
-  // ⚡ WEBSOCKET LIVE STREAMING INGESTION & ZERO-LATENCY LOCAL CALCULATION
+  // ⚡ WEBSOCKET LIVE STREAMING INGESTION & TWO-TIER FUNNEL DYNAMIC STREAM LIFECYCLE
   useEffect(() => {
     const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
     const pairs: { symbol: string; tf: string }[] = [];
+    
+    // 1. 初筛池 (300币规模): 默认仅监听 15m 核心基准流
     for (const c of candidates) {
-      for (const tf of activeTfs) {
-        pairs.push({ symbol: c.symbol, tf });
+      pairs.push({ symbol: c.symbol, tf: '15m' });
+    }
+
+    // 2. 二级临界池 (进入 List 2 的 15~30 个币): 动态追加 30m/1h/4h 等高周期流
+    const highTfs = activeTfs.filter(tf => tf !== '15m');
+    const list2Symbols = (list2 || []).map(i => i.symbol);
+
+    for (const sym of list2Symbols) {
+      for (const tf of highTfs) {
+        pairs.push({ symbol: sym, tf });
       }
     }
+
+    // 3. 驱动 WS 分片连接池进行同步订阅与自动退订卸载
     binanceKlineWs.syncSubscriptions(pairs);
 
     const lastWsEvalTimeMap = new Map<string, number>();
@@ -1751,7 +1783,7 @@ export const useGrandCrossing = (
     return () => {
       unsubscribe();
     };
-  }, [candidates, config.timeframes, evaluateKlines]);
+  }, [candidates, list2, config.timeframes, evaluateKlines]);
 
   // --- CORE: Scan Logic (Direct Fetching for Cold-Start / Polling) ---
   const processSymbol = async (
@@ -1834,8 +1866,8 @@ export const useGrandCrossing = (
 
     if (tasks.length === 0) return;
 
-    // 🚀 8 协程高并发差量预热，保证每个币的每个周期都100%预热到位
-    const CONCURRENCY = 8;
+    // 🚀 6 协程高并发差量预热，配合 50ms 防抖节流，保证 300 币冷启动安全平滑，杜绝触发 429 限流
+    const CONCURRENCY = 6;
     let taskIdx = 0;
 
     const worker = async () => {
@@ -1846,6 +1878,7 @@ export const useGrandCrossing = (
         inFlightPrefetchKeysRef.current.add(taskKey);
         try {
           await processSymbol(currentTask.symbol, currentTask.tf, undefined, false, true);
+          await delay(50); // 50ms 间隔并发节流，彻底杜绝币安 REST 429 权重超标
         } catch (_) {
         } finally {
           inFlightPrefetchKeysRef.current.delete(taskKey);

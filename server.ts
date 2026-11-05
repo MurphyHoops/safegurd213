@@ -10,6 +10,7 @@ import { backgroundDaemon } from './services/backgroundDaemon';
 import { SystemHealthGuard, SystemStatus } from './src/main/guards/SystemHealthGuard';
 import { AlertManager } from './src/main/alerts/AlertManager';
 import { binanceAxios } from './src/main/api/binanceAxios';
+import { binanceRateLimiter } from './services/binanceRateLimiter';
 
 // 🛡️ [进程第一前沿防护]: 在任何路由、网络与模块加载前挂载全局异常与信号拦截，确保单个路由或异步错误绝不导致 Node 退出
 function persistFatalCrash(moduleName: string, message: string, stack?: string) {
@@ -304,14 +305,11 @@ async function startServer() {
 
   systemHealthGuard.startMonitoring(10000);
 
-  // 2. 注入真实鉴权探针：必须验证 ListenKey 是否能成功拿到
+  // 2. 注入真实鉴权探针：使用轻量 GET /fapi/v1/time 校验网络与交易所 API 通畅，严禁频发 POST listenKey
   systemHealthGuard.setAuthProbe(async () => {
     try {
-      const res = await binanceAxios.post('/fapi/v1/listenKey');
-      if (res && res.data && res.data.listenKey) {
-        return true;
-      }
-      return false;
+      const res = await binanceAxios.get('/fapi/v1/time');
+      return !!(res && res.status === 200);
     } catch (err: any) {
       return false;
     }
@@ -771,11 +769,13 @@ async function startServer() {
       return;
     }
 
-    // 🔒 若当前 IP 正处于币安临时限频封禁期，智能等待至封禁解除，严禁反复撞墙重置封禁时间
-    if (binanceBannedUntilTimestamp > Date.now()) {
-      const waitMs = binanceBannedUntilTimestamp - Date.now() + 2000;
-      console.warn(`[Binance UserData Stream] IP rate-limit active until ${new Date(binanceBannedUntilTimestamp).toLocaleTimeString()}. Scheduling listenKey acquisition in ${Math.round(waitMs / 1000)}s`);
-      setTimeout(() => ensureUserDataStream(cleanKey), Math.min(waitMs, 60000));
+    // 🔒 若当前 IP 正处于币安临时限频封禁期或全局熔断期，智能等待至封禁解除，严禁反复撞墙重置封禁时间
+    const limiterStatus = binanceRateLimiter.getStatus();
+    if (binanceBannedUntilTimestamp > Date.now() || limiterStatus.isFrozen) {
+      const frozenUntil = Math.max(binanceBannedUntilTimestamp, limiterStatus.frozenUntil);
+      const waitMs = Math.max(frozenUntil - Date.now(), 0) + 2000;
+      console.warn(`[Binance UserData Stream] Circuit breaker active until ${new Date(frozenUntil).toLocaleTimeString()}. Scheduling listenKey acquisition in ${Math.round(waitMs / 1000)}s`);
+      setTimeout(() => ensureUserDataStream(cleanKey), Math.min(waitMs, 120000));
       return;
     }
 
@@ -808,14 +808,21 @@ async function startServer() {
             }
           }
         } catch (err: any) {
-          console.warn(`[Binance UserData Stream] Network error on ${endpoint}:`, err.message || err);
+          const errMsg = err?.message || String(err);
+          if (errMsg.includes('[CIRCUIT_BREAKER_FROZEN]') || errMsg.includes('-1003')) {
+            console.warn(`[Binance UserData Stream] Intercepted by local circuit breaker on ${endpoint}`);
+          } else {
+            console.warn(`[Binance UserData Stream] Network error on ${endpoint}:`, errMsg);
+          }
         }
       }
 
       if (!listenKey) {
         let retryDelay = isAuthError ? 60000 : 5000;
-        if (binanceBannedUntilTimestamp > Date.now()) {
-          retryDelay = Math.max(binanceBannedUntilTimestamp - Date.now() + 2000, 5000);
+        const curLimiterStatus = binanceRateLimiter.getStatus();
+        if (binanceBannedUntilTimestamp > Date.now() || curLimiterStatus.isFrozen) {
+          const frozenUntil = Math.max(binanceBannedUntilTimestamp, curLimiterStatus.frozenUntil);
+          retryDelay = Math.max(frozenUntil - Date.now() + 2000, 5000);
         }
         console.warn(`[Binance UserData Stream] Could not acquire listenKey for API Key: ${cleanKey.slice(0, 8)}... Next retry in ${Math.round(retryDelay / 1000)}s`);
         setTimeout(() => ensureUserDataStream(cleanKey), retryDelay);
@@ -883,7 +890,7 @@ async function startServer() {
           if (instance.keepAliveTimer) clearInterval(instance.keepAliveTimer);
           instance.keepAliveTimer = setInterval(async () => {
             try {
-              const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/listenKey`, {
+              const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/listenKey?listenKey=${encodeURIComponent(instance.listenKey)}`, {
                 method: "PUT",
                 headers: { "X-MBX-APIKEY": cleanKey }
               });
@@ -895,7 +902,7 @@ async function startServer() {
                 if (instance.heartbeatTimer) clearInterval(instance.heartbeatTimer);
                 try { uws.close(); } catch(e) {}
                 activeUserStreams.delete(cleanKey);
-                setTimeout(() => ensureUserDataStream(cleanKey), 500);
+                setTimeout(() => ensureUserDataStream(cleanKey), 5000);
               }
             } catch (e: any) {
               console.warn(`[Binance UserData Stream] Keepalive error:`, e.message || e);
@@ -1408,7 +1415,15 @@ async function startServer() {
 
     const binanceWsTradingEngine = new BinanceWsTradingEngine();
 
-    async function fetchWithFallback(urlStr: string, options: RequestInit = {}, timeoutMs: number = 8000): Promise<Response> {
+    async function fetchWithFallback(urlStr: string, options: RequestInit & { isCoreOrder?: boolean } = {}, timeoutMs: number = 8000): Promise<Response> {
+        const isCoreOrder = Boolean(options.isCoreOrder) || 
+          urlStr.includes('/order') || 
+          urlStr.includes('/batchOrders') || 
+          urlStr.includes('/leverage') || 
+          urlStr.includes('/marginType') || 
+          urlStr.includes('/positionSide');
+        binanceRateLimiter.checkCanRequest(isCoreOrder);
+
         if (binanceBannedUntilTimestamp > Date.now()) {
             const waitSec = Math.ceil((binanceBannedUntilTimestamp - Date.now()) / 1000);
             console.warn(`[Binance Gateway Guard] Pausing outbound request to ${urlStr} (${waitSec}s rate-limit backoff remaining)...`);
@@ -1434,14 +1449,18 @@ async function startServer() {
                     throw new Error(`Endpoint returned unexpected redirect ${res.status}`);
                 }
 
+                binanceRateLimiter.handleResponse(res.status, res.headers);
+
                 if (res.status === 418 || res.status === 429) {
                     try {
                         const clone = res.clone();
                         const text = await clone.text();
-                        binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, 60000);
+                        binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, res.status === 418 ? 120000 : 60000);
+                        binanceRateLimiter.triggerCircuitBreaker(res.status === 418 ? 'IP 418 封禁' : '429 频控', Math.max(binanceBannedUntilTimestamp - Date.now(), 60000));
                         console.error(`🚨 [Binance Ban Intercept] IP rate-limited until ${binanceBannedUntilTimestamp} (${Math.round((binanceBannedUntilTimestamp - Date.now()) / 1000)}s remaining).`);
                     } catch (e) {
-                        binanceBannedUntilTimestamp = Date.now() + 60000;
+                        binanceBannedUntilTimestamp = Date.now() + (res.status === 418 ? 120000 : 60000);
+                        binanceRateLimiter.triggerCircuitBreaker(res.status === 418 ? 'IP 418 封禁' : '429 频控', res.status === 418 ? 120000 : 60000);
                     }
                 }
                 return res;
@@ -1796,19 +1815,34 @@ async function startServer() {
                 }
             }
 
-            // 🛡️ [高精度步进量化对齐]: 防止 IEEE-754 浮点数除法精度损失 (如 41.9 / 0.1 = 418.99999999999994 导致 Math.floor 误算为 418 遗留 0.1 尾巴)
+            // 🛡️ [高精度步进量化对齐]: 计算 stepSize 实际小数位数，与 qtyPrecision 取最小值作为物理封顶，彻底杜绝 -1111 精度超限报错
+            const getStepPrecision = (step: number | string): number => {
+                if (!step) return 0;
+                const str = typeof step === 'number' ? step.toString() : step;
+                if (str.includes('e-') || str.includes('E-')) {
+                    const exp = parseInt(str.split(/[eE]-/)[1], 10);
+                    return isNaN(exp) ? 0 : exp;
+                }
+                const dotIdx = str.indexOf('.');
+                return dotIdx === -1 ? 0 : str.length - dotIdx - 1;
+            };
+
+            const stepPrecision = getStepPrecision(stepSize);
+            const effectiveQtyPrecision = Math.min(qtyPrecision, stepPrecision);
+
             let roundedQty: number;
             if (action === "CLOSE") {
-                // 平仓时使用精度精确四舍五入，杜绝截断吞掉最后 1 个 stepSize
-                roundedQty = Math.round(finalQty * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision);
+                // 平仓时使用有效精度精确四舍五入
+                roundedQty = Math.round(finalQty * Math.pow(10, effectiveQtyPrecision)) / Math.pow(10, effectiveQtyPrecision);
             } else {
                 roundedQty = Math.floor((finalQty + 1e-9) / stepSize) * stepSize;
-                roundedQty = Math.round(roundedQty * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision);
+                roundedQty = Math.round(roundedQty * Math.pow(10, effectiveQtyPrecision)) / Math.pow(10, effectiveQtyPrecision);
             }
             if (roundedQty <= 0 && finalQty > 0) {
                 roundedQty = Math.max(stepSize, minQty);
             }
-            finalQty = parseFloat(roundedQty.toFixed(qtyPrecision));
+            let formattedQtyStr = roundedQty.toFixed(effectiveQtyPrecision);
+            finalQty = parseFloat(formattedQtyStr);
 
             // Ensure notional requirement (MIN_NOTIONAL) for OPEN orders
             if (action === "OPEN" && currentPrice > 0) {
@@ -1816,13 +1850,14 @@ async function startServer() {
                 if (notionalValue < minNotional) {
                     // Check if rounding or input was slightly under minNotional (e.g. 19.8 USDT instead of 20 USDT)
                     const minNeededQty = Math.ceil((minNotional / currentPrice) / stepSize) * stepSize;
-                    const adjustedQty = parseFloat(minNeededQty.toFixed(qtyPrecision));
+                    const adjustedQty = parseFloat(minNeededQty.toFixed(effectiveQtyPrecision));
                     
                     // If user passed an amount or requested opening/refill/hedge and it's close to minNotional, auto-align upward to satisfy minNotional
                     const isRefillReq = req.body.isRefill === true || req.body.allowExisting === true || req.body.isHedge === true;
                     if (isRefillReq || (amountUsdt && amountUsdt >= minNotional * 0.5) || notionalValue >= minNotional * 0.5) {
                         console.log(`[Binance Order] Auto-adjusting quantity for ${formattedSymbol} from ${finalQty} to ${adjustedQty} (${(adjustedQty * currentPrice).toFixed(2)} USDT) to satisfy Binance MIN_NOTIONAL (${minNotional} USDT) (Refill: ${isRefillReq})`);
                         finalQty = adjustedQty;
+                        formattedQtyStr = finalQty.toFixed(effectiveQtyPrecision);
                     } else if (finalQty * currentPrice < minNotional) {
                         return res.status(400).json({ 
                             success: false, 
@@ -1836,6 +1871,7 @@ async function startServer() {
             if (finalQty < minQty) {
                 if (action === "OPEN") {
                     finalQty = minQty;
+                    formattedQtyStr = finalQty.toFixed(effectiveQtyPrecision);
                 } else {
                     return res.status(400).json({ 
                         success: false, 
@@ -2023,7 +2059,7 @@ async function startServer() {
                 symbol: formattedSymbol,
                 side: binanceSide,
                 type: "MARKET",
-                quantity: finalQty.toString(),
+                quantity: formattedQtyStr,
                 newClientOrderId: generatedClientOrderId,
                 timestamp: orderTimestamp.toString(),
                 recvWindow: "10000"

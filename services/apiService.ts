@@ -1,4 +1,6 @@
 
+import { binanceRateLimiter } from './binanceRateLimiter';
+
 let lastSuccessfulProxy: string | null = null;
 let continuousFailures = 0;
 let circuitBreakerUntil = 0;
@@ -275,6 +277,10 @@ const _fetchWithFallbackInner = async (
     if (url.includes('symbol=USDT&') || url.includes('symbol=&') || url.endsWith('symbol=USDT') || url.endsWith('symbol=')) {
         return new Response(JSON.stringify([]), { status: 200 }); // Return empty array to avoid unhandled rejections
     }
+
+    // 🛡️ [全局熔断器出站门禁]: 若处于 429/418 静默期，立即抛出本地异常，绝不在网络层发包！
+    const isCoreOrder = url.includes('/order') || url.includes('/batchOrders');
+    binanceRateLimiter.checkCanRequest(isCoreOrder);
 
     // 1. Enter Queue with priority (Charts, Klines and 24hr Ticker go higher priority than background scans)
     const isKlinePayload = url.includes('/klines');

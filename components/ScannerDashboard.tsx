@@ -24,6 +24,25 @@ import {
 import { audioService } from "../services/audioService";
 import { normalizeSymbol, resolvePrice } from "../services/symbolUtils";
 import { logSignalOccurrence } from "../services/binanceLogger";
+import { l234DataStore } from "../services/l234DataStore";
+
+// 1. 冷却锁缓存结构：Symbol -> 冷却截止时间戳 (ms)
+const PANIC_COOLDOWN_STORAGE_KEY = 'SAFREGUARD_PANIC_COOLDOWN_MAP';
+const COOLDOWN_DURATION_MS = 30 * 60 * 1000; // 清仓后冷却 30 分钟
+
+// 从本地存储恢复冷却状态，防止刷新页面后立即复开
+const getInitialCooldownMap = (): Map<string, number> => {
+  try {
+    const raw = localStorage.getItem(PANIC_COOLDOWN_STORAGE_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+    const validEntries = Object.entries(parsed).filter(([_, expireAt]) => (expireAt as number) > now);
+    return new Map(validEntries as [string, number][]);
+  } catch {
+    return new Map();
+  }
+};
 import KlineChartModal from "./KlineChartModal";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { usePersistedState } from "../hooks/usePersistedState";
@@ -1177,6 +1196,24 @@ const ScannerDashboardInner: React.FC<
   const list1CandidatesRef = useRef<ScannerItem[]>([]);
   // 🔒 [调度执行器防并发重复开仓在途保护表]
   const inFlightTradeSymbolsRef = useRef<Map<string, number>>(new Map());
+  // 🔒 [一键清仓/手动平仓防自动复开硬锁黑名单]
+  const panicSoldSymbolsRef = useRef<Set<string>>(new Set());
+  // 🔒 [一键清仓/手动平仓 30 分钟持久化冷却锁 (存入 localStorage 防刷新复开)]
+  const panicCooldownMapRef = useRef<Map<string, number>>(getInitialCooldownMap());
+
+  const setSymbolCooldown = useCallback((symbol: string) => {
+    const normSym = normalizeSymbol(symbol);
+    const expireAt = Date.now() + COOLDOWN_DURATION_MS;
+    panicCooldownMapRef.current.set(normSym, expireAt);
+    panicSoldSymbolsRef.current.add(normSym);
+    try {
+      const obj: Record<string, number> = {};
+      panicCooldownMapRef.current.forEach((val, key) => {
+        if (val > Date.now()) obj[key] = val;
+      });
+      localStorage.setItem(PANIC_COOLDOWN_STORAGE_KEY, JSON.stringify(obj));
+    } catch {}
+  }, []);
 
   // Render-phase Ref Synchronization: Synchronously assigns incoming props/state to mutable refs
   // during the render cycle itself. This bypasses React's asynchronous commit phase (useEffect)
@@ -1301,7 +1338,7 @@ const ScannerDashboardInner: React.FC<
         breakerConfig: userConfig.breakerConfig || DEFAULT_ACTION_CONFIG.breakerConfig,
       };
 
-      const isManual = reason.includes("Manual") || reason.includes("手动") || reason.includes("快速开仓");
+      const isManual = reason?.includes("Manual") || reason?.includes("MANUAL") || reason?.includes("手动") || reason?.includes("快速开仓") || Boolean((extraProps as any)?.isManual);
       const isList4 = reason.includes("列表4");
       const isAuto = (reason.includes("Auto") || isList4) && !reason.includes("List1 Auto");
       if (!config.enabled && !isManual && !isList4) {
@@ -1326,6 +1363,36 @@ const ScannerDashboardInner: React.FC<
       
       console.log(`[Trade Attempt] ${cleanSymbol} @ ${price} (Reason: ${reason})`);
 
+      // 🛡️ [一键清仓/手动平仓 30 分钟持久化护城河门禁]
+      const cooldownExpireAt = panicCooldownMapRef.current.get(cleanSymbol);
+      const now = Date.now();
+
+      if (!isManual && !(extraProps as any)?.isReopened) {
+        if (cooldownExpireAt && cooldownExpireAt > now) {
+          const remainingMin = Math.ceil((cooldownExpireAt - now) / 60000);
+          if (onLog) {
+            onLog(
+              "WARNING",
+              `🛡️ [一键清仓护城河拦截] ${cleanSymbol} 处于平仓冷却期中 (剩余约 ${remainingMin} 分钟)，自动策略禁止再次开仓！`
+            );
+          }
+          console.warn(`[Trade Reject] Cooldown symbol blocked: ${cleanSymbol}`);
+          return false;
+        }
+      }
+
+      // 若为手动主动开仓，或冷却已过期，安全解除锁定
+      if (isManual || (cooldownExpireAt && cooldownExpireAt <= now)) {
+        panicCooldownMapRef.current.delete(cleanSymbol);
+        try {
+          const obj: Record<string, number> = {};
+          panicCooldownMapRef.current.forEach((val, key) => {
+            if (val > Date.now()) obj[key] = val;
+          });
+          localStorage.setItem(PANIC_COOLDOWN_STORAGE_KEY, JSON.stringify(obj));
+        } catch (_) {}
+      }
+
       const activePositions =
         scannerMode === "BACKTEST"
           ? backtestPositionsRef.current
@@ -1344,13 +1411,13 @@ const ScannerDashboardInner: React.FC<
         return false;
       }
 
-      // 🛡️ [在途并发与短时防重锁：防止多周期同时突破在持仓同步前穿透]
+      // 🛡️ [在途并发与长效防重锁：防止多周期同时突破或在持仓同步延迟期间穿透]
       const lastInFlightTime = inFlightTradeSymbolsRef.current.get(cleanSymbol) || 0;
-      if (Date.now() - lastInFlightTime < 10000 && !isManual && !(extraProps as any)?.isReopened) {
+      if (Date.now() - lastInFlightTime < 120000 && !isManual && !(extraProps as any)?.isReopened) {
         if (onLog) {
           onLog(
             "WARNING",
-            `🛡️ [防并发重复开仓拦截] ${cleanSymbol} 在 10 秒内已触发过开仓 (${((Date.now() - lastInFlightTime)/1000).toFixed(1)}s 前)，在途锁保护中，拒绝重复执行。`
+            `🛡️ [防并发重复开仓拦截] ${cleanSymbol} 在 120 秒内已触发过开仓 (${((Date.now() - lastInFlightTime)/1000).toFixed(1)}s 前)，在途锁保护中，拒绝重复执行。`
           );
         }
         console.warn(`[Trade Reject] Concurrency duplicate open blocked: ${cleanSymbol} triggered ${Date.now() - lastInFlightTime}ms ago.`);
@@ -1820,6 +1887,8 @@ const ScannerDashboardInner: React.FC<
       const normSym = normalizeSymbol(symbol);
       list1ClosedSymbolsRef.current.add(normSym);
       list1ClosedTimeRef.current[normSym] = Date.now();
+      setSymbolCooldown(normSym);
+      l234DataStore.unregisterSymbol(normSym);
       if (scannerMode === "BACKTEST") {
         setPositions((prev) => {
           const pos = prev.find((p) => p.symbol === symbol && p.side === side);
@@ -1850,23 +1919,29 @@ const ScannerDashboardInner: React.FC<
         onClosePosition(symbol, side);
       }
     },
-    [scannerMode, setPositions, setAccount, setTradeLogs, onClosePosition],
+    [scannerMode, setPositions, setAccount, setTradeLogs, onClosePosition, setSymbolCooldown],
   );
 
   const handlePanicSell = useCallback(() => {
+    const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
+    targets.forEach((p) => {
+      const normSym = normalizeSymbol(p.symbol);
+      setSymbolCooldown(normSym);
+      l234DataStore.unregisterSymbol(normSym);
+    });
+
     if (scannerMode === "BACKTEST") {
       batchCloseAll();
-      if (onLog) onLog("SUCCESS", "[回测] 全部清仓执行完毕");
+      if (onLog) onLog("SUCCESS", "[回测] 全部清仓执行完毕，已锁死二次自动复开");
     } else {
       if (onBatchClose) {
         onBatchClose();
       } else {
-        const positionsToClose = currentPositions.length > 0 ? currentPositions : filteredPositions;
-        positionsToClose.forEach((p) =>
+        targets.forEach((p) =>
           handleClosePositionInternal(p.symbol, p.side),
         );
       }
-      if (onLog) onLog("SUCCESS", "战术执行: 全部清仓 (PANIC SELL)");
+      if (onLog) onLog("SUCCESS", "战术执行: 全部清仓 (PANIC SELL) - 触发全局平仓锁与 30 分钟持久化冷却，已硬性封锁二次自动开仓");
     }
   }, [
     scannerMode,
@@ -1876,41 +1951,62 @@ const ScannerDashboardInner: React.FC<
     filteredPositions,
     handleClosePositionInternal,
     onLog,
+    setSymbolCooldown,
   ]);
 
   const handleSecureProfit = useCallback(() => {
     const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
     const profitable = targets.filter((p) => p.unrealizedPnL > 0);
-    profitable.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
+    profitable.forEach((p) => {
+      const normSym = normalizeSymbol(p.symbol);
+      setSymbolCooldown(normSym);
+      l234DataStore.unregisterSymbol(normSym);
+      handleClosePositionInternal(p.symbol, p.side);
+    });
     if (profitable.length > 0 && onLog)
-      onLog("INFO", `战术执行: 止盈落袋 (${profitable.length} 个仓位)`);
-  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
+      onLog("INFO", `战术执行: 止盈落袋 (${profitable.length} 个仓位) - 已压入防二次复开保护与 30 分钟冷却`);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog, setSymbolCooldown]);
 
   const handleCutLosses = useCallback(() => {
     const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
     const losing = targets.filter((p) => p.unrealizedPnL < 0);
-    losing.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
+    losing.forEach((p) => {
+      const normSym = normalizeSymbol(p.symbol);
+      setSymbolCooldown(normSym);
+      l234DataStore.unregisterSymbol(normSym);
+      handleClosePositionInternal(p.symbol, p.side);
+    });
     if (losing.length > 0 && onLog)
-      onLog("INFO", `战术执行: 一键止损 (${losing.length} 个仓位)`);
-  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
+      onLog("INFO", `战术执行: 一键止损 (${losing.length} 个仓位) - 已压入防二次复开保护与 30 分钟冷却`);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog, setSymbolCooldown]);
 
   const handleCloseLongs = useCallback(() => {
     const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
     const longs = targets.filter((p) => p.side === PositionSide.LONG);
-    longs.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
+    longs.forEach((p) => {
+      const normSym = normalizeSymbol(p.symbol);
+      setSymbolCooldown(normSym);
+      l234DataStore.unregisterSymbol(normSym);
+      handleClosePositionInternal(p.symbol, p.side);
+    });
     if (longs.length > 0 && onLog)
-      onLog("INFO", `战术执行: 平多 (${longs.length} 个仓位)`);
-  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
+      onLog("INFO", `战术执行: 平多 (${longs.length} 个仓位) - 已压入防二次复开保护与 30 分钟冷却`);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog, setSymbolCooldown]);
 
   const handleCloseShorts = useCallback(() => {
     const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
     const shorts = targets.filter(
       (p) => p.side === PositionSide.SHORT,
     );
-    shorts.forEach((p) => handleClosePositionInternal(p.symbol, p.side));
+    shorts.forEach((p) => {
+      const normSym = normalizeSymbol(p.symbol);
+      setSymbolCooldown(normSym);
+      l234DataStore.unregisterSymbol(normSym);
+      handleClosePositionInternal(p.symbol, p.side);
+    });
     if (shorts.length > 0 && onLog)
-      onLog("INFO", `战术执行: 平空 (${shorts.length} 个仓位)`);
-  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog]);
+      onLog("INFO", `战术执行: 平空 (${shorts.length} 个仓位) - 已压入防二次复开保护与 30 分钟冷却`);
+  }, [currentPositions, filteredPositions, handleClosePositionInternal, onLog, setSymbolCooldown]);
 
   const setScanConfig = useCallback(
     (update: React.SetStateAction<ScanConfig>) => {

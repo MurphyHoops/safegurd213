@@ -1151,7 +1151,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         <div className="flex items-center gap-2">
                                             <span 
                                                 className="cursor-pointer hover:text-indigo-400 transition-colors"
-                                                onClick={() => onOpenChart?.(group.symbol, group.latestLog?.entry_price || group.latestLog?.entryPrice, group.latestLog?.entry_timestamp || group.latestLog?.entryTime, group.latestLog?.timeframe, group.latestLog?.direction || group.latestLog?.side)}
+                                                onClick={() => (onOpenChart as any)?.(group.symbol, (group.latestLog as any)?.entry_price || (group.latestLog as any)?.entryPrice, (group.latestLog as any)?.entry_timestamp || (group.latestLog as any)?.entryTime, (group.latestLog as any)?.timeframe, (group.latestLog as any)?.direction || (group.latestLog as any)?.side)}
                                             >
                                                 <span>{group.symbol}</span>
                                                 {getCoinChineseName(group.symbol) && (
@@ -1161,7 +1161,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             {activeFilter === 'DEBT' && <Banknote size={12} className="text-red-400"/>}
                                             {activeFilter === 'RECOVERY' && <RotateCcw size={12} className="text-emerald-400"/>}
                                             <button 
-                                                onClick={() => onOpenChart?.(group.symbol, group.latestLog?.entry_price || group.latestLog?.entryPrice, group.latestLog?.entry_timestamp || group.latestLog?.entryTime, group.latestLog?.timeframe, group.latestLog?.direction || group.latestLog?.side)}
+                                                onClick={() => (onOpenChart as any)?.(group.symbol, (group.latestLog as any)?.entry_price || (group.latestLog as any)?.entryPrice, (group.latestLog as any)?.entry_timestamp || (group.latestLog as any)?.entryTime, (group.latestLog as any)?.timeframe, (group.latestLog as any)?.direction || (group.latestLog as any)?.side)}
                                                 className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-indigo-400 transition-all"
                                                 title="查看K线"
                                             >
@@ -1361,7 +1361,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                             <Clock size={16} />
                                                         </button>
                                                         <button 
-                                                            onClick={() => onOpenChart?.(log.symbol, log.entry_price || log.entryPrice, log.entry_timestamp || log.entryTime, log.timeframe, log.direction || log.side)}
+                                                            onClick={() => (onOpenChart as any)?.((log as any).symbol, (log as any).entry_price || (log as any).entryPrice, (log as any).entry_timestamp || (log as any).entryTime, (log as any).timeframe, (log as any).direction || (log as any).side)}
                                                             className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-400 hover:text-indigo-400 transition-all border border-slate-700" 
                                                             title="查看图表"
                                                         >
@@ -1418,7 +1418,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                             <Clock size={16} />
                                                         </button>
                                                         <button 
-                                                            onClick={() => onOpenChart?.(log.symbol, log.entry_price || log.entryPrice, log.entry_timestamp || log.entryTime, log.timeframe, log.direction || log.side)}
+                                                            onClick={() => (onOpenChart as any)?.((log as any).symbol, (log as any).entry_price || (log as any).entryPrice, (log as any).entry_timestamp || (log as any).entryTime, (log as any).timeframe, (log as any).direction || (log as any).side)}
                                                             className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-400 hover:text-indigo-400 transition-all border border-slate-700" 
                                                             title="查看图表"
                                                         >
@@ -1645,7 +1645,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                             <div className="flex items-center gap-2">
                                                 <span 
                                                     className="cursor-pointer hover:text-indigo-400 transition-colors"
-                                                    onClick={() => onOpenChart?.(log.symbol, log.entry_price || log.entryPrice, log.entry_timestamp || log.entryTime, log.timeframe, log.direction || log.side)}
+                                                    onClick={() => (onOpenChart as any)?.((log as any).symbol, (log as any).entry_price || (log as any).entryPrice, (log as any).entry_timestamp || (log as any).entryTime, (log as any).timeframe, (log as any).direction || (log as any).side)}
                                                 >
                                                     <span>{log.symbol}</span>
                                                     {getCoinChineseName(log.symbol) && (
@@ -1662,7 +1662,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                         <td className="px-4 py-3">
                                             {log.timeframe ? (
                                                 <button 
-                                                    onClick={() => onOpenChart?.(log.symbol, log.entry_price || log.entryPrice, log.entry_timestamp || log.entryTime, log.timeframe, log.direction || log.side)}
+                                                    onClick={() => (onOpenChart as any)?.((log as any).symbol, (log as any).entry_price || (log as any).entryPrice, (log as any).entry_timestamp || (log as any).entryTime, (log as any).timeframe, (log as any).direction || (log as any).side)}
                                                     className="px-2 py-1 bg-indigo-900/30 text-indigo-400 rounded border border-indigo-500/30 text-xs font-bold hover:bg-indigo-600 hover:text-white transition-all flex items-center gap-1"
                                                 >
                                                     <BarChart2 size={12} />
@@ -2223,7 +2223,7 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                     {!!selectedLog.main_entry_id && <span className="text-[10px] text-blue-400 border border-blue-500/30 px-1 rounded">对冲</span>}
                                     {!!selectedLog.parent_entry_id && <span className="text-[10px] text-purple-400 border border-purple-500/30 px-1 rounded">减仓</span>}
                                     <button 
-                                        onClick={() => onOpenChart?.(selectedLog.symbol, selectedLog.entry_price || selectedLog.entryPrice, selectedLog.entry_timestamp || selectedLog.entryTime, selectedLog.timeframe, selectedLog.direction || selectedLog.side)}
+                                        onClick={() => (onOpenChart as any)?.((selectedLog as any).symbol, (selectedLog as any).entry_price || (selectedLog as any).entryPrice, (selectedLog as any).entry_timestamp || (selectedLog as any).entryTime, (selectedLog as any).timeframe, (selectedLog as any).direction || (selectedLog as any).side)}
                                         className="p-1.5 bg-slate-800 hover:bg-indigo-600 text-slate-400 hover:text-white rounded transition-colors flex items-center gap-1"
                                     >
                                         <BarChart2 size={14} />

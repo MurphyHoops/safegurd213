@@ -294,11 +294,16 @@ export const useMomentumAudit = (
                     const cleanSym = normalizeSymbol(item.symbol);
                     const uniqueId = `${cleanSym}-${res.tf}-${res.direction}`;
                     
-                    // 当上游列表3有活跃信号流入时，物理清除该信号的过期黑名单，防止历史残余锁死
-                    expiredSignalCacheRef.current.delete(uniqueId);
+                    // 🔒 防复开保护：不再因上游候选扫描而误删 expiredSignalCacheRef，防止已平仓/已出场的信号被重新恢复引发复开
                     if (currentConfig.enableThresholds === false) {
+                        expiredSignalCacheRef.current.delete(uniqueId);
                         fuseAuditLatchRef.current.delete(uniqueId);
                         fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                    } else {
+                        // 保持 expiredSignalCacheRef 持久拦截，防止本轮已出场/已废弃的信号借由轮询“死灰复燃”
+                        if (expiredSignalCacheRef.current.has(uniqueId)) {
+                            return; // 直接跳过该过期信号的重新评估
+                        }
                     }
                     
                     const klineKey = `${cleanSym}-${res.tf}`;
@@ -379,10 +384,14 @@ export const useMomentumAudit = (
                     const grDir = gr.direction || 'LONG';
                     const uniqueId = `${cleanSym}-${grTf}-${grDir}`;
                     
-                    expiredSignalCacheRef.current.delete(uniqueId);
                     if (currentConfig.enableThresholds === false) {
+                        expiredSignalCacheRef.current.delete(uniqueId);
                         fuseAuditLatchRef.current.delete(uniqueId);
                         fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                    } else {
+                        if (expiredSignalCacheRef.current.has(uniqueId)) {
+                            return;
+                        }
                     }
                     
                     const existing = list4CacheRef.current.get(uniqueId);
@@ -402,8 +411,8 @@ export const useMomentumAudit = (
                 const cleanSym = normalizeSymbol(item.symbol);
                 const uniqueId = `${cleanSym}-${item.tf}-${item.direction}`;
                 
-                expiredSignalCacheRef.current.delete(uniqueId);
                 if (currentConfig.enableThresholds === false) {
+                    expiredSignalCacheRef.current.delete(uniqueId);
                     fuseAuditLatchRef.current.delete(uniqueId);
                     fuseBlockedSignalCacheRef.current.delete(uniqueId);
                 }
@@ -835,6 +844,13 @@ export const useMomentumAudit = (
             runAnalysisSync();
         });
 
+        // 直通开仓管道 (Fast-Track Pipeline): 监听来自 List2FastScanner 的直发信号
+        const unsubDirectTrigger = eventBus.subscribe('DIRECT_TRIGGER_TO_LIST4', (payload: any) => {
+            if (!payload || !payload.symbol) return;
+            console.log(`⚡ [List4 直通管道接收] 收到直发开仓信号: ${payload.symbol} ${payload.direction} 触发价: ${payload.triggerPrice}`);
+            runAnalysisSync();
+        });
+
         // 2. 500ms 兜底安全心跳脉冲（即使 WS 短暂断连或重连中，也保证秒级轮询判定开仓）
         const intervalTimer = setInterval(() => {
             runAnalysisSync();
@@ -845,6 +861,7 @@ export const useMomentumAudit = (
 
         return () => {
             unsubscribe();
+            unsubDirectTrigger();
             clearInterval(intervalTimer);
         };
     }, [runAnalysisSync]);

@@ -31,7 +31,7 @@ interface Props {
     detectedTf?: string; 
 }
 
-export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChartData, onClosePosition, auditStatus, detectedTf = '15m' }) => {
+const LivePositionRowBase: React.FC<Props> = ({ position, realPrice, setChartData, onClosePosition, auditStatus, detectedTf = '15m' }) => {
     const isLong = position.side === PositionSide.LONG;
     const rawCurrentPrice = realPrice || position.markPrice || position.entryPrice; 
     
@@ -118,9 +118,7 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
                 source: 'LIST5'
             }], 
             currentPrice: currentPrice,
-            showAuditLines: false,
-            source: 'list5',
-            viewMode: 'TRADE'
+            showAuditLines: false
         });
     };
 
@@ -234,3 +232,13 @@ export const LivePositionRow: React.FC<Props> = ({ position, realPrice, setChart
         </div>
     );
 };
+
+export const LivePositionRow = React.memo(LivePositionRowBase, (prevProps, nextProps) => {
+    return (
+        prevProps.realPrice === nextProps.realPrice &&
+        prevProps.detectedTf === nextProps.detectedTf &&
+        prevProps.position === nextProps.position &&
+        prevProps.auditStatus?.label === nextProps.auditStatus?.label &&
+        prevProps.auditStatus?.color === nextProps.auditStatus?.color
+    );
+});

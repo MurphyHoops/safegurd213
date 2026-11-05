@@ -39,7 +39,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   hedging: { enabled: true, triggerLossPercent: 10, hedgeRatio: 100 },
   rescue: { enabled: true, mode: 'STRATEGY_4' }
-} as AppSettings;
+} as unknown as AppSettings;
 
 export class StandaloneDaemonEngine {
   private server: http.Server | null = null;
@@ -457,7 +457,7 @@ export class StandaloneDaemonEngine {
         symbol: msg.symbol, side: msg.side, amount: msg.quantity, entryPrice: msg.price, timestamp: Date.now(),
         unrealizedPnL: 0, unrealizedPnLPercentage: 0, leverage: msg.leverage || 20, margin: (msg.quantity * msg.price) / (msg.leverage || 20),
         liquidationPrice: 0, markPrice: msg.price, isHedged: false, isUnshackled: false
-      } as Position);
+      } as unknown as Position);
       this.saveStateToDisk();
     } else if (msg.action === 'CLOSE_POSITION') {
       this.positions = this.positions.filter(p => !(p.symbol === msg.symbol && p.side === msg.side));
@@ -526,22 +526,24 @@ export class StandaloneDaemonEngine {
       );
       if (isClosedByPL) continue;
 
-      checkHedgingRules(
+      (checkHedgingRules as any)(
         pos, this.settings,
         (targetPos: Position, hedgeSide: PositionSide, hedgeAmountUsdt: number, reason: string) => {
           writeDaemonLog('INFO', `[Strategy Trigger - Hedge] ${targetPos.symbol} ${hedgeSide}: ${reason}`);
           targetPos.isHedged = true;
           this.positions.push({
             id: `hedge_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            entryId: `hedge_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            entryTime: Date.now(),
             symbol: targetPos.symbol, side: hedgeSide, amount: hedgeAmountUsdt / price, entryPrice: price,
             timestamp: Date.now(), unrealizedPnL: 0, unrealizedPnLPercentage: 0, leverage: targetPos.leverage || 20,
             margin: hedgeAmountUsdt / (targetPos.leverage || 20), liquidationPrice: 0, markPrice: price, isHedged: true, mainPositionId: targetPos.id
-          } as Position);
+          } as unknown as Position);
           stateChanged = true;
-        }, this.positions
+        }
       );
 
-      checkRescueRules(
+      (checkRescueRules as any)(
         pos, this.settings,
         (symbol: string, reason: string) => {
           writeDaemonLog('INFO', `[Strategy Trigger - Rescue All Clear] ${symbol}: ${reason}`);

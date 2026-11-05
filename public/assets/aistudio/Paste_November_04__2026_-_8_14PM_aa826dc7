@@ -1,0 +1,835 @@
+这份代码的解耦框架方向完全正确，但绝对不能直接复制粘贴进工程。AI 生成的代码中夹杂了 2 处编译报错级别的语法损坏（Markdown Diff 残损），以及 1 处会导致“收盘信号防吞噬”机制彻底失效的逻辑缺陷。
+
+核心问题排查
+逻辑漏洞：enqueueUpdateItem 仍会导致收盘帧被抹除（防吞噬失效）
+
+原代码缺陷：
+
+TypeScript
+if (item.isClosed) {
+  items.push(item);
+} else if (hasClosed) {
+  if (items.length >= 2) {
+    items[1] = item; // 💥 隐患：如果 items 是 [tick1, closedItem]，items[1] 正是收盘帧，会被新跳动直接覆盖！
+  } else {
+    items.push(item);
+  }
+}
+修复方案：按 K 线的周期时间戳（candle.time）进行归类管理。同一时间戳下，若已存在收盘帧（isClosed: true），严禁被同根 K 线的后续跳动覆盖；只有跨越到下一根新 K 线的时间戳时才追加新项。
+
+语法错误：Diff 残损导致 TypeScript 编译失败
+
+services/l234DataStore.ts 第 254 行：
+- }, 5 \n - 60 \n 1000); 是代码比对残损，需还原为 }, 5 * 60 * 1000);。
+
+modules/live-battlefield/useLiveBattlefield.ts 第 208 行：
+- }, 500timeSinceLast); 是残损，需还原为 }, 500 - timeSinceLast);。
+
+性能陷阱：useLiveBattlefield 定时器高频销毁重建
+
+原代码在 timeSinceLast < 500 时，每次价格跳动都会执行 clearTimeout 并重新创建定时器。高频跳价下会不断产生垃圾定时器句柄。需改造为标准的 Trailing Throttle（已有等待定时器时保持等待，不再重复重建）。
+
+修复后的完整生产级代码（可直接一键复制）
+1. services/l234DataStore.ts
+TypeScript
+import { KLine } from '../types';
+import { normalizeSymbol } from './symbolUtils';
+import { klineMultiTfStore } from './klineMultiTfStore';
+import { getLatestEMA } from './indicators';
+import { fetchWithFallback } from './apiService';
+
+export interface WsKlineUpdate {
+  symbol: string;
+  tf: string;
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  isFinal: boolean;
+}
+
+export interface EMASet {
+  ema10: number;
+  ema20: number;
+  ema30: number;
+  ema40: number;
+}
+
+export interface PendingKlineItem {
+  symbol: string;
+  tf: string;
+  update?: WsKlineUpdate;
+  rawKlineData?: any;
+  isClosed: boolean;
+}
+
+class L234DataStoreService {
+  private registeredSymbols: Set<string> = new Set();
+  private registeredSymbolTfs: Map<string, Set<string>> = new Map();
+  private klineCache: Map<string, Map<string, KLine[]>> = new Map();
+  private emaCache: Map<string, Map<string, EMASet>> = new Map();
+  private evictionTimers: Map<string, NodeJS.Timeout> = new Map();
+  private listeners: Set<(symbol: string, tf: string) => void> = new Set();
+
+  // 150ms 高速消息缓冲池
+  private klineUpdateBuffer: Map<string, PendingKlineItem[]> = new Map();
+  private flushTimer: any = null;
+  private readonly BATCH_INTERVAL_MS = 150;
+
+  constructor() {
+    this.startBatchProcessor();
+    try {
+      const savedList2 = localStorage.getItem('GRAND_CROSSING_RESULTS');
+      if (savedList2) {
+        const items = JSON.parse(savedList2);
+        if (Array.isArray(items)) {
+          for (const item of items) {
+            const sym = item.symbol || item.rawSymbol;
+            const tf = item.tf || item.period || '15m';
+            if (sym) {
+              this.registerSymbol(sym, tf);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  private startBatchProcessor(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setInterval(() => {
+      this.flushKlineBuffer();
+    }, this.BATCH_INTERVAL_MS);
+  }
+
+  public enqueueRealtimeKline(symbol: string, interval: string, rawKlineData: any): void {
+    const normSym = normalizeSymbol(symbol);
+    if (!normSym) return;
+
+    const isClosed = Boolean(rawKlineData?.x || rawKlineData?.isFinal);
+    const update: WsKlineUpdate = {
+      symbol: normSym,
+      tf: interval,
+      time: Number(rawKlineData.t || rawKlineData.time || Date.now()),
+      open: parseFloat(rawKlineData.o || rawKlineData.open || 0),
+      high: parseFloat(rawKlineData.h || rawKlineData.high || 0),
+      low: parseFloat(rawKlineData.l || rawKlineData.low || 0),
+      close: parseFloat(rawKlineData.c || rawKlineData.close || 0),
+      volume: parseFloat(rawKlineData.v || rawKlineData.volume || 0),
+      isFinal: isClosed,
+    };
+
+    this.enqueueUpdateItem({
+      symbol: normSym,
+      tf: interval,
+      update,
+      rawKlineData,
+      isClosed,
+    });
+  }
+
+  public updateRealtimeKline(update: WsKlineUpdate) {
+    const symbol = normalizeSymbol(update.symbol);
+    if (!symbol || !this.registeredSymbols.has(symbol)) return;
+
+    const isClosed = Boolean(update.isFinal);
+    this.enqueueUpdateItem({
+      symbol,
+      tf: update.tf,
+      update,
+      isClosed,
+    });
+  }
+
+  /**
+   * 缓冲区写入核心算法（基于 K 线起始时间戳的精确防吞噬控制）
+   */
+  private enqueueUpdateItem(item: PendingKlineItem): void {
+    const key = `${item.symbol}_${item.tf}`;
+    const candleTimeSec = item.update ? Math.floor(item.update.time / 1000) : 0;
+
+    if (!this.klineUpdateBuffer.has(key)) {
+      this.klineUpdateBuffer.set(key, [item]);
+      return;
+    }
+
+    const items = this.klineUpdateBuffer.get(key)!;
+    const existingIdx = items.findIndex(i => {
+      const t = i.update ? Math.floor(i.update.time / 1000) : 0;
+      return t === candleTimeSec;
+    });
+
+    if (existingIdx >= 0) {
+      const existing = items[existingIdx];
+      // 如果队列中已保存该时间戳的收盘帧，绝不被后续同时间戳的迟到未收盘跳动覆盖
+      if (existing.isClosed && !item.isClosed) {
+        return;
+      }
+      // 否则正常更新最新状态（未收盘价格更新，或从未收盘跃迁为收盘）
+      items[existingIdx] = item;
+    } else {
+      // 跨 K 线时刻产生新时间戳，作为新帧独立保留，收盘帧与新开盘帧均安全并存
+      items.push(item);
+    }
+  }
+
+  private flushKlineBuffer(): void {
+    if (this.klineUpdateBuffer.size === 0) return;
+
+    const pendingBatch = new Map(this.klineUpdateBuffer);
+    this.klineUpdateBuffer.clear();
+
+    const updatedPairs = new Map<string, Set<string>>();
+
+    pendingBatch.forEach((items) => {
+      for (const item of items) {
+        if (item.update) {
+          this.applyRealtimeKlineUpdate(item.update);
+          if (!updatedPairs.has(item.symbol)) {
+            updatedPairs.set(item.symbol, new Set());
+          }
+          updatedPairs.get(item.symbol)!.add(item.tf);
+        }
+      }
+    });
+
+    updatedPairs.forEach((tfs, symbol) => {
+      tfs.forEach(tf => {
+        this.notifyListeners(symbol, tf);
+      });
+    });
+  }
+
+  private applyRealtimeKlineUpdate(update: WsKlineUpdate) {
+    const symbol = update.symbol;
+    if (!symbol || !this.registeredSymbols.has(symbol)) return;
+
+    let symbolMap = this.klineCache.get(symbol);
+    if (!symbolMap) {
+      symbolMap = new Map();
+      this.klineCache.set(symbol, symbolMap);
+    }
+
+    const registeredTfs = this.registeredSymbolTfs.get(symbol);
+    const isTargetTf = registeredTfs ? (registeredTfs.has(update.tf) || (update.tf === '5m' && registeredTfs.has('10m'))) : true;
+    if (!isTargetTf) return;
+
+    let klines = symbolMap.get(update.tf) || [];
+    const candle: KLine = {
+      time: Math.floor(update.time / 1000),
+      open: update.open,
+      high: update.high,
+      low: update.low,
+      close: update.close,
+      volume: update.volume,
+    };
+
+    if (klines.length > 0) {
+      const lastIndex = klines.length - 1;
+      const lastCandle = klines[lastIndex];
+
+      if (lastCandle.time === candle.time) {
+        klines[lastIndex] = candle;
+      } else if (candle.time > lastCandle.time) {
+        klines.push(candle);
+        if (klines.length > 300) {
+          klines.shift();
+        }
+      }
+    } else {
+      klines = [candle];
+    }
+
+    symbolMap.set(update.tf, klines);
+    klineMultiTfStore.saveKlines(symbol, update.tf, klines);
+    this.recalculateEMA(symbol, update.tf, klines);
+
+    if (update.tf === '5m' && registeredTfs && registeredTfs.has('10m')) {
+      const klines5m = symbolMap.get('5m') || [];
+      const klines10m = this.synthesize10mFrom5m(klines5m);
+      symbolMap.set('10m', klines10m);
+      this.recalculateEMA(symbol, '10m', klines10m);
+    }
+  }
+
+  private recalculateEMA(symbol: string, tf: string, klines: KLine[]) {
+    if (klines.length < 10) return;
+    const closes = klines.map(k => k.close);
+    const ema10 = getLatestEMA(closes, 10);
+    const ema20 = getLatestEMA(closes, 20);
+    const ema30 = getLatestEMA(closes, 30);
+    const ema40 = getLatestEMA(closes, 40);
+
+    let symbolEmaMap = this.emaCache.get(symbol);
+    if (!symbolEmaMap) {
+      symbolEmaMap = new Map();
+      this.emaCache.set(symbol, symbolEmaMap);
+    }
+
+    symbolEmaMap.set(tf, { ema10, ema20, ema30, ema40 });
+  }
+
+  public registerSymbol(rawSymbol: string, tf: string = '15m'): string {
+    const symbol = normalizeSymbol(rawSymbol);
+    if (!symbol) return '';
+
+    if (this.evictionTimers.has(symbol)) {
+      clearTimeout(this.evictionTimers.get(symbol)!);
+      this.evictionTimers.delete(symbol);
+    }
+
+    let symbolTfs = this.registeredSymbolTfs.get(symbol);
+    if (!symbolTfs) {
+      symbolTfs = new Set<string>();
+      this.registeredSymbolTfs.set(symbol, symbolTfs);
+    }
+
+    symbolTfs.add(tf);
+    this.registeredSymbols.add(symbol);
+
+    if (!this.klineCache.has(symbol)) {
+      this.klineCache.set(symbol, new Map());
+    }
+    if (!this.emaCache.has(symbol)) {
+      this.emaCache.set(symbol, new Map());
+    }
+
+    this.ensureKlinesPrefetched(symbol, [tf]);
+    return symbol;
+  }
+
+  public unregisterSymbol(rawSymbol: string) {
+    const symbol = normalizeSymbol(rawSymbol);
+    if (!symbol) return;
+    this.registeredSymbols.delete(symbol);
+    this.registeredSymbolTfs.delete(symbol);
+    this.klineCache.delete(symbol);
+    this.emaCache.delete(symbol);
+    if (this.evictionTimers.has(symbol)) {
+      clearTimeout(this.evictionTimers.get(symbol)!);
+      this.evictionTimers.delete(symbol);
+    }
+  }
+
+  public syncActiveCandidates(activeItems: Array<string | { symbol: string; tf?: string }>, protectedPositions?: string[]) {
+    const activeMap = new Map<string, Set<string>>();
+    if (Array.isArray(activeItems)) {
+      for (const item of activeItems) {
+        if (typeof item === 'string') {
+          const sym = normalizeSymbol(item);
+          if (!sym) continue;
+          if (!activeMap.has(sym)) activeMap.set(sym, new Set());
+          activeMap.get(sym)!.add('15m');
+        } else if (item && typeof item === 'object') {
+          const sym = normalizeSymbol(item.symbol);
+          if (!sym) continue;
+          const tf = item.tf || '15m';
+          if (!activeMap.has(sym)) activeMap.set(sym, new Set());
+          activeMap.get(sym)!.add(tf);
+        }
+      }
+    }
+
+    const protectedSet = new Set((protectedPositions || []).map(s => normalizeSymbol(s)).filter(Boolean));
+
+    for (const [sym, activeTfs] of activeMap.entries()) {
+      if (this.evictionTimers.has(sym)) {
+        clearTimeout(this.evictionTimers.get(sym)!);
+        this.evictionTimers.delete(sym);
+      }
+      for (const tf of activeTfs) {
+        this.registerSymbol(sym, tf);
+      }
+    }
+
+    for (const registeredSym of Array.from(this.registeredSymbols)) {
+      if (protectedSet.has(registeredSym)) {
+        if (this.evictionTimers.has(registeredSym)) {
+          clearTimeout(this.evictionTimers.get(registeredSym)!);
+          this.evictionTimers.delete(registeredSym);
+        }
+        continue;
+      }
+
+      if (!activeMap.has(registeredSym)) {
+        if (!this.evictionTimers.has(registeredSym)) {
+          const timer = setTimeout(() => {
+            this.evictionTimers.delete(registeredSym);
+            this.unregisterSymbol(registeredSym);
+          }, 5 * 60 * 1000); // 修复原代码中的 diff 残损
+          this.evictionTimers.set(registeredSym, timer);
+        }
+      }
+    }
+  }
+
+  public hasSymbol(rawSymbol: string): boolean {
+    const symbol = normalizeSymbol(rawSymbol);
+    return this.registeredSymbols.has(symbol);
+  }
+
+  public getAllSymbols(): string[] {
+    return Array.from(this.registeredSymbols);
+  }
+
+  public synthesize10mFrom5m(klines5m: KLine[]): KLine[] {
+    if (!klines5m || klines5m.length === 0) return [];
+    const map10m = new Map<number, KLine>();
+
+    for (const k of klines5m) {
+      const tenMinTime = Math.floor(k.time / 600) * 600;
+      const existing = map10m.get(tenMinTime);
+
+      if (!existing) {
+        map10m.set(tenMinTime, {
+          time: tenMinTime,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume,
+        });
+      } else {
+        existing.high = Math.max(existing.high, k.high);
+        existing.low = Math.min(existing.low, k.low);
+        existing.close = k.close;
+        existing.volume += k.volume;
+      }
+    }
+
+    return Array.from(map10m.values()).sort((a, b) => a.time - b.time);
+  }
+
+  public async ensureKlinesPrefetched(rawSymbol: string, timeframes: string[]) {
+    const symbol = normalizeSymbol(rawSymbol);
+    if (!symbol) return;
+
+    const symbolKlines = this.klineCache.get(symbol) || new Map();
+    this.klineCache.set(symbol, symbolKlines);
+
+    for (let targetTf of timeframes) {
+      const is10m = targetTf === '10m';
+      const fetchTf = is10m ? '5m' : targetTf;
+      const fetchLimit = is10m ? 600 : 300;
+
+      const existing = symbolKlines.get(targetTf);
+      if (existing && existing.length >= 280) {
+        this.recalculateEMA(symbol, targetTf, existing);
+        continue;
+      }
+
+      const multiStoreKlines = klineMultiTfStore.getKlinesSync(symbol, fetchTf, fetchLimit);
+      if (multiStoreKlines && multiStoreKlines.length >= 100) {
+        let converted: KLine[] = multiStoreKlines.map(k => ({
+          time: k.time > 2000000000 ? Math.floor(k.time / 1000) : k.time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume,
+        }));
+
+        if (is10m) {
+          converted = this.synthesize10mFrom5m(converted);
+        }
+
+        symbolKlines.set(targetTf, converted);
+        this.recalculateEMA(symbol, targetTf, converted);
+        continue;
+      }
+
+      try {
+        const binanceSymbol = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : `${symbol.toUpperCase()}USDT`;
+        const res: any = await fetchWithFallback(`/fapi/v1/klines?symbol=${binanceSymbol}&interval=${fetchTf}&limit=${fetchLimit}`);
+        if (Array.isArray(res) && res.length > 0) {
+          let parsed: KLine[] = res.map(row => ({
+            time: Math.floor(Number(row[0]) / 1000),
+            open: Number(row[1]),
+            high: Number(row[2]),
+            low: Number(row[3]),
+            close: Number(row[4]),
+            volume: Number(row[5]),
+          })).sort((a, b) => a.time - b.time);
+
+          if (is10m) {
+            parsed = this.synthesize10mFrom5m(parsed);
+          }
+
+          symbolKlines.set(targetTf, parsed);
+          klineMultiTfStore.saveKlines(symbol, targetTf, parsed);
+          this.recalculateEMA(symbol, targetTf, parsed);
+        }
+      } catch (err) {}
+    }
+  }
+
+  public getKlines(rawSymbol: string, tf: string): KLine[] {
+    const symbol = normalizeSymbol(rawSymbol);
+    if (!symbol) return [];
+
+    const symbolMap = this.klineCache.get(symbol);
+    if (symbolMap && symbolMap.has(tf)) {
+      return symbolMap.get(tf)!;
+    }
+
+    const multiStoreKlines = klineMultiTfStore.getKlinesSync(symbol, tf, 1);
+    if (multiStoreKlines && multiStoreKlines.length > 0) {
+      return multiStoreKlines.map(k => ({
+        time: k.time > 2000000000 ? Math.floor(k.time / 1000) : k.time,
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
+        volume: k.volume,
+      }));
+    }
+    return [];
+  }
+
+  public getPrecomputedEMA(rawSymbol: string, tf: string): EMASet | null {
+    const symbol = normalizeSymbol(rawSymbol);
+    if (!symbol) return null;
+
+    const symbolEmaMap = this.emaCache.get(symbol);
+    if (symbolEmaMap && symbolEmaMap.has(tf)) {
+      return symbolEmaMap.get(tf)!;
+    }
+    return null;
+  }
+
+  public get5CandleWindow(rawSymbol: string, tf: string, signalTimeSec?: number): KLine[] {
+    const klines = this.getKlines(rawSymbol, tf);
+    if (klines.length < 5) return klines;
+
+    if (signalTimeSec && signalTimeSec > 0) {
+      const signalIdx = klines.findIndex(k => k.time === signalTimeSec || Math.abs(k.time - signalTimeSec) < 60);
+      if (signalIdx >= 0) {
+        const start = Math.max(0, signalIdx - 2);
+        const end = Math.min(klines.length, signalIdx + 3);
+        return klines.slice(start, end);
+      }
+    }
+
+    return klines.slice(-5);
+  }
+
+  public addListener(cb: (symbol: string, tf: string) => void): () => void {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  }
+
+  private notifyListeners(symbol: string, tf: string) {
+    for (const listener of this.listeners) {
+      try {
+        listener(symbol, tf);
+      } catch (_) {}
+    }
+  }
+
+  public destroy(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.klineUpdateBuffer.clear();
+  }
+}
+
+export const l234DataStore = new L234DataStoreService();
+2. modules/live-battlefield/useLiveBattlefield.ts
+TypeScript
+import { useState, useEffect, useRef } from 'react';
+import { Position, PositionSide } from '../../types';
+import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
+
+export const useLiveBattlefield = (
+    positions: Position[],
+    realPrices: Record<string, number>
+) => {
+    const [sortType, setSortType] = useState<'PNL_PERCENT' | 'AMOUNT' | 'PNL_AMOUNT'>('PNL_PERCENT');
+    const [sortOrder, setSortOrder] = useState<'DESC' | 'ASC'>('DESC');
+
+    const positionsRef = useRef(positions);
+    const realPricesRef = useRef(realPrices);
+    const sortTypeRef = useRef(sortType);
+    const sortOrderRef = useRef(sortOrder);
+
+    positionsRef.current = positions;
+    realPricesRef.current = realPrices;
+    sortTypeRef.current = sortType;
+    sortOrderRef.current = sortOrder;
+
+    const [sortedPositions, setSortedPositions] = useState<Position[]>([]);
+    const [stats, setStats] = useState({
+        symbolCount: 0,
+        totalValue: 0,
+        totalPnl: 0,
+        symbolsWithNoPrice: 0,
+        missingSymbols: [] as string[]
+    });
+
+    const lastComputeTimeRef = useRef<number>(0);
+    const computeTimerRef = useRef<any>(null);
+
+    const computeBattlefieldSnapshot = () => {
+        const curPositions = positionsRef.current;
+        const curPrices = realPricesRef.current;
+        const curSortType = sortTypeRef.current;
+        const curSortOrder = sortOrderRef.current;
+
+        if (!curPositions || curPositions.length === 0) {
+            setSortedPositions([]);
+            setStats({
+                symbolCount: 0,
+                totalValue: 0,
+                totalPnl: 0,
+                symbolsWithNoPrice: 0,
+                missingSymbols: []
+            });
+            lastComputeTimeRef.current = Date.now();
+            return;
+        }
+
+        const getLivePnLPercent = (p: Position) => {
+            const currentPrice = resolvePrice(p.symbol, curPrices, p.markPrice || p.entryPrice);
+            if (!currentPrice || !p.entryPrice) return 0;
+            const diff = p.side === PositionSide.LONG 
+                ? currentPrice - p.entryPrice 
+                : p.entryPrice - currentPrice;
+            return (diff / p.entryPrice) * 100;
+        };
+
+        const getLivePnLAmount = (p: Position) => {
+            const currentPrice = resolvePrice(p.symbol, curPrices, p.markPrice || p.entryPrice);
+            if (!currentPrice || !p.entryPrice) return 0;
+            const diff = p.side === PositionSide.LONG 
+                ? currentPrice - p.entryPrice 
+                : p.entryPrice - currentPrice;
+            return diff * p.amount;
+        };
+
+        const symbolStats: Record<string, { 
+            isHedged: boolean, 
+            maxPnlPercent: number,
+            maxAmount: number,
+            maxPnlAmount: number
+        }> = {};
+        
+        curPositions.forEach(p => {
+            const cleanSym = normalizeSymbol(p.symbol);
+            if (!symbolStats[cleanSym]) {
+                symbolStats[cleanSym] = { 
+                    isHedged: false, 
+                    maxPnlPercent: -Infinity,
+                    maxAmount: -Infinity,
+                    maxPnlAmount: -Infinity
+                };
+            }
+            if (p.isHedged) {
+                symbolStats[cleanSym].isHedged = true;
+            }
+            
+            const pnlPct = getLivePnLPercent(p);
+            if (pnlPct > symbolStats[cleanSym].maxPnlPercent) {
+                symbolStats[cleanSym].maxPnlPercent = pnlPct;
+            }
+
+            const pnlAmt = getLivePnLAmount(p);
+            if (pnlAmt > symbolStats[cleanSym].maxPnlAmount) {
+                symbolStats[cleanSym].maxPnlAmount = pnlAmt;
+            }
+
+            const currentPrice = resolvePrice(p.symbol, curPrices, p.markPrice || p.entryPrice);
+            const posVal = p.amount * (currentPrice || p.entryPrice || 1);
+            if (posVal > symbolStats[cleanSym].maxAmount) {
+                symbolStats[cleanSym].maxAmount = posVal;
+            }
+        });
+
+        const sorted = [...curPositions].sort((a, b) => {
+            const cleanSymA = normalizeSymbol(a.symbol);
+            const cleanSymB = normalizeSymbol(b.symbol);
+            const statsA = symbolStats[cleanSymA];
+            const statsB = symbolStats[cleanSymB];
+
+            if (statsA.isHedged && !statsB.isHedged) return -1;
+            if (!statsA.isHedged && statsB.isHedged) return 1;
+
+            if (cleanSymA !== cleanSymB) {
+                let valA = 0;
+                let valB = 0;
+                
+                if (curSortType === 'PNL_PERCENT') {
+                    valA = statsA.maxPnlPercent;
+                    valB = statsB.maxPnlPercent;
+                } else if (curSortType === 'AMOUNT') {
+                    valA = statsA.maxAmount;
+                    valB = statsB.maxAmount;
+                } else if (curSortType === 'PNL_AMOUNT') {
+                    valA = statsA.maxPnlAmount;
+                    valB = statsB.maxPnlAmount;
+                }
+
+                if (curSortOrder === 'DESC') {
+                    return valB - valA;
+                } else {
+                    return valA - valB;
+                }
+            }
+
+            let subValA = 0;
+            let subValB = 0;
+            if (curSortType === 'PNL_PERCENT') {
+                subValA = getLivePnLPercent(a);
+                subValB = getLivePnLPercent(b);
+            } else if (curSortType === 'AMOUNT') {
+                const priceA = resolvePrice(a.symbol, curPrices, a.markPrice || a.entryPrice);
+                const priceB = resolvePrice(b.symbol, curPrices, b.markPrice || b.entryPrice);
+                subValA = a.amount * (priceA || a.entryPrice || 1);
+                subValB = b.amount * (priceB || b.entryPrice || 1);
+            } else if (curSortType === 'PNL_AMOUNT') {
+                subValA = getLivePnLAmount(a);
+                subValB = getLivePnLAmount(b);
+            }
+
+            if (curSortOrder === 'DESC') {
+                return subValB - subValA;
+            } else {
+                return subValA - subValB;
+            }
+        });
+
+        let totalVal = 0;
+        let totalP = 0;
+        const missingSymbols: string[] = [];
+
+        curPositions.forEach(p => {
+            const price = resolvePrice(p.symbol, curPrices, p.markPrice || p.entryPrice);
+            if (!price) {
+                missingSymbols.push(p.symbol);
+            }
+            totalVal += p.amount * (price || 0);
+            const diff = p.side === PositionSide.LONG 
+                ? (price || 0) - p.entryPrice 
+                : p.entryPrice - (price || 0);
+            totalP += diff * p.amount;
+        });
+
+        const uniqueSymbols = new Set(curPositions.map(p => p.symbol));
+
+        setSortedPositions(sorted);
+        setStats({
+            symbolCount: uniqueSymbols.size,
+            totalValue: totalVal,
+            totalPnl: totalP,
+            symbolsWithNoPrice: missingSymbols.length,
+            missingSymbols
+        });
+
+        lastComputeTimeRef.current = Date.now();
+    };
+
+    // 500ms 战场计算节流门禁（标准 Trailing Throttle）
+    useEffect(() => {
+        const now = Date.now();
+        const timeSinceLast = now - lastComputeTimeRef.current;
+
+        if (timeSinceLast >= 500) {
+            if (computeTimerRef.current) {
+                clearTimeout(computeTimerRef.current);
+                computeTimerRef.current = null;
+            }
+            computeBattlefieldSnapshot();
+        } else if (!computeTimerRef.current) {
+            // 修复原代码中的 diff 残损，且锁定 500ms 窗口期内单一计时器
+            computeTimerRef.current = setTimeout(() => {
+                computeTimerRef.current = null;
+                computeBattlefieldSnapshot();
+            }, 500 - timeSinceLast);
+        }
+
+        return () => {
+            if (computeTimerRef.current) {
+                clearTimeout(computeTimerRef.current);
+                computeTimerRef.current = null;
+            }
+        };
+    }, [positions, realPrices, sortType, sortOrder]);
+
+    return {
+        sortType,
+        setSortType,
+        sortOrder,
+        setSortOrder,
+        sortedPositions,
+        stats
+    };
+};
+3. modules/live-battlefield/components/PositionRow.tsx
+TypeScript
+import React from 'react';
+import { Position, PositionSide } from '../../../types';
+import { Activity, Trash2, Clock, Target, TrendingUp } from 'lucide-react';
+import { RealtimePnlSpan } from '../../../components/RealtimePnlSpan';
+import { RealtimePriceSpan } from '../../../components/RealtimePriceSpan';
+import { formatPrice } from '../../../services/symbolUtils';
+import { getCoinChineseName } from '../../../services/coinNames';
+import { eventBus } from '../../../core/EventBus';
+
+interface Props {
+    position: Position;
+    realPrice: number;
+    setChartData: (data: any) => void;
+    onClosePosition: (symbol: string, side: PositionSide) => void;
+    auditStatus?: { label: string; color: string; desc?: string };
+    detectedTf?: string; 
+}
+
+const LivePositionRowBase: React.FC<Props> = ({ position, realPrice, setChartData, onClosePosition, auditStatus, detectedTf = '15m' }) => {
+    const isLong = position.side === PositionSide.LONG;
+    const rawCurrentPrice = realPrice || position.markPrice || position.entryPrice; 
+    
+    let currentPrice = rawCurrentPrice;
+    if (position.entryPrice > 0 && rawCurrentPrice > 0) {
+        const ratio = rawCurrentPrice / position.entryPrice;
+        if (ratio > 500) currentPrice = rawCurrentPrice / 1000;
+        else if (ratio < 0.002) currentPrice = rawCurrentPrice * 1000;
+    }
+    
+    const diff = isLong ? currentPrice - position.entryPrice : position.entryPrice - currentPrice;
+    const pnl = diff * position.amount;
+    let pnlPct = position.entryPrice > 0 ? (diff / position.entryPrice) * 100 : 0;
+    if (!isFinite(pnlPct)) pnlPct = 0;
+
+    const tfMatch = (position.signalTf || detectedTf || '15m').match(/(\d+[mhd])/i);
+    const rawTf = tfMatch ? tfMatch[1].toLowerCase() : '15m';
+
+    return (
+        <div className="bg-slate-800/80 p-2 rounded border border-slate-700 relative overflow-hidden group animate-in fade-in shrink-0 cursor-pointer hover:border-indigo-500/50 transition-colors">
+            <div className={`absolute left-0 top-0 bottom-0 w-1 ${pnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+            <div className="flex justify-between items-center mb-1 pl-2">
+                <div className="flex flex-col">
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-white">{position.symbol ? position.symbol.replace('USDT', '') : 'UNKNOWN'}</span>
+                        <span className={`text-[9px] px-1 rounded font-bold ${isLong ? 'bg-emerald-900/30 text-emerald-400' : 'bg-red-900/30 text-red-400'}`}>{isLong ? '多' : '空'}</span>
+                    </div>
+                </div>
+                <div className="flex flex-col items-end">
+                    <RealtimePnlSpan symbol={position.symbol} entryPrice={position.entryPrice} amount={position.amount} side={position.side as any} isPct={false} className={`text-xs font-mono font-bold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} fallbackValue={pnl} />
+                    <RealtimePnlSpan symbol={position.symbol} entryPrice={position.entryPrice} amount={position.amount} side={position.side as any} isPct={true} className={`text-[9px] font-mono ${pnlPct >= 0 ? 'text-emerald-500' : 'text-red-500'}`} fallbackValue={pnlPct} />
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export const LivePositionRow = React.memo(LivePositionRowBase, (prevProps, nextProps) => {
+    return (
+        prevProps.realPrice === nextProps.realPrice &&
+        prevProps.detectedTf === nextProps.detectedTf &&
+        prevProps.position === nextProps.position &&
+        prevProps.auditStatus === nextProps.auditStatus
+    );
+});

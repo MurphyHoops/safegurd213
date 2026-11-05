@@ -3,7 +3,7 @@ import { LogEntry } from '../../types';
 
 export interface LogCenterProps {
     logs: LogEntry[];
-    onOpenChart?: (symbol: string, entryPrice?: number, entryTime?: number) => void;
+    onOpenChart?: (symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string, direction?: string) => void;
     onClearLogs?: () => void;
 }
 

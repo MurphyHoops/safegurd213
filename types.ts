@@ -8,6 +8,8 @@ export interface KLine {
     volume: number;
 }
 
+export type UnifiedKline = KLine;
+
 export enum PositionSide {
     LONG = 'LONG',
     SHORT = 'SHORT'
@@ -33,6 +35,9 @@ export interface Position {
     unrealizedPnLPercentage: number;
     entryId: string;
     entryTime: number;
+    id?: string;
+    margin?: number;
+    currentPrice?: number;
     initialAmount?: number;
     amputationTriggered?: boolean;
     maxPnLAfterAmputationTrigger?: number;

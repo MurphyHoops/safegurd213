@@ -1,12 +1,12 @@
 import { exec } from 'child_process';
-import nodemailer from 'nodemailer';
+import nodemailer, { Transporter } from 'nodemailer';
 import { HealthState, SystemStatus } from '../guards/SystemHealthGuard';
 
 export class AlertManager {
   private static instance: AlertManager;
   private isSirenMuted: boolean = false;
   private sirenIntervalTimer: NodeJS.Timeout | null = null;
-  private smtpTransporter: nodemailer.Transporter | null = null;
+  private smtpTransporter: Transporter | null = null;
 
   private constructor() {
     this.initSmtpTransporter();

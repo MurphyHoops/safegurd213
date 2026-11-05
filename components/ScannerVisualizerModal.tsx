@@ -234,7 +234,7 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   lookbackDays={currentItem?.lookbackDays}
                   sidewaysDays={currentItem?.sidewaysDays}
                   source={currentItem?.source || (isList5Mode ? 'list5' : undefined)}
-                  viewMode={currentItem?.viewMode || (isList5Mode ? 'TRADE' : undefined)}
+                  viewMode={(currentItem?.viewMode as 'SIGNAL' | 'TRADE') || (isList5Mode ? 'TRADE' : undefined)}
                 />
               </div>
             ) : (

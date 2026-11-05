@@ -162,6 +162,7 @@ export interface ScannerItem {
         maxClose3?: number;
         minClose3?: number;
         recentCloses?: number[];
+        recentOpens?: number[];
         ema80Intersections?: number;
         isAdvancedFilterPassed?: boolean;
         isPriorReverseFound?: boolean;
@@ -287,6 +288,13 @@ export interface List3Config {
     rsiShortMin: number;
     rsiShortMax: number;
     enableRsi: boolean;
+    rsiPeriod?: number;
+    rev3KCandles?: number;
+    enableStrictTrend?: boolean;
+    enableColorAlign?: boolean;
+    enableRsiFilter?: boolean;
+    minRsi?: number;
+    maxRsi?: number;
     autoSimOpen: boolean;
     maxBBW: number;
     validityPeriod: number;

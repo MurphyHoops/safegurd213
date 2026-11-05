@@ -950,10 +950,19 @@ export function analyzeList2Crossing(
 
             // 各条件独立有效性计算
             const crossingValidL = isCrossing && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
-            const crossingValidS = isCrossing && !conflictS && strictOkS && isAlignedShort && crossingIsBearish;
+            const crossingValidS = isCrossing && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
+
+            // 🔒 [USER MANDATORY RULE] 均线穿越 (reqMa) 专属两阶段阶梯式准入条件:
+            // 阶段 1：EMA10 穿越 EMA30 但未穿越 EMA40 -> 触发折叠等待区 (isWaitPending = true)
+            // 阶段 2：EMA10 穿越 EMA40 -> 正式解锁列表2主池 (isWaitPending = false)
+            const isMaCrossWaitLong = !isMaCrossLong && (e10 !== null && e30 !== null && e10 > e30) && (e40 !== null && e10 <= e40);
+            const isMaCrossWaitShort = !isMaCrossShort && (e10 !== null && e30 !== null && e10 < e30) && (e40 !== null && e10 >= e40);
 
             const maCrossValidL = isMaCrossLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
-            const maCrossValidS = isMaCrossShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && isAlignedShort && crossingIsBearish;
+            const maCrossWaitValidL = isMaCrossWaitLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
+
+            const maCrossValidS = isMaCrossShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
+            const maCrossWaitValidS = isMaCrossWaitShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
 
             const divergenceStrictValidL = divergenceValidL && strictOkL;
             const divergenceStrictValidS = divergenceValidS && strictOkS && isAlignedShort;
@@ -1114,8 +1123,18 @@ export function analyzeList2Crossing(
                 patternMatchedS = matchS;
             }
 
-            // 🔒 [USER MANDATORY RULE] 做空时，任何匹配模式均必须严格满足 EMA10 < EMA20 < EMA30 < EMA40
-            patternMatchedS = patternMatchedS && isAlignedShort;
+            // 🔒 [USER MANDATORY RULE] 若开启“均线穿越 (reqMa)”且满足阶段1 (EMA10跨30未跨40)，推入折叠等待区
+            if (reqMa && !maCrossValidL && maCrossWaitValidL) {
+                patternMatchedL = true;
+                isWaitPendingL = true;
+            }
+            if (reqMa && !maCrossValidS && maCrossWaitValidS) {
+                patternMatchedS = true;
+                isWaitPendingS = true;
+            }
+
+            // 🔒 [USER MANDATORY RULE] 做空时，若要求均线发散必须严格满足 EMA10 < EMA20 < EMA30 < EMA40，否则只需满足非金叉方向守卫
+            patternMatchedS = patternMatchedS && (reqAlign ? isAlignedShort : directionGuardS);
 
             // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
             if (enableDivergenceCrossCheck && config.requireAlignment) {
@@ -1123,7 +1142,7 @@ export function analyzeList2Crossing(
                 patternMatchedS = patternMatchedS && crossedAllS;
             }
 
-            // 🔒 [USER MANDATORY RULE - 收盘确认] 做多信号K线必须是已收盘阳线，做空信号K线必须是已收盘阴线
+            // 🔒 [USER MANDATORY RULE - 收盘确认] 做多信号K线必须是已收盘阳线，做空信号K线必须是已收盘阴线；等待挂起状态直接放行进入等待折叠区
             let isValidL = false;
             let isPendingGrayL = false;
             if (patternMatchedL) {
@@ -1131,8 +1150,8 @@ export function analyzeList2Crossing(
                 const targetOpenL = opens[targetIdxL];
                 const targetLagL = idx - targetIdxL;
 
-                // 只有已收盘的K线 (targetLagL > 0) 且收阳方可确立为正式信号K线
-                if (targetLagL > 0 && targetCloseL > targetOpenL) {
+                // 只有已收盘的K线 (targetLagL > 0) 且收阳方可确立为正式信号K线；等待折叠直接确立
+                if (isWaitPendingL || (targetLagL > 0 && targetCloseL > targetOpenL)) {
                     isValidL = true;
                     isPendingGrayL = false;
                 } else {
@@ -1148,8 +1167,8 @@ export function analyzeList2Crossing(
                 const targetOpenS = opens[targetIdxS];
                 const targetLagS = idx - targetIdxS;
 
-                // 只有已收盘的K线 (targetLagS > 0) 且收阴方可确立为正式信号K线
-                if (targetLagS > 0 && targetCloseS < targetOpenS) {
+                // 只有已收盘的K线 (targetLagS > 0) 且收阴方可确立为正式信号K线；等待折叠直接确立
+                if (isWaitPendingS || (targetLagS > 0 && targetCloseS < targetOpenS)) {
                     isValidS = true;
                     isPendingGrayS = false;
                 } else {

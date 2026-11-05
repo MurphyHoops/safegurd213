@@ -1,5 +1,13 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { systemHealthGuard } from '../guards/SystemHealthGuard';
+import { binanceRateLimiter } from '../../../services/binanceRateLimiter';
+
+// 扩展 Axios 配置接口，支持 isCoreOrder 字段
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    isCoreOrder?: boolean;
+  }
+}
 
 const baseURL = process.env.BINANCE_BASE_URL || 'https://fapi.binance.com';
 
@@ -16,10 +24,30 @@ binanceAxios.interceptors.request.use((config) => {
     config.headers['X-MBX-APIKEY'] = process.env.BINANCE_API_KEY;
   }
 
-  // 核心修正：锁定期间仅放行用于恢复探针的 POST 请求，严格阻断定时的 PUT 续期请求防 429
+  // 🛡️ [第一防护：出站门禁拦截] 
+  // 核心订单 (isCoreOrder = true 及下单/杠杆/保证金模式调整) 允许在权重高时放行，但熔断期一律物理阻断
+  const url = config.url || '';
+  const isCoreOrder = Boolean(config.isCoreOrder) ||
+    url.includes('/order') ||
+    url.includes('/batchOrders') ||
+    url.includes('/leverage') ||
+    url.includes('/marginType') ||
+    url.includes('/positionSide');
+
+  try {
+    binanceRateLimiter.checkCanRequest(isCoreOrder);
+  } catch (err: any) {
+    return Promise.reject({
+      isHandledIpError: true,
+      isCircuitBreakerFrozen: true,
+      message: err.message || '【全局熔断拦截】处于 429/418 熔断静默期，已直接本地拦截发包！'
+    });
+  }
+
   if (systemHealthGuard.isSystemLocked()) {
     const isListenKeyProbe = config.url?.includes('/fapi/v1/listenKey') && config.method?.toUpperCase() === 'POST';
-    if (!isListenKeyProbe) {
+    const isTimeProbe = config.url?.includes('/fapi/v1/time');
+    if (!isListenKeyProbe && !isTimeProbe) {
       return Promise.reject({
         isHandledIpError: true,
         message: '【受控挂起】系统处于锁定保护中，阻断交易指令与无效续期，防 429 封禁'
@@ -30,8 +58,19 @@ binanceAxios.interceptors.request.use((config) => {
 });
 
 binanceAxios.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    binanceRateLimiter.handleResponse(response.status, response.headers);
+    return response;
+  },
   async (error) => {
+    if (error.response) {
+      binanceRateLimiter.handleResponse(
+        error.response.status,
+        error.response.headers,
+        typeof error.response.data === 'string' ? error.response.data : JSON.stringify(error.response.data || {})
+      );
+    }
+
     const resData = error.response?.data;
     const is2015 = resData?.code === -2015 || (typeof resData?.msg === 'string' && resData.msg.includes('Invalid API-key'));
 
@@ -58,3 +97,4 @@ binanceAxios.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
