@@ -7,12 +7,12 @@
   "scripts": {
     "dev": "NODE_OPTIONS='--expose-gc' tsx server.ts",
     "daemon": "tsx src/daemon/daemon_engine.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
+    "build": "tsc --noEmit && vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --sourcemap --outfile=dist/server.cjs",
     "start": "node --expose-gc --max-old-space-size=4096 dist/server.cjs",
     "lint": "tsc --noEmit",
     "electron:dev": "concurrently \"NODE_OPTIONS='--max-old-space-size=4096 --expose-gc' tsx server.ts\" \"wait-on http://localhost:3000 && electron .\"",
-    "dist:win": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --outfile=dist/server.cjs && npx --yes electron-builder --win",
-    "dist:mac": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:vite --outfile=dist/server.cjs && electron-builder --mac"
+    "dist:win": "npm run build && npx --yes electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac"
   },
   "description": "0211自动找币防爆仓救世之星",
   "author": "TradingMaster",

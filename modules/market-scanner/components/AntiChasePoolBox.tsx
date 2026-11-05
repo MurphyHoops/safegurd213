@@ -4,6 +4,7 @@ import { ChevronDown, ChevronUp, Copy, Check, Search, ShieldCheck, RefreshCw, Ar
 import { usePersistedState } from '../../../hooks/usePersistedState';
 import { DEFAULT_LIST1_ANTI_CHASE_CONFIG, AntiChasePoolItem, auditSymbolAntiChase } from '../../../services/rules/list1_anti_chase';
 import { klineDailyStore } from '../../../services/klineDailyStore';
+import { fetchWithFallback } from '../../../services/apiService';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -270,11 +271,11 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
                     }
                 }
 
-                // 2. 若本地缓存缺失，平滑轻量抓取 320 根日K
+                // 2. 若本地缓存缺失，平滑轻量抓取 320 根日K (使用 fetchWithFallback 双通道保障 PC 桌面端与网络代理畅通)
                 if (!rawK || rawK.length < 90) {
                     try {
                         const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym.toUpperCase()}&interval=1d&limit=320&isScanner=true`;
-                        const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}&priority=normal`);
+                        const res = await fetchWithFallback(url, { timeout: 8000, priority: 'NORMAL' }, (d) => Array.isArray(d) && d.length >= 2);
                         if (res.ok) {
                             const data = await res.json();
                             if (Array.isArray(data) && data.length >= 2) {

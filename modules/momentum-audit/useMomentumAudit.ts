@@ -34,6 +34,67 @@ const getTfMinutes = (tf: string) => {
     return 15;
 };
 
+const EXPIRED_SIGNAL_STORAGE_KEY = 'SCANNER_EXPIRED_SIGNAL_CACHE';
+const EXPIRED_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12小时内禁止同一结构死灰复燃
+
+// 从 localStorage 恢复已过期/已平仓的信号黑名单
+const getInitialExpiredSignalCache = (): Set<string> => {
+  try {
+    const raw = localStorage.getItem(EXPIRED_SIGNAL_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed: Record<string, number> = JSON.parse(raw);
+    const now = Date.now();
+    const validKeys = Object.entries(parsed)
+      .filter(([_, ts]) => typeof ts === 'number' && (now - ts < EXPIRED_CACHE_TTL_MS))
+      .map(([k]) => k);
+    return new Set(validKeys);
+  } catch {
+    return new Set();
+  }
+};
+
+// 将过期/已平仓信号同步持久化到 localStorage
+export const persistExpiredSignalKey = (key: string, cacheSet?: Set<string>) => {
+  try {
+    if (cacheSet) cacheSet.add(key);
+    const raw = localStorage.getItem(EXPIRED_SIGNAL_STORAGE_KEY);
+    const parsed: Record<string, number> = raw ? JSON.parse(raw) : {};
+    const now = Date.now();
+    parsed[key] = now;
+    // 顺带清理超过 12 小时的旧记录
+    Object.keys(parsed).forEach(k => {
+      if (now - parsed[k] >= EXPIRED_CACHE_TTL_MS) {
+        delete parsed[k];
+      }
+    });
+    localStorage.setItem(EXPIRED_SIGNAL_STORAGE_KEY, JSON.stringify(parsed));
+  } catch (_) {}
+};
+
+// 生成不依赖可变时间戳的“结构级唯一键”（币种-周期-方向）
+export const getStructureLockKey = (symbol: string, tf: string = '15m', direction: string = 'LONG'): string => {
+  const cleanSym = symbol.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  return `${cleanSym}-${tf}-${direction.toUpperCase()}`;
+};
+
+// 检查黑名单 Set 是否命中；未命中时从 localStorage 降级兜底读取校验，若找到则补入内存 Set
+export const checkAndSyncExpiredSignalKey = (key: string, cacheSet: Set<string>): boolean => {
+  if (cacheSet.has(key)) return true;
+  try {
+    const raw = localStorage.getItem(EXPIRED_SIGNAL_STORAGE_KEY);
+    if (raw) {
+      const parsed: Record<string, number> = JSON.parse(raw);
+      const now = Date.now();
+      const ts = parsed[key];
+      if (typeof ts === 'number' && (now - ts < EXPIRED_CACHE_TTL_MS)) {
+        cacheSet.add(key);
+        return true;
+      }
+    }
+  } catch (_) {}
+  return false;
+};
+
 export const useMomentumAudit = (
     candidates: ScannerItem[], // Input from List 3 (Raw)
     initialConfig: List4Config,
@@ -103,18 +164,7 @@ export const useMomentumAudit = (
             return [];
         })()
     ));
-    const expiredSignalCacheRef = useRef<Set<string>>(new Set(
-        (() => {
-            try {
-                const saved = localStorage.getItem(expiredSignalsKey);
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    return Array.isArray(parsed) ? parsed : [];
-                }
-            } catch (e) {}
-            return [];
-        })()
-    ));
+    const expiredSignalCacheRef = useRef<Set<string>>(getInitialExpiredSignalCache());
 
     // 🔒 [列表4独立常驻候选记忆池] 杜绝上游一帧刷新或重算导致列表中处于等待的币突然“闪退”
     const list4CacheRef = useRef<Map<string, ScannerItem>>(new Map(
@@ -280,6 +330,11 @@ export const useMomentumAudit = (
 
         // 1. Maintain & Ingest Candidates into list4CacheRef
         currentCandidates.forEach(item => {
+            // 1. 如果源数据本身已被标记为已消费（_consumed），直接跳过，绝不重新计算为 TRIGGERED
+            if ((item as any)._consumed || item.momentum?.status === 'CONSUMED') {
+                return;
+            }
+
             const livePrice = resolvePrice(item.symbol, currentPrices, item.price);
 
             if (item.list3Results && item.list3Results.length > 0) {
@@ -293,16 +348,21 @@ export const useMomentumAudit = (
                     
                     const cleanSym = normalizeSymbol(item.symbol);
                     const uniqueId = `${cleanSym}-${res.tf}-${res.direction}`;
+                    const structKey = getStructureLockKey(cleanSym, res.tf || '15m', res.direction || 'LONG');
                     
                     // 🔒 防复开保护：不再因上游候选扫描而误删 expiredSignalCacheRef，防止已平仓/已出场的信号被重新恢复引发复开
                     if (currentConfig.enableThresholds === false) {
                         expiredSignalCacheRef.current.delete(uniqueId);
+                        expiredSignalCacheRef.current.delete(structKey);
                         fuseAuditLatchRef.current.delete(uniqueId);
                         fuseBlockedSignalCacheRef.current.delete(uniqueId);
                     } else {
-                        // 保持 expiredSignalCacheRef 持久拦截，防止本轮已出场/已废弃的信号借由轮询“死灰复燃”
-                        if (expiredSignalCacheRef.current.has(uniqueId)) {
-                            return; // 直接跳过该过期信号的重新评估
+                        // 2. 同时拦截 uniqueId 与 结构级 structKey（包含从 localStorage 降级兜底读盘）
+                        if (
+                            checkAndSyncExpiredSignalKey(uniqueId, expiredSignalCacheRef.current) ||
+                            checkAndSyncExpiredSignalKey(structKey, expiredSignalCacheRef.current)
+                        ) {
+                            return; // 彻底阻断已平仓/已过期信号借由重启轮询“死灰复燃”
                         }
                     }
                     
@@ -384,12 +444,17 @@ export const useMomentumAudit = (
                     const grDir = gr.direction || 'LONG';
                     const uniqueId = `${cleanSym}-${grTf}-${grDir}`;
                     
+                    const structKey = getStructureLockKey(cleanSym, grTf, grDir);
                     if (currentConfig.enableThresholds === false) {
                         expiredSignalCacheRef.current.delete(uniqueId);
+                        expiredSignalCacheRef.current.delete(structKey);
                         fuseAuditLatchRef.current.delete(uniqueId);
                         fuseBlockedSignalCacheRef.current.delete(uniqueId);
                     } else {
-                        if (expiredSignalCacheRef.current.has(uniqueId)) {
+                        if (
+                            checkAndSyncExpiredSignalKey(uniqueId, expiredSignalCacheRef.current) ||
+                            checkAndSyncExpiredSignalKey(structKey, expiredSignalCacheRef.current)
+                        ) {
                             return;
                         }
                     }
@@ -410,11 +475,20 @@ export const useMomentumAudit = (
             } else if (item.tf && item.direction) {
                 const cleanSym = normalizeSymbol(item.symbol);
                 const uniqueId = `${cleanSym}-${item.tf}-${item.direction}`;
+                const structKey = getStructureLockKey(cleanSym, item.tf, item.direction);
                 
                 if (currentConfig.enableThresholds === false) {
                     expiredSignalCacheRef.current.delete(uniqueId);
+                    expiredSignalCacheRef.current.delete(structKey);
                     fuseAuditLatchRef.current.delete(uniqueId);
                     fuseBlockedSignalCacheRef.current.delete(uniqueId);
+                } else {
+                    if (
+                        checkAndSyncExpiredSignalKey(uniqueId, expiredSignalCacheRef.current) ||
+                        checkAndSyncExpiredSignalKey(structKey, expiredSignalCacheRef.current)
+                    ) {
+                        return;
+                    }
                 }
                 
                 list4CacheRef.current.set(uniqueId, {
@@ -497,11 +571,16 @@ export const useMomentumAudit = (
         analyzedItems.forEach(item => {
             const cleanSym = normalizeSymbol(item.symbol);
             const uniqueId = `${cleanSym}-${item.tf}-${item.direction}`;
+            const structKey = getStructureLockKey(cleanSym, item.tf || '15m', item.direction || 'LONG');
             
             // If already permanently expired, skip (unless enableThresholds is OFF, in which case we clear cache and allow passthrough)
-            if (expiredSignalCacheRef.current.has(uniqueId)) {
+            if (
+                checkAndSyncExpiredSignalKey(uniqueId, expiredSignalCacheRef.current) ||
+                checkAndSyncExpiredSignalKey(structKey, expiredSignalCacheRef.current)
+            ) {
                 if (currentConfig.enableThresholds === false) {
                     expiredSignalCacheRef.current.delete(uniqueId);
+                    expiredSignalCacheRef.current.delete(structKey);
                 } else {
                     list4CacheRef.current.delete(uniqueId);
                     return;

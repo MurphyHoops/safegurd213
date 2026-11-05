@@ -1,0 +1,17 @@
+# 🛡️ AI Project Rules & Engineering Discipline (.cursorrules)
+
+## 【最高核心铁律】
+1. **跨端 100% 行为与数据绝对对齐**：
+   - 本项目必须保持 Web 浏览器端与 PC 客户端（打包后 Electron 环境）100% 相同的运行行为、业务计算管道与 UI 交互表现。
+   - 严禁编写会导致两端数据流、过滤管道（如“市场初筛”）或交互产生任何差异的环境分支代码。
+
+2. **数据流管道与安全校验规则**：
+   - 所有新增配置参数与过滤条件必须具备默认值兜底（Fallback），且必须经由 `sanitizeConfigObject` 过滤，严禁 `NaN`、`null` 或 `undefined` 污染过滤管道。
+   - 绝不因平台差异（`file://` 协议 vs `http://` 域名）改变核心筛选流水线逻辑。代理与网络请求统一通过 `getProxyUrl` 或 `fetchWithFallback` 封装调度。
+
+3. **DOM 与 UI 交互规范**：
+   - 所有表单控件、输入框（`<input>`）、文本域（`<textarea>`）和下拉框（`<select>`）必须默认开启 `-webkit-app-region: no-drag !important` 和 `user-select: text !important`，确保在 Electron 桌面端可直接定位光标与键盘打字。
+   - 严禁使用原生 `window.alert()` 或 `window.confirm()`（避免 Electron WebContents 键盘焦点锁死），一律统一使用前端自定义 Toast/Banner 或 Modal 组件。
+
+4. **原子代码锁与模块边界 (Code Lock Discipline)**：
+   - 严格尊重系统内已标注 `🔴 LOCKED` 或 `🔒 LOCKED_MODULE` 的规则代码（包括 List 1 扫描、List 2 发散、List 3 结构审计、List 4 动能审计、多级阶梯保底、强力防爆对冲与救赎策略）。未获用户明确变动指令前，绝不擅自改动。

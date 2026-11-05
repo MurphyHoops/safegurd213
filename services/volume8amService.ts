@@ -9,6 +9,7 @@
  */
 
 import { klineDailyStore } from './klineDailyStore';
+import { getProxyUrl } from './apiService';
 
 export interface Volume8amItem {
     symbol: string;
@@ -180,12 +181,11 @@ export async function fetchVolume8amBatch(
             try {
                 const targetUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=1`;
                 let klines: any = null;
-
-                // 优先使用后端 /api/proxy
+                // 优先使用后端 /api/proxy (支持 file:// 协议与 http 统一寻址)
                 try {
                     const controller = new AbortController();
                     const timer = setTimeout(() => controller.abort(), 3500);
-                    const res = await fetch(`/api/proxy?url=${encodeURIComponent(targetUrl)}&priority=high`, {
+                    const res = await fetch(getProxyUrl(targetUrl, 'high'), {
                         signal: controller.signal
                     });
                     clearTimeout(timer);

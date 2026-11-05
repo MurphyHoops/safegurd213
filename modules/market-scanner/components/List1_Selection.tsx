@@ -1086,16 +1086,22 @@ const List1_Selection: React.FC<Props> = ({
                 scanConfig.breakoutFilter?.enabled || 
                 scanConfig.majorTrend?.breakoutFilter?.enabled
             );
-            let isAntiChaseActive = (scanConfig.antiChaseFilter?.enabled ?? scanConfig.majorTrend?.antiChaseFilter?.enabled) !== false;
-            try {
-                const storedAntiChase = localStorage.getItem('SCANNER_ANTI_CHASE_CONFIG');
-                if (storedAntiChase) {
-                    const parsed = JSON.parse(storedAntiChase);
-                    if (parsed && typeof parsed.enabled === 'boolean') {
-                        isAntiChaseActive = parsed.enabled;
+            let isAntiChaseActive = false;
+            if (scanConfig.antiChaseFilter?.enabled !== undefined) {
+                isAntiChaseActive = Boolean(scanConfig.antiChaseFilter.enabled);
+            } else if (scanConfig.majorTrend?.antiChaseFilter?.enabled !== undefined) {
+                isAntiChaseActive = Boolean(scanConfig.majorTrend.antiChaseFilter.enabled);
+            } else {
+                try {
+                    const storedAntiChase = localStorage.getItem('SCANNER_ANTI_CHASE_CONFIG');
+                    if (storedAntiChase) {
+                        const parsed = JSON.parse(storedAntiChase);
+                        if (parsed && typeof parsed.enabled === 'boolean') {
+                            isAntiChaseActive = parsed.enabled;
+                        }
                     }
-                }
-            } catch (_) {}
+                } catch (_) {}
+            }
 
             // 🎯【流水闸级联数据流】: 严格遵循每一级过滤规则设立独立底池，下一级从上一级获取数据；
             // 若某项过滤规则开关未开启，直接向上穿透获取；终点根据所选最后一项开启的过滤规则推送至“市场初筛”！
@@ -1104,9 +1110,19 @@ const List1_Selection: React.FC<Props> = ({
                 // 🛡️ 核心铁律：若前级“防追高熔断”开启，趋势爆发合格币种必须严格受限于防追高熔断底池！绝不可跳过防追高熔断！
                 let effectiveBreakoutPool = breakoutPool || [];
                 if (isAntiChaseActive) {
-                    if (antiChasePool && antiChasePool.length > 0) {
+                    let activeAntiPool = antiChasePool;
+                    if (!activeAntiPool || activeAntiPool.length === 0) {
+                        try {
+                            const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                            if (raw) {
+                                const parsed = JSON.parse(raw);
+                                if (Array.isArray(parsed) && parsed.length > 0) activeAntiPool = parsed;
+                            }
+                        } catch (_) {}
+                    }
+                    if (activeAntiPool && activeAntiPool.length > 0) {
                         const antiChaseValidSet = new Set<string>();
-                        antiChasePool.forEach(item => {
+                        activeAntiPool.forEach(item => {
                             const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
                             const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
                             const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
@@ -1143,9 +1159,20 @@ const List1_Selection: React.FC<Props> = ({
                 }
             } else if (isAntiChaseActive) {
                 // 🛡️ 闸门 4: 第三组 防追高熔断过滤 (最后一项开启规则)
-                if (antiChasePool && antiChasePool.length > 0) {
+                let activeAntiChasePool = antiChasePool;
+                if (!activeAntiChasePool || activeAntiChasePool.length === 0) {
+                    try {
+                        const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                        if (raw) {
+                            const parsed = JSON.parse(raw);
+                            if (Array.isArray(parsed) && parsed.length > 0) activeAntiChasePool = parsed;
+                        }
+                    } catch (_) {}
+                }
+
+                if (activeAntiChasePool && activeAntiChasePool.length > 0) {
                     const antiChaseValidSet = new Set<string>();
-                    antiChasePool.forEach(item => {
+                    activeAntiChasePool.forEach(item => {
                         const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
                         const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
                         const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
@@ -1158,7 +1185,7 @@ const List1_Selection: React.FC<Props> = ({
                     const matchedList = sortedList1.filter(item => antiChaseValidSet.has(normalizeSym(item.symbol)));
                     const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
                     const additional: any[] = [];
-                    antiChasePool.forEach(item => {
+                    activeAntiChasePool.forEach(item => {
                         const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
                         const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
                         const isLong = sym?.endsWith('_LONG') || dir === 'LONG';

@@ -1,9 +1,6 @@
 
-// 🔒 LOCKED_MODULE: LIST 4 [动能趋势审计 UI 模块]
-// @LOCKED: 严格原子化单独锁定。未经用户明确下达的专属指令，严禁擅自修改、增加、删减或变动任何功能与代码。
-
 import React, { useEffect, useRef } from 'react';
-import { useMomentumAudit } from './useMomentumAudit';
+import { useMomentumAudit, persistExpiredSignalKey, getStructureLockKey } from './useMomentumAudit';
 import { ScannerItem, List4Config, List3Config, ActionConfig } from '../../components/Scanner/scannerTypes';
 import { PositionSide, Position } from '../../types';
 import { normalizeSymbol } from '../../services/symbolUtils';
@@ -57,52 +54,151 @@ const DEFAULT_CONFIG: List4Config = {
     }
 };
 
-// 辅助函数：根据周期推算当前 K 线的起始对齐秒级时间戳（防止数据源缺失时间戳退化为无时间维度锁）
-const getFallbackCandleTimeSec = (tf: string = '15m'): number => {
-  const match = tf.match(/(\d+)([mhd])/i);
-  let intervalMs = 15 * 60 * 1000;
-  if (match) {
-    const num = parseInt(match[1], 10);
-    const unit = match[2].toLowerCase();
-    if (unit === 'm') {
-      intervalMs = num * 60 * 1000;
-    } else if (unit === 'h') {
-      intervalMs = num * 60 * 60 * 1000;
-    } else if (unit === 'd') {
-      intervalMs = num * 24 * 60 * 60 * 1000;
-    }
-  }
-  return Math.floor(Math.floor(Date.now() / intervalMs) * intervalMs / 1000);
-};
-
 const EXECUTION_LOCKS_STORAGE_KEY = 'SCANNER_LIST4_EXECUTION_LOCKS';
+const LIST4_STORAGE_KEY = 'SCANNER_LIST4_RESULTS';
+const LOCK_TTL_MS = 24 * 60 * 60 * 1000; // 24小时持久化锁
 
-const getInitialExecutionLocks = (): Map<string, { status: 'SUCCESS' | number; timestamp: number; confirmedInPositions?: boolean }> => {
+interface ExecutionLockRecord {
+  status: 'SUCCESS' | number;
+  timestamp: number;
+  confirmedInPositions?: boolean;
+}
+
+// 1. 从 localStorage 恢复 24 小时内的信号开仓锁
+const getInitialExecutionLocks = (): Map<string, ExecutionLockRecord> => {
   try {
     const raw = localStorage.getItem(EXECUTION_LOCKS_STORAGE_KEY);
     if (!raw) return new Map();
     const parsed = JSON.parse(raw);
     const now = Date.now();
     const validEntries = Object.entries(parsed).filter(
-      ([_, val]: [string, any]) => val && typeof val === 'object' && val.timestamp && (now - val.timestamp < 24 * 60 * 60 * 1000)
+      ([_, val]: [string, any]) =>
+        val && typeof val === 'object' && val.timestamp && (now - val.timestamp < LOCK_TTL_MS)
     );
-    return new Map(validEntries as [string, any][]);
+    return new Map(validEntries as [string, ExecutionLockRecord][]);
   } catch {
     return new Map();
   }
 };
 
-const saveExecutionLocks = (map: Map<string, any>) => {
+// 2. 写入持久化执行锁
+export const saveExecutionLocks = (map: Map<string, ExecutionLockRecord>) => {
   try {
-    const obj: Record<string, any> = {};
+    const obj: Record<string, ExecutionLockRecord> = {};
     const now = Date.now();
     map.forEach((val, key) => {
-      if (val && typeof val === 'object' && val.timestamp && (now - val.timestamp < 24 * 60 * 60 * 1000)) {
+      if (val && typeof val === 'object' && val.timestamp && (now - val.timestamp < LOCK_TTL_MS)) {
         obj[key] = val;
       }
     });
     localStorage.setItem(EXECUTION_LOCKS_STORAGE_KEY, JSON.stringify(obj));
   } catch (_) {}
+};
+
+// 3. 源头销毁：将SCANNER_LIST4_RESULTS中的对应币种彻底标记为 CONSUMED（已消费），防止重启后再读出 TRIGGERED
+export const markList4SignalConsumedInStorage = (symbol: string, normalizeFn: (s: string) => string) => {
+  try {
+    const targetSym = normalizeFn(symbol);
+    const raw = localStorage.getItem(LIST4_STORAGE_KEY);
+    if (!raw) return;
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return;
+
+    let modified = false;
+    const updatedList = list.map((item: any) => {
+      if (item && normalizeFn(item.symbol || '') === targetSym) {
+        modified = true;
+        return {
+          ...item,
+          _consumed: true,
+          consumedAt: Date.now(),
+          momentum: {
+            ...(item.momentum || {}),
+            status: 'CONSUMED',
+          },
+        };
+      }
+      return item;
+    });
+
+    if (modified) {
+      localStorage.setItem(LIST4_STORAGE_KEY, JSON.stringify(updatedList));
+    }
+  } catch (_) {}
+};
+
+// 4. 提取固定锚定时间戳（彻底解决跨 K 线重启导致 uniqueId 漂移的漏洞）
+const getAnchoredCandleTimeSec = (item: any): number => {
+  // 优先读取已经固化在 item 上的锚定时间戳
+  if (typeof item._anchoredTimeSec === 'number' && item._anchoredTimeSec > 0) {
+    return item._anchoredTimeSec;
+  }
+
+  const rawTime =
+    item.structure?.signalTimeSec ||
+    item.structure?.signalTime ||
+    item.candleTimeSec ||
+    item.timeSec ||
+    (item.candle ? item.candle.time : 0);
+
+  let validSec = 0;
+  if (typeof rawTime === 'number' && !isNaN(rawTime) && rawTime > 0) {
+    validSec = rawTime > 1e11 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+  } else if (typeof rawTime === 'string' && rawTime.trim() !== '') {
+    const parsedTime = Date.parse(rawTime);
+    if (!isNaN(parsedTime) && parsedTime > 0) {
+      validSec = Math.floor(parsedTime / 1000);
+    }
+  }
+
+  if (validSec <= 0) {
+    const tf = item.tf || '15m';
+    const match = tf.match(/(\d+)([mhd])/i);
+    let intervalMs = 15 * 60 * 1000;
+    if (match) {
+      const num = parseInt(match[1], 10);
+      const unit = match[2].toLowerCase();
+      if (unit === 'm') intervalMs = num * 60 * 1000;
+      else if (unit === 'h') intervalMs = num * 60 * 60 * 1000;
+      else if (unit === 'd') intervalMs = num * 24 * 60 * 60 * 1000;
+    }
+    validSec = Math.floor(Math.floor(Date.now() / intervalMs) * intervalMs / 1000);
+
+    // 关键【兜底时间戳持久化】：同步将该字段写回 localStorage['SCANNER_LIST4_RESULTS'] 对应标的中，防止跨 K 线刷新页面漂移
+    try {
+      const normTarget = normalizeSymbol(item.symbol || '');
+      const keys = [LIST4_STORAGE_KEY];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(LIST4_STORAGE_KEY) && !keys.includes(k)) {
+          keys.push(k);
+        }
+      }
+      keys.forEach((key) => {
+        const raw = localStorage.getItem(key);
+        if (!raw) return;
+        const list = JSON.parse(raw);
+        if (!Array.isArray(list)) return;
+        let modified = false;
+        const updated = list.map((listItem: any) => {
+          if (listItem && normalizeSymbol(listItem.symbol || '') === normTarget && listItem.tf === item.tf && listItem.direction === item.direction) {
+            if (listItem._anchoredTimeSec !== validSec) {
+              modified = true;
+              return { ...listItem, _anchoredTimeSec: validSec };
+            }
+          }
+          return listItem;
+        });
+        if (modified) {
+          localStorage.setItem(key, JSON.stringify(updated));
+        }
+      });
+    } catch (_) {}
+  }
+
+  // 关键：将计算出的时间戳反写固化到对象上，防止后续轮询漂移
+  item._anchoredTimeSec = validSec;
+  return validSec;
 };
 
 export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData, executeTradeSafe, list3Config, realPrices, activePositions, onRemoveSignal, actionConfig, onLog, strategyId, isBackground = false }) => {
@@ -112,9 +208,11 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
     
     // Track executed signals to prevent duplicate orders for the same signal event
     // Map stores signalId -> { status: 'SUCCESS' | number, timestamp: number, confirmedInPositions?: boolean }
-    const executionStatusRef = useRef<Map<string, { status: 'SUCCESS' | number; timestamp: number; confirmedInPositions?: boolean }>>(getInitialExecutionLocks());
+    const executionStatusRef = useRef<Map<string, ExecutionLockRecord>>(getInitialExecutionLocks());
     // 🔒 [单币多周期防并发锁] 杜绝同一币种在 15m、30m、1h 等多个周期同时突破时连续开仓 (120秒在途硬锁)
     const symbolLastExecutedRef = useRef<Map<string, number>>(new Map());
+    // 启动保护：程序挂载前 2.5 秒内禁止自动下单，等待持仓与本地状态完全对齐
+    const mountTimeRef = useRef<number>(Date.now());
     const list4Ref = useRef(list4);
     const activePositionsRef = useRef(activePositions);
     const executeTradeSafeRef = useRef(executeTradeSafe);
@@ -133,6 +231,11 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
 
     // 🔒 [列表4核心驱动] 极速判定并执行开仓逻辑
     const checkAndExecuteList4Trades = useRef(() => {
+        // 阻断刚重启瞬间 positions 尚未同步完成时的首屏竞态开仓
+        if (Date.now() - mountTimeRef.current < 2500) {
+            return;
+        }
+
         const curConfig = configRef.current;
         const curActionConfig = actionConfigRef.current;
         const isMasterAutoOn = curActionConfig?.autoExecute ?? true;
@@ -147,16 +250,18 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
         const currentPositions = activePositionsRef.current;
 
         currentList4.forEach(item => {
+            // 拦截已打上消费钢印的信号
+            if ((item as any)._consumed || item.momentum?.status === 'CONSUMED') {
+                return;
+            }
+
             // 必须达到突破触发状态 TRIGGERED
             if (item.momentum?.status === 'TRIGGERED') {
                 const cleanSym = normalizeSymbol(item.symbol);
-                const rawTimeSec = (item.structure as any)?.signalTimeSec || 
-                                   item.structure?.signalTime || 
-                                   (item as any).candleTimeSec || 
-                                   (item as any).timeSec || 
-                                   ((item as any).candle ? Math.floor((item as any).candle.time / 1000) : 0);
-                const candleTimeSec = rawTimeSec > 0 ? rawTimeSec : getFallbackCandleTimeSec(item.tf);
+                const candleTimeSec = getAnchoredCandleTimeSec(item);
                 const uniqueId = `${cleanSym}-${item.tf}-${item.direction}-${candleTimeSec}`;
+                // 结构级锁 Key（不随 K 线时间改变而失效）
+                const structLockKey = getStructureLockKey(cleanSym, item.tf || '15m', item.direction || 'LONG');
                 
                 // 方向过滤校验
                 if (curConfig.directionFilter && curConfig.directionFilter !== 'BOTH') {

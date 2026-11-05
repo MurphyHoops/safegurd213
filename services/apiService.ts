@@ -69,6 +69,13 @@ export const clearClientSideCache = () => {
     inflightRequests.clear();
 };
 
+export const getProxyUrl = (targetUrl: string, priority?: string): string => {
+    const encoded = encodeURIComponent(targetUrl);
+    const isFileProtocol = typeof window !== 'undefined' && window.location && (window.location.protocol === 'file:' || !window.location.origin.startsWith('http'));
+    const base = isFileProtocol ? 'http://127.0.0.1:3000/api/proxy' : '/api/proxy';
+    return `${base}?url=${encoded}${priority === 'high' ? '&priority=high' : ''}`;
+};
+
 const setWithLruCap = (key: string, entry: CacheEntry) => {
     // Evict expired entries or oldest entry if over capacity
     const now = Date.now();
@@ -359,7 +366,7 @@ const _fetchWithFallbackInner = async (
         }
 
         // Proxy List Strategy: Always prioritize the high-performance local server proxy (/api/proxy)
-        const proxyLocalServer = `/api/proxy?url=${encodedUrl}${priority === 'HIGH' ? '&priority=high' : ''}`;
+        const proxyLocalServer = getProxyUrl(currentUrl, priority);
         let proxies: string[] = [proxyLocalServer];
 
         const fetchProxy = async (proxyUrl: string): Promise<Response> => {

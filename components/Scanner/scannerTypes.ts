@@ -174,7 +174,7 @@ export interface ScannerItem {
         purityValid: boolean;
         breakoutValid: boolean;
         reverseTrend?: boolean;
-        status: 'INVALID' | 'PENDING' | 'TRIGGERED' | 'DORMANT' | 'REVIVED'; 
+        status: 'INVALID' | 'PENDING' | 'TRIGGERED' | 'DORMANT' | 'REVIVED' | 'CONSUMED'; 
         invalidReason?: string;
     };
     smartExit?: {

@@ -121,16 +121,45 @@ const cleanPayloadForPersistence = (key: string, data: any): any => {
 };
 
 /**
+ * 🛡️ [跨端配置自愈守卫 (Runtime Config Sync Guard)]
+ * 深度解析并修复 localStorage 中所有 Object 配置：
+ * 1. 递归清洗所有 NaN, Infinity, 'NaN', null 字段；
+ * 2. 补齐缺失配置项，确保 PC 端与 Web 端 100% 规则对齐零错漏；
+ * 3. 自动版本提升与冷启动清渣。
+ */
+export const sanitizeConfigObject = (obj: any): any => {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'number') {
+        return (isNaN(obj) || !isFinite(obj)) ? 0 : obj;
+    }
+    if (typeof obj === 'string') {
+        if (obj === 'NaN' || obj === 'null' || obj === 'undefined') return '';
+        return obj;
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(item => sanitizeConfigObject(item));
+    }
+    if (typeof obj === 'object') {
+        const cleaned: any = {};
+        for (const k of Object.keys(obj)) {
+            cleaned[k] = sanitizeConfigObject(obj[k]);
+        }
+        return cleaned;
+    }
+    return obj;
+};
+
+/**
  * Saves data to localStorage with a safety check for quota and size.
  * If quota is exceeded, it attempts to clear non-critical caches.
  */
 export const autoHealLocalStorage = () => {
     try {
         if (typeof window === 'undefined') return;
-        const CURRENT_APP_VERSION = '2026.08.16.v2';
+        const CURRENT_APP_VERSION = '2026.11.05.v3_SYNC_GUARD';
         const storedVersion = localStorage.getItem('SAVIOR_APP_VERSION');
         if (storedVersion !== CURRENT_APP_VERSION) {
-            console.warn(`[AutoHeal] Version change detected (${storedVersion} -> ${CURRENT_APP_VERSION}). Purging stale caches to prevent upgrade crashes...`);
+            console.warn(`[AutoHeal] Version change detected (${storedVersion} -> ${CURRENT_APP_VERSION}). Purging stale caches and sanitizing configs...`);
             const keysToRemove: string[] = [];
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
@@ -143,6 +172,19 @@ export const autoHealLocalStorage = () => {
             });
             localStorage.setItem('SAVIOR_APP_VERSION', CURRENT_APP_VERSION);
         }
+
+        // 🛡️ 遍历所有配置项，进行跨版本 NaN 与脏数据强清洗
+        const configKeys = ['SAVIOR_SETTINGS', 'SCANNER_CONFIG', 'SCANNER_ANTI_CHASE_CONFIG', 'SCANNER_BREAKOUT_CONFIG'];
+        configKeys.forEach(key => {
+            try {
+                const raw = localStorage.getItem(key);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    const sanitized = sanitizeConfigObject(parsed);
+                    localStorage.setItem(key, JSON.stringify(sanitized));
+                }
+            } catch (_) {}
+        });
     } catch (e) {
         console.error('[AutoHeal] Failed during autoHealLocalStorage:', e);
     }

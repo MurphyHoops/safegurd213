@@ -263,11 +263,23 @@ export const IpOutageAlertModal: React.FC<IpOutageAlertModalProps> = ({
         )}
 
         {/* Modal Buttons */}
-        <div className="flex items-center justify-end space-x-3 pt-2 border-t border-slate-800">
+        <div className="flex flex-col sm:flex-row items-center justify-end gap-3 pt-2 border-t border-slate-800">
+          <button
+            type="button"
+            onClick={() => {
+              setIncidentData(null);
+              if (onClose) onClose();
+            }}
+            className="w-full sm:w-auto px-4 py-3 text-xs font-bold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-all cursor-pointer"
+            title="跳过 IP 限制，直接进入主界面使用模拟运行功能"
+          >
+            跳过 / 暂不修改 (进入主界面)
+          </button>
+
           <button
             onClick={handleRetryRecovery}
             disabled={isRecovering}
-            className="w-full flex items-center justify-center space-x-2 px-6 py-3 text-base font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl transition-all shadow-lg shadow-emerald-950 border border-emerald-400 active:scale-95"
+            className="w-full sm:w-auto flex-1 flex items-center justify-center space-x-2 px-6 py-3 text-base font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl transition-all shadow-lg shadow-emerald-950 border border-emerald-400 active:scale-95 cursor-pointer"
           >
             <RefreshCw className={`w-5 h-5 ${isRecovering ? 'animate-spin' : ''}`} />
             <span>{isRecovering ? '正在重试验证连通...' : '重试连通 / 白名单已加'}</span>

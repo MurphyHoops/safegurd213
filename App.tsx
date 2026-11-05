@@ -414,6 +414,10 @@ const AppContent: React.FC = () => {
     const [tradeLogSearchSymbol, setTradeLogSearchSymbol] = useState<string>('');
     const [fuseAlertData, setFuseAlertData] = useState<FuseAlertData | null>(null);
     const [ipChangeAlertData, setIpChangeAlertData] = useState<IpChangeAlertData | null>(null);
+    const [currentServerIp, setCurrentServerIp] = useState<string>('');
+
+    const lastConfirmedIp = localStorage.getItem('SAVIOR_LAST_CONFIRMED_IP') || '';
+    const isIpUnconfirmed = Boolean(currentServerIp && lastConfirmedIp && currentServerIp.trim() !== lastConfirmedIp.trim());
 
     // --- FUSE ALERT EVENT LISTENER ---
     useEffect(() => {
@@ -439,20 +443,20 @@ const AppContent: React.FC = () => {
                 const data = await res.json();
                 if (data && data.success && data.ip) {
                     const currentIp = String(data.ip).trim();
-                    const lastConfirmedIp = localStorage.getItem(LAST_CONFIRMED_IP_KEY);
+                    setCurrentServerIp(currentIp);
+                    const lastConfirmed = localStorage.getItem(LAST_CONFIRMED_IP_KEY);
 
-                    if (!lastConfirmedIp) {
+                    if (!lastConfirmed) {
                         // 首次运行初始化记忆基准
                         localStorage.setItem(LAST_CONFIRMED_IP_KEY, currentIp);
-                    } else if (lastConfirmedIp !== currentIp) {
+                    } else if (lastConfirmed !== currentIp) {
                         // 发现出口 IP 发生变动！
                         setIpChangeAlertData({
-                            oldIp: lastConfirmedIp,
+                            oldIp: lastConfirmed,
                             newIp: currentIp
                         });
-                        // 触发高优先级语音强提醒与日志警报
-                        audioService.speak('警告！服务器出口 IP 已发生变动，请尽快更新币安白名单！', true);
-                        handleLog('DANGER', `🚨 【服务器出口 IP 变动警报】原出口 IP [${lastConfirmedIp}] 已漂移变为 [${currentIp}]！请立即在币安 API 管理中心更新白名单，避免实盘下单被拒！`);
+                        audioService.speak('提示：服务器出口 IP 发生变动，模拟盘可直接运行，如需实盘请更新币安白名单！', true);
+                        handleLog('WARNING', `⚠️ 【出口 IP 变动提示】原出口 IP [${lastConfirmed}] 已变为 [${currentIp}]！模拟运行不受限制；开启实盘交易前请在币安后台更新白名单。`);
                     }
                 }
             } catch (e) {
@@ -475,7 +479,7 @@ const AppContent: React.FC = () => {
                         oldIp: currentConfirmed,
                         newIp: e.detail.newIp
                     });
-                    audioService.speak('警告！服务器出口 IP 已发生变动，请尽快更新币安白名单！', true);
+                    audioService.speak('提示：服务器出口 IP 已发生变动！', true);
                 }
             }
         };
@@ -553,6 +557,12 @@ const AppContent: React.FC = () => {
             const isReal = settingsRef.current.system.realTrading;
 
             if (isReal) {
+                if (isIpUnconfirmed) {
+                    alert(`⚠️ 实盘下单拦截: 当前服务器出口 IP [${currentServerIp}] 未在币安 API 白名单中确认加白！禁止发送真实资金订单。请先配置 IP 白名单。`);
+                    handleLog("DANGER", `⚠️ 实盘下单失败: 出口 IP [${currentServerIp}] 未确认加白`, true);
+                    setIpChangeAlertData({ oldIp: lastConfirmedIp || '未确认', newIp: currentServerIp });
+                    return;
+                }
                 const apiKey = settingsRef.current.system.binanceApiKey;
                 const apiSecret = settingsRef.current.system.binanceApiSecret;
                 if (!apiKey || !apiSecret) {
@@ -2028,7 +2038,17 @@ const AppContent: React.FC = () => {
         if (section === 'system' && key === 'realTrading') {
             const nextRealTrading = !!value;
             const prevRealTrading = settings.system.realTrading;
-            
+
+            if (nextRealTrading && isIpUnconfirmed) {
+                alert(`⚠️ 实盘开启拦截: 检测到当前服务器出口 IP [${currentServerIp}] 未在币安 API 白名单中确认加白 (原 IP: ${lastConfirmedIp || '未确认'})。\n\n模拟运行不受任何限制可正常运行；为了保障真实资金安全，禁止在 IP 未加白时开启实盘。请先更新 IP 白名单或确认最新 IP！`);
+                handleLog('DANGER', `⚠️ 阻止开启实盘: 当前出口 IP [${currentServerIp}] 未在币安白名单中确认加白！`, true);
+                setIpChangeAlertData({
+                    oldIp: lastConfirmedIp || '未确认',
+                    newIp: currentServerIp
+                });
+                return;
+            }
+
             if (prevRealTrading !== nextRealTrading) {
                 // 1. Save current states before transitioning
                 const prevAccountKey = prevRealTrading ? 'SAVIOR_ACCOUNT_LIVE' : 'SAVIOR_ACCOUNT_SIM';
@@ -2219,6 +2239,12 @@ const AppContent: React.FC = () => {
         const isReal = settingsRef.current.system.realTrading;
 
         if (isReal) {
+            if (isIpUnconfirmed) {
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("DANGER", `自动实盘开仓拦截: 当前出口 IP [${currentServerIp}] 未确认加入币安白名单，拒绝发送实盘指令！`);
+                }
+                return;
+            }
             const apiKey = settingsRef.current.system.binanceApiKey;
             const apiSecret = settingsRef.current.system.binanceApiSecret;
             if (!apiKey || !apiSecret) {
@@ -4887,6 +4913,26 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 />
             )}
 
+            {/* 🛡️ IP 未加白-仅限模拟状态栏轻量提醒与点击复现入口 */}
+            {isIpUnconfirmed && !ipChangeAlertData && (
+                <div className="fixed top-3 right-20 z-[9990] animate-in fade-in duration-300">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setIpChangeAlertData({
+                                oldIp: lastConfirmedIp || '未确认',
+                                newIp: currentServerIp
+                            });
+                        }}
+                        className="bg-amber-950/90 hover:bg-amber-900 border-2 border-amber-500/70 text-amber-300 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 shadow-xl shadow-amber-950/60 transition-all cursor-pointer hover:scale-105 active:scale-95"
+                        title="点击查看 IP 变动信息并配置币安出口 IP 白名单"
+                    >
+                        <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping shrink-0" />
+                        <span>⚠️ IP未加白-仅限模拟</span>
+                    </button>
+                </div>
+            )}
+
             {ipChangeAlertData && (
                 <IpChangeAlertModal 
                     data={ipChangeAlertData}
@@ -4900,8 +4946,8 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 />
             )}
 
-            {/* 🛡️ 全局 IP 漂移受控锁与断网熔断热自愈全屏悬浮面板 */}
-            <IpOutageAlertModal />
+            {/* 🛡️ 全局 IP 漂移受控锁与断网熔断热自愈悬浮面板 (非阻断模式，支持跳过进入主界面) */}
+            <IpOutageAlertModal onClose={() => setIpChangeAlertData(null)} />
         </div>
     );
 };

@@ -128,7 +128,7 @@ export const IpChangeAlertModal: React.FC<Props> = ({
 
                 {/* Footer Buttons */}
                 <div className="p-4 bg-slate-950 border-t border-slate-800 flex flex-col sm:flex-row gap-2.5 justify-between items-center">
-                    <div className="flex gap-2 w-full sm:w-auto">
+                    <div className="flex flex-wrap gap-2 w-full sm:w-auto">
                         <button
                             type="button"
                             onClick={handleCopy}
@@ -139,7 +139,7 @@ export const IpChangeAlertModal: React.FC<Props> = ({
                             }`}
                         >
                             {copied ? <Check size={14} /> : <Copy size={14} />}
-                            <span>{copied ? '最新 IP 复制成功' : '一键复制最新 IP'}</span>
+                            <span>{copied ? '最新 IP 复制成功' : '一键复制 IP'}</span>
                         </button>
 
                         <a
@@ -149,8 +149,17 @@ export const IpChangeAlertModal: React.FC<Props> = ({
                             className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold transition-all"
                         >
                             <ExternalLink size={14} />
-                            <span>前往币安 API 管理</span>
+                            <span>币安 API 管理</span>
                         </a>
+
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-bold transition-all"
+                            title="跳过 IP 修改，以模拟盘模式直接进入系统主界面"
+                        >
+                            <span>跳过 / 暂不修改 (进入主界面)</span>
+                        </button>
                     </div>
 
                     <button

@@ -9,7 +9,7 @@
  */
 
 import { klineMultiTfStore } from './klineMultiTfStore';
-import { fetchWithFallback } from './apiService';
+import { fetchWithFallback, getProxyUrl } from './apiService';
 import { KLineSynthesizer } from './klineSynthesizer';
 
 export interface CachedKlineEntry {
@@ -597,7 +597,7 @@ class KlineDailyStore {
                         if (!source5m || source5m.length < 100) {
                             const url5m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=5m&limit=${limit * 2}&isScanner=true`;
                             try {
-                                const res = await fetch(`/api/proxy?url=${encodeURIComponent(url5m)}&priority=normal`);
+                                const res = await fetch(getProxyUrl(url5m, 'normal'));
                                 if (res.ok) source5m = await res.json();
                             } catch (_) {}
                             if (!Array.isArray(source5m) || source5m.length === 0) {
@@ -620,7 +620,7 @@ class KlineDailyStore {
                     } else {
                         const targetUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=${tf}&limit=${limit}&isScanner=true`;
                         try {
-                            const res = await fetch(`/api/proxy?url=${encodeURIComponent(targetUrl)}&priority=normal`);
+                            const res = await fetch(getProxyUrl(targetUrl, 'normal'));
                             if (res.ok) data = await res.json();
                         } catch (_) {}
 
