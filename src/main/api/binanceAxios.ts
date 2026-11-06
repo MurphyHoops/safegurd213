@@ -32,7 +32,9 @@ binanceAxios.interceptors.request.use((config) => {
     url.includes('/batchOrders') ||
     url.includes('/leverage') ||
     url.includes('/marginType') ||
-    url.includes('/positionSide');
+    url.includes('/positionSide') ||
+    url.includes('/listenKey') ||
+    url.includes('/time');
 
   try {
     binanceRateLimiter.checkCanRequest(isCoreOrder);

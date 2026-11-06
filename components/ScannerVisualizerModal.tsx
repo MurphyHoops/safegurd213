@@ -23,6 +23,7 @@ interface VisualizerItem {
   direction?: string;
   side?: string;
   source?: string;
+  isPreWait?: boolean;
   viewMode?: string;
 }
 
@@ -233,7 +234,8 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   disappearedTime={currentItem?.disappearedTime}
                   lookbackDays={currentItem?.lookbackDays}
                   sidewaysDays={currentItem?.sidewaysDays}
-                  source={currentItem?.source || (isList5Mode ? 'list5' : undefined)}
+                  source={currentItem?.source || (isList5Mode ? 'list5' : (title.includes('2') || title.includes('防御')) ? (currentItem?.isPreWait ? 'list2_prewait' : 'list2') : (title.includes('3') || title.includes('结构') || title.includes('深度')) ? 'list3' : undefined)}
+                  isPreWait={Boolean(currentItem?.isPreWait || currentItem?.source === 'list2_prewait' || currentItem?.source === 'prewait')}
                   viewMode={(currentItem?.viewMode as 'SIGNAL' | 'TRADE') || (isList5Mode ? 'TRADE' : undefined)}
                 />
               </div>

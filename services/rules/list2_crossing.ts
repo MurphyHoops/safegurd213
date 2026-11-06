@@ -958,11 +958,11 @@ export function analyzeList2Crossing(
             const isMaCrossWaitLong = !isMaCrossLong && (e10 !== null && e30 !== null && e10 > e30) && (e40 !== null && e10 <= e40);
             const isMaCrossWaitShort = !isMaCrossShort && (e10 !== null && e30 !== null && e10 < e30) && (e40 !== null && e10 >= e40);
 
-            const maCrossValidL = isMaCrossLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
-            const maCrossWaitValidL = isMaCrossWaitLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
+            const maCrossValidL = isMaCrossLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL && (maCrossConfirmedIdxL !== null);
+            const maCrossWaitValidL = isMaCrossWaitLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL;
 
-            const maCrossValidS = isMaCrossShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
-            const maCrossWaitValidS = isMaCrossWaitShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
+            const maCrossValidS = isMaCrossShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS && (maCrossConfirmedIdxS !== null);
+            const maCrossWaitValidS = isMaCrossWaitShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS;
 
             const divergenceStrictValidL = divergenceValidL && strictOkL;
             const divergenceStrictValidS = divergenceValidS && strictOkS && isAlignedShort;
@@ -1519,20 +1519,33 @@ export function analyzeList2Crossing(
         : 5;
 
     if (results.length === 0 && enableEma30PreWait && closes.length >= 40) {
-        // 从当前K线往前追溯 EMA10 穿越 EMA30
+        // 从当前K线往前追溯 EMA10 穿越 EMA30 / EMA40
         const maxCheckLag = Math.min(ema30PreWaitBars, closes.length - 35);
         let foundPreWaitL = false;
         let foundPreWaitS = false;
         let preWaitLagL = 0;
         let preWaitLagS = 0;
 
+        let foundPromotedL = false;
+        let foundPromotedS = false;
+        let promotedLagL = 0;
+        let promotedLagS = 0;
+        let promotedTimeL = 0;
+        let promotedTimeS = 0;
+        let confirmedIdxL = idx;
+        let confirmedIdxS = idx;
+
         // 当前 EMA 状态
         const curE10 = getEmaVal(ema10, idx, 10);
+        const curE20 = getEmaVal(ema20, idx, 20);
         const curE30 = getEmaVal(ema30, idx, 30);
         const curE40 = getEmaVal(ema40, idx, 40);
 
         if (curE10 !== null && curE30 !== null && curE40 !== null) {
-            // 多头检查：当前 EMA10 > EMA30，但尚未完成 EMA40 穿越 (如 curE10 <= curE40)
+            // =================================================================
+            // 多头分支
+            // =================================================================
+            // 阶段 1：多头蓄势折叠区 (EMA10 > EMA30 但尚未完成 EMA40 穿越, 即 curE10 <= curE40)
             if (curE10 > curE30 && curE10 <= curE40) {
                 for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
@@ -1549,9 +1562,55 @@ export function analyzeList2Crossing(
                         }
                     }
                 }
+            } 
+            // 阶段 2：多头无缝自动晋升 (EMA10 > EMA40 且 EMA10 > EMA30，已顺次完成对 EMA40 的穿越)
+            else if (curE10 > curE40 && curE10 > curE30) {
+                // 追溯过去设定根数内 EMA10 向上金叉穿越 EMA40
+                for (let pLag = 0; pLag <= maxCheckLag; pLag++) {
+                    const cIdx = idx - pLag;
+                    const pE10 = getEmaVal(ema10, cIdx, 10);
+                    const pE40 = getEmaVal(ema40, cIdx, 40);
+                    const prevE10 = getEmaVal(ema10, cIdx - 1, 10);
+                    const prevE40 = getEmaVal(ema40, cIdx - 1, 40);
+                    if (pE10 !== null && pE40 !== null && prevE10 !== null && prevE40 !== null) {
+                        if ((prevE10 <= prevE40 && pE10 > pE40) || (prevE10 < prevE40 && pE10 >= pE40)) {
+                            // 寻找确认收盘K线 (优先当根，若未收盘或为阴线则向前/向后寻找已收盘阳线)
+                            let cTarget = cIdx;
+                            if (pLag > 0 && closes[cIdx] > opens[cIdx]) {
+                                cTarget = cIdx;
+                            } else {
+                                const searchEnd = Math.min(idx - 1, cIdx + 3);
+                                let foundBull = false;
+                                for (let f = cIdx; f <= searchEnd; f++) {
+                                    if (f >= 0 && f < idx && closes[f] > opens[f]) {
+                                        cTarget = f;
+                                        foundBull = true;
+                                        break;
+                                    }
+                                }
+                                if (!foundBull && idx > 0) {
+                                    cTarget = idx - 1;
+                                }
+                            }
+
+                            // 方向防守门禁：非空头排列
+                            const isNotBearArranged = curE20 === null || !(curE10 < curE20 && curE10 < curE30);
+                            if (isNotBearArranged) {
+                                foundPromotedL = true;
+                                promotedLagL = Math.max(1, idx - cTarget);
+                                confirmedIdxL = cTarget;
+                                promotedTimeL = timestamps[cTarget] || timestamps[idx];
+                                break;
+                            }
+                        }
+                    }
+                }
             }
 
-            // 空头检查：当前 EMA10 < EMA30，但尚未完成 EMA40 穿越 (如 curE10 >= curE40)
+            // =================================================================
+            // 空头分支
+            // =================================================================
+            // 阶段 1：空头蓄势折叠区 (EMA10 < EMA30 但尚未完成 EMA40 穿越, 即 curE10 >= curE40)
             if (curE10 < curE30 && curE10 >= curE40) {
                 for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
@@ -1569,14 +1628,114 @@ export function analyzeList2Crossing(
                     }
                 }
             }
+            // 阶段 2：空头无缝自动晋升 (EMA10 < EMA40 且 EMA10 < EMA30，已顺次完成对 EMA40 的穿越)
+            else if (curE10 < curE40 && curE10 < curE30) {
+                // 追溯过去设定根数内 EMA10 向下死叉穿越 EMA40
+                for (let pLag = 0; pLag <= maxCheckLag; pLag++) {
+                    const cIdx = idx - pLag;
+                    const pE10 = getEmaVal(ema10, cIdx, 10);
+                    const pE40 = getEmaVal(ema40, cIdx, 40);
+                    const prevE10 = getEmaVal(ema10, cIdx - 1, 10);
+                    const prevE40 = getEmaVal(ema40, cIdx - 1, 40);
+                    if (pE10 !== null && pE40 !== null && prevE10 !== null && prevE40 !== null) {
+                        if ((prevE10 >= prevE40 && pE10 < pE40) || (prevE10 > prevE40 && pE10 <= pE40)) {
+                            let cTarget = cIdx;
+                            if (pLag > 0 && closes[cIdx] < opens[cIdx]) {
+                                cTarget = cIdx;
+                            } else {
+                                const searchEnd = Math.min(idx - 1, cIdx + 3);
+                                let foundBear = false;
+                                for (let f = cIdx; f <= searchEnd; f++) {
+                                    if (f >= 0 && f < idx && closes[f] < opens[f]) {
+                                        cTarget = f;
+                                        foundBear = true;
+                                        break;
+                                    }
+                                }
+                                if (!foundBear && idx > 0) {
+                                    cTarget = idx - 1;
+                                }
+                            }
+
+                            // 方向防守门禁：非多头排列
+                            const isNotBullArranged = curE20 === null || !(curE10 > curE20 && curE10 > curE30);
+                            if (isNotBullArranged) {
+                                foundPromotedS = true;
+                                promotedLagS = Math.max(1, idx - cTarget);
+                                confirmedIdxS = cTarget;
+                                promotedTimeS = timestamps[cTarget] || timestamps[idx];
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        if (foundPreWaitL) {
+        // 优先推送已正式晋升的标准显示区信号 (isPreWaitEma30: false)
+        if (foundPromotedL) {
+            const candleRangeL = Math.max(0, highs[confirmedIdxL] - lows[confirmedIdxL]);
+            const ampL = opens[confirmedIdxL] > 0 ? (candleRangeL / opens[confirmedIdxL]) * 100 : 1;
+            results.push({
+                tf,
+                lag: promotedLagL,
+                crossingCount: 1,
+                isSqueeze: false,
+                squeezeVal: ampL,
+                direction: 'LONG',
+                crossingLags: [promotedLagL],
+                crossingTimes: [promotedTimeL],
+                bodyRatio: 100,
+                ampValid: true,
+                volValid: true,
+                bodyValid: true,
+                isAligned: (curE10 !== null && curE20 !== null && curE30 !== null && curE40 !== null && curE10 > curE20 && curE20 > curE30 && curE30 > curE40),
+                isCandleCrossed: true,
+                isMaCrossed: true,
+                isPreWaitEma30: false, // ⚡ 彻底解除折叠等待状态，正式晋升为列表2标准显示区！
+                isClosed: true,
+                kOpen: opens[confirmedIdxL],
+                kClose: closes[confirmedIdxL],
+                kHigh: highs[confirmedIdxL],
+                kLow: lows[confirmedIdxL],
+                signalTime: promotedTimeL
+            });
+        } else if (foundPromotedS) {
+            const candleRangeS = Math.max(0, highs[confirmedIdxS] - lows[confirmedIdxS]);
+            const ampS = opens[confirmedIdxS] > 0 ? (candleRangeS / opens[confirmedIdxS]) * 100 : 1;
+            results.push({
+                tf,
+                lag: promotedLagS,
+                crossingCount: 1,
+                isSqueeze: false,
+                squeezeVal: ampS,
+                direction: 'SHORT',
+                crossingLags: [promotedLagS],
+                crossingTimes: [promotedTimeS],
+                bodyRatio: 100,
+                ampValid: true,
+                volValid: true,
+                bodyValid: true,
+                isAligned: (curE10 !== null && curE20 !== null && curE30 !== null && curE40 !== null && curE10 < curE20 && curE20 < curE30 && curE30 < curE40),
+                isCandleCrossed: true,
+                isMaCrossed: true,
+                isPreWaitEma30: false, // ⚡ 彻底解除折叠等待状态，正式晋升为列表2标准显示区！
+                isClosed: true,
+                kOpen: opens[confirmedIdxS],
+                kClose: closes[confirmedIdxS],
+                kHigh: highs[confirmedIdxS],
+                kLow: lows[confirmedIdxS],
+                signalTime: promotedTimeS
+            });
+        } else if (foundPreWaitL) {
+            const candleRangeL = Math.max(0, highs[idx] - lows[idx]);
+            const ampL = opens[idx] > 0 ? (candleRangeL / opens[idx]) * 100 : 1;
             results.push({
                 tf,
                 lag: preWaitLagL,
                 crossingCount: 1,
                 isSqueeze: false,
+                squeezeVal: ampL,
                 direction: 'LONG',
                 crossingLags: [preWaitLagL],
                 crossingTimes: [timestamps[idx - preWaitLagL] || timestamps[idx]],
@@ -1596,11 +1755,14 @@ export function analyzeList2Crossing(
                 signalTime: timestamps[idx - preWaitLagL] || timestamps[idx]
             });
         } else if (foundPreWaitS) {
+            const candleRangeS = Math.max(0, highs[idx] - lows[idx]);
+            const ampS = opens[idx] > 0 ? (candleRangeS / opens[idx]) * 100 : 1;
             results.push({
                 tf,
                 lag: preWaitLagS,
                 crossingCount: 1,
                 isSqueeze: false,
+                squeezeVal: ampS,
                 direction: 'SHORT',
                 crossingLags: [preWaitLagS],
                 crossingTimes: [timestamps[idx - preWaitLagS] || timestamps[idx]],

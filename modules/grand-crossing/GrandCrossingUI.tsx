@@ -83,21 +83,25 @@ export const GrandCrossingModule: React.FC<Props> = ({
         }
     }, [config?.timeframes]);
 
-    // Active open position symbols for position standby buffer
-    const openPositionSymbols = React.useMemo(() => {
-        const set = new Set<string>();
+    // Active open position symbols for position standby buffer (stabilized string hash key to avoid Set reference churn)
+    const openPositionSymbolsKey = React.useMemo(() => {
+        const arr: string[] = [];
         (activePositions || []).forEach(p => {
             if (p && p.symbol) {
                 const isHolding = (typeof p.amount === 'number' && p.amount > 0) ||
                                   (typeof p.contracts === 'number' && Math.abs(p.contracts) > 0) ||
                                   (typeof p.positionAmt === 'number' && Math.abs(p.positionAmt) > 0);
                 if (isHolding) {
-                    set.add(normalizeSymbol(p.symbol));
+                    arr.push(normalizeSymbol(p.symbol));
                 }
             }
         });
-        return set;
+        return arr.sort().join(',');
     }, [activePositions]);
+
+    const openPositionSymbols = React.useMemo(() => {
+        return new Set(openPositionSymbolsKey ? openPositionSymbolsKey.split(',') : []);
+    }, [openPositionSymbolsKey]);
 
     // 🔒 [USER MANDATORY RULE - 列表2独立生命周期与信号存续]:
     // 只要进入列表2的币种与信号，其存续期完全由“信号存续/寿命根数”(newModeRetention)独立控制。
@@ -135,7 +139,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
     }, [list2, config?.newModeRetention]);
 
     // --- SYNC OUTPUT (All non-pending signals pass to List 3, EXCLUDING open position symbols) ---
-    const lastListStrRef = React.useRef<string>('');
+    const lastListSigRef = React.useRef<string>('');
     useEffect(() => {
         let outputList = sanitizedList2 || [];
 
@@ -175,14 +179,19 @@ export const GrandCrossingModule: React.FC<Props> = ({
             }).filter(Boolean) as ScannerItem[];
         }
 
-        const str = JSON.stringify(outputList);
-        if (str !== lastListStrRef.current) {
-            lastListStrRef.current = str;
-            setTimeout(() => {
-                onResultsUpdateRef.current?.(outputList);
-            }, 0);
+        // 🔒 [STRUCTURAL SIGNATURE]: 仅在结构性标的、周期、方向或待定状态发生实质变更时向下游派发，彻底隔离毫秒级行情报价波动导致的循环重渲染
+        const sig = outputList.map(item => {
+            const sigs = (item.groupedResults || [])
+                .map(r => `${r.tf}_${r.direction}_${r.isPendingGray ? 1 : 0}_${r.signalTime ?? 0}`)
+                .join(';');
+            return `${item.symbol}:${item.direction}:${sigs}`;
+        }).join('|');
+
+        if (sig !== lastListSigRef.current) {
+            lastListSigRef.current = sig;
+            onResultsUpdateRef.current?.(outputList);
         }
-    }, [sanitizedList2, config?.syncDirectionFilterToList3, config?.viewMode, openPositionSymbols]);
+    }, [sanitizedList2, config?.syncDirectionFilterToList3, config?.viewMode, openPositionSymbolsKey, openPositionSymbols]);
 
     // --- LOCAL UI STATE ---
     const [activeFilterTf, setActiveFilterTf] = useState<string | null>(null);
@@ -210,31 +219,34 @@ export const GrandCrossingModule: React.FC<Props> = ({
         }
     };
 
-    // Filter list for display
-    let filteredList = activeFilterTf 
-        ? sanitizedList2.filter(item => item.groupedResults?.some(r => r.tf === activeFilterTf))
-        : sanitizedList2;
+    // Filter list for display (memoized to prevent child prop reference churn)
+    const filteredList = React.useMemo(() => {
+        let list = activeFilterTf 
+            ? sanitizedList2.filter(item => item.groupedResults?.some(r => r.tf === activeFilterTf))
+            : sanitizedList2;
 
-    const viewMode = config?.viewMode || 'ALL';
-    if (viewMode === 'LONG') {
-        filteredList = filteredList.map(item => {
-            const longResults = (item.groupedResults || []).filter(r => r.direction === 'LONG');
-            return {
-                ...item,
-                direction: 'LONG' as const,
-                groupedResults: longResults
-            };
-        }).filter(item => item.groupedResults && item.groupedResults.length > 0);
-    } else if (viewMode === 'SHORT') {
-        filteredList = filteredList.map(item => {
-            const shortResults = (item.groupedResults || []).filter(r => r.direction === 'SHORT');
-            return {
-                ...item,
-                direction: 'SHORT' as const,
-                groupedResults: shortResults
-            };
-        }).filter(item => item.groupedResults && item.groupedResults.length > 0);
-    }
+        const activeViewMode = config?.viewMode || 'ALL';
+        if (activeViewMode === 'LONG') {
+            return list.map(item => {
+                const longResults = (item.groupedResults || []).filter(r => r.direction === 'LONG');
+                return {
+                    ...item,
+                    direction: 'LONG' as const,
+                    groupedResults: longResults
+                };
+            }).filter(item => item.groupedResults && item.groupedResults.length > 0);
+        } else if (activeViewMode === 'SHORT') {
+            return list.map(item => {
+                const shortResults = (item.groupedResults || []).filter(r => r.direction === 'SHORT');
+                return {
+                    ...item,
+                    direction: 'SHORT' as const,
+                    groupedResults: shortResults
+                };
+            }).filter(item => item.groupedResults && item.groupedResults.length > 0);
+        }
+        return list;
+    }, [sanitizedList2, activeFilterTf, config?.viewMode]);
 
     if (isBackground) {
         return null;

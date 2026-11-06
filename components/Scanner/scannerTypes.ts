@@ -226,6 +226,7 @@ export interface ScannerItem {
     fuseCountdownMs?: number;
     starScore?: number;
     starBadges?: string[];
+    isPreWaitEma30?: boolean;
 }
 
 export interface List2Config {

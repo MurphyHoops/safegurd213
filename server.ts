@@ -791,7 +791,8 @@ async function startServer() {
         try {
           const res = await fetchWithFallback(endpoint, {
             method: "POST",
-            headers: { "X-MBX-APIKEY": cleanKey }
+            headers: { "X-MBX-APIKEY": cleanKey },
+            isCoreOrder: true
           });
           if (res.ok) {
             const data = await res.json();
@@ -811,6 +812,8 @@ async function startServer() {
           const errMsg = err?.message || String(err);
           if (errMsg.includes('[CIRCUIT_BREAKER_FROZEN]') || errMsg.includes('-1003')) {
             console.warn(`[Binance UserData Stream] Intercepted by local circuit breaker on ${endpoint}`);
+          } else if (errMsg.includes('[RATE_LIMIT_WEIGHT_HIGH]')) {
+            console.warn(`[Binance UserData Stream] Paused listenKey acquisition due to high weight on ${endpoint}`);
           } else {
             console.warn(`[Binance UserData Stream] Network error on ${endpoint}:`, errMsg);
           }
@@ -823,6 +826,8 @@ async function startServer() {
         if (binanceBannedUntilTimestamp > Date.now() || curLimiterStatus.isFrozen) {
           const frozenUntil = Math.max(binanceBannedUntilTimestamp, curLimiterStatus.frozenUntil);
           retryDelay = Math.max(frozenUntil - Date.now() + 2000, 5000);
+        } else if (curLimiterStatus.isHighWeight) {
+          retryDelay = 15000;
         }
         console.warn(`[Binance UserData Stream] Could not acquire listenKey for API Key: ${cleanKey.slice(0, 8)}... Next retry in ${Math.round(retryDelay / 1000)}s`);
         setTimeout(() => ensureUserDataStream(cleanKey), retryDelay);
@@ -892,7 +897,8 @@ async function startServer() {
             try {
               const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/listenKey?listenKey=${encodeURIComponent(instance.listenKey)}`, {
                 method: "PUT",
-                headers: { "X-MBX-APIKEY": cleanKey }
+                headers: { "X-MBX-APIKEY": cleanKey },
+                isCoreOrder: true
               });
               if (res.ok) {
                 console.log(`🔄 [Binance UserData Stream] listenKey keep-alive ping sent successfully`);
@@ -1421,7 +1427,9 @@ async function startServer() {
           urlStr.includes('/batchOrders') || 
           urlStr.includes('/leverage') || 
           urlStr.includes('/marginType') || 
-          urlStr.includes('/positionSide');
+          urlStr.includes('/positionSide') ||
+          urlStr.includes('/listenKey') ||
+          urlStr.includes('/time');
         binanceRateLimiter.checkCanRequest(isCoreOrder);
 
         if (binanceBannedUntilTimestamp > Date.now()) {
@@ -1541,31 +1549,34 @@ async function startServer() {
         const formattedSymbol = formatBinanceSymbol(symbol);
         let appliedLeverage: number = parseInt(leverage || "20");
 
-        // 🔒 [服务端第一道绝对硬锁：单币在途并发互斥与10秒防重锁] (手动开仓、断臂/解套复开及补仓允许穿透)
-        const isRefillOrHedge = req.body.isRefill === true || req.body.allowExisting === true || req.body.isHedge === true || req.body.isReopened === true || req.body.isManual === true;
+        // 🔒 [服务端第一道绝对硬锁：单币在途并发互斥与防重锁] (断臂/解套复开及补仓允许穿透)
+        const isRefillOrHedge = req.body.isRefill === true || req.body.allowExisting === true || req.body.isHedge === true || req.body.isReopened === true;
+        const isManualOpen = req.body.isManual === true;
         const openSymbolLockKey = `${apiKey.slice(-6)}_${formattedSymbol}`;
 
         if (action === "OPEN" && !isRefillOrHedge) {
             const now = Date.now();
             const inFlightTime = serverOpeningPositionsInFlight.get(openSymbolLockKey);
-            if (inFlightTime && now - inFlightTime < 15000) {
-                console.warn(`[Binance Order] 🛡️ [服务端在途硬锁拦截] ${formattedSymbol} 开仓指令正在向币安执行在途中，严禁并发重复开仓！`);
+            const lockWindowMs = isManualOpen ? 3000 : 15000;
+            if (inFlightTime && now - inFlightTime < lockWindowMs) {
+                console.warn(`[Binance Order] 🛡️ [服务端在途硬锁拦截] ${formattedSymbol} 开仓指令正在向币安执行在途中 (防连击锁 ${lockWindowMs/1000}s)，严禁并发重复开仓！`);
                 return res.json({
                     success: false,
                     intercepted: true,
                     orderId: "IN_FLIGHT_OPEN_INTERCEPTED",
-                    error: `🛡️ [服务端在途硬锁拦截] ${formattedSymbol} 开仓指令正在向币安处理中（耗时: ${now - inFlightTime}ms），严禁并发重复开仓！`
+                    error: `🛡️ [服务端在途硬锁拦截] ${formattedSymbol} 开仓指令处理中 (耗时: ${now - inFlightTime}ms)，请勿重复连续点击！`
                 });
             }
 
             const lastOpenedTime = serverRecentOpenedPositions.get(openSymbolLockKey);
-            if (lastOpenedTime && now - lastOpenedTime < 10000) {
+            const recentWindowMs = isManualOpen ? 3000 : 10000;
+            if (lastOpenedTime && now - lastOpenedTime < recentWindowMs) {
                 console.warn(`[Binance Order] 🛡️ [服务端防重开冷却拦截] ${formattedSymbol} 在 ${((now - lastOpenedTime)/1000).toFixed(1)} 秒前已成功开仓，严禁重复开仓！`);
                 return res.json({
                     success: false,
                     intercepted: true,
                     orderId: "RECENT_OPEN_INTERCEPTED",
-                    error: `🛡️ [服务端防重开冷却拦截] ${formattedSymbol} 在 ${((now - lastOpenedTime)/1000).toFixed(1)} 秒前已成功开仓，严禁重复开仓！`
+                    error: `🛡️ [服务端防重开冷却拦截] ${formattedSymbol} 已开仓成功，请勿重复点击！`
                 });
             }
 
@@ -1641,15 +1652,24 @@ async function startServer() {
                         }
                     }
 
-                    console.log(`[Binance Order] Setting leverage to ${initialTargetLev}x for ${formattedSymbol}...`);
-                    let levResponse = await setLeverageFn(initialTargetLev);
-                    
-                    if (levResponse.ok) {
-                        const levJson = await levResponse.json();
-                        appliedLeverage = levJson.leverage || initialTargetLev;
-                        symbolMaxLeverageCache.set(formattedSymbol, { maxLeverage: appliedLeverage, timestamp: Date.now() });
-                        console.log(`[Binance Order] Successfully set leverage to ${appliedLeverage}x for ${formattedSymbol}`);
+                    // 🎯 权重优化：若当前合约杠杆已成功设定且在 1 小时内相同，跳过冗余的 POST /fapi/v1/leverage 权重请求
+                    if (cachedLevInfo && (cachedLevInfo as any).currentLeverage === initialTargetLev && (Date.now() - cachedLevInfo.timestamp < 3600 * 1000)) {
+                        console.log(`[Binance Order] ⚡ [权重优化] ${formattedSymbol} 杠杆已为 ${initialTargetLev}x (缓存有效)，跳过 REST API 杠杆调整请求。`);
+                        appliedLeverage = initialTargetLev;
                     } else {
+                        console.log(`[Binance Order] Setting leverage to ${initialTargetLev}x for ${formattedSymbol}...`);
+                        let levResponse = await setLeverageFn(initialTargetLev);
+                        
+                        if (levResponse.ok) {
+                            const levJson = await levResponse.json();
+                            appliedLeverage = levJson.leverage || initialTargetLev;
+                            symbolMaxLeverageCache.set(formattedSymbol, { 
+                                maxLeverage: Math.max(appliedLeverage, cachedLevInfo?.maxLeverage || 0), 
+                                currentLeverage: appliedLeverage, 
+                                timestamp: Date.now() 
+                            } as any);
+                            console.log(`[Binance Order] Successfully set leverage to ${appliedLeverage}x for ${formattedSymbol}`);
+                        } else {
                         const levErrText = await levResponse.text();
                         console.log(`[Binance Order] Leverage setting note: ${initialTargetLev}x returned ${levErrText}. Auto-adapting leverage downward...`);
                         
@@ -1747,10 +1767,11 @@ async function startServer() {
                             console.warn(`[Binance Order] Leverage setting could not be updated for ${formattedSymbol} (${levErrText}). Proceeding with existing account leverage setting...`);
                         }
                     }
-                } catch (e: any) {
-                    console.warn(`[Binance Order] Exception while setting leverage:`, e);
                 }
+            } catch (e: any) {
+                console.warn(`[Binance Order] Exception while setting leverage:`, e);
             }
+        }
 
             // 2. Get current ticker price to calculate quantity or validate notional value (only fetch REST if quantity not provided)
             let currentPrice = latestTickerPrices.get(formattedSymbol) || 0;
@@ -2978,8 +2999,8 @@ async function startServer() {
             return res.json({ success: true, trades: filteredCached || [], rateLimited: true });
         }
 
-        // 2 seconds cache for trades during fast polling (bypass if forced)
-        if (!force && !bypassCache && cached && (now - cached.timestamp < 2000)) {
+        // 10 seconds cache for trades during fast polling to protect Binance API rate limits (bypass if forced)
+        if (!force && !bypassCache && cached && (now - cached.timestamp < 10000)) {
             const filteredCached = startTimestamp > 0 
                 ? (cached.data || []).filter((t: any) => (parseInt(t.time || t.timestamp || "0") || 0) > startTimestamp)
                 : cached.data;

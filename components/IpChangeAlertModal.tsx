@@ -9,7 +9,7 @@ export interface IpChangeAlertData {
 
 interface Props {
     data: IpChangeAlertData;
-    onClose: () => void;
+    onClose: (skippedIp?: string) => void;
     onAcknowledge: (newIp: string) => void;
 }
 
@@ -45,7 +45,7 @@ export const IpChangeAlertModal: React.FC<Props> = ({
                         </div>
                     </div>
                     <button 
-                        onClick={onClose}
+                        onClick={() => onClose(data.newIp)}
                         className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
                         title="关闭提示"
                     >
@@ -154,7 +154,7 @@ export const IpChangeAlertModal: React.FC<Props> = ({
 
                         <button
                             type="button"
-                            onClick={onClose}
+                            onClick={() => onClose(data.newIp)}
                             className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-bold transition-all"
                             title="跳过 IP 修改，以模拟盘模式直接进入系统主界面"
                         >

@@ -47,7 +47,7 @@ export const QuickTradeModal: React.FC<Props> = ({
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        if (amountUsdt <= 0 || realPrice <= 0) return;
+        if (submitting || amountUsdt <= 0 || realPrice <= 0) return;
         setSubmitting(true);
 
         const tradeSide = side;
@@ -57,7 +57,7 @@ export const QuickTradeModal: React.FC<Props> = ({
         setTimeout(() => {
             setSubmitting(false);
             onClose();
-        }, 150);
+        }, 1500);
     };
 
     const quickAmounts = [10, 20, 50, 100, 200, 500];

@@ -48,7 +48,8 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                 });
             }
         });
-        setChartData({ symbol: item.symbol, tf: defaultTf, signals, currentPrice: item.price, list2Config: config, showAuditLines: false });
+        const isPreWait = Boolean(item.isPreWaitEma30 || (item.groupedResults && item.groupedResults.length > 0 && item.groupedResults.every(r => !!r.isPreWaitEma30)));
+        setChartData({ symbol: item.symbol, tf: defaultTf, signals, currentPrice: item.price, list2Config: config, showAuditLines: false, source: isPreWait ? 'list2_prewait' : 'list2', isPreWait });
     };
 
     return (
@@ -179,7 +180,8 @@ export const List2Item: React.FC<Props> = ({ item, config, activeFilterTf, setCh
                                     r.crossingTimes.forEach(t => signals.push({ time: t, type: r.direction || 'LONG' }));
                                 }
                             });
-                            setChartData({ symbol: item.symbol, tf: res.tf, signals, currentPrice: item.price, list2Config: config, showAuditLines: false }); 
+                            const isPreWait = Boolean(item.isPreWaitEma30 || (item.groupedResults && item.groupedResults.length > 0 && item.groupedResults.every(r => !!r.isPreWaitEma30)));
+                            setChartData({ symbol: item.symbol, tf: res.tf, signals, currentPrice: item.price, list2Config: config, showAuditLines: false, source: isPreWait ? 'list2_prewait' : 'list2', isPreWait }); 
                         }} className={`relative overflow-hidden flex flex-col border rounded cursor-pointer transition-all min-w-[50px] ${containerClass} hover:border-indigo-400`}>
                             
                             {/* Top Label Row */}

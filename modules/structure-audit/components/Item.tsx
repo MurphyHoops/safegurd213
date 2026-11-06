@@ -19,6 +19,7 @@ interface Props {
 }
 
 export const List3Item: React.FC<Props> = ({ item, results, setChartData, executeTradeSafe, onRemove, idx }) => {
+    const [isSubmitting, setIsSubmitting] = React.useState(false);
     // Use passed results if available, otherwise fall back to item.list3Results
     const rawSignals = results || item.list3Results || [];
     
@@ -48,7 +49,9 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                 symbol: item.symbol, 
                 tf: res.tf, 
                 signals: res.structure.signalTime ? [{ time: res.structure.signalTime, type: res.direction }] : [],
-                currentPrice: item.price
+                currentPrice: item.price,
+                source: 'list3',
+                isPreWait: false
             });
         }
     };
@@ -146,7 +149,9 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                                     symbol: item.symbol, 
                                     tf: res.tf, 
                                     signals: res.structure.signalTime ? [{ time: res.structure.signalTime, type: res.direction }] : [],
-                                    currentPrice: item.price
+                                    currentPrice: item.price,
+                                    source: 'list3',
+                                    isPreWait: false
                                 });
                             }}
                             className={`relative overflow-hidden flex flex-col items-center justify-between border rounded cursor-pointer transition-all px-1.5 py-1 min-w-[50px] ${isL ? 'bg-emerald-900/20 border-emerald-500/30 hover:bg-emerald-900/40' : 'bg-red-900/20 border-red-500/30 hover:bg-red-900/40'}`}
@@ -179,26 +184,34 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
             <div className="flex gap-1 mt-2">
                 {isLongDominant && (
                     <button 
+                        disabled={isSubmitting}
                         onClick={(e) => { 
                             e.stopPropagation(); 
+                            if (isSubmitting) return;
+                            setIsSubmitting(true);
+                            setTimeout(() => setIsSubmitting(false), 2000);
                             const targetTf = signals.find(s => s.direction === 'LONG')?.tf;
                             executeTradeSafe(item.symbol, PositionSide.LONG, item.price, "Manual L3 Long", targetTf); 
                         }}
-                        className="flex-1 py-1 bg-emerald-600/80 hover:bg-emerald-500 text-white rounded text-[9px] font-bold"
+                        className="flex-1 py-1 bg-emerald-600/80 hover:bg-emerald-500 text-white rounded text-[9px] font-bold disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        开多 (Long)
+                        {isSubmitting ? '开仓中...' : '开多 (Long)'}
                     </button>
                 )}
                 {isShortDominant && (
                     <button 
+                        disabled={isSubmitting}
                         onClick={(e) => { 
                             e.stopPropagation(); 
+                            if (isSubmitting) return;
+                            setIsSubmitting(true);
+                            setTimeout(() => setIsSubmitting(false), 2000);
                             const targetTf = signals.find(s => s.direction === 'SHORT')?.tf;
                             executeTradeSafe(item.symbol, PositionSide.SHORT, item.price, "Manual L3 Short", targetTf); 
                         }}
-                        className="flex-1 py-1 bg-red-600/80 hover:bg-red-500 text-white rounded text-[9px] font-bold"
+                        className="flex-1 py-1 bg-red-600/80 hover:bg-red-500 text-white rounded text-[9px] font-bold disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        开空 (Short)
+                        {isSubmitting ? '开仓中...' : '开空 (Short)'}
                     </button>
                 )}
             </div>

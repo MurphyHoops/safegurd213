@@ -63,7 +63,8 @@ interface Props {
   tradeLogs?: TradeLog[]; // Added tradeLogs prop
   appearedTime?: number; // Time the signal appeared
   disappearedTime?: number; // Time the signal disappeared
-  source?: 'list1' | 'list2' | 'list3' | 'list4' | 'list5' | 'positions' | 'tradelogs' | string;
+  source?: 'list1' | 'list2' | 'list2_prewait' | 'list3' | 'list4' | 'list5' | 'positions' | 'tradelogs' | string;
+  isPreWait?: boolean;
   viewMode?: 'SIGNAL' | 'TRADE';
   onClose: () => void;
   onTimeframeChange?: (timeframe: string) => void;
@@ -413,6 +414,7 @@ const KlineChartModal: React.FC<Props> = ({
   appearedTime, 
   disappearedTime, 
   source, 
+  isPreWait = false,
   viewMode, 
   onClose, 
   onTimeframeChange, 
@@ -2418,8 +2420,19 @@ const KlineChartModal: React.FC<Props> = ({
       // 根据手绘图格式渲染 进攻突破线 & 中轴防守线 阶梯折弯结构
       // 做多形态: 上方为 进攻突破线 (向上折弯)，下方为 中轴防守线 (向下折弯)
       // 做空形态: 上方为 中轴防守线 (向上折弯)，下方为 进攻突破线 (向下折弯)
+      // 🔒【跨模块权限隔离与显隐门禁】：
+      // 1. 列表 2 进入的币种：凡处于“等待折叠区”(isPreWait === true 或 source === 'list2_prewait')的币种，绝对禁止标记“进攻突破线”和“中轴防守线”！
+      // 2. 只有正式列表 2 币种或列表 3 进入的币种，才正常绘制标记。
+      const isWaitingFoldedArea = Boolean(
+          isPreWait === true || 
+          source === 'list2_prewait' || 
+          source === 'prewait' ||
+          (signals && signals.length > 0 && signals.every((s: any) => s.isPreWaitEma30 || s.isPreWait))
+      );
+      const isLinesAllowed = !isWaitingFoldedArea;
+
       let focalLinesVisual: React.ReactNode = null;
-      if (focalBreakoutPrice !== null) {
+      if (isLinesAllowed && focalBreakoutPrice !== null) {
           const yBreakout = getY(focalBreakoutPrice);
           const yDefense = focalDefensePrice !== null ? getY(focalDefensePrice) : NaN;
           const xEnd = width - padding.right;
@@ -2885,7 +2898,7 @@ const KlineChartModal: React.FC<Props> = ({
 
       // Waiting / Triggered Line (等待 / 已触发 - for active coins in list) - 带智能决策悬浮卡片
       let waitingLine = null;
-      if (!isTradeViewMode && !disappearedTime && fullData.length > 0) {
+      if (!isTradeViewMode && !disappearedTime && fullData.length > 0 && !isWaitingFoldedArea) {
           const lastIdx = fullData.length - 1;
           if (lastIdx >= startIndex && lastIdx < startIndex + visibleCount) {
               const i = lastIdx - startIndex;
@@ -3160,8 +3173,8 @@ const KlineChartModal: React.FC<Props> = ({
       // EXTRA LINES (Other custom indicators) - Only show lines not already rendered by focalLinesVisual
       const extraVisuals = showAuditLines ? extraLines?.map((line, idx) => {
           if (!line.price || line.price <= 0) return null;
-          // Skip defense/breakout if already rendered by focalLinesVisual
-          if (focalLinesVisual && (line.label.includes('防守') || line.label.includes('突破') || line.label.includes('TRIGGER') || line.label.includes('DEFENSE') || line.label.includes('攻') || line.label.includes('守'))) {
+          // Skip defense/breakout if already rendered by focalLinesVisual or if in List 2 waiting area
+          if ((focalLinesVisual || isWaitingFoldedArea) && (line.label.includes('防守') || line.label.includes('突破') || line.label.includes('TRIGGER') || line.label.includes('DEFENSE') || line.label.includes('攻') || line.label.includes('守'))) {
               return null;
           }
           const y = getY(line.price);

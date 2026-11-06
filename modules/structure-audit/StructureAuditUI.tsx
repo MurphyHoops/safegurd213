@@ -77,15 +77,17 @@ export const StructureAuditModule: React.FC<Props> = ({ candidates, onResultsUpd
     // Fix: Store previous config string to prevent infinite loops
     const prevConfigStrRef = useRef('');
 
-    // Sync Output
-    const lastListStrRef = useRef<string>('');
+    // Sync Output (Structural Signature comparison to isolate real-time price fluctuations)
+    const lastListSigRef = useRef<string>('');
     useEffect(() => {
-        const str = JSON.stringify(list3);
-        if (str !== lastListStrRef.current) {
-            lastListStrRef.current = str;
-            setTimeout(() => {
-                onResultsUpdateRef.current?.(list3);
-            }, 0);
+        const sig = (list3 || []).map(item => {
+            const res = (item.list3Results || item.groupedResults || []).map(r => `${r.tf}_${r.direction}_${r.signalTime ?? 0}`).join(';');
+            return `${item.symbol}:${item.direction}:${res}`;
+        }).join('|');
+
+        if (sig !== lastListSigRef.current) {
+            lastListSigRef.current = sig;
+            onResultsUpdateRef.current?.(list3);
         }
     }, [list3]);
 

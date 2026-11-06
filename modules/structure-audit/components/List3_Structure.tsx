@@ -298,6 +298,8 @@ const List3_Structure: React.FC<Props> = ({
           items={filteredList.map((i) => ({
             symbol: i.symbol,
             timeframe: i.tf,
+            source: 'list3',
+            isPreWait: false,
           }))}
           defaultTf="15m"
           onClose={() => setShowVisualizer(false)}

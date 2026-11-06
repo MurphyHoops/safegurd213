@@ -415,6 +415,7 @@ const AppContent: React.FC = () => {
     const [fuseAlertData, setFuseAlertData] = useState<FuseAlertData | null>(null);
     const [ipChangeAlertData, setIpChangeAlertData] = useState<IpChangeAlertData | null>(null);
     const [currentServerIp, setCurrentServerIp] = useState<string>('');
+    const skippedIpRef = useRef<string>(typeof window !== 'undefined' ? (sessionStorage.getItem('SAVIOR_SKIPPED_IP') || '') : '');
 
     const lastConfirmedIp = localStorage.getItem('SAVIOR_LAST_CONFIRMED_IP') || '';
     const isIpUnconfirmed = Boolean(currentServerIp && lastConfirmedIp && currentServerIp.trim() !== lastConfirmedIp.trim());
@@ -435,6 +436,7 @@ const AppContent: React.FC = () => {
     // --- IP CHANGE MONITOR & ALERTS ---
     useEffect(() => {
         const LAST_CONFIRMED_IP_KEY = 'SAVIOR_LAST_CONFIRMED_IP';
+        const SKIPPED_IP_KEY = 'SAVIOR_SKIPPED_IP';
 
         const checkServerIp = async () => {
             try {
@@ -450,7 +452,21 @@ const AppContent: React.FC = () => {
                         // 首次运行初始化记忆基准
                         localStorage.setItem(LAST_CONFIRMED_IP_KEY, currentIp);
                     } else if (lastConfirmed !== currentIp) {
-                        // 发现出口 IP 发生变动！
+                        // 检查用户是否在此会话中已主动点击了“跳过/暂不修改”
+                        let skipped = skippedIpRef.current;
+                        try {
+                            if (!skipped) {
+                                skipped = sessionStorage.getItem(SKIPPED_IP_KEY) || '';
+                                skippedIpRef.current = skipped;
+                            }
+                        } catch (_) {}
+
+                        if (skipped && skipped.trim() === currentIp) {
+                            // 核心拦截：当前检测到的出口 IP 与用户主动跳过的 IP 一致，静默放行，绝对禁止再次弹出该提示框与重复语音骚扰！
+                            return;
+                        }
+
+                        // 发现出口 IP 发生变动且为全新未跳过的 IP，执行提醒！
                         setIpChangeAlertData({
                             oldIp: lastConfirmed,
                             newIp: currentIp
@@ -473,11 +489,20 @@ const AppContent: React.FC = () => {
         // 监听全局币安 API -2015 错误事件（如有即时捕获透传）
         const handleIpEvent = (e: any) => {
             if (e.detail?.newIp) {
+                const newIp = String(e.detail.newIp).trim();
                 const currentConfirmed = localStorage.getItem(LAST_CONFIRMED_IP_KEY) || '';
-                if (e.detail.newIp !== currentConfirmed) {
+                let skipped = skippedIpRef.current;
+                try {
+                    if (!skipped) {
+                        skipped = sessionStorage.getItem(SKIPPED_IP_KEY) || '';
+                        skippedIpRef.current = skipped;
+                    }
+                } catch (_) {}
+
+                if (newIp !== currentConfirmed && newIp !== skipped) {
                     setIpChangeAlertData({
                         oldIp: currentConfirmed,
-                        newIp: e.detail.newIp
+                        newIp: newIp
                     });
                     audioService.speak('提示：服务器出口 IP 已发生变动！', true);
                 }
@@ -509,6 +534,10 @@ const AppContent: React.FC = () => {
     // --- MAIN MOUNTED FLAG & PANIC SELF-HEALING ---
     useEffect(() => {
         (window as any).__MAIN_APP_MOUNTED__ = true;
+        (window as any).isReactReady = true;
+        try {
+            window.dispatchEvent(new Event('SAVIOR_APP_READY'));
+        } catch (_) {}
         console.log("🛡️ [System Guard] Main app successfully mounted. Clearing any false-alarm panic UI.");
         const panic = document.getElementById('panic-ui');
         if (panic) {
@@ -516,7 +545,13 @@ const AppContent: React.FC = () => {
         }
         const shield = document.getElementById('boot-shield');
         if (shield) {
-            shield.remove();
+            shield.style.transition = 'opacity 0.2s ease';
+            shield.style.opacity = '0';
+            setTimeout(() => {
+                try {
+                    if (shield && shield.parentNode) shield.parentNode.removeChild(shield);
+                } catch (e) {}
+            }, 200);
         }
     }, []);
 
@@ -1917,32 +1952,17 @@ const AppContent: React.FC = () => {
             // 阶段 1：0ms 立即执行首轮快速主动抓取
             fetchInstantTradeRecords(targetSymbol, orderId, action);
             
-            // 阶段 2：150ms 极速二次探针（匹配交易所撮合落库周期）
+            // 阶段 2：300ms 极速二次探针
             setTimeout(() => {
                 fetchInstantTradeRecords(targetSymbol, orderId, action);
-            }, 150);
+            }, 300);
 
-            // 阶段 3：500ms 快速兜底探针（若 WebSocket 与前两轮探针未确认，进行保全对账）
-            setTimeout(() => {
-                if (orderId && simulatorRef.current?.tradeLogs) {
-                    const hasConfirmed = simulatorRef.current.tradeLogs.some(l => 
-                        (l.binance_order_id && String(l.binance_order_id) === String(orderId))
-                    );
-                    if (!hasConfirmed) {
-                        fetchInstantTradeRecords(targetSymbol, orderId, action);
-                    }
-                } else {
-                    fetchInstantTradeRecords(targetSymbol, orderId, action);
-                }
-            }, 500);
-
-            // 阶段 4：【双通道抓到为止铁律】每隔 1 秒主动向币安抓取一次成交记录，抓到即停（严格遵守 5 秒安全上限，杜绝网络拥塞）
+            // 阶段 3：平滑延迟探针 (每 2.5 秒一次，最多 2 次探针，防止高频 REST 轰炸币安 API)
             let secCount = 0;
-            const maxSeconds = 5;
+            const maxProbeAttempts = 2;
             const secTimer = setInterval(async () => {
                 secCount++;
                 try {
-                    // 检查是否已被 WebSocket 或之前的探针确认
                     if (orderId && simulatorRef.current?.tradeLogs) {
                         const isConfirmed = simulatorRef.current.tradeLogs.some(l => 
                             (l.binance_order_id && String(l.binance_order_id) === String(orderId))
@@ -1953,19 +1973,18 @@ const AppContent: React.FC = () => {
                             return;
                         }
                     }
-                    // 每隔 1 秒向币安主动抓取一次
                     const success = await fetchInstantTradeRecords(targetSymbol, orderId, action);
-                    if (success || secCount >= maxSeconds) {
+                    if (success || secCount >= maxProbeAttempts) {
                         clearInterval(secTimer);
                         activePollingSymbols.delete(cleanSym);
                     }
                 } catch (err) {
-                    if (secCount >= maxSeconds) {
+                    if (secCount >= maxProbeAttempts) {
                         clearInterval(secTimer);
                         activePollingSymbols.delete(cleanSym);
                     }
                 }
-            }, 1000);
+            }, 2500);
 
             activePollingSymbols.set(cleanSym, secTimer);
         };
@@ -4936,11 +4955,26 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             {ipChangeAlertData && (
                 <IpChangeAlertModal 
                     data={ipChangeAlertData}
-                    onClose={() => setIpChangeAlertData(null)}
-                    onAcknowledge={(newIp) => {
-                        localStorage.setItem('SAVIOR_LAST_CONFIRMED_IP', newIp);
+                    onClose={(skippedIp) => {
+                        const ipToSkip = (typeof skippedIp === 'string' && skippedIp.trim()) ? skippedIp.trim() : (ipChangeAlertData?.newIp ? ipChangeAlertData.newIp.trim() : '');
+                        if (ipToSkip) {
+                            try {
+                                sessionStorage.setItem('SAVIOR_SKIPPED_IP', ipToSkip);
+                            } catch (_) {}
+                            skippedIpRef.current = ipToSkip;
+                            handleLog('INFO', `已暂缓出口 IP [${ipToSkip}] 白名单更新提醒，本会话内不再重复弹窗`);
+                        }
                         setIpChangeAlertData(null);
-                        handleLog('SUCCESS', `已确认并保存最新服务器出口 IP [${newIp}] 为基准`);
+                    }}
+                    onAcknowledge={(newIp) => {
+                        const validIp = String(newIp).trim();
+                        localStorage.setItem('SAVIOR_LAST_CONFIRMED_IP', validIp);
+                        try {
+                            sessionStorage.removeItem('SAVIOR_SKIPPED_IP');
+                        } catch (_) {}
+                        skippedIpRef.current = '';
+                        setIpChangeAlertData(null);
+                        handleLog('SUCCESS', `已确认并保存最新服务器出口 IP [${validIp}] 为基准`);
                         audioService.speak('已确认更新出口IP', true);
                     }}
                 />

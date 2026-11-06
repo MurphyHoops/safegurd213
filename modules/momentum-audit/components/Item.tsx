@@ -288,6 +288,7 @@ const resolveItemFuseInfo = (item: ScannerItem, config?: List4Config): ParsedFus
 };
 
 const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartData, onRemove, idx, config, tier }) => {
+    const [isSubmitting, setIsSubmitting] = useState(false);
     // Robust defensive check: Ensure item and its nested objects exist
     if (!item) return null;
 
@@ -787,8 +788,12 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                                             {isActionExpanded && (
                                                 <div className="mt-1 animate-in fade-in duration-150">
                                                     <button 
+                                                        disabled={isInvalid || isSubmitting}
                                                         onClick={(e) => {
                                                             e.stopPropagation();
+                                                            if (isSubmitting) return;
+                                                            setIsSubmitting(true);
+                                                            setTimeout(() => setIsSubmitting(false), 2000);
                                                             const signalCandle = item.structure ? {
                                                                 high: item.structure.signalHigh,
                                                                 low: item.structure.signalLow,
@@ -804,11 +809,10 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                                                             : isRevived
                                                                 ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/40 cursor-pointer animate-pulse'
                                                                 : 'bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 border border-emerald-500/40'
-                                                        }`}
-                                                        disabled={isInvalid}
+                                                        } disabled:opacity-50 disabled:cursor-not-allowed`}
                                                     >
                                                         {isTriggered ? <Zap size={12} fill="currentColor"/> : isRevived ? <Sparkles size={12} fill="currentColor"/> : <Lock size={12}/>}
-                                                        {isTriggered ? '确认离弦信号：立即部署' : isRevived ? '已复活：立即开仓' : '手动开仓执行 (Manual Force)'}
+                                                        {isSubmitting ? '开仓指令发送中...' : (isTriggered ? '确认离弦信号：立即部署' : isRevived ? '已复活：立即开仓' : '手动开仓执行 (Manual Force)')}
                                                     </button>
                                                 </div>
                                             )}
@@ -852,8 +856,12 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                                 </div>
 
                                 <button 
+                                    disabled={isSubmitting}
                                     onClick={(e) => {
                                         e.stopPropagation();
+                                        if (isSubmitting) return;
+                                        setIsSubmitting(true);
+                                        setTimeout(() => setIsSubmitting(false), 2000);
                                         const signalCandle = item.structure ? {
                                             high: item.structure.signalHigh,
                                             low: item.structure.signalLow,
@@ -863,10 +871,10 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
                                         } : undefined;
                                         executeTradeSafe(item.symbol, item.direction as any, item.price, "Manual L4 Dormant Force", tf, signalCandle);
                                     }} 
-                                    className="w-full py-1.5 rounded text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-1.5 bg-slate-800/80 hover:bg-slate-800 text-yellow-500/70 border border-yellow-600/30"
+                                    className="w-full py-1.5 rounded text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-1.5 bg-slate-800/80 hover:bg-slate-800 text-yellow-500/70 border border-yellow-600/30 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     <Moon size={12}/>
-                                    休眠期：等待重新破高复活
+                                    {isSubmitting ? '开仓发送中...' : '休眠期：等待重新破高复活'}
                                 </button>
                             </div>
                         )}

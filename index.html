@@ -96,46 +96,168 @@
       </style>
       <script>
         (function() {
-          var step = 0;
+          var CURRENT_BUILD_SIG = "2026.11.05.v5_AUTO_HEAL_SYNC";
           var bar = document.getElementById('boot-progress-bar');
           var text = document.getElementById('boot-status-text');
           var tools = document.getElementById('boot-fallback-tools');
           var diag = document.getElementById('boot-diag-msg');
+          var shield = document.getElementById('boot-shield');
           
-          var interval = setInterval(function() {
-            if (window.__MAIN_APP_MOUNTED__ || window.isReactReady) {
-              clearInterval(interval);
-              var bs = document.getElementById('boot-shield');
-              if (bs) bs.remove();
+          // 🛡️ [1. 静默自动版本迁移与缓存预热 (Silent Version Migration & Cache Warmup)]
+          var lastBuildSig = null;
+          try {
+            lastBuildSig = localStorage.getItem("SAVIOR_INSTALLED_BUILD_SIG");
+            var isNewVersion = lastBuildSig !== CURRENT_BUILD_SIG;
+            
+            // 计算当前 LocalStorage 体量，若超过 3MB 或版本变更，立即执行全自动静默自愈清洗
+            var totalStorageChars = 0;
+            for (var i = 0; i < localStorage.length; i++) {
+              var k = localStorage.key(i);
+              totalStorageChars += (localStorage.getItem(k) || '').length;
+            }
+            var isStorageBloated = totalStorageChars > 2.5 * 1024 * 1024; // >2.5MB
+
+            if (isNewVersion || isStorageBloated) {
+              console.log("[Boot Shield] 🚀 检测到新版本更新或缓存冗余 (" + (lastBuildSig || '首次安装') + " -> " + CURRENT_BUILD_SIG + ")，正在自动静默清理脏缓存并预热性能...");
+              if (text) text.innerText = '正在执行新版本静默自愈与配置对齐...';
+              
+              // 自动清理临时性大体积缓存与废弃数据，100% 绝对保留用户核心资产（持仓、API密钥、交易记录、策略参数）
+              var keysToPurge = [];
+              for (var j = 0; j < localStorage.length; j++) {
+                var keyName = localStorage.key(j);
+                if (!keyName) continue;
+                // 严禁触碰的白名单核心资产：
+                if (
+                  keyName.indexOf('SAVIOR_SETTINGS') !== -1 ||
+                  keyName.indexOf('SAVIOR_POSITIONS') !== -1 ||
+                  keyName.indexOf('SAVIOR_TRADELOGS') !== -1 ||
+                  keyName.indexOf('SAVIOR_ACCOUNT') !== -1 ||
+                  keyName.indexOf('SCANNER_CONFIG') !== -1 ||
+                  keyName.indexOf('SCANNER_ACTION_CONFIG') !== -1 ||
+                  keyName.indexOf('BINANCE_API') !== -1
+                ) {
+                  continue; // 绝对保留
+                }
+                // 淘汰无用大缓存：
+                if (
+                  keyName.indexOf('CACHE_MAP') !== -1 ||
+                  keyName.indexOf('SCANNER_CACHE') !== -1 ||
+                  keyName.indexOf('EXPIRED') !== -1 ||
+                  keyName.indexOf('SAVIOR_LOGS') !== -1 ||
+                  keyName.indexOf('SAVIOR_SYSTEM_MONITOR_LOGS') !== -1 ||
+                  keyName.indexOf('SAVIOR_CRASH_BLACKBOX') !== -1 ||
+                  keyName.indexOf('DOM_TRACKER') !== -1
+                ) {
+                  keysToPurge.push(keyName);
+                }
+              }
+              keysToPurge.forEach(function(k) {
+                try { localStorage.removeItem(k); } catch(e){}
+              });
+              localStorage.setItem("SAVIOR_INSTALLED_BUILD_SIG", CURRENT_BUILD_SIG);
+              console.log("[Boot Shield] ✅ 新版本自动静默自愈完成，已释放 " + keysToPurge.length + " 项旧版废弃缓存！");
+            }
+          } catch(migErr) {
+            console.warn("[Boot Shield] 迁移自愈非致命提示:", migErr);
+          }
+
+          // 🛡️ [2. 丝滑平跳与自动退出遮罩 (Zero-Click Auto Dismiss)]
+          var dismissed = false;
+          function dismissShield() {
+            if (dismissed) return;
+            dismissed = true;
+            if (bar) bar.style.width = '100%';
+            if (text) text.innerText = '系统就绪，正在进入控制台...';
+            if (shield) {
+              shield.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+              shield.style.opacity = '0';
+              shield.style.transform = 'scale(1.01)';
+              shield.style.pointerEvents = 'none';
+              setTimeout(function() {
+                try {
+                  if (shield && shield.parentNode) shield.parentNode.removeChild(shield);
+                } catch(e){}
+              }, 260);
+            }
+          }
+
+          // 监听 React 挂载就绪广播事件
+          window.addEventListener('SAVIOR_APP_READY', dismissShield);
+
+          // 🛡️ [3. 永续高频自愈看门狗 (Never-Die Watchdog with Auto-Retry)]
+          var elapsed = 0;
+          var retryCount = 0;
+          var hasAutoHealed = false;
+
+          var watchdog = setInterval(function() {
+            elapsed += 200;
+
+            // 只要检测到主程序挂载，立即 100% 自动解散遮罩，无需任何人工点击！
+            var rootEl = document.getElementById('root');
+            var isReactRendered = rootEl && (
+              window.__MAIN_APP_MOUNTED__ || 
+              window.isReactReady || 
+              rootEl.querySelector('[data-reactroot], header, nav, main, div[class*="bg-"]')
+            );
+
+            if (isReactRendered) {
+              clearInterval(watchdog);
+              dismissShield();
               return;
             }
-            step++;
-            if (step === 1 && bar && text) {
-              bar.style.width = '55%';
-              text.innerText = '正在初始化高频行情与核心策略引擎...';
-            } else if (step === 3 && bar && text) {
-              bar.style.width = '85%';
-              text.innerText = '正在校验持仓状态与风控防御防线...';
-            } else if (step >= 5) {
-              clearInterval(interval);
-              if (window.__MAIN_APP_MOUNTED__ || window.isReactReady) {
-                var bs2 = document.getElementById('boot-shield');
-                if (bs2) bs2.remove();
-                return;
+
+            // 丝滑进度动画推进
+            if (bar && text) {
+              if (elapsed < 1200) {
+                bar.style.width = '45%';
+                text.innerText = '正在初始化高频行情与核心策略引擎...';
+              } else if (elapsed < 2600) {
+                bar.style.width = '75%';
+                text.innerText = '正在预热交易引擎与极速行情通道...';
+              } else if (elapsed < 4200) {
+                bar.style.width = '90%';
+                text.innerText = '正在校验持仓状态与风控防御防线...';
+              } else if (elapsed >= 4200 && elapsed < 16000) {
+                // 超时自动重试阶段：每隔 2 秒自动执行一次自愈优化并向 100% 推进
+                bar.style.width = Math.min(99, 90 + Math.floor((elapsed - 4200) / 1000) * 2) + '%';
+                if (!hasAutoHealed) {
+                  hasAutoHealed = true;
+                  retryCount++;
+                  text.innerText = '系统正在完成升级自愈并启动引擎 (第 ' + retryCount + '/5 次重试)...';
+                  try {
+                    // 轻量级自愈：自动清理可能引发卡顿的日志缓存
+                    localStorage.removeItem('SAVIOR_LOGS');
+                  } catch(e){}
+                } else if (elapsed % 2000 === 0 && retryCount < 5) {
+                  retryCount++;
+                  text.innerText = '系统正在完成升级自愈并启动引擎 (第 ' + retryCount + '/5 次重试)...';
+                }
               }
-              if (bar) bar.style.width = '95%';
-              if (text) text.innerText = '系统正在就绪，如遇卡顿可使用下方工具：';
+            }
+
+            // 🛡️ [看门狗兜底保障]: 达到 5 次重试 (约 12 秒) 或捕获到启动抛错时，自动展开备用修复工具，杜绝无限死循环卡死
+            if (elapsed >= 12000 || window.__BOOT_FATAL_ERROR__) {
+              clearInterval(watchdog);
+              if (bar) bar.style.width = '100%';
+              if (text) text.innerText = window.__BOOT_FATAL_ERROR__ 
+                ? '系统检测到启动异常，请使用下方工具一键自愈恢复：' 
+                : '系统自动重试超时，已为您准备一键自愈修复工具：';
               if (tools) tools.style.display = 'flex';
             }
-          }, 1200);
+          }, 200);
 
-          // 捕获早期脚本语法或载入异常，杜绝任何蓝屏静默
+          // 宽泛拦截前端启动异常 (包含打包后的 bundle 脚本抛错与未捕获异常)
           window.addEventListener('error', function(e) {
-            if (tools) tools.style.display = 'flex';
-            if (diag && e && e.message) {
-              diag.style.display = 'block';
-              diag.innerText = '启动提示: ' + e.message;
-            }
+            try {
+              var errMsg = e.message || (e.error && e.error.message) || '未捕获的启动脚本异常';
+              // 忽略非致命网络图片加载失败
+              if (e.target && (e.target.tagName === 'IMG' || e.target.tagName === 'LINK')) return;
+              window.__BOOT_FATAL_ERROR__ = errMsg;
+              if (diag) {
+                diag.style.display = 'block';
+                diag.innerText = '启动自愈提示: ' + errMsg;
+              }
+            } catch(_) {}
           });
         })();
       </script>

@@ -27,7 +27,7 @@ class BinanceRateLimiter {
   private frozenUntil: number = 0;
   private currentWeight1m: number = 0;
   private lastWeightUpdateTime: number = Date.now();
-  private maxWeightLimit: number = 1200; // 合约 1 分钟权重上限通常为 1200 或 2400
+  private maxWeightLimit: number = 2400; // 币安 USD-M 合约 (fapi) 官方 1 分钟 IP 权重上限为 2400
   private lastManualReconciliationTime: number = 0;
   private isReconcilingMutex: boolean = false;
   private listeners: Set<(status: RateLimiterStatus) => void> = new Set();

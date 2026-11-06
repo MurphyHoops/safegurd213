@@ -181,10 +181,19 @@ if (!rootElement) {
     (window as any).isReactReady = true;
     (window as any).__MAIN_APP_MOUNTED__ = true;
 
-    // 清理启动遮罩
+    // 清理启动遮罩并向看门狗广播应用就绪
     try {
+        window.dispatchEvent(new Event('SAVIOR_APP_READY'));
         const shield = document.getElementById('boot-shield');
-        if (shield) shield.remove();
+        if (shield) {
+            shield.style.transition = 'opacity 0.2s ease';
+            shield.style.opacity = '0';
+            setTimeout(() => {
+                try {
+                    if (shield && shield.parentNode) shield.parentNode.removeChild(shield);
+                } catch (e) {}
+            }, 200);
+        }
     } catch (e) {}
 
     ReactDOM.createRoot(rootElement).render(

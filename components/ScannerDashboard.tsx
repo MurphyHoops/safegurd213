@@ -1467,13 +1467,14 @@ const ScannerDashboardInner: React.FC<
         return false;
       }
 
-      // 🛡️ [在途并发与长效防重锁：防止多周期同时突破或在持仓同步延迟期间穿透]
+      // 🛡️ [在途并发与长效防重锁：防止多周期同时突破或手动防连击]
       const lastInFlightTime = inFlightTradeSymbolsRef.current.get(cleanSymbol) || 0;
-      if (Date.now() - lastInFlightTime < 120000 && !isManual && !(extraProps as any)?.isReopened) {
+      const minInFlightMs = isManual ? 3000 : 120000;
+      if (Date.now() - lastInFlightTime < minInFlightMs && !(extraProps as any)?.isReopened) {
         if (onLog) {
           onLog(
             "WARNING",
-            `🛡️ [防并发重复开仓拦截] ${cleanSymbol} 在 120 秒内已触发过开仓 (${((Date.now() - lastInFlightTime)/1000).toFixed(1)}s 前)，在途锁保护中，拒绝重复执行。`
+            `🛡️ [防并发重复开仓拦截] ${cleanSymbol} 在 ${((Date.now() - lastInFlightTime)/1000).toFixed(1)}s 前已触发过开仓，在途锁保护中 (${isManual ? '手动防连击3s' : '自动120s'})，拒绝重复执行。`
           );
         }
         console.warn(`[Trade Reject] Concurrency duplicate open blocked: ${cleanSymbol} triggered ${Date.now() - lastInFlightTime}ms ago.`);
@@ -1596,9 +1597,7 @@ const ScannerDashboardInner: React.FC<
         ...extraProps,
       };
 
-      if (!isManual) {
-        inFlightTradeSymbolsRef.current.set(cleanSymbol, Date.now());
-      }
+      inFlightTradeSymbolsRef.current.set(cleanSymbol, Date.now());
 
       if (scannerMode === "BACKTEST") {
         const qty = amount / price;
@@ -2583,6 +2582,7 @@ const ScannerDashboardInner: React.FC<
           appearedTime={chartData.appearedTime}
           disappearedTime={chartData.disappearedTime}
           source={chartData.source}
+          isPreWait={chartData.isPreWait}
           viewMode={chartData.viewMode}
           onClose={() => setChartData(null)}
           onSymbolChange={(newSymbol, newTf) => {

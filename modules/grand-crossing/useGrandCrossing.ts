@@ -5,7 +5,7 @@
  * Secondary and double-verification filters are fully completed and locked.
  */
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import {
   List2Config,
@@ -530,7 +530,7 @@ export const useGrandCrossing = (
 
         // --- RE-FILTERING LOGIC (Reactive to Config Changes) ---
         // If strict filtering is ON, strictly verify all conditions (body ratio, amplitude bounds, volume).
-        if (cfg.strictFiltering) {
+        if (cfg.strictFiltering && !r.isPreWaitEma30) {
           const ratio = r.bodyRatio ?? 0; // Set default to 0 to be strictly compliant and filter out malformed/legacy signals
           if (ratio < (cfg.minBodyRatio || 0)) return false;
 
@@ -548,7 +548,9 @@ export const useGrandCrossing = (
 
         // 压缩信号过滤 / 触发器过滤
         let satisfiesTrigger = false;
-        if (cfg.requireCrossing && cfg.requireAlignment) {
+        if (r.isPreWaitEma30) {
+          satisfiesTrigger = true;
+        } else if (cfg.requireCrossing && cfg.requireAlignment) {
           // 同时选中时，信号必须满足穿越（非 squeeze）或者发散（isAligned 为 true）
           if (!r.isSqueeze || r.isAligned) {
             satisfiesTrigger = true;
@@ -1597,19 +1599,30 @@ export const useGrandCrossing = (
         const ema40 = getLatestEMA(closes, 40);
 
         sameTfSignals.forEach((prevSig) => {
-          const sigT = prevSig.crossingTimes && prevSig.crossingTimes.length > 0 ? Math.max(...prevSig.crossingTimes) : (prevSig.signalTime ?? 0);
-          const tfM = getTfMinutes(prevSig.tf || "1m");
-          const rtLag = (sigT > 0 && tfM > 0) ? (Date.now() - sigT) / (tfM * 60 * 1000) : (prevSig.lag || 0);
-          const effLag = Math.max(prevSig.lag || 0, rtLag);
+          let currentSig = prevSig;
+          // ⚡ 状态自愈与即时晋升：若历史缓存中的上一代信号为 preWait 折叠态 (isPreWaitEma30: true)，
+          // 检查当前实时均线是否已跨越 EMA40：若 EMA10 已跨过 EMA40，立即解除折叠态 (isPreWaitEma30 = false) 并设为 isMaCrossed: true
+          if (prevSig.isPreWaitEma30) {
+            if (prevSig.direction === 'LONG' && ema10 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema40) && ema10 > ema40) {
+              currentSig = { ...prevSig, isPreWaitEma30: false, isMaCrossed: true, isClosed: true };
+            } else if (prevSig.direction === 'SHORT' && ema10 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema40) && ema10 < ema40) {
+              currentSig = { ...prevSig, isPreWaitEma30: false, isMaCrossed: true, isClosed: true };
+            }
+          }
 
-          if (effLag < retention && (prevSig.lag || 0) < retention) {
+          const sigT = currentSig.crossingTimes && currentSig.crossingTimes.length > 0 ? Math.max(...currentSig.crossingTimes) : (currentSig.signalTime ?? 0);
+          const tfM = getTfMinutes(currentSig.tf || "1m");
+          const rtLag = (sigT > 0 && tfM > 0) ? (Date.now() - sigT) / (tfM * 60 * 1000) : (currentSig.lag || 0);
+          const effLag = Math.max(currentSig.lag || 0, rtLag);
+
+          if (effLag < retention && (currentSig.lag || 0) < retention) {
             let isTrulyDestroyed = false;
-            if (prevSig.direction === 'LONG') {
+            if (currentSig.direction === 'LONG') {
               // 做多单真正形态破坏条件：EMA10 下穿 EMA30 (死叉)
               if (ema10 !== undefined && ema30 !== undefined && !isNaN(ema10) && !isNaN(ema30) && ema10 < ema30) {
                 isTrulyDestroyed = true;
               }
-            } else if (prevSig.direction === 'SHORT') {
+            } else if (currentSig.direction === 'SHORT') {
               // 做空单真正形态破坏条件：EMA10 上穿 EMA30 (金叉)
               if (ema10 !== undefined && ema30 !== undefined && !isNaN(ema10) && !isNaN(ema30) && ema10 > ema30) {
                 isTrulyDestroyed = true;
@@ -1617,7 +1630,7 @@ export const useGrandCrossing = (
             }
 
             if (!isTrulyDestroyed) {
-              preservedSameTfSignals.push(prevSig);
+              preservedSameTfSignals.push(currentSig);
             }
           }
         });
@@ -1687,19 +1700,37 @@ export const useGrandCrossing = (
     }
   }, [scheduleUpdate]);
 
+  // Stable symbol keys to prevent WebSocket subscription effect from cycling on price or lag updates
+  const list2SymbolsKey = useMemo(() => {
+    return (list2 || []).map((i) => i.symbol).sort().join(',');
+  }, [list2]);
+
+  const candidatesSymbolsKey = useMemo(() => {
+    return (candidates || []).map((c) => c.symbol).sort().join(',');
+  }, [candidates]);
+
+  const timeframesKey = useMemo(() => {
+    return (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf)).sort().join(',');
+  }, [config.timeframes]);
+
+  const evaluateKlinesRef = useRef(evaluateKlines);
+  useEffect(() => {
+    evaluateKlinesRef.current = evaluateKlines;
+  }, [evaluateKlines]);
+
   // ⚡ WEBSOCKET LIVE STREAMING INGESTION & TWO-TIER FUNNEL DYNAMIC STREAM LIFECYCLE
   useEffect(() => {
-    const activeTfs = (config.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
+    const activeTfs = (configRef.current.timeframes || []).filter((tf) => ALL_ORDERED_TIMEFRAMES.includes(tf));
     const pairs: { symbol: string; tf: string }[] = [];
     
     // 1. 初筛池 (300币规模): 默认仅监听 15m 核心基准流
-    for (const c of candidates) {
+    for (const c of candidatesRef.current) {
       pairs.push({ symbol: c.symbol, tf: '15m' });
     }
 
     // 2. 二级临界池 (进入 List 2 的 15~30 个币): 动态追加 30m/1h/4h 等高周期流
     const highTfs = activeTfs.filter(tf => tf !== '15m');
-    const list2Symbols = (list2 || []).map(i => i.symbol);
+    const list2Symbols = list2SymbolsKey ? list2SymbolsKey.split(',') : [];
 
     for (const sym of list2Symbols) {
       for (const tf of highTfs) {
@@ -1733,7 +1764,7 @@ export const useGrandCrossing = (
               klineStoreRef.current.set(key, res.klines);
               klineStoreRef.current.set(safeKey, res.klines);
               klineMultiTfStore.saveKlines(symbol, tf, res.klines);
-              evaluateKlines(symbol, tf, res.klines, 0);
+              evaluateKlinesRef.current(symbol, tf, res.klines, 0);
             }
           }).catch(() => {
             inFlightPrefetchKeysRef.current.delete(fetchKey);
@@ -1776,14 +1807,14 @@ export const useGrandCrossing = (
       const lastEval = lastWsEvalTimeMap.get(key) || 0;
       if (now - lastEval >= 150) {
         lastWsEvalTimeMap.set(key, now);
-        evaluateKlines(symbol, tf, updated, 0);
+        evaluateKlinesRef.current(symbol, tf, updated, 0);
       }
     });
 
     return () => {
       unsubscribe();
     };
-  }, [candidates, list2, config.timeframes, evaluateKlines]);
+  }, [candidatesSymbolsKey, list2SymbolsKey, timeframesKey]);
 
   // --- CORE: Scan Logic (Direct Fetching for Cold-Start / Polling) ---
   const processSymbol = async (

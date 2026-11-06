@@ -66,7 +66,7 @@ export const IpOutageAlertModal: React.FC<IpOutageAlertModalProps> = ({
     };
   }, [incidentData, onRecovered]);
 
-  // 核心铁律：若原 IP 与当前最新 IP 相同（未发生 IP 漂移），绝不弹出此白名单告警遮罩（严格遵循用户指令：都是同一个IP就不要弹出了）
+  // 核心铁律：若原 IP 与当前最新 IP 相同（未发生 IP 漂移），或当前 IP 已被用户在当前会话中主动跳过，绝不弹出此白名单告警遮罩
   const isSameIp = Boolean(
     incidentData &&
     incidentData.currentIp &&
@@ -76,7 +76,15 @@ export const IpOutageAlertModal: React.FC<IpOutageAlertModalProps> = ({
     incidentData.currentIp.trim() === incidentData.oldIp.trim()
   );
 
-  if (!incidentData || incidentData.status === 'HEALTHY' || isSameIp) {
+  let isSkipped = false;
+  try {
+    const skipped = sessionStorage.getItem('SAVIOR_SKIPPED_IP');
+    if (skipped && incidentData?.currentIp && skipped.trim() === incidentData.currentIp.trim()) {
+      isSkipped = true;
+    }
+  } catch (_) {}
+
+  if (!incidentData || incidentData.status === 'HEALTHY' || isSameIp || isSkipped) {
     return null;
   }
 
@@ -267,6 +275,11 @@ export const IpOutageAlertModal: React.FC<IpOutageAlertModalProps> = ({
           <button
             type="button"
             onClick={() => {
+              if (incidentData?.currentIp) {
+                try {
+                  sessionStorage.setItem('SAVIOR_SKIPPED_IP', incidentData.currentIp.trim());
+                } catch (_) {}
+              }
               setIncidentData(null);
               if (onClose) onClose();
             }}

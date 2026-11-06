@@ -156,15 +156,17 @@ export const sanitizeConfigObject = (obj: any): any => {
 export const autoHealLocalStorage = () => {
     try {
         if (typeof window === 'undefined') return;
-        const CURRENT_APP_VERSION = '2026.11.05.v3_SYNC_GUARD';
+        const CURRENT_APP_VERSION = '2026.11.05.v5_AUTO_HEAL_SYNC';
         const storedVersion = localStorage.getItem('SAVIOR_APP_VERSION');
         if (storedVersion !== CURRENT_APP_VERSION) {
             console.warn(`[AutoHeal] Version change detected (${storedVersion} -> ${CURRENT_APP_VERSION}). Purging stale caches and sanitizing configs...`);
             const keysToRemove: string[] = [];
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
-                if (k && (k.includes('SCANNER_CACHE') || k.includes('CACHE_MAP') || k.includes('EXPIRED') || k.includes('CAPTURED') || k.includes('SAVIOR_LOGS'))) {
-                    keysToRemove.push(k);
+                if (k && (k.includes('SCANNER_CACHE') || k.includes('CACHE_MAP') || k.includes('EXPIRED') || k.includes('CAPTURED') || k.includes('SAVIOR_LOGS') || k.includes('SAVIOR_SYSTEM_MONITOR_LOGS') || k.includes('SAVIOR_CRASH_BLACKBOX'))) {
+                    if (!k.includes('CONFIG') && !k.includes('BLACKLIST') && !k.includes('SETTINGS') && !k.includes('POSITIONS') && !k.includes('ACCOUNT') && !k.includes('TRADELOGS')) {
+                        keysToRemove.push(k);
+                    }
                 }
             }
             keysToRemove.forEach(k => {

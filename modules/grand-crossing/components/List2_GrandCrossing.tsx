@@ -397,14 +397,25 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         title="2. 绝对防御"
                         items={displayList.map(i => {
                             const tf = i.tf || activeFilterTf || '15m';
-                            const signals: { time: number, type: 'LONG' | 'SHORT' }[] = [];
+                            const signals: { time: number, type: 'LONG' | 'SHORT', isPreWait?: boolean }[] = [];
                             i.groupedResults?.forEach(res => {
                                 if (res.tf === tf && res.crossingTimes) {
                                     res.crossingTimes.forEach(t => {
-                                        signals.push({ time: t, type: res.direction || 'LONG' });
+                                        signals.push({ 
+                                            time: t, 
+                                            type: res.direction || 'LONG',
+                                            isPreWait: !!res.isPreWaitEma30
+                                        });
                                     });
                                 }
                             });
+                            // 精准识别币种是否属于“蓄势折叠区 (预警待命)”
+                            const isPreWaitItem = Boolean(
+                                i.isPreWaitEma30 ||
+                                (i as any).isPreWait ||
+                                (i.groupedResults && i.groupedResults.length > 0 && i.groupedResults.every(r => !!r.isPreWaitEma30)) ||
+                                preWaitList.some(p => p.symbol === i.symbol)
+                            );
                             return {
                                 symbol: i.symbol,
                                 timeframe: tf,
@@ -412,6 +423,8 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                                 currentPrice: i.price,
                                 showAuditLines: false,
                                 entryPrice: i.price, // Same as currentPrice as list2 entry representation
+                                isPreWait: isPreWaitItem,
+                                source: isPreWaitItem ? 'list2_prewait' : 'list2',
                             };
                         })}
                         defaultTf={activeFilterTf || '15m'}
@@ -741,27 +754,33 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
                         </button>
                     </div>
 
-                    <KlineChartModal
-                        symbol={autoPopupItem.symbol}
-                        initialTimeframe={autoPopupItem.groupedResults?.[0]?.tf || activeFilterTf || '15m'}
-                        signals={(() => {
-                            const defaultTf = autoPopupItem.groupedResults?.[0]?.tf || activeFilterTf || '15m';
-                            const sigs: { time: number, type: 'LONG' | 'SHORT' }[] = [];
-                            autoPopupItem.groupedResults?.forEach(res => {
-                                if (res.tf === defaultTf && res.crossingTimes) {
-                                    res.crossingTimes.forEach(t => {
-                                        sigs.push({ time: t, type: res.direction || 'LONG' });
+                    {(() => {
+                        const isPreWait = Boolean(autoPopupItem.isPreWaitEma30 || (autoPopupItem.groupedResults && autoPopupItem.groupedResults.length > 0 && autoPopupItem.groupedResults.every(r => !!r.isPreWaitEma30)));
+                        return (
+                            <KlineChartModal
+                                symbol={autoPopupItem.symbol}
+                                initialTimeframe={autoPopupItem.groupedResults?.[0]?.tf || activeFilterTf || '15m'}
+                                signals={(() => {
+                                    const defaultTf = autoPopupItem.groupedResults?.[0]?.tf || activeFilterTf || '15m';
+                                    const sigs: { time: number, type: 'LONG' | 'SHORT' }[] = [];
+                                    autoPopupItem.groupedResults?.forEach(res => {
+                                        if (res.tf === defaultTf && res.crossingTimes) {
+                                            res.crossingTimes.forEach(t => {
+                                                sigs.push({ time: t, type: res.direction || 'LONG' });
+                                            });
+                                        }
                                     });
-                                }
-                            });
-                            return sigs;
-                        })()}
-                        currentPrice={autoPopupItem.price}
-                        list2Config={config}
-                        showAuditLines={false}
-                        source="list2"
-                        onClose={() => setAutoPopupItem(null)}
-                    />
+                                    return sigs;
+                                })()}
+                                currentPrice={autoPopupItem.price}
+                                list2Config={config}
+                                showAuditLines={false}
+                                source={isPreWait ? 'list2_prewait' : 'list2'}
+                                isPreWait={isPreWait}
+                                onClose={() => setAutoPopupItem(null)}
+                            />
+                        );
+                    })()}
                 </div>
             )}
         </div>

@@ -286,7 +286,14 @@ const _fetchWithFallbackInner = async (
     }
 
     // 🛡️ [全局熔断器出站门禁]: 若处于 429/418 静默期，立即抛出本地异常，绝不在网络层发包！
-    const isCoreOrder = url.includes('/order') || url.includes('/batchOrders');
+    const isCoreOrder = Boolean((options as any)?.isCoreOrder) ||
+        url.includes('/order') || 
+        url.includes('/batchOrders') || 
+        url.includes('/leverage') || 
+        url.includes('/marginType') || 
+        url.includes('/positionSide') || 
+        url.includes('/listenKey') || 
+        url.includes('/time');
     binanceRateLimiter.checkCanRequest(isCoreOrder);
 
     // 1. Enter Queue with priority (Charts, Klines and 24hr Ticker go higher priority than background scans)
