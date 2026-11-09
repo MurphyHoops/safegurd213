@@ -299,74 +299,80 @@ const List1_Selection: React.FC<Props> = ({
         const handleStartTrendUpdate = () => {
             try {
                 const raw = localStorage.getItem('SCANNER_START_TREND_POOL');
-                setStartTrendPool(raw ? JSON.parse(raw) : []);
+                const parsed = raw ? JSON.parse(raw) : [];
+                setStartTrendPool(prev => JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed);
             } catch (_) {}
         };
         const handleSidewaysUpdate = (e?: any) => {
             try {
+                let targetPool: any[] = [];
                 if (e?.detail) {
                     if (e.detail.strategyId && e.detail.strategyId !== (selectedStrategyId || 'strat-1')) {
                         return; // 忽略其他策略的横盘底池事件
                     }
                     if (Array.isArray(e.detail.pool)) {
-                        setSidewaysPool(e.detail.pool);
-                        return;
-                    }
-                    if (Array.isArray(e.detail)) {
+                        targetPool = e.detail.pool;
+                    } else if (Array.isArray(e.detail)) {
                         if (!selectedStrategyId || selectedStrategyId === 'strat-1') {
-                            setSidewaysPool(e.detail);
-                            return;
+                            targetPool = e.detail;
                         }
                     }
                 }
-                const key = selectedStrategyId ? `SCANNER_SIDEWAYS_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_SIDEWAYS_FILTERED_POOL';
-                const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL') : null);
-                setSidewaysPool(raw ? JSON.parse(raw) : []);
+                if (targetPool.length === 0) {
+                    const key = selectedStrategyId ? `SCANNER_SIDEWAYS_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_SIDEWAYS_FILTERED_POOL';
+                    const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL') : null);
+                    targetPool = raw ? JSON.parse(raw) : [];
+                }
+                setSidewaysPool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
             } catch (_) {}
         };
         const handleBreakoutUpdate = (e?: any) => {
             try {
+                let targetPool: any[] = [];
                 if (e?.detail && Array.isArray(e.detail)) {
-                    setBreakoutPool(e.detail);
-                    return;
+                    targetPool = e.detail;
+                } else {
+                    const raw = localStorage.getItem('SCANNER_BREAKOUT_FILTERED_POOL');
+                    targetPool = raw ? JSON.parse(raw) : [];
                 }
-                const raw = localStorage.getItem('SCANNER_BREAKOUT_FILTERED_POOL');
-                setBreakoutPool(raw ? JSON.parse(raw) : []);
+                setBreakoutPool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
             } catch (_) {}
         };
 
         const handleLookbackPoolUpdate = (e?: any) => {
             try {
+                let targetPool: any[] = [];
                 if (e?.detail) {
                     if (e.detail.strategyId && e.detail.strategyId !== (selectedStrategyId || 'strat-1')) return;
                     if (Array.isArray(e.detail.pool)) {
-                        setLookbackPool(e.detail.pool);
-                        return;
-                    }
-                    if (Array.isArray(e.detail)) {
-                        setLookbackPool(e.detail);
-                        return;
+                        targetPool = e.detail.pool;
+                    } else if (Array.isArray(e.detail)) {
+                        targetPool = e.detail;
                     }
                 }
-                const raw = localStorage.getItem('SCANNER_LOOKBACK_FILTERED_POOL');
-                setLookbackPool(raw ? JSON.parse(raw) : []);
+                if (targetPool.length === 0) {
+                    const raw = localStorage.getItem('SCANNER_LOOKBACK_FILTERED_POOL');
+                    targetPool = raw ? JSON.parse(raw) : [];
+                }
+                setLookbackPool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
             } catch (_) {}
         };
 
         const handleAntiChasePoolUpdate = (e?: any) => {
             try {
+                let targetPool: any[] = [];
                 if (e?.detail) {
                     if (Array.isArray(e.detail.pool)) {
-                        setAntiChasePool(e.detail.pool);
-                        return;
-                    }
-                    if (Array.isArray(e.detail)) {
-                        setAntiChasePool(e.detail);
-                        return;
+                        targetPool = e.detail.pool;
+                    } else if (Array.isArray(e.detail)) {
+                        targetPool = e.detail;
                     }
                 }
-                const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
-                setAntiChasePool(raw ? JSON.parse(raw) : []);
+                if (targetPool.length === 0) {
+                    const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                    targetPool = raw ? JSON.parse(raw) : [];
+                }
+                setAntiChasePool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
             } catch (_) {}
         };
 

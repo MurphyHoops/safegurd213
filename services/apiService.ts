@@ -6,8 +6,8 @@ let continuousFailures = 0;
 let circuitBreakerUntil = 0;
 
 // --- GLOBAL CONCURRENCY LOCK (Semaphore) ---
-// Bounded concurrency limit matching browser socket pool limits to prevent OOM/render crashes
-const MAX_CONCURRENT = 8;
+// Bounded concurrency limit restricted to max 4 concurrent requests to prevent net::ERR_INSUFFICIENT_RESOURCES socket exhaustion
+const MAX_CONCURRENT = 4;
 let activeRequests = 0;
 
 interface QueueItem {
@@ -479,22 +479,32 @@ const _fetchWithFallbackInner = async (
 
         let lastError: any;
 
-        // Clean sequential execution: Local server proxy (/api/proxy) is always #1 and handles upstream routing reliably
+        // Clean sequential execution with retry and exponential backoff (up to 3 attempts for resource/network exhaustion)
         for (let idx = 0; idx < proxies.length; idx++) {
             const proxy = proxies[idx];
-            try {
-                const response = await fetchProxy(proxy);
-                continuousFailures = 0;
-                return response;
-            } catch (e: any) {
-                lastError = e;
-                if (url.includes('/klines') && proxy === proxyLocalServer) {
-                    // If local server proxy failed for klines, try at most 1 external fallback
-                    continue;
-                }
-                if (e.message && (e.message.includes('HTTP 404') || e.message.includes('HTTP 400'))) {
-                    console.warn(`[API] Early abort proxy loop due to ${e.message} for ${url}`);
-                    break;
+            let attempts = 0;
+            const maxAttempts = 3;
+            while (attempts < maxAttempts) {
+                attempts++;
+                try {
+                    const response = await fetchProxy(proxy);
+                    continuousFailures = 0;
+                    return response;
+                } catch (e: any) {
+                    lastError = e;
+                    const errStr = e?.message || String(e);
+                    const isResourceOrNetworkError = errStr.includes('INSUFFICIENT_RESOURCES') || errStr.includes('Failed to fetch') || errStr.includes('NetworkError') || errStr.includes('timed out');
+                    if (attempts < maxAttempts && isResourceOrNetworkError) {
+                        const backoffMs = attempts * 1000; // 1000ms, 2000ms backoff
+                        await new Promise(resolve => setTimeout(resolve, backoffMs));
+                        continue;
+                    }
+                    if (errStr.includes('HTTP 404') || errStr.includes('HTTP 400')) {
+                        break;
+                    }
+                    if (attempts >= maxAttempts) {
+                        break;
+                    }
                 }
             }
         }
