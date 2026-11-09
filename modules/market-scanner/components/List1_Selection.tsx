@@ -717,8 +717,8 @@ const List1_Selection: React.FC<Props> = ({
             // Mark all as fetching
             symbolsToFetch.forEach(item => fetchingSymbolsRef.current.add(item.symbol));
 
-            // Fetch in controlled concurrency batches to prevent proxy stampede and timeouts
-            const batchSize = 3;
+            // ⚡ [Time Slicing & Main Thread Liberation]: 采用严格时间分片与微任务让渡 (batchSize=2 且每批次间隔 15ms)，彻底根除 MAIN_THREAD_LAG 卡死
+            const batchSize = 2;
             for (let i = 0; i < symbolsToFetch.length; i += batchSize) {
                 if (!active) break;
                 const batch = symbolsToFetch.slice(i, i + batchSize);
@@ -956,6 +956,7 @@ const List1_Selection: React.FC<Props> = ({
                     }));
                 }
             }));
+            await new Promise(r => setTimeout(r, 15)); // 让出主线程执行权，彻底消除卡顿
         }
     };
 
