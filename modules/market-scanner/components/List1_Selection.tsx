@@ -370,6 +370,16 @@ const List1_Selection: React.FC<Props> = ({
             } catch (_) {}
         };
 
+        const updateCandidatesSet = (arr: string[]) => {
+            setLocalMajorTrendCandidates(prev => {
+                const nextSet = new Set(arr);
+                if (prev.size === nextSet.size && Array.from(prev).every(x => nextSet.has(x))) {
+                    return prev;
+                }
+                return nextSet;
+            });
+        };
+
         const handleMajorTrendUpdate = (e?: any) => {
             try {
                 if (e?.detail) {
@@ -378,13 +388,13 @@ const List1_Selection: React.FC<Props> = ({
                         return;
                     }
                     if (Array.isArray(e.detail.candidates)) {
-                        setLocalMajorTrendCandidates(new Set(e.detail.candidates));
+                        updateCandidatesSet(e.detail.candidates);
                         setHasRunMajorTrend(true);
                         return;
                     }
                     if (Array.isArray(e.detail)) {
                         if (!selectedStrategyId || selectedStrategyId === 'strat-1') {
-                            setLocalMajorTrendCandidates(new Set(e.detail));
+                            updateCandidatesSet(e.detail);
                             setHasRunMajorTrend(true);
                             return;
                         }
@@ -394,7 +404,7 @@ const List1_Selection: React.FC<Props> = ({
                 const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES') : null);
                 if (raw) {
                     const parsed = JSON.parse(raw);
-                    setLocalMajorTrendCandidates(new Set(Array.isArray(parsed) ? parsed : []));
+                    updateCandidatesSet(Array.isArray(parsed) ? parsed : []);
                 }
                 const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
                 if (localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true') {

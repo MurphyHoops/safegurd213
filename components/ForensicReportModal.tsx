@@ -25,6 +25,8 @@ export const ForensicReportModal: React.FC<Props> = ({ isOpen, onClose }) => {
     const [copied, setCopied] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
 
+    const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+
     const fetchRecords = async () => {
         setIsLoading(true);
         setError(null);
@@ -49,11 +51,21 @@ export const ForensicReportModal: React.FC<Props> = ({ isOpen, onClose }) => {
     };
 
     useEffect(() => {
-        if (isOpen) {
-            const timer = setTimeout(fetchRecords, 0);
-            return () => clearTimeout(timer);
+        if (!isOpen) return;
+        const timer = setTimeout(fetchRecords, 0);
+
+        let interval: any = null;
+        if (autoRefresh) {
+            interval = setInterval(() => {
+                fetchRecords();
+            }, 2000);
         }
-    }, [isOpen]);
+
+        return () => {
+            clearTimeout(timer);
+            if (interval) clearInterval(interval);
+        };
+    }, [isOpen, autoRefresh]);
 
     const handleCopyReport = () => {
         if (records.length === 0) return;
@@ -100,6 +112,19 @@ export const ForensicReportModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setAutoRefresh(prev => !prev)}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-bold border transition-all cursor-pointer ${
+                                autoRefresh
+                                    ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300'
+                                    : 'bg-slate-800 border-slate-700 text-slate-400'
+                            }`}
+                            title={autoRefresh ? "自动刷新已开启（每2秒，点击关闭）" : "自动刷新已关闭（点击开启）"}
+                        >
+                            <span className={`w-1.5 h-1.5 rounded-full ${autoRefresh ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                            <span>{autoRefresh ? '自动刷新:开' : '自动刷新:关'}</span>
+                        </button>
                         <button
                             type="button"
                             onClick={fetchRecords}

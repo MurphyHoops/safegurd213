@@ -358,6 +358,10 @@ export function checkVolumeRule(
         // 🎯 最小 8AM 交易额校验：数据未加载(undefined)或未达标时，统一拦截（不盲目放行导致数量爆涨爆跌）
         if (min8am > 0) {
             if (vol8am === undefined || isNaN(vol8am) || vol8am < min8am) {
+                if (vol8am === undefined) {
+                    fetchVolume8amBatch([item.symbol]).catch(() => {});
+                    return true; // 临时放行，等待后台加载完成后自动刷新，杜绝打包 PC 端冷启动时初筛归零
+                }
                 return false;
             }
         }

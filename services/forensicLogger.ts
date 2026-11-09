@@ -1,9 +1,9 @@
 /**
- * 🛡️ [Forensic Metrics Time-Series Logger] 法医级高频时序指标记录器与雷达
+ * 🛡️ [Forensic Metrics Time-Series Logger - Sliding Window Edition] 法医级高频时序指标记录器与雷达
  * services/forensicLogger.ts
  * 
  * 服务端专用模块 (Node.js / Express Server)
- * 采用纯字符串拼接路径与秒级物理追加写入 (appendFileSync)
+ * 采用纯字符串拼接路径与秒级物理追加写入 (appendFileSync)，并内置滑动窗口硬截断机制（最大保留300条）
  */
 
 import fs from 'fs';
@@ -25,8 +25,8 @@ export interface ForensicDataPoint {
 }
 
 /**
- * 核心写盘函数：采用秒级物理追加写入 (appendFileSync)
- * 确保即使程序被强杀，暴毙前一秒的数据也已经死死刻在硬盘里
+ * 核心写盘函数：采用秒级物理追加写入 (appendFileSync) 并集成滑动窗口硬截断（最大 300 条）
+ * 确保即使程序被强杀，暴毙前一秒的数据也已经死死刻在硬盘里，且文件永不无限膨胀
  */
 export const logForensicMetric = (data: Partial<ForensicDataPoint>) => {
   try {
@@ -49,6 +49,17 @@ export const logForensicMetric = (data: Partial<ForensicDataPoint>) => {
     };
 
     fs.appendFileSync(FORENSIC_LOG_FILE, JSON.stringify(point) + '\n', 'utf-8');
+
+    // 🛡️ 滑动窗口与容量硬截断：确保 forensic_metrics.jsonl 文件最多只保留最近的 300 条记录
+    try {
+      const content = fs.readFileSync(FORENSIC_LOG_FILE, 'utf-8');
+      const lines = content.split('\n').filter(line => line.trim().length > 0);
+      if (lines.length > 300) {
+        const trimmed = lines.slice(-300).join('\n') + '\n';
+        fs.writeFileSync(FORENSIC_LOG_FILE, trimmed, 'utf-8');
+      }
+    } catch (_) {}
+
   } catch (err) {
     console.error('[Forensic Logger Error]', err);
   }
