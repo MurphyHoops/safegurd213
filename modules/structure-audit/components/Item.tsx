@@ -42,16 +42,39 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
     const borderColor = isLongDominant && isShortDominant ? 'border-indigo-500/20' : isLongDominant ? 'border-emerald-500/20' : 'border-red-500/20';
     const hoverColor = isLongDominant && isShortDominant ? 'hover:border-indigo-500/40' : isLongDominant ? 'hover:border-emerald-500/40' : 'hover:border-red-500/40';
 
+    const getList3ExtraLines = (res: any) => {
+        const dir = res.direction || 'LONG';
+        const isLong = dir === 'LONG';
+        const st = res.structure;
+        const price = item.price || 0;
+        const rawHigh = typeof st?.signalHigh === 'number' && st.signalHigh > 0 ? st.signalHigh : (st?.signalPrice ?? price);
+        const rawLow = typeof st?.signalLow === 'number' && st.signalLow > 0 ? st.signalLow : (st?.signalPrice ?? price);
+        const high = Math.max(rawHigh, rawLow);
+        const low = Math.min(rawHigh, rawLow);
+        const raw_price_range = high - low;
+        const price_range = raw_price_range > (price * 0.0005) ? raw_price_range : (price * 0.0005);
+
+        const triggerPrice = isLong ? (high + price_range * 0.1) : (low - price_range * 0.1);
+        const defensePrice = isLong ? (high - price_range * 0.8) : (low + price_range * 0.8);
+
+        return [
+            { price: triggerPrice, label: `进攻突破线(${isLong ? '多' : '空'})`, color: '#38bdf8', style: 'dashed' as const },
+            { price: defensePrice, label: `中轴防守线(${isLong ? '多' : '空'})`, color: '#f59e0b', style: 'dashed' as const }
+        ];
+    };
+
     const handleRowClick = () => {
         if (signals.length > 0) {
             const res = signals[0];
             setChartData({ 
                 symbol: item.symbol, 
                 tf: res.tf, 
-                signals: res.structure.signalTime ? [{ time: res.structure.signalTime, type: res.direction }] : [],
+                signals: res.structure?.signalTime ? [{ time: res.structure.signalTime, type: res.direction }] : [],
                 currentPrice: item.price,
                 source: 'list3',
-                isPreWait: false
+                isPreWait: false,
+                showAuditLines: true,
+                extraLines: getList3ExtraLines(res)
             });
         }
     };
@@ -148,10 +171,12 @@ export const List3Item: React.FC<Props> = ({ item, results, setChartData, execut
                                 setChartData({ 
                                     symbol: item.symbol, 
                                     tf: res.tf, 
-                                    signals: res.structure.signalTime ? [{ time: res.structure.signalTime, type: res.direction }] : [],
+                                    signals: res.structure?.signalTime ? [{ time: res.structure.signalTime, type: res.direction }] : [],
                                     currentPrice: item.price,
                                     source: 'list3',
-                                    isPreWait: false
+                                    isPreWait: false,
+                                    showAuditLines: true,
+                                    extraLines: getList3ExtraLines(res)
                                 });
                             }}
                             className={`relative overflow-hidden flex flex-col items-center justify-between border rounded cursor-pointer transition-all px-1.5 py-1 min-w-[50px] ${isL ? 'bg-emerald-900/20 border-emerald-500/30 hover:bg-emerald-900/40' : 'bg-red-900/20 border-red-500/30 hover:bg-red-900/40'}`}

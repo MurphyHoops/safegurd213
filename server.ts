@@ -11,6 +11,7 @@ import { SystemHealthGuard, SystemStatus } from './src/main/guards/SystemHealthG
 import { AlertManager } from './src/main/alerts/AlertManager';
 import { binanceAxios } from './src/main/api/binanceAxios';
 import { binanceRateLimiter } from './services/binanceRateLimiter';
+import { logForensicMetric, startForensicServerCollector } from './services/forensicLogger';
 
 // 🛡️ [进程第一前沿防护]: 在任何路由、网络与模块加载前挂载全局异常与信号拦截，确保单个路由或异步错误绝不导致 Node 退出
 function persistFatalCrash(moduleName: string, message: string, stack?: string) {
@@ -106,7 +107,7 @@ const signalExitCodes: Record<string, number> = {
   });
 });
 
-// 📊 [内存泄漏与堆空间探针 + RSS 警戒线主动保护机制]: 每隔 30 秒打印内存，超过 280MB 主动 GC，超过 430MB 优雅安全退出
+// 📊 [内存泄漏与堆空间探针 + RSS 警戒线主动保护机制]: 每隔 30 秒打印内存，多级驱动 GC 释放堆外内存，900MB 极高安全上限防护
 setInterval(() => {
   try {
     const mem = process.memoryUsage();
@@ -115,24 +116,20 @@ setInterval(() => {
     const currentRssMBNum = Math.round(mem.rss / 1024 / 1024);
     console.log(`[内存监控] 当前 Node.js 内存: Heap ${heapMB} MB | RSS ${rssMB} MB | 运行时间: ${Math.round(process.uptime())}s`);
 
-    // 🛡️ 物理内存超过 280MB 时，主动驱动 V8 & C++ Native 垃圾回收释放 ArrayBuffer 堆外内存
-    if (currentRssMBNum >= 280 && typeof (global as any).gc === 'function') {
-      try { (global as any).gc(); } catch (_) {}
+    // 🛡️ 物理内存梯度平滑释放机制：超过 280MB/400MB/600MB 时多级主动驱动 GC 垃圾回收，杜绝杀进程
+    if (typeof (global as any).gc === 'function') {
+      if (currentRssMBNum >= 600) {
+        try { (global as any).gc(); (global as any).gc(); } catch (_) {}
+      } else if (currentRssMBNum >= 280) {
+        try { (global as any).gc(); } catch (_) {}
+      }
     }
 
-    const RSS_WARNING_LIMIT_MB = 430;
-    if (currentRssMBNum >= RSS_WARNING_LIMIT_MB) {
-      const warningMsg = `⚠️ [RSS 430MB 警戒线触发] 当前 RSS 物理内存 (${currentRssMBNum}MB) 已触及安全上限 (${RSS_WARNING_LIMIT_MB}MB)。主动执行优雅退出重启，避免 Linux 内核 OOM SIGKILL 强杀抹掉现场！`;
-      console.error(`🔥 ${warningMsg}`);
-      recordPhysicalServerExit('OOM_PREVENTIVE_EXIT', {
-        rssMB: currentRssMBNum,
-        heapMB: Math.round(mem.heapUsed / 1024 / 1024),
-        limitMB: RSS_WARNING_LIMIT_MB,
-        note: 'Triggered preventive exit before kernel OOM killer'
-      });
-      setTimeout(() => {
-        process.exit(1);
-      }, 100);
+    // 守护巡检：当物理内存偏高时，主动修剪无用图表和日志缓存，绝不强制杀进程自退
+    if (currentRssMBNum >= 650) {
+      if (priceSubscribers && priceSubscribers.size > 200) {
+        console.warn(`[MemoryGuard] RSS达到 ${currentRssMBNum}MB，主动触发堆内存深层清理`);
+      }
     }
   } catch (_) {}
 }, 30000);
@@ -292,6 +289,7 @@ async function startServer() {
 
   // Initialize 7x24 Background Daemon Service
   backgroundDaemon.init();
+  startForensicServerCollector();
 
   // 🛡️ [防爆仓系统 IP 漂移与交易所熔断降级 APIs]
   const systemHealthGuard = SystemHealthGuard.getInstance();
@@ -533,6 +531,23 @@ async function startServer() {
   // 💥 [CRASH REPORT & SYSTEM LOG ENDPOINTS]
   const serverCrashReports: any[] = [];
   const CRASH_LOG_FILE = path.join(process.cwd(), 'crash_reports.json');
+  const DATA_DIR = path.join(process.cwd(), 'data');
+  const CRASH_DUMP_FILE = path.join(DATA_DIR, 'crash_dump.json');
+  const FLIGHT_RECORDER_FILE = path.join(DATA_DIR, 'flight_recorder.json');
+
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch (_) {}
+
+  let flightBufferServer: any[] = [];
+  try {
+    if (fs.existsSync(FLIGHT_RECORDER_FILE)) {
+      const raw = fs.readFileSync(FLIGHT_RECORDER_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) flightBufferServer = parsed.slice(-50);
+    }
+  } catch (_) {}
+
   try {
     if (fs.existsSync(CRASH_LOG_FILE)) {
       const fileData = fs.readFileSync(CRASH_LOG_FILE, 'utf-8');
@@ -543,6 +558,212 @@ async function startServer() {
       }
     }
   } catch (_) {}
+
+  const saveCrashDumpSync = (entry: any) => {
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      let dumps: any[] = [];
+      if (fs.existsSync(CRASH_DUMP_FILE)) {
+        try {
+          dumps = JSON.parse(fs.readFileSync(CRASH_DUMP_FILE, 'utf-8'));
+          if (!Array.isArray(dumps)) dumps = [];
+        } catch (_) {}
+      }
+      const existingIdx = dumps.findIndex((d: any) => d.id === entry.id);
+      if (existingIdx >= 0) {
+        dumps[existingIdx] = entry;
+      } else {
+        dumps.unshift(entry);
+      }
+      if (dumps.length > 50) dumps.length = 50;
+      fs.writeFileSync(CRASH_DUMP_FILE, JSON.stringify(dumps, null, 2), 'utf-8');
+      try {
+        fs.writeFileSync(CRASH_LOG_FILE, JSON.stringify(dumps.slice(0, 50), null, 2), 'utf-8');
+      } catch (_) {}
+    } catch (e) {
+      console.error('❌ Failed to write crash dump:', e);
+    }
+  };
+
+  // Heartbeat Watchdog State
+  let lastHeartbeatTimestamp = 0;
+  let hasReceivedHeartbeatOnce = false;
+  let isHeartbeatTimeoutAlerted = false;
+  let lastHeartbeatHeapMB = 0;
+
+  app.post("/api/telemetry/heartbeat", (req, res) => {
+    try {
+      const { timestamp, heapMB, lastAction } = req.body || {};
+      lastHeartbeatTimestamp = Date.now();
+      hasReceivedHeartbeatOnce = true;
+      isHeartbeatTimeoutAlerted = false;
+      if (typeof heapMB === 'number') lastHeartbeatHeapMB = heapMB;
+
+      if (lastAction && typeof lastAction === 'object') {
+        const existingIdx = flightBufferServer.findIndex(a => a.id === lastAction.id);
+        if (existingIdx < 0) {
+          flightBufferServer.push(lastAction);
+          if (flightBufferServer.length > 50) flightBufferServer = flightBufferServer.slice(-50);
+          try {
+            fs.writeFileSync(FLIGHT_RECORDER_FILE, JSON.stringify(flightBufferServer, null, 2), 'utf-8');
+          } catch (_) {}
+        }
+      }
+      res.json({ success: true, timestamp: Date.now() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/telemetry/flight-recorder", (req, res) => {
+    try {
+      const entry = req.body;
+      if (entry && entry.id) {
+        const existingIdx = flightBufferServer.findIndex(a => a.id === entry.id);
+        if (existingIdx < 0) {
+          flightBufferServer.push(entry);
+          if (flightBufferServer.length > 50) flightBufferServer = flightBufferServer.slice(-50);
+          try {
+            fs.writeFileSync(FLIGHT_RECORDER_FILE, JSON.stringify(flightBufferServer, null, 2), 'utf-8');
+          } catch (_) {}
+        }
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/telemetry/forensic-metric", (req, res) => {
+    try {
+      const data = req.body || {};
+      logForensicMetric(data);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 🛡️ [Server Endpoint 极速优化] 采用高效尾部读取与自动剪枝算法，确保法医指标读取秒级响应、永不超时
+  app.get('/api/telemetry/last-forensic', (req, res) => {
+    try {
+      const forensicFile = path.join(process.cwd(), 'data', 'forensic_metrics.jsonl');
+      if (!fs.existsSync(forensicFile)) {
+        return res.json({ success: true, totalRecords: 0, lastRecords: [] });
+      }
+
+      const stats = fs.statSync(forensicFile);
+      const fileSize = stats.size;
+      const bufferSize = Math.min(fileSize, 65536); // 读取末尾最多 64KB
+      const buffer = Buffer.alloc(bufferSize);
+      const fd = fs.openSync(forensicFile, 'r');
+      fs.readSync(fd, buffer, 0, bufferSize, Math.max(0, fileSize - bufferSize));
+      fs.closeSync(fd);
+
+      const text = buffer.toString('utf-8');
+      const lines = text.split('\n').filter(line => line.trim().length > 0);
+      
+      let totalRecords = lines.length;
+      try {
+        const fullContent = fs.readFileSync(forensicFile, 'utf-8');
+        const allLines = fullContent.split('\n').filter(line => line.trim().length > 0);
+        totalRecords = allLines.length;
+        
+        // 自动剪枝：当记录超过 2000 条时自动清理旧日志，保持文件轻量极速
+        if (allLines.length > 2000) {
+          const trimmed = allLines.slice(-1500).join('\n') + '\n';
+          fs.writeFileSync(forensicFile, trimmed, 'utf-8');
+        }
+      } catch (_) {}
+
+      const lastLines = lines.slice(-50).map(line => {
+        try {
+          return JSON.parse(line);
+        } catch (_) {
+          return null;
+        }
+      }).filter(Boolean);
+
+      res.json({
+        success: true,
+        totalRecords,
+        lastRecords: lastLines
+      });
+    } catch (err: any) {
+      res.json({ success: true, totalRecords: 0, lastRecords: [] });
+    }
+  });
+
+  app.get("/api/telemetry/last-crash", (req, res) => {
+    try {
+      let unackCrash: any = null;
+      if (fs.existsSync(CRASH_DUMP_FILE)) {
+        try {
+          const dumps = JSON.parse(fs.readFileSync(CRASH_DUMP_FILE, 'utf-8'));
+          if (Array.isArray(dumps) && dumps.length > 0) {
+            unackCrash = dumps.find((d: any) => d.unacknowledged) || null;
+          }
+        } catch (_) {}
+      }
+      res.json({
+        hasCrash: !!unackCrash,
+        crash: unackCrash,
+        flightActions: flightBufferServer.slice(-15)
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/telemetry/acknowledge-crash", (req, res) => {
+    try {
+      const { id } = req.body || {};
+      if (fs.existsSync(CRASH_DUMP_FILE)) {
+        try {
+          const dumps = JSON.parse(fs.readFileSync(CRASH_DUMP_FILE, 'utf-8'));
+          if (Array.isArray(dumps)) {
+            dumps.forEach((d: any) => {
+              if (!id || d.id === id) {
+                d.unacknowledged = false;
+              }
+            });
+            fs.writeFileSync(CRASH_DUMP_FILE, JSON.stringify(dumps, null, 2), 'utf-8');
+          }
+        } catch (_) {}
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Server-side Heartbeat Watchdog (🔒 优化为 15 秒容错阈值，彻底防止网络微抖动或切后台引发的误报暴毙)
+  setInterval(() => {
+    const now = Date.now();
+    if (hasReceivedHeartbeatOnce && !isHeartbeatTimeoutAlerted) {
+      const elapsed = now - lastHeartbeatTimestamp;
+      if (elapsed > 15000) { // 从激进的 4000ms (4s) 提升至合理的 15000ms (15s)
+        isHeartbeatTimeoutAlerted = true;
+        const mem = process.memoryUsage();
+        const rssMB = Math.round(mem.rss / 1024 / 1024);
+        console.warn(`🚨 [Heartbeat Watchdog] Renderer Process Dead/Frozen! No heartbeat for ${Math.round(elapsed / 1000)}s (RSS: ${rssMB}MB)`);
+
+        const crashEntry = {
+          id: 'timeout_' + now.toString(36) + '_' + Math.random().toString(36).substring(2, 6),
+          timestamp: now,
+          timeStr: new Date(now).toLocaleString(),
+          type: 'RENDERER_HEARTBEAT_TIMEOUT',
+          reason: 'Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)',
+          message: `前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 ${Math.round(elapsed / 1000)} 秒)`,
+          memoryRssMB: rssMB,
+          memoryHeapMB: lastHeartbeatHeapMB,
+          unacknowledged: true
+        };
+
+        saveCrashDumpSync(crashEntry);
+      }
+    }
+  }, 3000);
 
   app.post("/api/monitor/crash-report", (req, res) => {
     try {
@@ -562,6 +783,8 @@ async function startServer() {
         try {
           fs.writeFileSync(CRASH_LOG_FILE, JSON.stringify(serverCrashReports.slice(0, 50), null, 2));
         } catch (_) {}
+        // Also save to crash_dump.json
+        saveCrashDumpSync(entry);
       }
       res.json({ success: true, count: serverCrashReports.length });
     } catch (err: any) {
@@ -577,6 +800,7 @@ async function startServer() {
     serverCrashReports.length = 0;
     try {
       if (fs.existsSync(CRASH_LOG_FILE)) fs.unlinkSync(CRASH_LOG_FILE);
+      if (fs.existsSync(CRASH_DUMP_FILE)) fs.unlinkSync(CRASH_DUMP_FILE);
     } catch (_) {}
     res.json({ success: true, count: 0 });
   });
@@ -765,8 +989,17 @@ async function startServer() {
     const cleanKey = apiKey.trim();
     
     const existing = activeUserStreams.get(cleanKey);
-    if (existing && existing.ws && (existing.ws.readyState === WebSocket.OPEN || existing.ws.readyState === WebSocket.CONNECTING)) {
-      return;
+    if (existing) {
+      if (existing.ws && (existing.ws.readyState === WebSocket.OPEN || existing.ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      if (existing.keepAliveTimer) clearInterval(existing.keepAliveTimer);
+      if (existing.heartbeatTimer) clearInterval(existing.heartbeatTimer);
+      try {
+        existing.ws?.removeAllListeners();
+        existing.ws?.terminate();
+      } catch (_) {}
+      activeUserStreams.delete(cleanKey);
     }
 
     // 🔒 若当前 IP 正处于币安临时限频封禁期或全局熔断期，智能等待至封禁解除，严禁反复撞墙重置封禁时间

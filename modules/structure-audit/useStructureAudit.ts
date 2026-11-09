@@ -1,7 +1,7 @@
 // 🔒 LOCKED_MODULE: LIST 3 [结构深度审计 逻辑与状态管理 Hook]
 // @LOCKED: 严格原子化单独锁定。未经用户明确的专属书面指令，严禁擅自修改、重构或变动任何功能与代码。
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import {
   ScannerItem,
@@ -52,21 +52,22 @@ export const useStructureAudit = (
     initialConfig,
   );
 
+  const configKeyJson = useMemo(() => JSON.stringify(config || {}), [config]);
+
   // Ensure timeframes is sanitized & never empty, and obsolete 15s/30s are stripped
   useEffect(() => {
-    if (!config.timeframes || config.timeframes.length === 0) {
-      setConfig((prev) => {
-        if (prev.timeframes && prev.timeframes.length > 0) return prev;
-        return {
+    const tfs = config.timeframes || [];
+    if (tfs.length === 0 || tfs.includes("15s") || tfs.includes("30s")) {
+      const sanitized = tfs.length === 0 
+        ? ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "1d", "3d"]
+        : tfs.filter((tf) => tf !== "15s" && tf !== "30s");
+      
+      if (JSON.stringify(tfs) !== JSON.stringify(sanitized)) {
+        setConfig((prev) => ({
           ...prev,
-          timeframes: ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "1d", "3d"],
-        };
-      });
-    } else if (config.timeframes.includes("15s") || config.timeframes.includes("30s")) {
-      setConfig((prev) => ({
-        ...prev,
-        timeframes: (prev.timeframes || []).filter((tf) => tf !== "15s" && tf !== "30s"),
-      }));
+          timeframes: sanitized,
+        }));
+      }
     }
   }, [config.timeframes, setConfig]);
 
@@ -359,10 +360,12 @@ export const useStructureAudit = (
     if (changed) {
       updateList3FromCache();
     }
-  }, [config, updateList3FromCache]);
+  }, [configKeyJson, updateList3FromCache]);
+
+  const candidatesKey = useMemo(() => (candidates || []).map(c => `${c.symbol}_${c.price || 0}`).join('|'), [candidates]);
   useEffect(() => {
     candidatesRef.current = candidates;
-  }, [candidates]);
+  }, [candidatesKey]);
   useEffect(() => {
     realPricesRef.current = realPrices;
   }, [realPrices]);

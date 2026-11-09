@@ -624,6 +624,25 @@ const KlineChartModal: React.FC<Props> = ({
     return false;
   }, [viewMode, source, signals, list2Config, propList4Config, entryPrice, entryTime, showAuditLines]);
 
+  // 🎯 判断是否是从列表 1 (初筛列表 / 行情扫描) 进入的 K 线图
+  const isFromList1 = useMemo(() => {
+    const s = (source || '').toString().toLowerCase();
+    if (s === 'list1' || s === 'market_scanner' || s === 'scanner' || s === 'list1_selection') {
+      return true;
+    }
+    if (signals && signals.length > 0 && (signals[0] as any).source) {
+      const sigSrc = String((signals[0] as any).source).toLowerCase();
+      if (sigSrc.includes('list1') || sigSrc.includes('scanner')) {
+        return true;
+      }
+    }
+    return false;
+  }, [source, signals]);
+
+  const extraLinesKey = useMemo(() => {
+    return (extraLines || []).map(l => `${l.price}_${l.label}_${l.color}`).join('|');
+  }, [extraLines]);
+
 
   
   // Sync timeframe with initialTimeframe if it changes (e.g. when clicking a different row for same symbol)
@@ -1098,7 +1117,7 @@ const KlineChartModal: React.FC<Props> = ({
               openDropFromMax
           };
       });
-  }, [computedSignals, fullData, timeframe, getCandleIdxFast, extraLines, propList4Config]);
+  }, [computedSignals, fullData, timeframe, getCandleIdxFast, extraLinesKey, propList4Config]);
 
   // Daily (Major Trend) Stats State
   interface DailyStats {
@@ -2896,9 +2915,9 @@ const KlineChartModal: React.FC<Props> = ({
           }
       }
 
-      // Waiting / Triggered Line (等待 / 已触发 - for active coins in list) - 带智能决策悬浮卡片
+      // Waiting / Triggered Line (等待 / 已触发 - for active coins in list) - 带智能决策悬浮卡片 (仅非列表1展示)
       let waitingLine = null;
-      if (!isTradeViewMode && !disappearedTime && fullData.length > 0 && !isWaitingFoldedArea) {
+      if (!isTradeViewMode && !isFromList1 && !disappearedTime && fullData.length > 0 && !isWaitingFoldedArea) {
           const lastIdx = fullData.length - 1;
           if (lastIdx >= startIndex && lastIdx < startIndex + visibleCount) {
               const i = lastIdx - startIndex;
@@ -3170,11 +3189,11 @@ const KlineChartModal: React.FC<Props> = ({
           }
       }
 
-      // EXTRA LINES (Other custom indicators) - Only show lines not already rendered by focalLinesVisual
-      const extraVisuals = showAuditLines ? extraLines?.map((line, idx) => {
+      // EXTRA LINES (Other custom indicators: Breakout / Defense lines)
+      const extraVisuals = (showAuditLines || source === 'list3' || (extraLines && extraLines.length > 0)) ? extraLines?.map((line, idx) => {
           if (!line.price || line.price <= 0) return null;
-          // Skip defense/breakout if already rendered by focalLinesVisual or if in List 2 waiting area
-          if ((focalLinesVisual || isWaitingFoldedArea) && (line.label.includes('防守') || line.label.includes('突破') || line.label.includes('TRIGGER') || line.label.includes('DEFENSE') || line.label.includes('攻') || line.label.includes('守'))) {
+          // Skip if in List 2 waiting area
+          if (isWaitingFoldedArea) {
               return null;
           }
           const y = getY(line.price);
@@ -3184,10 +3203,6 @@ const KlineChartModal: React.FC<Props> = ({
           return (
               <g key={`extra-${idx}`} pointerEvents="none">
                   <line x1={0} y1={y} x2={width - padding.right} y2={y} stroke={line.color} strokeWidth={1.5} strokeDasharray={dash} opacity={0.9} />
-                  <rect x={width - padding.right - 145} y={y - 9} width={145} height={18} fill={line.color} rx={2} opacity={0.15} />
-                  <text x={width - padding.right - 141} y={y + 3} fill={line.color} fontSize="9" fontWeight="bold" fontFamily="monospace">
-                      {line.label}: {formatPrice(line.price)}
-                  </text>
               </g>
           );
       }) : null;

@@ -86,6 +86,26 @@ const resolveItemFuseInfo = (item: ScannerItem, config?: List4Config): ParsedFus
     const isLong = item.direction === 'LONG';
 
     // 2. Pattern Matching against reason string
+    // 0. 1440M Dual-Layer Fuse: 【1440M双向熔断】做多总体振幅过激 (18.50% > 15%)
+    const fuse1440Match = reason.match(/【1440M双向熔断】(做多|做空)(总体振幅过激|高位追涨拦截|低位追跌拦截)\s*\(([\d\.]+)%\s*>\s*([\d\.]+)%\)/);
+    if (fuse1440Match) {
+        const sideStr = fuse1440Match[1];
+        const typeStr = fuse1440Match[2];
+        const actVal = parseFloat(fuse1440Match[3]);
+        const threshVal = parseFloat(fuse1440Match[4]);
+        const diffVal = parseFloat((actVal - threshVal).toFixed(2));
+        return {
+            ruleName: '1440M双向熔断',
+            paramName: `${sideStr}${typeStr}`,
+            period: '1440分钟(24H)',
+            threshold: `${threshVal}%`,
+            actual: `${actVal}%`,
+            diff: `超出 +${diffVal}%`,
+            diffType: 'excess',
+            detailSummary: reason
+        };
+    }
+
     // A. Anti-chase: [1小时内涨幅 18.5% > 阈值 15%]
     const antiChaseMatch = reason.match(/(?:(\d+)小时内)?(涨幅|跌幅)\s*([\d\.]+)%\s*>\s*(?:阈值|限制)\s*([\d\.]+)%/);
     if (antiChaseMatch) {
@@ -340,7 +360,10 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
     let maxCloseN: number | undefined = undefined;
     let minCloseN: number | undefined = undefined;
     if (item.structure?.recentCloses && item.structure.recentCloses.length > 0) {
-        const slice = item.structure.recentCloses.slice(-kCount);
+        const priorCloses = item.structure.recentCloses.length > 1
+            ? item.structure.recentCloses.slice(0, -1)
+            : item.structure.recentCloses;
+        const slice = priorCloses.slice(-kCount);
         if (slice.length > 0) {
             maxCloseN = Math.max(...slice);
             minCloseN = Math.min(...slice);

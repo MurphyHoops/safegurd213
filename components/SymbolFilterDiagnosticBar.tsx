@@ -2,7 +2,7 @@
 // @LOCKED: 独立只读诊断分析组件。绝不触碰、修改或篡改列表 1/2/3/4 已锁定的底层策略与交易撮合逻辑。
 // 本诊断引擎执行 100% 真实算法测算，杜绝任何假装达标的硬编码逻辑，规则标题与系统各控制面板 1:1 严格对齐。
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import { 
     Search, Activity, CheckCircle2, XCircle, AlertTriangle, 
     ArrowRight, ChevronDown, ChevronUp, RefreshCw, Layers, 
@@ -215,9 +215,35 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
     const [diagnosticResult, setDiagnosticResult] = useState<DiagnosticResult | null>(null);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+    const scanConfigRef = useRef(scanConfig);
+    scanConfigRef.current = scanConfig;
+    const list1CandidatesRef = useRef(list1Candidates);
+    list1CandidatesRef.current = list1Candidates;
+    const list2ResultsRef = useRef(list2Results);
+    list2ResultsRef.current = list2Results;
+    const list3ResultsRef = useRef(list3Results);
+    list3ResultsRef.current = list3Results;
+    const list2ConfigRef = useRef(list2Config);
+    list2ConfigRef.current = list2Config;
+    const list3ConfigRef = useRef(list3Config);
+    list3ConfigRef.current = list3Config;
+    const list4ConfigRef = useRef(list4Config);
+    list4ConfigRef.current = list4Config;
+    const currentPricesRef = useRef(currentPrices);
+    currentPricesRef.current = currentPrices;
+
     // Run real diagnosis function
     const runDiagnosis = useCallback(async (searchQuery: string) => {
         if (!searchQuery.trim()) return;
+        const scanConfig = scanConfigRef.current;
+        const list1Candidates = list1CandidatesRef.current;
+        const list2Results = list2ResultsRef.current;
+        const list3Results = list3ResultsRef.current;
+        const list2Config = list2ConfigRef.current;
+        const list3Config = list3ConfigRef.current;
+        const list4Config = list4ConfigRef.current;
+        const currentPrices = currentPricesRef.current;
+
         const norm = normalizeSymbol(searchQuery.trim());
         const bSym = formatToBinanceSymbol(norm);
 
@@ -1853,7 +1879,7 @@ export const SymbolFilterDiagnosticBar: React.FC<Props> = ({
         } finally {
             setIsDiagnosing(false);
         }
-    }, [scanConfig, list1Candidates, list2Results, list3Results, list2Config, list3Config, list4Config, currentPrices]);
+    }, []);
 
     const [isModalOpen, setIsModalOpen] = useState(false);
 

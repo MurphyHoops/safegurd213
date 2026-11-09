@@ -1,5 +1,5 @@
 // @LOCKED: PositionSettingsModal logic
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Position, ProfitSettings, AppSettings, PositionSide } from '../../../types';
 import { X, Settings, Target, Shield, HelpCircle, Save, RotateCcw, AlertCircle, Sparkles, Brain, Cpu, CheckCircle } from 'lucide-react';
 import { audioService } from '../../../services/audioService';
@@ -35,6 +35,9 @@ export const PositionSettingsModal: React.FC<Props> = ({
 
     const [activeTab, setActiveTab] = useState<'STOP_LOSS' | 'CUSTOM_PROFIT'>('CUSTOM_PROFIT');
 
+    const customProfitSettingsJson = useMemo(() => JSON.stringify(position.customProfitSettings || {}), [position.customProfitSettings]);
+    const globalProfitJson = useMemo(() => JSON.stringify(globalSettings.profit || {}), [globalSettings.profit]);
+
     useEffect(() => {
         if (isOpen) {
             setUseCustom(!!position.customProfitSettings);
@@ -45,7 +48,7 @@ export const PositionSettingsModal: React.FC<Props> = ({
             );
             setActiveTab('CUSTOM_PROFIT');
         }
-    }, [isOpen, position.customProfitSettings, globalSettings.profit]);
+    }, [isOpen, customProfitSettingsJson, globalProfitJson]);
 
     if (!isOpen) return null;
 

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Trash2, RefreshCw, ChevronDown, Database, AlertCircle, FolderTree } from 'lucide-react';
+import { Layers, Trash2, RefreshCw, ChevronDown, Database, AlertCircle, FolderTree, Activity } from 'lucide-react';
 import { deepCleanAndResetSystem, logger } from '../services/monitor/monitorService';
 import { priceRegistry } from '../services/priceRegistry';
+import { ForensicReportModal } from './ForensicReportModal';
 
 interface ModuleDomStat {
     id: string;
@@ -38,6 +39,7 @@ interface DomHistoryRecord {
 
 export const DomTrackerWidget: React.FC = () => {
     const [isOpen, setIsOpen] = useState(false);
+    const [isForensicModalOpen, setIsForensicModalOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'LIST1_DEEP_DIVE' | 'CACHE_DB' | 'HISTORY'>('OVERVIEW');
     const [totalNodes, setTotalNodes] = useState<number>(0);
     const [moduleStats, setModuleStats] = useState<ModuleDomStat[]>([]);
@@ -211,9 +213,12 @@ export const DomTrackerWidget: React.FC = () => {
     };
 
     useEffect(() => {
-        sampleDom();
+        const timer = setTimeout(sampleDom, 0);
         const interval = setInterval(sampleDom, 3000);
-        return () => clearInterval(interval);
+        return () => {
+            clearTimeout(timer);
+            clearInterval(interval);
+        };
     }, []);
 
     const handleCleanDOM = () => {
@@ -258,20 +263,39 @@ export const DomTrackerWidget: React.FC = () => {
 
     return (
         <div className="relative inline-block text-left">
-            {/* Header Badge Trigger */}
-            <button
-                type="button"
-                onClick={() => {
-                    sampleDom();
-                    setIsOpen(!isOpen);
-                }}
-                className={`px-2 py-0.5 rounded border text-[10px] font-mono font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer select-none ${badgeStyle.bg}`}
-                title="点击查看各模块及 List 1 内部嵌套子目录 DOM 归因诊断"
-            >
-                <span className={`w-2 h-2 rounded-full ${badgeStyle.dot}`} />
-                <span>{badgeStyle.label}</span>
-                <ChevronDown size={11} className={`transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-            </button>
+            <div className="flex items-center gap-1.5">
+                {/* Header Badge Trigger */}
+                <button
+                    type="button"
+                    onClick={() => {
+                        sampleDom();
+                        setIsOpen(!isOpen);
+                    }}
+                    className={`px-2 py-0.5 rounded border text-[10px] font-mono font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer select-none ${badgeStyle.bg}`}
+                    title="点击查看各模块及 List 1 内部嵌套子目录 DOM 归因诊断"
+                >
+                    <span className={`w-2 h-2 rounded-full ${badgeStyle.dot}`} />
+                    <span>{badgeStyle.label}</span>
+                    <ChevronDown size={11} className={`transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {/* 🛡️ [Forensic Metrics Time-Series Logger] 法医级高频时序指标记录器与雷达 */}
+                <button 
+                    type="button"
+                    onClick={() => setIsForensicModalOpen(true)}
+                    className="px-2 py-0.5 rounded border border-indigo-500/40 bg-indigo-950/60 hover:bg-indigo-900/60 text-indigo-300 hover:text-white text-[10px] font-mono font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer select-none active:scale-95"
+                    title="点击打开【法医级高频时序指标记录器与雷达】诊断报告弹窗 (读取并回放 data/forensic_metrics.jsonl 最后 20 秒指标，支持一键复制)"
+                >
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                    <span>🛡️ 法医级高频时序指标记录器与雷达</span>
+                </button>
+            </div>
+
+            {/* Forensic Report Modal */}
+            <ForensicReportModal 
+                isOpen={isForensicModalOpen} 
+                onClose={() => setIsForensicModalOpen(false)} 
+            />
 
             {/* Diagnostic Panel Dropdown */}
             {isOpen && (
@@ -488,7 +512,10 @@ export const DomTrackerWidget: React.FC = () => {
                     {activeTab === 'HISTORY' && (
                         <div className="space-y-2">
                             <div className="text-[9px] text-slate-400 font-bold flex items-center justify-between">
-                                <span>⏱️ DOM 节点历史采样趋势记录</span>
+                                <span className="flex items-center gap-1.5">
+                                    <span>⏱️ DOM 节点历史采样趋势记录</span>
+                                    <span className="text-[8px] text-cyan-400 font-normal">| 🛡️ 法医级高频时序指标记录器与雷达 (秒级持久化至 data/forensic_metrics.jsonl)</span>
+                                </span>
                                 <span className="text-slate-500 text-[8px]">{historyLogs.length} 条采样</span>
                             </div>
                             <div className="max-h-[200px] overflow-y-auto custom-scrollbar border border-slate-800 rounded bg-slate-950/60 p-1">

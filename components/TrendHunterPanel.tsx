@@ -62,11 +62,17 @@ const TrendHunterPanel: React.FC<Props> = ({ settings, positions = [], onUpdateS
         step1: [], step2: [], step3: [], step4: [], step5: [] 
     });
     
-    const activeTrendPositions = positions.filter(p => p.strategyId === 'TREND_HUNTER');
+    const activeTrendPositionsKey = useMemo(() => {
+        return positions.filter(p => p.strategyId === 'TREND_HUNTER').map(p => `${p.symbol}_${p.side}_${p.amount}`).join('|');
+    }, [positions]);
 
     useEffect(() => {
-        setStepLists(prev => ({ ...prev, step5: activeTrendPositions }));
-    }, [positions]);
+        const activeTrend = positions.filter(p => p.strategyId === 'TREND_HUNTER');
+        setStepLists(prev => {
+            if (JSON.stringify(prev.step5) === JSON.stringify(activeTrend)) return prev;
+            return { ...prev, step5: activeTrend };
+        });
+    }, [activeTrendPositionsKey]);
 
     const mockDelay = (ms: number) => new Promise(r => setTimeout(r, ms));
 

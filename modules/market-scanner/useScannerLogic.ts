@@ -1,6 +1,6 @@
 
 // @LOCKED: List 1 过滤流程与市场初筛列表增删对比更新逻辑已锁定，未经用户明确专项指令严禁修改
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { ScanConfig, ScannerItem } from '../../components/Scanner/scannerTypes';
 import { processMarketData } from '../../services/rules/list1_market';
 import { evaluateSidewaysFilter, evaluateLookbackFilter, computeCandidatesDiff, getMatchedUniqueSymbolsCount } from '../../services/rules/list1';
@@ -438,11 +438,15 @@ export const useScannerLogic = (
         } catch (_) {}
     }, []);
 
+    const customSymbolSetKey = useMemo(() => Array.from(customSymbolSet || []).sort().join(','), [customSymbolSet]);
+    const initialConfigJson = useMemo(() => JSON.stringify(initialConfig || {}), [initialConfig]);
+    const majorTrendCandidatesContentKey = useMemo(() => Array.from(majorTrendCandidates || []).sort().join(','), [majorTrendCandidates]);
+
     useEffect(() => {
         configRef.current = initialConfig;
         customSymbolSetRef.current = customSymbolSet;
         fixedModeViewRef.current = fixedModeView;
-    }, [initialConfig, customSymbolSet, fixedModeView]);
+    }, [initialConfigJson, customSymbolSetKey, fixedModeView]);
 
     useEffect(() => {
         isMountedRef.current = true;
@@ -626,7 +630,7 @@ export const useScannerLogic = (
         } catch (err) {
             console.error("[Scanner] Instant re-filter failed:", err);
         }
-    }, [initialConfig, customSymbolSet, fixedModeView, blacklist, mode, majorTrendCandidates, majorTrendLimits, hasRunMajorTrend]); // Stabilized dependencies
+    }, [initialConfigJson, customSymbolSetKey, fixedModeView, blacklist, mode, majorTrendCandidatesContentKey, majorTrendLimits, hasRunMajorTrend]); // Stabilized dependencies
 
     const directModeRef = useRef(directMode);
     useEffect(() => { directModeRef.current = directMode; }, [directMode]);
@@ -991,7 +995,7 @@ export const useScannerLogic = (
         return () => {
             if (configUpdateTimerRef.current) clearTimeout(configUpdateTimerRef.current);
         };
-    }, [initialConfig]);
+    }, [initialConfigJson]);
 
     const isScanningRef = useRef(isScanning);
     useEffect(() => { isScanningRef.current = isScanning; }, [isScanning]);
@@ -1017,7 +1021,8 @@ export const useScannerLogic = (
 
     // --- MAJOR TREND DISCOVERY ENGINE ---
     const majorTrendConfigRef = useRef(initialConfig.majorTrend);
-    useEffect(() => { majorTrendConfigRef.current = initialConfig.majorTrend; }, [initialConfig.majorTrend]);
+    const majorTrendJson = JSON.stringify(initialConfig.majorTrend);
+    useEffect(() => { majorTrendConfigRef.current = initialConfig.majorTrend; }, [majorTrendJson]);
 
     const majorScanAbortRef = useRef<boolean>(false);
 
@@ -1701,7 +1706,7 @@ export const useScannerLogic = (
             }, 800);
             return () => clearTimeout(delay);
         }
-    }, [initialConfig.majorTrend, runMajorTrendDiscovery, strategyId]);
+    }, [majorTrendJson, runMajorTrendDiscovery, strategyId]);
     // 🔒 [END_SECURITY_LOCK]
 
     // --- 🔒 [时间先后·接力赛]: 行情启动底池整轮扫描完毕后，接力唤醒大行情发现扫描 (横盘蓄势过滤 -> 回溯周期过滤) ---

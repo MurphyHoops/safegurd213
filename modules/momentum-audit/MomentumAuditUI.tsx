@@ -326,7 +326,10 @@ export const MomentumAuditModule: React.FC<Props> = ({ candidates, setChartData,
                     let maxClose: number | undefined = undefined;
                     let minClose: number | undefined = undefined;
                     if (item.structure.recentCloses && item.structure.recentCloses.length > 0) {
-                        const slice = item.structure.recentCloses.slice(-kCount);
+                        const priorCloses = item.structure.recentCloses.length > 1
+                            ? item.structure.recentCloses.slice(0, -1)
+                            : item.structure.recentCloses;
+                        const slice = priorCloses.slice(-kCount);
                         if (slice.length > 0) {
                             maxClose = Math.max(...slice);
                             minClose = Math.min(...slice);

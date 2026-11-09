@@ -78,6 +78,10 @@ export const LightweightKlineChart: React.FC<Props> = ({
     volume?: number;
   } | null>(null);
 
+  const extraLinesKey = useMemo(() => {
+    return (extraLines || []).map(l => `${l.price}_${l.label}_${l.color}`).join('|');
+  }, [extraLines]);
+
   // 初始化图表实例
   useEffect(() => {
     if (!containerRef.current) return;
@@ -294,7 +298,7 @@ export const LightweightKlineChart: React.FC<Props> = ({
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
     }
-  }, [klines, entryPrice, side, extraLines]);
+  }, [klines, entryPrice, side, extraLinesKey]);
 
   // ⚡ 实时 WebSocket 秒级增量渲染更新（无 DOM 开销，直接 Canvas 绘制）
   useEffect(() => {

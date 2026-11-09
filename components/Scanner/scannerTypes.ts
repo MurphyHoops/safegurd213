@@ -346,6 +346,13 @@ export interface List4Config {
         longThresholds: { [key: string]: number };
         shortThresholds: { [key: string]: number };
     };
+    enable1440Fuse?: boolean; // 1440分钟(24小时)双向熔断开关
+    fuse1440Config?: {
+        longMaxAmplitude: number; // 条件A: 做多1440m总体振幅上限 % (默认 15)
+        longMaxDistance: number;  // 条件B: 做多1440m当前追高上限 % (默认 10)
+        shortMaxAmplitude: number; // 条件A: 做空1440m总体振幅上限 % (默认 15)
+        shortMaxDistance: number;  // 条件B: 做空1440m当前追跌上限 % (默认 10)
+    };
     enableAutoDirGuard?: boolean;
     autoDirConfig?: {
         limit1Q?: number; // %

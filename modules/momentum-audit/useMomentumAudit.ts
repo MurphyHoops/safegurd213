@@ -5,7 +5,7 @@
  * @status STRICTLY LOCKED - DO NOT MODIFY WITHOUT EXPLICIT AUTHORIZATION
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { priceRegistry } from '../../services/priceRegistry';
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { ScannerItem, List4Config, List3Config } from '../../components/Scanner/scannerTypes';
@@ -192,8 +192,8 @@ export const useMomentumAudit = (
         })()
     ));
 
-    // 🔒 [独立 K 线高保真收盘价缓存通道] 列表 4 独立直连币安抓取对应周期真实已收盘 K 线
-    const list4KlinesCacheRef = useRef<Map<string, { closes: number[], timestamp: number }>>(new Map());
+    // 🔒 [独立 K 线高保真收盘价/开盘价缓存通道] 列表 4 独立直连币安抓取对应周期真实已收盘 K 线
+    const list4KlinesCacheRef = useRef<Map<string, { closes: number[], opens?: number[], timestamp: number }>>(new Map());
     const activeFetchingKeysRef = useRef<Set<string>>(new Set());
 
     const fetchList4Klines = useCallback(async (symbol: string, tf: string) => {
@@ -206,9 +206,11 @@ export const useMomentumAudit = (
                                  klineDailyStore.getShortlistKlineSync(cleanSym, tf, 20) ||
                                  (tf === '1d' ? klineDailyStore.getCachedKlinesSync(cleanSym, 30) : null);
         if (persistentKlines && persistentKlines.length >= 20) {
-            const allCloses = persistentKlines.map((k: any) => typeof k.close === 'number' ? k.close : parseFloat(k[4]) || 0).filter(v => !isNaN(v) && v > 0);
+            const allCloses = persistentKlines.map((k: any) => typeof k.close === 'number' ? k.close : parseFloat(k[4]) || 0).filter((v: any) => !isNaN(v) && v > 0);
+            const allOpens = persistentKlines.map((k: any) => typeof k.open === 'number' ? k.open : parseFloat(k[1]) || 0).filter((v: any) => !isNaN(v) && v > 0);
             const priorCloses = allCloses.length > 1 ? allCloses.slice(0, -1) : allCloses;
-            list4KlinesCacheRef.current.set(key, { closes: priorCloses, timestamp: Date.now() });
+            const priorOpens = allOpens.length > 1 ? allOpens.slice(0, -1) : allOpens;
+            list4KlinesCacheRef.current.set(key, { closes: priorCloses, opens: priorOpens, timestamp: Date.now() });
             return priorCloses;
         }
 
@@ -238,9 +240,11 @@ export const useMomentumAudit = (
                     klineMultiTfStore.saveKlines(safeSym, tf, klines);
 
                     const allCloses = raw.map((k: any) => parseFloat(k[4]) || 0).filter((v: number) => !isNaN(v) && v > 0);
-                    // 仅提取已收盘的前序K线收盘价切片（剔除正在形成的最后一根）
+                    const allOpens = raw.map((k: any) => parseFloat(k[1]) || 0).filter((v: number) => !isNaN(v) && v > 0);
+                    // 仅提取已收盘的前序K线切片（剔除正在形成的最后一根）
                     const priorCloses = allCloses.length > 1 ? allCloses.slice(0, -1) : allCloses;
-                    list4KlinesCacheRef.current.set(key, { closes: priorCloses, timestamp: Date.now() });
+                    const priorOpens = allOpens.length > 1 ? allOpens.slice(0, -1) : allOpens;
+                    list4KlinesCacheRef.current.set(key, { closes: priorCloses, opens: priorOpens, timestamp: Date.now() });
                     // 异步拿到最新K线后立即重新计算列表4动能，秒级解锁
                     runMomentumAnalysis.current();
                     return priorCloses;
@@ -292,7 +296,7 @@ export const useMomentumAudit = (
             return;
         }
 
-        const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter);
+        const isAnyFuseEnabled = !!(currentConfig.enableAntiChase || currentConfig.enableThrust || currentConfig.enableAutoDirGuard || currentConfig.enableAdvancedFilter || currentConfig.enable1440Fuse);
 
         // 🔒 [上游淘汰联动同步]: 收集上游列表3当前放行的合法 uniqueId
         const validIncomingIds = new Set<string>();
@@ -855,10 +859,23 @@ export const useMomentumAudit = (
         runMomentumAnalysis.current();
     }, [strategyId]);
 
-    // CRITICAL LATENCY REFIX: Re-run analysis immediately when list 3 candidates or config updates
+    const candidatesKey = useMemo(() => {
+        return (candidates || []).map(c => `${c.symbol}_${c.direction}_${c.tf}_${c.price}`).join('|');
+    }, [candidates]);
+
+    const serializedConfigKey = useMemo(() => JSON.stringify(config || {}), [config]);
+
+    // CRITICAL LATENCY REFIX: Re-run analysis with strict debounce when list 3 candidates or config updates
+    const debounceTimerRef = useRef<any>(null);
     useEffect(() => {
-        runAnalysisSync();
-    }, [candidates, config, runAnalysisSync]);
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = setTimeout(() => {
+            runAnalysisSync();
+        }, 150);
+        return () => {
+            if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+        };
+    }, [candidatesKey, serializedConfigKey, runAnalysisSync]);
 
     const logToHistory = useCallback(async (item: ScannerItem, reason: string) => {
         if (!auth.currentUser) return;

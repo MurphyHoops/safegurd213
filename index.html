@@ -82,10 +82,10 @@
           <!-- 诊断与超时自愈选项 (在等待超过5秒或异常时自动展现) -->
           <div id="boot-fallback-tools" style="display:none;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid #334155;">
             <div id="boot-diag-msg" style="display:none;font-size:11px;color:#f87171;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);padding:8px 12px;border-radius:8px;margin-bottom:8px;text-align:left;word-break:break-all;"></div>
-            <button onclick="window.location.reload()" style="background:#4f46e5;color:#fff;border:none;padding:10px;border-radius:10px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+            <button onclick="window.__SAVIOR_FORCE_RELOAD__()" style="background:#4f46e5;color:#fff;border:none;padding:10px;border-radius:10px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
               🔄 立即重新加载
             </button>
-            <button onclick="localStorage.removeItem('SAVIOR_LOGS');localStorage.removeItem('SAVIOR_SYSTEM_MONITOR_LOGS');localStorage.removeItem('SCANNER_LIST2_CACHE_MAP');localStorage.removeItem('SCANNER_LIST3_CACHE_MAP');localStorage.removeItem('SCANNER_LIST4_CACHE_MAP');alert('已清理系统扫描缓存，保留所有持仓与配置，正在重启...');window.location.reload();" style="background:rgba(59,130,246,0.15);color:#60a5fa;border:1px solid rgba(59,130,246,0.3);padding:10px;border-radius:10px;font-size:12px;font-weight:bold;cursor:pointer;">
+            <button onclick="window.__SAVIOR_REPAIR_CACHE__()" style="background:rgba(59,130,246,0.15);color:#60a5fa;border:1px solid rgba(59,130,246,0.3);padding:10px;border-radius:10px;font-size:12px;font-weight:bold;cursor:pointer;">
               🧹 快速修复缓存并重启 (保留持仓与设置)
             </button>
           </div>
@@ -103,96 +103,129 @@
           var diag = document.getElementById('boot-diag-msg');
           var shield = document.getElementById('boot-shield');
           
-          // 🛡️ [1. 静默自动版本迁移与缓存预热 (Silent Version Migration & Cache Warmup)]
-          var lastBuildSig = null;
-          try {
-            lastBuildSig = localStorage.getItem("SAVIOR_INSTALLED_BUILD_SIG");
-            var isNewVersion = lastBuildSig !== CURRENT_BUILD_SIG;
-            
-            // 计算当前 LocalStorage 体量，若超过 3MB 或版本变更，立即执行全自动静默自愈清洗
-            var totalStorageChars = 0;
-            for (var i = 0; i < localStorage.length; i++) {
-              var k = localStorage.key(i);
-              totalStorageChars += (localStorage.getItem(k) || '').length;
-            }
-            var isStorageBloated = totalStorageChars > 2.5 * 1024 * 1024; // >2.5MB
-
-            if (isNewVersion || isStorageBloated) {
-              console.log("[Boot Shield] 🚀 检测到新版本更新或缓存冗余 (" + (lastBuildSig || '首次安装') + " -> " + CURRENT_BUILD_SIG + ")，正在自动静默清理脏缓存并预热性能...");
-              if (text) text.innerText = '正在执行新版本静默自愈与配置对齐...';
+          // 🛡️ [1. 异步非阻塞版本迁移与缓存预热 (Async Non-blocking Cache Cleanup)]
+          setTimeout(function() {
+            try {
+              var lastBuildSig = localStorage.getItem("SAVIOR_INSTALLED_BUILD_SIG");
+              var isNewVersion = lastBuildSig !== CURRENT_BUILD_SIG;
               
-              // 自动清理临时性大体积缓存与废弃数据，100% 绝对保留用户核心资产（持仓、API密钥、交易记录、策略参数）
-              var keysToPurge = [];
-              for (var j = 0; j < localStorage.length; j++) {
-                var keyName = localStorage.key(j);
-                if (!keyName) continue;
-                // 严禁触碰的白名单核心资产：
-                if (
-                  keyName.indexOf('SAVIOR_SETTINGS') !== -1 ||
-                  keyName.indexOf('SAVIOR_POSITIONS') !== -1 ||
-                  keyName.indexOf('SAVIOR_TRADELOGS') !== -1 ||
-                  keyName.indexOf('SAVIOR_ACCOUNT') !== -1 ||
-                  keyName.indexOf('SCANNER_CONFIG') !== -1 ||
-                  keyName.indexOf('SCANNER_ACTION_CONFIG') !== -1 ||
-                  keyName.indexOf('BINANCE_API') !== -1
-                ) {
-                  continue; // 绝对保留
-                }
-                // 淘汰无用大缓存：
-                if (
-                  keyName.indexOf('CACHE_MAP') !== -1 ||
-                  keyName.indexOf('SCANNER_CACHE') !== -1 ||
-                  keyName.indexOf('EXPIRED') !== -1 ||
-                  keyName.indexOf('SAVIOR_LOGS') !== -1 ||
-                  keyName.indexOf('SAVIOR_SYSTEM_MONITOR_LOGS') !== -1 ||
-                  keyName.indexOf('SAVIOR_CRASH_BLACKBOX') !== -1 ||
-                  keyName.indexOf('DOM_TRACKER') !== -1
-                ) {
-                  keysToPurge.push(keyName);
-                }
+              var totalStorageChars = 0;
+              for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                totalStorageChars += (localStorage.getItem(k) || '').length;
               }
-              keysToPurge.forEach(function(k) {
-                try { localStorage.removeItem(k); } catch(e){}
-              });
-              localStorage.setItem("SAVIOR_INSTALLED_BUILD_SIG", CURRENT_BUILD_SIG);
-              console.log("[Boot Shield] ✅ 新版本自动静默自愈完成，已释放 " + keysToPurge.length + " 项旧版废弃缓存！");
-            }
-          } catch(migErr) {
-            console.warn("[Boot Shield] 迁移自愈非致命提示:", migErr);
-          }
+              var isStorageBloated = totalStorageChars > 2.5 * 1024 * 1024;
 
-          // 🛡️ [2. 丝滑平跳与自动退出遮罩 (Zero-Click Auto Dismiss)]
+              if (isNewVersion || isStorageBloated) {
+                console.log("[Boot Shield] 🚀 检测到版本更新或缓存空间，正在后台异步对齐...");
+                var keysToPurge = [];
+                for (var j = 0; j < localStorage.length; j++) {
+                  var keyName = localStorage.key(j);
+                  if (!keyName) continue;
+                  if (
+                    keyName.indexOf('SAVIOR_SETTINGS') !== -1 ||
+                    keyName.indexOf('SAVIOR_POSITIONS') !== -1 ||
+                    keyName.indexOf('SAVIOR_TRADELOGS') !== -1 ||
+                    keyName.indexOf('SAVIOR_ACCOUNT') !== -1 ||
+                    keyName.indexOf('SCANNER_CONFIG') !== -1 ||
+                    keyName.indexOf('SCANNER_ACTION_CONFIG') !== -1 ||
+                    keyName.indexOf('BINANCE_API') !== -1
+                  ) {
+                    continue;
+                  }
+                  if (
+                    keyName.indexOf('CACHE_MAP') !== -1 ||
+                    keyName.indexOf('SCANNER_CACHE') !== -1 ||
+                    keyName.indexOf('EXPIRED') !== -1 ||
+                    keyName.indexOf('SAVIOR_LOGS') !== -1 ||
+                    keyName.indexOf('SAVIOR_SYSTEM_MONITOR_LOGS') !== -1 ||
+                    keyName.indexOf('SAVIOR_CRASH_BLACKBOX') !== -1 ||
+                    keyName.indexOf('DOM_TRACKER') !== -1
+                  ) {
+                    keysToPurge.push(keyName);
+                  }
+                }
+                keysToPurge.forEach(function(k) {
+                  try { localStorage.removeItem(k); } catch(e){}
+                });
+                localStorage.setItem("SAVIOR_INSTALLED_BUILD_SIG", CURRENT_BUILD_SIG);
+                console.log("[Boot Shield] ✅ 静默对齐与整理完成");
+              }
+            } catch(migErr) {
+              console.warn("[Boot Shield] 迁移非致命提示:", migErr);
+            }
+          }, 0);
+
+          // 🛡️ [2. 极速平跳与秒级解锁遮罩 (Instant Sub-second Dismissal)]
           var dismissed = false;
           function dismissShield() {
             if (dismissed) return;
             dismissed = true;
             if (bar) bar.style.width = '100%';
-            if (text) text.innerText = '系统就绪，正在进入控制台...';
+            if (text) text.innerText = '系统就绪';
             if (shield) {
-              shield.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+              shield.style.transition = 'opacity 0.1s ease, transform 0.1s ease';
               shield.style.opacity = '0';
-              shield.style.transform = 'scale(1.01)';
+              shield.style.transform = 'scale(1.005)';
               shield.style.pointerEvents = 'none';
               setTimeout(function() {
                 try {
                   if (shield && shield.parentNode) shield.parentNode.removeChild(shield);
                 } catch(e){}
-              }, 260);
+              }, 110);
             }
           }
+
+          // 暴露一键自愈与强制重载函数，打破无限死循环
+          window.__SAVIOR_FORCE_RELOAD__ = function() {
+            var rootEl = document.getElementById('root');
+            var isReactRendered = rootEl && (
+              window.__MAIN_APP_MOUNTED__ || 
+              window.isReactReady || 
+              rootEl.querySelector('[data-reactroot], header, nav, main, div[class*="bg-"]')
+            );
+            if (isReactRendered) {
+              dismissShield();
+              return;
+            }
+            window.__BOOT_FATAL_ERROR__ = null;
+            try {
+              localStorage.removeItem('SAVIOR_LOGS');
+              localStorage.removeItem('SAVIOR_SYSTEM_MONITOR_LOGS');
+            } catch(e){}
+            window.location.href = window.location.pathname + '?force_boot=' + Date.now();
+          };
+
+          window.__SAVIOR_REPAIR_CACHE__ = function() {
+            try {
+              var keysToKeep = ['SAVIOR_SETTINGS', 'SAVIOR_POSITIONS', 'SAVIOR_ACCOUNT', 'SAVIOR_TRADELOGS'];
+              var keysToPurge = [];
+              for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && !keysToKeep.some(function(keep) { return k.indexOf(keep) !== -1; })) {
+                  if (k.indexOf('CACHE') !== -1 || k.indexOf('LOG') !== -1 || k.indexOf('SCANNER') !== -1) {
+                    keysToPurge.push(k);
+                  }
+                }
+              }
+              keysToPurge.forEach(function(k) { try { localStorage.removeItem(k); } catch(e){} });
+            } catch(e){}
+            alert('已成功清理缓存并重置状态，保留持仓与设置，正在为您重启系统...');
+            window.location.href = window.location.pathname + '?cache_repaired=' + Date.now();
+          };
 
           // 监听 React 挂载就绪广播事件
           window.addEventListener('SAVIOR_APP_READY', dismissShield);
 
-          // 🛡️ [3. 永续高频自愈看门狗 (Never-Die Watchdog with Auto-Retry)]
+          // 🛡️ [3. 毫秒级极速探针看门狗 (持续巡检，即使超时也不停掉巡检)]
           var elapsed = 0;
           var retryCount = 0;
           var hasAutoHealed = false;
 
           var watchdog = setInterval(function() {
-            elapsed += 200;
+            elapsed += 50;
 
-            // 只要检测到主程序挂载，立即 100% 自动解散遮罩，无需任何人工点击！
+            // 只要检测到主程序挂载，毫秒级直接解散遮罩！
             var rootEl = document.getElementById('root');
             var isReactRendered = rootEl && (
               window.__MAIN_APP_MOUNTED__ || 
@@ -208,43 +241,40 @@
 
             // 丝滑进度动画推进
             if (bar && text) {
-              if (elapsed < 1200) {
-                bar.style.width = '45%';
-                text.innerText = '正在初始化高频行情与核心策略引擎...';
-              } else if (elapsed < 2600) {
-                bar.style.width = '75%';
-                text.innerText = '正在预热交易引擎与极速行情通道...';
-              } else if (elapsed < 4200) {
-                bar.style.width = '90%';
-                text.innerText = '正在校验持仓状态与风控防御防线...';
-              } else if (elapsed >= 4200 && elapsed < 16000) {
-                // 超时自动重试阶段：每隔 2 秒自动执行一次自愈优化并向 100% 推进
-                bar.style.width = Math.min(99, 90 + Math.floor((elapsed - 4200) / 1000) * 2) + '%';
+              if (elapsed < 300) {
+                bar.style.width = '65%';
+                text.innerText = '正在初始化交易引擎...';
+              } else if (elapsed < 800) {
+                bar.style.width = '85%';
+                text.innerText = '正在预热行情通道...';
+              } else if (elapsed < 2000) {
+                bar.style.width = '95%';
+                text.innerText = '正在进入系统...';
+              } else if (elapsed >= 2000 && elapsed < 10000) {
+                bar.style.width = Math.min(99, 90 + Math.floor((elapsed - 2000) / 1000) * 2) + '%';
                 if (!hasAutoHealed) {
                   hasAutoHealed = true;
                   retryCount++;
-                  text.innerText = '系统正在完成升级自愈并启动引擎 (第 ' + retryCount + '/5 次重试)...';
+                  text.innerText = '系统正在完成自愈并启动 (第 ' + retryCount + '/5 次重试)...';
                   try {
-                    // 轻量级自愈：自动清理可能引发卡顿的日志缓存
                     localStorage.removeItem('SAVIOR_LOGS');
                   } catch(e){}
-                } else if (elapsed % 2000 === 0 && retryCount < 5) {
+                } else if (elapsed % 1500 === 0 && retryCount < 5) {
                   retryCount++;
-                  text.innerText = '系统正在完成升级自愈并启动引擎 (第 ' + retryCount + '/5 次重试)...';
+                  text.innerText = '系统正在完成自愈并启动 (第 ' + retryCount + '/5 次重试)...';
                 }
               }
             }
 
-            // 🛡️ [看门狗兜底保障]: 达到 5 次重试 (约 12 秒) 或捕获到启动抛错时，自动展开备用修复工具，杜绝无限死循环卡死
-            if (elapsed >= 12000 || window.__BOOT_FATAL_ERROR__) {
-              clearInterval(watchdog);
+            // 🛡️ [看门狗兜底保障]: 达到 10 秒超时或捕获到异常时展开一键修复，但保持看门狗继续轮询！
+            if (elapsed >= 10000 || window.__BOOT_FATAL_ERROR__) {
               if (bar) bar.style.width = '100%';
               if (text) text.innerText = window.__BOOT_FATAL_ERROR__ 
                 ? '系统检测到启动异常，请使用下方工具一键自愈恢复：' 
-                : '系统自动重试超时，已为您准备一键自愈修复工具：';
+                : '系统重试超时，已为您准备一键自愈修复工具：';
               if (tools) tools.style.display = 'flex';
             }
-          }, 200);
+          }, 50);
 
           // 宽泛拦截前端启动异常 (包含打包后的 bundle 脚本抛错与未捕获异常)
           window.addEventListener('error', function(e) {

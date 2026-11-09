@@ -53,18 +53,26 @@ function logCrashToFile(moduleName, message, stack, traceId) {
     const timestamp = Date.now();
     const timeStr = new Date(timestamp).toLocaleString();
     const tid = traceId || `tr_main_${timestamp.toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+    const mem = process.memoryUsage ? process.memoryUsage() : {};
     const entry = {
       id: 'electron_' + timestamp.toString(36) + '_' + Math.random().toString(36).substring(2, 6),
       traceId: tid,
       timestamp,
       timeStr,
       module: moduleName || 'ELECTRON_CORE',
+      reason: message,
       message: String(message || '未知异常'),
       stack: String(stack || ''),
-      type: 'ELECTRON_CRASH'
+      type: moduleName || 'ELECTRON_CRASH',
+      memoryRssMB: Math.round((mem.rss || 0) / 1024 / 1024),
+      memoryHeapMB: Math.round((mem.heapUsed || 0) / 1024 / 1024),
+      unacknowledged: true
     };
 
-    let targetPaths = [path.join(process.cwd(), 'crash_reports.json')];
+    let targetPaths = [
+      path.join(process.cwd(), 'crash_reports.json'),
+      path.join(process.cwd(), 'data', 'crash_dump.json')
+    ];
     try {
       if (app && typeof app.getPath === 'function') {
         targetPaths.push(path.join(app.getPath('userData'), 'crash_reports.json'));

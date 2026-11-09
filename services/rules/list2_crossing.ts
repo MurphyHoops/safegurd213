@@ -370,10 +370,11 @@ export function analyzeList2Crossing(
                             }
                         }
 
-                        // 必须全部完成对 EMA20/30/40 的方向性穿越
-                        if (cross20IdxL !== null && cross30IdxL !== null && cross40IdxL !== null) {
-                            // 第一根被穿越的EMA均线（即三根均线金叉穿越中发生最早的那根K线）
-                            const firstCrossIdxL = Math.min(cross20IdxL, cross30IdxL, cross40IdxL);
+                        // 必须全部完成对 EMA20/30/40 的方向性穿越，且必须严格按顺序：先20，再30，最后40
+                        if (cross20IdxL !== null && cross30IdxL !== null && cross40IdxL !== null &&
+                            cross20IdxL <= cross30IdxL && cross30IdxL <= cross40IdxL) {
+                            // 第一根被穿越的EMA均线（即发生最早的那根K线，此处即为 cross20IdxL）
+                            const firstCrossIdxL = cross20IdxL;
                             const distFromCurrentL = idx - firstCrossIdxL;
 
                             // 🔒 铁律门禁：当前K线距离第一根穿越均线不得大于 divergenceLookbackBars 根K线
@@ -383,7 +384,7 @@ export function analyzeList2Crossing(
                                 crossedAllL = false; // 距离大于设定值，直接过滤掉，不进列表2！
                             }
                         } else {
-                            // 规定搜索窗口内未找到完整金叉穿越，直接淘汰！
+                            // 规定搜索窗口内未找到完整按顺序金叉穿越，直接淘汰！
                             crossedAllL = false;
                         }
                     }
@@ -543,10 +544,11 @@ export function analyzeList2Crossing(
                             }
                         }
 
-                        // 必须全部完成对 EMA20/30/40 的方向性穿越
-                        if (cross20IdxS !== null && cross30IdxS !== null && cross40IdxS !== null) {
-                            // 第一根被穿越的EMA均线（即三根均线死叉穿越中发生最早的那根K线）
-                            const firstCrossIdxS = Math.min(cross20IdxS, cross30IdxS, cross40IdxS);
+                        // 必须全部完成对 EMA20/30/40 的方向性穿越，且必须严格按顺序：先20，再30，最后40
+                        if (cross20IdxS !== null && cross30IdxS !== null && cross40IdxS !== null &&
+                            cross20IdxS <= cross30IdxS && cross30IdxS <= cross40IdxS) {
+                            // 第一根被穿越的EMA均线（即发生最早的那根K线，此处即为 cross20IdxS）
+                            const firstCrossIdxS = cross20IdxS;
                             const distFromCurrentS = idx - firstCrossIdxS;
 
                             // 🔒 铁律门禁：当前K线距离第一根穿越均线不得大于 divergenceLookbackBars 根K线
@@ -556,7 +558,7 @@ export function analyzeList2Crossing(
                                 crossedAllS = false; // 距离大于设定值，直接过滤掉，不进列表2！
                             }
                         } else {
-                            // 规定搜索窗口内未找到完整死叉穿越，直接淘汰！
+                            // 规定搜索窗口内未找到完整按顺序死叉穿越，直接淘汰！
                             crossedAllS = false;
                         }
                     }
@@ -662,8 +664,8 @@ export function analyzeList2Crossing(
                         if (cross20IdxL !== null && cross30IdxL !== null) break;
                     }
 
-                    // 必须在过去 N 根 K 线内同时完成对 EMA20/30/40 的连续金叉穿越
-                    if (cross20IdxL !== null && cross30IdxL !== null) {
+                    // 必须在过去 N 根 K 线内按顺序同时完成对 EMA20/30/40 的连续金叉穿越 (cross20 <= cross30 <= checkIdx)
+                    if (cross20IdxL !== null && cross30IdxL !== null && cross20IdxL <= cross30IdxL && cross30IdxL <= checkIdx) {
                         // 🔒【第一根同向阳线确认逻辑】：
                         // A. 若穿越当根 (checkIdx) 就是已收盘阳线，当根直接确认！
                         // B. 若穿越当根为阴线/十字星，向右顺延寻找第一根已收盘阳线 (Close > Open) 确定为信号 K 线
@@ -733,8 +735,8 @@ export function analyzeList2Crossing(
                         if (cross20IdxS !== null && cross30IdxS !== null) break;
                     }
 
-                    // 必须在过去 N 根 K 线内同时完成对 EMA20/30/40 的连续死叉穿越
-                    if (cross20IdxS !== null && cross30IdxS !== null) {
+                    // 必须在过去 N 根 K 线内按顺序同时完成对 EMA20/30/40 的连续死叉穿越 (cross20 <= cross30 <= checkIdx)
+                    if (cross20IdxS !== null && cross30IdxS !== null && cross20IdxS <= cross30IdxS && cross30IdxS <= checkIdx) {
                         // 🔒【第一根同向阴线确认逻辑】：
                         // A. 若穿越当根 (checkIdx) 就是已收盘阴线，当根直接确认！
                         // B. 若穿越当根为阳线/十字星，向右顺延寻找第一根已收盘阴线 (Close < Open) 确定为信号 K 线
@@ -1563,8 +1565,8 @@ export function analyzeList2Crossing(
                     }
                 }
             } 
-            // 阶段 2：多头无缝自动晋升 (EMA10 > EMA40 且 EMA10 > EMA30，已顺次完成对 EMA40 的穿越)
-            else if (curE10 > curE40 && curE10 > curE30) {
+            // 阶段 2：多头无缝自动晋升 (EMA10 向上穿越 EMA40 且同时高于 EMA20、EMA30、EMA40 实现完全多头排列)
+            else if (curE10 > curE40 && curE10 > curE30 && curE20 !== null && curE10 > curE20) {
                 // 追溯过去设定根数内 EMA10 向上金叉穿越 EMA40
                 for (let pLag = 0; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
@@ -1593,9 +1595,9 @@ export function analyzeList2Crossing(
                                 }
                             }
 
-                            // 方向防守门禁：非空头排列
-                            const isNotBearArranged = curE20 === null || !(curE10 < curE20 && curE10 < curE30);
-                            if (isNotBearArranged) {
+                            // 严密的多头均线排列确认：EMA10 必须同时高于 EMA20/30/40
+                            const isFullyBullAligned = curE20 !== null && curE10 > curE20 && curE10 > curE30 && curE10 > curE40;
+                            if (isFullyBullAligned) {
                                 foundPromotedL = true;
                                 promotedLagL = Math.max(1, idx - cTarget);
                                 confirmedIdxL = cTarget;
@@ -1628,8 +1630,8 @@ export function analyzeList2Crossing(
                     }
                 }
             }
-            // 阶段 2：空头无缝自动晋升 (EMA10 < EMA40 且 EMA10 < EMA30，已顺次完成对 EMA40 的穿越)
-            else if (curE10 < curE40 && curE10 < curE30) {
+            // 阶段 2：空头无缝自动晋升 (EMA10 向下死叉穿越 EMA40 且同时低于 EMA20、EMA30、EMA40 实现完全空头排列)
+            else if (curE10 < curE40 && curE10 < curE30 && curE20 !== null && curE10 < curE20) {
                 // 追溯过去设定根数内 EMA10 向下死叉穿越 EMA40
                 for (let pLag = 0; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
@@ -1657,9 +1659,9 @@ export function analyzeList2Crossing(
                                 }
                             }
 
-                            // 方向防守门禁：非多头排列
-                            const isNotBullArranged = curE20 === null || !(curE10 > curE20 && curE10 > curE30);
-                            if (isNotBullArranged) {
+                            // 严密的空头均线排列确认：EMA10 必须同时低于 EMA20/30/40
+                            const isFullyBearAligned = curE20 !== null && curE10 < curE20 && curE10 < curE30 && curE10 < curE40;
+                            if (isFullyBearAligned) {
                                 foundPromotedS = true;
                                 promotedLagS = Math.max(1, idx - cTarget);
                                 confirmedIdxS = cTarget;

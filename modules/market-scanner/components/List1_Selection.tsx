@@ -450,11 +450,20 @@ const List1_Selection: React.FC<Props> = ({
         return localMajorTrendCandidates;
     }, [majorTrendCandidates, localMajorTrendCandidates]);
 
+    const majorCandidatesStr = useMemo(() => {
+        return Array.from(majorTrendCandidates || []).sort().join(',');
+    }, [majorTrendCandidates]);
+
     useEffect(() => {
         if (majorTrendCandidates && majorTrendCandidates.size > 0) {
-            setLocalMajorTrendCandidates(majorTrendCandidates);
+            setLocalMajorTrendCandidates(prev => {
+                if (prev.size === majorTrendCandidates.size && Array.from(prev).every(x => majorTrendCandidates.has(x))) {
+                    return prev;
+                }
+                return majorTrendCandidates;
+            });
         }
-    }, [majorTrendCandidates]);
+    }, [majorCandidatesStr]);
 
     const lookbackDays = scanConfig.majorTrend?.lookbackDays || 300;
     const enableLong = scanConfig.majorTrend?.enableLong !== false;
@@ -1835,7 +1844,7 @@ const List1_Selection: React.FC<Props> = ({
             {showVisualizer && (
                 <ScannerVisualizerModal 
                     title="1. 市场初筛"
-                    items={filteredList.map(i => ({ symbol: i.symbol, timeframe: scanConfig.list1DefaultTf || '1d' }))}
+                    items={filteredList.map(i => ({ symbol: i.symbol, timeframe: scanConfig.list1DefaultTf || '1d', source: 'list1' }))}
                     defaultTf={scanConfig.list1DefaultTf || '1d'}
                     defaultLimit={500}
                     watchlist={

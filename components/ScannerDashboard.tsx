@@ -1154,14 +1154,14 @@ const ScannerDashboardInner: React.FC<
         y: payload.y || 0,
         symbol: payload.symbol,
         chineseName: payload.chineseName,
-        currentPrice: payload.currentPrice || currentPrices[payload.symbol] || 0,
+        currentPrice: payload.currentPrice || currentPricesRef.current[payload.symbol] || 0,
         direction: payload.direction || 'LONG',
       });
     });
     return () => {
       unsubscribe();
     };
-  }, [currentPrices]);
+  }, []);
 
   const isUnconfigured = useMemo(() => {
     const activeStrat = strategies.find((s) => s.id === selectedStrategyId);
@@ -1783,6 +1783,16 @@ const ScannerDashboardInner: React.FC<
     return filtered;
   };
 
+  const list1CandidatesKey = useMemo(() => {
+    return (list1Candidates || []).map(c => `${c.symbol}_${c.price || 0}`).join('|');
+  }, [list1Candidates]);
+
+  const filteredPositionsKey = useMemo(() => {
+    return (filteredPositions || []).map(p => `${p.symbol}_${p.side}`).join('|');
+  }, [filteredPositions]);
+
+  const scanConfigKey = useMemo(() => JSON.stringify(scanConfig), [scanConfig]);
+
   useEffect(() => {
     const instantOpen = !!scanConfig?.instantOpenEnabled;
     const instantOpenAfterClose = !!scanConfig?.instantReopenEnabled;
@@ -1856,7 +1866,7 @@ const ScannerDashboardInner: React.FC<
           return;
         }
 
-        const price = resolvePrice(item.symbol, currentPrices, item.price);
+        const price = resolvePrice(item.symbol, currentPricesRef.current, item.price);
         if (price > 0) {
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
           pendingOpenTasks.push({
@@ -1876,7 +1886,7 @@ const ScannerDashboardInner: React.FC<
           return;
         }
 
-        const price = resolvePrice(item.symbol, currentPrices, item.price);
+        const price = resolvePrice(item.symbol, currentPricesRef.current, item.price);
         if (price > 0) {
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
           pendingOpenTasks.push({
@@ -1926,7 +1936,11 @@ const ScannerDashboardInner: React.FC<
             task.symbol,
             task.side,
             task.price,
-            task.reason
+            task.reason,
+            undefined,
+            undefined,
+            undefined,
+            { isReopened: task.isReopen }
           );
         }
       }
@@ -1935,7 +1949,7 @@ const ScannerDashboardInner: React.FC<
     return () => {
       isCancelled = true;
     };
-  }, [list1Candidates, scanConfig, filteredPositions, currentPrices, executeTradeSafe]);
+  }, [list1CandidatesKey, scanConfigKey, filteredPositionsKey, executeTradeSafe]);
 
   const handleClosePositionInternal = useCallback(
     (symbol: string, side: PositionSide) => {
@@ -2985,6 +2999,18 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
   // 后台策略的即时开仓执行
   const bgOpenedSymbolsRef = useRef<Set<string>>(new Set());
   const bgLastTriggerTimeRef = useRef<Record<string, number>>({});
+  const bgCurrentPricesRef = useRef<Record<string, number>>({});
+  bgCurrentPricesRef.current = currentPrices;
+
+  const bgCandidatesKey = useMemo(() => {
+    return (list1Candidates || []).map(c => `${c.symbol}_${c.price || 0}`).join('|');
+  }, [list1Candidates]);
+
+  const bgPositionsKey = useMemo(() => {
+    return (filteredPositions || []).map(p => `${p.symbol}_${p.side}`).join('|');
+  }, [filteredPositions]);
+
+  const bgConfigKey = useMemo(() => JSON.stringify(scanConfig), [scanConfig]);
 
   useEffect(() => {
     const instantOpen = !!scanConfig?.instantOpenEnabled;
@@ -3019,7 +3045,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
       if (now - lastTrigger < 5000) return;
 
       if (instantOpen && !bgOpenedSymbolsRef.current.has(symbol)) {
-        const price = resolvePrice(item.symbol, currentPrices, item.price);
+        const price = resolvePrice(item.symbol, bgCurrentPricesRef.current, item.price);
         if (price > 0) {
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
           bgOpenedSymbolsRef.current.add(symbol);
@@ -3033,7 +3059,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
         }
       }
     });
-  }, [list1Candidates, scanConfig, filteredPositions, currentPrices, wrappedExecuteTradeSafe, strategyId]);
+  }, [bgCandidatesKey, bgConfigKey, bgPositionsKey, wrappedExecuteTradeSafe, strategyId]);
 
   const isBacktest = mode === "BACKTEST";
 

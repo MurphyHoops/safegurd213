@@ -41,10 +41,18 @@ export const IpOutageAlertModal: React.FC<IpOutageAlertModalProps> = ({
         if (res.ok) {
           const json = await res.json();
           if (json && json.status && json.status !== 'HEALTHY') {
-            setIncidentData(json);
-          } else if (json && json.status === 'HEALTHY' && incidentData) {
-            setIncidentData(null);
-            if (onRecovered) onRecovered();
+            setIncidentData(prev => {
+              if (JSON.stringify(prev) === JSON.stringify(json)) return prev;
+              return json;
+            });
+          } else if (json && json.status === 'HEALTHY') {
+            setIncidentData(prev => {
+              if (prev !== null) {
+                if (onRecovered) onRecovered();
+                return null;
+              }
+              return null;
+            });
           }
         }
       } catch (_) {}
@@ -55,7 +63,10 @@ export const IpOutageAlertModal: React.FC<IpOutageAlertModalProps> = ({
 
     const handleCustomEvent = (e: any) => {
       if (e.detail) {
-        setIncidentData(e.detail);
+        setIncidentData(prev => {
+          if (JSON.stringify(prev) === JSON.stringify(e.detail)) return prev;
+          return e.detail;
+        });
       }
     };
     window.addEventListener('savior_system_incident', handleCustomEvent);
@@ -64,7 +75,7 @@ export const IpOutageAlertModal: React.FC<IpOutageAlertModalProps> = ({
       clearInterval(interval);
       window.removeEventListener('savior_system_incident', handleCustomEvent);
     };
-  }, [incidentData, onRecovered]);
+  }, [onRecovered]);
 
   // 核心铁律：若原 IP 与当前最新 IP 相同（未发生 IP 漂移），或当前 IP 已被用户在当前会话中主动跳过，绝不弹出此白名单告警遮罩
   const isSameIp = Boolean(

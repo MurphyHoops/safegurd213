@@ -54,6 +54,23 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
 
   const selectedSymbol = currentItem?.symbol || null;
 
+  const emptySignals = useMemo(() => [], []);
+  const modalSignals = useMemo(() => currentItem?.signals || emptySignals, [currentItem?.signals, emptySignals]);
+
+  const modalExtraLines = useMemo(() => {
+    if (currentItem?.extraLines) return currentItem.extraLines;
+    if (currentItem?.entryPrice) {
+      const isShort = currentItem.direction === 'SHORT' || currentItem.side === 'SHORT' || currentItem.side === '空';
+      return [{
+        price: currentItem.entryPrice,
+        label: `开仓信号线(${isShort ? '空' : '多'})`,
+        color: isShort ? '#ef4444' : '#10b981',
+        style: 'dashed'
+      }];
+    }
+    return undefined;
+  }, [currentItem?.extraLines, currentItem?.entryPrice, currentItem?.direction, currentItem?.side]);
+
   const currentIndex = useMemo(() => {
     if (!selectedItem) return -1;
     return filteredItems.findIndex(i => i.symbol === selectedItem.symbol && i.timeframe === selectedItem.timeframe);
@@ -216,7 +233,7 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   list4Config={isList5Mode ? undefined : currentItem?.list4Config}
                   disablePortal={true}
                   onClose={() => setSelectedItem(null)}
-                  signals={currentItem?.signals || []}
+                  signals={modalSignals}
                   direction={currentItem?.direction || currentItem?.side}
                   side={currentItem?.side || currentItem?.direction}
                   entryPrice={currentItem?.entryPrice}
@@ -224,17 +241,12 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   currentPrice={currentItem?.currentPrice}
                   highlightTime={currentItem?.highlightTime}
                   showAuditLines={isList5Mode ? false : (currentItem?.showAuditLines || false)}
-                  extraLines={currentItem?.extraLines || (currentItem?.entryPrice ? [{
-                    price: currentItem.entryPrice,
-                    label: `开仓信号线(${(currentItem.direction === 'SHORT' || currentItem.side === 'SHORT' || currentItem.side === '空') ? '空' : '多'})`,
-                    color: (currentItem.direction === 'SHORT' || currentItem.side === 'SHORT' || currentItem.side === '空') ? '#ef4444' : '#10b981',
-                    style: 'dashed'
-                  }] : undefined)}
+                  extraLines={modalExtraLines}
                   appearedTime={currentItem?.appearedTime}
                   disappearedTime={currentItem?.disappearedTime}
                   lookbackDays={currentItem?.lookbackDays}
                   sidewaysDays={currentItem?.sidewaysDays}
-                  source={currentItem?.source || (isList5Mode ? 'list5' : (title.includes('2') || title.includes('防御')) ? (currentItem?.isPreWait ? 'list2_prewait' : 'list2') : (title.includes('3') || title.includes('结构') || title.includes('深度')) ? 'list3' : undefined)}
+                  source={currentItem?.source || ((title.includes('1') || title.includes('初筛')) ? 'list1' : isList5Mode ? 'list5' : (title.includes('2') || title.includes('防御')) ? (currentItem?.isPreWait ? 'list2_prewait' : 'list2') : (title.includes('3') || title.includes('结构') || title.includes('深度')) ? 'list3' : undefined)}
                   isPreWait={Boolean(currentItem?.isPreWait || currentItem?.source === 'list2_prewait' || currentItem?.source === 'prewait')}
                   viewMode={(currentItem?.viewMode as 'SIGNAL' | 'TRADE') || (isList5Mode ? 'TRADE' : undefined)}
                 />

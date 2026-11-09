@@ -254,8 +254,8 @@ export const klineMultiTfStore = {
   },
 
   purgeStaleEntries(): void {
-    if (symbolTfBufferMap.size > 600) {
-      let countToRemove = symbolTfBufferMap.size - 400;
+    if (symbolTfBufferMap.size > 250) {
+      let countToRemove = symbolTfBufferMap.size - 150;
       for (const key of symbolTfBufferMap.keys()) {
         symbolTfBufferMap.delete(key);
         symbolTfEmaMap.delete(key);

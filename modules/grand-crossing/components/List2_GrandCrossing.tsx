@@ -170,7 +170,6 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
         const timer = setInterval(() => {
             setPopupTimeLeft(prev => {
                 if (prev <= 1) {
-                    setAutoPopupItem(null);
                     return 0;
                 }
                 return prev - 1;
@@ -179,6 +178,12 @@ const List2_GrandCrossing: React.FC<Props> = ({ networkStatus = 'disconnected', 
 
         return () => clearInterval(timer);
     }, [autoPopupItem]);
+
+    useEffect(() => {
+        if (popupTimeLeft === 0 && autoPopupItem) {
+            setAutoPopupItem(null);
+        }
+    }, [popupTimeLeft, autoPopupItem]);
 
     // Reset timer back to 300s on user operation inside modal
     const handleModalInteraction = () => {

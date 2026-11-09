@@ -295,12 +295,46 @@ const List3_Structure: React.FC<Props> = ({
       {showVisualizer && (
         <ScannerVisualizerModal
           title="3. 爆发结构"
-          items={filteredList.map((i) => ({
-            symbol: i.symbol,
-            timeframe: i.tf,
-            source: 'list3',
-            isPreWait: false,
-          }))}
+          items={filteredList.flatMap((i) => {
+            const signals = i.list3Results || [];
+            if (signals.length === 0) {
+              return [{
+                symbol: i.symbol,
+                timeframe: i.tf || '15m',
+                source: 'list3',
+                isPreWait: false,
+                showAuditLines: true
+              }];
+            }
+            return signals.map(res => {
+              const dir = res.direction || i.direction || 'LONG';
+              const isLong = dir === 'LONG';
+              const st = res.structure;
+              const price = i.price || 0;
+              const rawHigh = typeof st?.signalHigh === 'number' && st.signalHigh > 0 ? st.signalHigh : (st?.signalPrice ?? price);
+              const rawLow = typeof st?.signalLow === 'number' && st.signalLow > 0 ? st.signalLow : (st?.signalPrice ?? price);
+              const high = Math.max(rawHigh, rawLow);
+              const low = Math.min(rawHigh, rawLow);
+              const raw_price_range = high - low;
+              const price_range = raw_price_range > (price * 0.0005) ? raw_price_range : (price * 0.0005);
+
+              const triggerPrice = isLong ? (high + price_range * 0.1) : (low - price_range * 0.1);
+              const defensePrice = isLong ? (high - price_range * 0.8) : (low + price_range * 0.8);
+
+              return {
+                symbol: i.symbol,
+                timeframe: res.tf || i.tf || '15m',
+                direction: dir,
+                source: 'list3',
+                isPreWait: false,
+                showAuditLines: true,
+                extraLines: [
+                  { price: triggerPrice, label: `进攻突破线(${isLong ? '多' : '空'})`, color: '#38bdf8', style: 'dashed' },
+                  { price: defensePrice, label: `中轴防守线(${isLong ? '多' : '空'})`, color: '#f59e0b', style: 'dashed' }
+                ]
+              };
+            });
+          })}
           defaultTf="15m"
           onClose={() => setShowVisualizer(false)}
         />

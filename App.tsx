@@ -26,6 +26,9 @@ import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
 import { IpChangeAlertModal, IpChangeAlertData } from './components/IpChangeAlertModal';
 import IpOutageAlertModal from './components/IpOutageAlertModal';
+import { startHeartbeatWatchdog, recordFlightAction, getFlightBuffer } from './services/flightRecorder';
+import { startClientForensicProbe } from './services/clientForensicProbe';
+import { CrashRecoveryModal, CrashDumpRecord } from './components/CrashRecoveryModal';
 import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock, AlertTriangle, Trash2 } from 'lucide-react'; 
 import { 
     setBinanceLogSink, 
@@ -116,11 +119,20 @@ const AppContent: React.FC = () => {
             const isReal = savedSettings?.system?.realTrading;
             const key = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
             const fallbackKey = 'SAVIOR_POSITIONS';
-            const saved = loadState<Position[]>(key, loadState<Position[]>(fallbackKey, []));
+            let saved = loadState<Position[]>(key, loadState<Position[]>(fallbackKey, []));
+            if (!Array.isArray(saved) || saved.length === 0) {
+                // Secondary fallback: check both SIM and LIVE keys in case mode switched or was saved in alternative key
+                const altKey = isReal ? 'SAVIOR_POSITIONS_SIM' : 'SAVIOR_POSITIONS_LIVE';
+                const altSaved = loadState<Position[]>(altKey, []);
+                if (Array.isArray(altSaved) && altSaved.length > 0) {
+                    saved = altSaved;
+                }
+            }
             if (!Array.isArray(saved)) return [];
 
-            // Read recently closed graveyard keys to prevent ghost resurrection at boot
-            let recentlyClosedSet = new Set<string>();
+            // Read recently closed graveyard keys with timestamp check:
+            // ONLY suppress if the position entryTime is older than or equal to the close event timestamp!
+            let recentlyClosedMap = new Map<string, number>();
             try {
                 const closedSaved = localStorage.getItem('SAVIOR_RECENTLY_CLOSED_KEYS');
                 if (closedSaved) {
@@ -129,7 +141,7 @@ const AppContent: React.FC = () => {
                         const now = Date.now();
                         parsed.forEach(([k, ts]: [string, number]) => {
                             if (now - ts < 43200000) { // 12 hours graveyard memory
-                                recentlyClosedSet.add(k);
+                                recentlyClosedMap.set(k, ts);
                             }
                         });
                     }
@@ -141,8 +153,10 @@ const AppContent: React.FC = () => {
                 .filter(p => {
                     const cleanSym = normalizeSymbol(p.symbol);
                     const lookupKey = `${cleanSym}_${p.side}`;
-                    if (recentlyClosedSet.has(lookupKey) || recentlyClosedSet.has(cleanSym)) {
-                        console.log(`[Boot Filter] Suppressing recently closed position ${cleanSym} (${p.side})`);
+                    const closedTs = recentlyClosedMap.get(lookupKey);
+                    // ONLY suppress if there is a recorded close timestamp AND the position was entered BEFORE that close
+                    if (closedTs && p.entryTime && p.entryTime <= closedTs) {
+                        console.log(`[Boot Filter] Suppressing genuinely stale closed position ${cleanSym} (${p.side}), closed at ${closedTs}, entered at ${p.entryTime}`);
                         return false;
                     }
                     return true;
@@ -202,6 +216,7 @@ const AppContent: React.FC = () => {
     const [networkStatus, setNetworkStatus] = useState<'healthy' | 'delayed' | 'disconnected'>('disconnected');
     const [backtestPositions, setBacktestPositions] = useState<Position[]>([]);
     const [binanceRealPositions, setBinanceRealPositions] = useState<Position[]>([]);
+    const [crashRecoveryData, setCrashRecoveryData] = useState<{ crash: CrashDumpRecord; actions: any[] } | null>(null);
     
     const handleBacktestPositionsUpdate = useCallback((newPos: Position[]) => {
         setTimeout(() => {
@@ -721,9 +736,23 @@ const AppContent: React.FC = () => {
                             simulatorRef.current.tradeLogs.unshift(manualLogItem);
                             simulatorRef.current.setPositions(nextPositions);
                             setPositions(nextPositions);
+                            positionsRef.current = nextPositions;
                             setBinanceRealPositions(nextPositions);
                             setTradeLogs(prev => [manualLogItem, ...prev]);
                             simulatorRef.current.emitUpdate(true);
+
+                            // ⚡ 即刻双轨持久化 (LocalStorage + 服务端物理磁盘 /data/positions.json)
+                            saveState('SAVIOR_POSITIONS_LIVE', nextPositions);
+                            saveState('SAVIOR_POSITIONS', nextPositions);
+                            saveState('SAVIOR_TRADELOGS_LIVE', simulatorRef.current.tradeLogs, 800);
+                            saveState('SAVIOR_TRADELOGS', simulatorRef.current.tradeLogs, 800);
+                            try {
+                                fetch('/api/daemon/save-state', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ key: 'positions', data: nextPositions })
+                                }).catch(() => {});
+                            } catch (_) {}
                         }
 
                         // Sync real-time positions instantly after order placement with cache bypass
@@ -787,28 +816,109 @@ const AppContent: React.FC = () => {
                         strategyId: activeStrategyId,
                         isManual: true
                     });
-                    setPositions([...simulatorRef.current.getPositions()]);
+                    const updatedSimPositions = [...simulatorRef.current.getPositions()];
+                    setPositions(updatedSimPositions);
+                    positionsRef.current = updatedSimPositions;
+
+                    // ⚡ 即刻双轨持久化 (LocalStorage + 服务端物理磁盘 /data/positions.json)
+                    saveState('SAVIOR_POSITIONS_SIM', updatedSimPositions);
+                    saveState('SAVIOR_POSITIONS', updatedSimPositions);
+                    saveState('SAVIOR_TRADELOGS_SIM', simulatorRef.current.tradeLogs, 800);
+                    saveState('SAVIOR_TRADELOGS', simulatorRef.current.tradeLogs, 800);
+                    try {
+                        fetch('/api/daemon/save-state', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ key: 'positions', data: updatedSimPositions })
+                        }).catch(() => {});
+                    } catch (_) {}
+
                     const simUsdt = (costUsdt).toFixed(2);
                     handleLog("SUCCESS", `🛡️ [模拟开仓] 手动开仓成功: ${cleanSymbol} ${side} | 数量: ${(costUsdt / (finalPrice || 1)).toFixed(4)} (约 ${simUsdt} USDT) | 成交价: ${finalPrice}`, true);
                 }
             }
         }; // 🔒 [LOCKED - MANUAL ORDER OPENING & MILLISECOND LOG ENGINE]
 
-        const initSystem = async () => {
-            console.log("[Boot] Initializing system services...");
+        // 🛡️ [Client Boot Autopsy] 冷启动自动拉取并打印最后法医指标
+        const checkLastForensicMetrics = async () => {
             try {
-                // Ensure audio is ready
-                await audioService.checkAndResume().catch((e) => {
-                    console.warn("[Boot] Audio resume warning", e);
-                    logger.warn('BOOT', '音频服务唤醒提醒', e.message);
-                });
-                console.log("[Boot] System initialized successfully.");
-                logger.info('BOOT', '系统初始化成功，主引擎负载就绪');
+                const res = await fetch('/api/telemetry/last-forensic', { signal: AbortSignal.timeout(2000) });
+                if (res.ok) {
+                    const json = await res.json();
+                    if (json && json.success && Array.isArray(json.lastRecords) && json.lastRecords.length > 0) {
+                        console.group('🔍 【法医级崩溃前时序指标回放】(Forensic Autopsy Report)');
+                        console.warn('以下为程序自动退出或重启前最后几秒钟的物理指标，请检查是否有某项数值突变：');
+                        
+                        json.lastRecords.forEach((record: any, idx: number) => {
+                            const isLast = idx === json.lastRecords.length - 1;
+                            const prefix = isLast ? '🚨 [临终前最后秒]' : '⏱️';
+                            console.log(
+                                `${prefix} [${record.timeStr}] | 节点DOM数: ${record.domNodeCount} | 客户端Heap: ${record.clientHeapMB}MB | 服务端RSS: ${record.serverRssMB}MB | 状态: ${record.customNote}`
+                            );
+                        });
+                        console.groupEnd();
+                    }
+                }
+            } catch (_) {}
+        };
+
+        const initSystem = () => {
+            console.log("[Boot] Initializing system services (Non-blocking)...");
+            try {
+                // 🛡️ 启动轻量级高频心跳看门狗与飞行记录仪
+                startHeartbeatWatchdog();
+                startClientForensicProbe();
+                recordFlightAction('BOOT_INIT', '主系统引导加载，黑匣子飞行记录仪已启动');
+                checkLastForensicMetrics();
+
+                // 立即推高就绪标识，解除首屏阻塞
                 setIsInitializing(false);
+
+                // 🛡️ [非阻塞后台流]: 检查上次崩溃/非正常退出记录与物理磁盘持仓恢复
+                Promise.allSettled([
+                    fetch('/api/telemetry/last-crash', { signal: AbortSignal.timeout(1500) })
+                        .then(res => res.ok ? res.json() : null)
+                        .then(crashJson => {
+                            if (crashJson && crashJson.hasCrash && crashJson.crash) {
+                                setCrashRecoveryData({
+                                    crash: crashJson.crash,
+                                    actions: crashJson.flightActions || getFlightBuffer()
+                                });
+                            }
+                        }).catch(() => {}),
+
+                    (!positionsRef.current || positionsRef.current.length === 0)
+                        ? fetch('/api/daemon/load-state?key=positions', { signal: AbortSignal.timeout(1500) })
+                            .then(res => res.ok ? res.json() : null)
+                            .then(dJson => {
+                                if (dJson && Array.isArray(dJson.positions) && dJson.positions.length > 0) {
+                                    console.log(`[Boot Recovery] Restored ${dJson.positions.length} active positions from server disk (/data/positions.json)`);
+                                    const restored = dJson.positions.filter((p: any) => p && (p.amount || 0) > 0.0001);
+                                    if (restored.length > 0) {
+                                        setPositions(restored);
+                                        positionsRef.current = restored;
+                                        if (simulatorRef.current) {
+                                            simulatorRef.current.setPositions(restored);
+                                        }
+                                        const isReal = settingsRef.current?.system?.realTrading;
+                                        const key = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
+                                        saveState(key, restored);
+                                        saveState('SAVIOR_POSITIONS', restored);
+                                    }
+                                }
+                            }).catch(() => {})
+                        : Promise.resolve()
+                ]).catch(() => {});
+
+                // Ensure audio is ready in background
+                audioService.checkAndResume().catch((e) => {
+                    console.warn("[Boot] Audio resume warning", e);
+                });
+                
+                console.log("[Boot] System initialized successfully.");
             } catch (err) {
-                console.error("[Boot] System boot failed:", err);
-                logger.error('BOOT', '系统启动崩溃', err);
-                setBootError(String(err));
+                console.error("[Boot] System boot error (Non-fatal):", err);
+                setIsInitializing(false);
             }
         };
 
@@ -911,10 +1021,12 @@ const AppContent: React.FC = () => {
             };
         };
 
-        connectWebSocket();
+        // 🚀 非阻塞延迟 50ms 建立 WebSocket，保障首屏 DOM Paint 100% 秒级优先完成
+        const bootWsTimer = setTimeout(connectWebSocket, 50);
 
         return () => {
             isIntentionalClose = true;
+            clearTimeout(bootWsTimer);
             clearInterval(heartbeatInterval);
             clearTimeout(reconnectTimer);
             if (disconnectLogTimer) clearTimeout(disconnectLogTimer);
@@ -4520,7 +4632,6 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
     // Periodic persistence
     useEffect(() => {
         const interval = setInterval(() => {
-            if (isProcessingRef.current) return;
             const isReal = settingsRef.current.system.realTrading;
             
             // Determine active keys
@@ -4539,6 +4650,17 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             
             saveState('SAVIOR_LOGS', logsRef.current, 150);
             saveState('SAVIOR_SETTINGS', settingsRef.current);
+
+            // 🛡️ 服务端物理磁盘双轨落盘备份 (/data/positions.json)
+            if (positionsRef.current && positionsRef.current.length > 0) {
+                try {
+                    fetch('/api/daemon/save-state', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ key: 'positions', data: positionsRef.current })
+                    }).catch(() => {});
+                } catch (_) {}
+            }
         }, 5000);
         
         // Immediate persistence on unload
@@ -4559,6 +4681,12 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             
             saveState('SAVIOR_LOGS', logsRef.current, 150);
             saveState('SAVIOR_SETTINGS', settingsRef.current);
+
+            if (positionsRef.current && positionsRef.current.length > 0) {
+                try {
+                    navigator.sendBeacon('/api/daemon/save-state', JSON.stringify({ key: 'positions', data: positionsRef.current }));
+                } catch (_) {}
+            }
         };
         window.addEventListener('beforeunload', handleBeforeUnload);
         
@@ -4982,6 +5110,15 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
 
             {/* 🛡️ 全局 IP 漂移受控锁与断网熔断热自愈悬浮面板 (非阻断模式，支持跳过进入主界面) */}
             <IpOutageAlertModal onClose={() => setIpChangeAlertData(null)} />
+
+            {/* 🛡️ 启动自检与灾难恢复弹窗 (Crash Recovery & Telemetry Modal) */}
+            {crashRecoveryData && (
+                <CrashRecoveryModal
+                    crashData={crashRecoveryData.crash}
+                    flightActions={crashRecoveryData.actions}
+                    onClose={() => setCrashRecoveryData(null)}
+                />
+            )}
         </div>
     );
 };

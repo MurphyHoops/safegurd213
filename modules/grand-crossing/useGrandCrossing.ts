@@ -128,15 +128,15 @@ export const useGrandCrossing = (
   );
   // Ensure timeframes is sanitized & never empty
   useEffect(() => {
-    let newTfs = [...(config.timeframes || [])];
-    if (!config.timeframes || config.timeframes.length === 0) {
-      setConfig((prev) => ({
-        ...prev,
-        timeframes:
-          newTfs.length > 0
-            ? newTfs
-            : ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "1d", "3d"],
-      }));
+    const tfs = config.timeframes || [];
+    if (tfs.length === 0) {
+      const sanitized = ["1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "1d", "3d"];
+      if (JSON.stringify(tfs) !== JSON.stringify(sanitized)) {
+        setConfig((prev) => ({
+          ...prev,
+          timeframes: sanitized,
+        }));
+      }
     }
   }, [config.timeframes, setConfig]);
 
@@ -1170,10 +1170,13 @@ export const useGrandCrossing = (
     };
   }, [performUpdate, onLog, directMode]);
 
+  const candidatesKey = useMemo(() => (candidates || []).map(c => `${c.symbol}_${c.price || 0}`).join('|'), [candidates]);
+  const configKeyJson = useMemo(() => JSON.stringify(config || {}), [config]);
+
   // --- EFFECT: Sync Ref & Pulse ---
   useEffect(() => {
     configRef.current = config;
-  }, [config]);
+  }, [configKeyJson]);
   useEffect(() => {
     candidatesRef.current = candidates;
 
@@ -1195,7 +1198,7 @@ export const useGrandCrossing = (
 
     // Rapid response for candidates
     performUpdate();
-  }, [candidates, performUpdate]);
+  }, [candidatesKey, performUpdate]);
 
   // ⚡ 订阅毫秒级 Tick 价格流：直接推动 list2FastScanner 执行 0ms 判定与直通派发
   useEffect(() => {
@@ -1216,17 +1219,17 @@ export const useGrandCrossing = (
       lastCandidatesPulseRef.current = pulse;
       performUpdate();
     }
-  }, [candidates, performUpdate]);
+  }, [candidatesKey, performUpdate]);
 
   useEffect(() => {
     performUpdate();
-  }, [config, performUpdate]);
+  }, [configKeyJson, performUpdate]);
 
   // --- DATA REFRESH ---
   useEffect(() => {
     // Always schedule update to reflect latest prices from candidates
     scheduleUpdate();
-  }, [candidates, scheduleUpdate]);
+  }, [candidatesKey, scheduleUpdate]);
 
   // ⚡ Persistent In-Memory Kline Ring-Buffer: key is `${symbol}-${tf}`
   const klineStoreRef = useRef<Map<string, KLine[]>>(new Map());
@@ -1603,9 +1606,9 @@ export const useGrandCrossing = (
           // ⚡ 状态自愈与即时晋升：若历史缓存中的上一代信号为 preWait 折叠态 (isPreWaitEma30: true)，
           // 检查当前实时均线是否已跨越 EMA40：若 EMA10 已跨过 EMA40，立即解除折叠态 (isPreWaitEma30 = false) 并设为 isMaCrossed: true
           if (prevSig.isPreWaitEma30) {
-            if (prevSig.direction === 'LONG' && ema10 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema40) && ema10 > ema40) {
+            if (prevSig.direction === 'LONG' && ema10 !== undefined && ema20 !== undefined && ema30 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema20) && !isNaN(ema30) && !isNaN(ema40) && ema10 > ema40 && ema10 > ema30 && ema10 > ema20) {
               currentSig = { ...prevSig, isPreWaitEma30: false, isMaCrossed: true, isClosed: true };
-            } else if (prevSig.direction === 'SHORT' && ema10 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema40) && ema10 < ema40) {
+            } else if (prevSig.direction === 'SHORT' && ema10 !== undefined && ema20 !== undefined && ema30 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema20) && !isNaN(ema30) && !isNaN(ema40) && ema10 < ema40 && ema10 < ema30 && ema10 < ema20) {
               currentSig = { ...prevSig, isPreWaitEma30: false, isMaCrossed: true, isClosed: true };
             }
           }

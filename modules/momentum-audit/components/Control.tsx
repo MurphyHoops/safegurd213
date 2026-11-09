@@ -32,6 +32,7 @@ export const List4Control: React.FC<List4PanelProps> = ({
 }) => {
   const [showRules, setShowRules] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [is1440FuseCollapsed, setIs1440FuseCollapsed] = useState(true);
   const [isAntiChaseCollapsed, setIsAntiChaseCollapsed] = useState(true);
   const [isAutoDirGuardCollapsed, setIsAutoDirGuardCollapsed] = useState(true);
   const [isAdvancedFilterCollapsed, setIsAdvancedFilterCollapsed] = useState(true);
@@ -44,6 +45,19 @@ export const List4Control: React.FC<List4PanelProps> = ({
       localStorage.setItem('list4_control_collapsed', String(next));
       return next;
     });
+  };
+
+  const setFuse1440 = (field: string, val: number) => {
+    setConfig((p) => ({
+      ...p,
+      fuse1440Config: {
+        longMaxAmplitude: p.fuse1440Config?.longMaxAmplitude ?? 15,
+        longMaxDistance: p.fuse1440Config?.longMaxDistance ?? 10,
+        shortMaxAmplitude: p.fuse1440Config?.shortMaxAmplitude ?? 15,
+        shortMaxDistance: p.fuse1440Config?.shortMaxDistance ?? 10,
+        [field]: val
+      }
+    }));
   };
 
   const setAntiChase = (field: string, val: number) => {
@@ -480,6 +494,120 @@ export const List4Control: React.FC<List4PanelProps> = ({
               />
             </div>
           </div>
+        </div>
+
+        {/* 1440-Minute Dual-Layer Circuit Breaker (24H Fuse) */}
+        <div className="space-y-1 pt-1 border-t border-slate-800/50">
+          <div
+            className="flex items-center justify-between px-1 cursor-pointer hover:bg-slate-800/30 rounded py-1 transition-colors"
+            onClick={() => setIs1440FuseCollapsed(!is1440FuseCollapsed)}
+          >
+            <span className="text-[10px] text-slate-500 font-bold uppercase flex items-center gap-1">
+              <ShieldCheck
+                size={10}
+                className={config.enable1440Fuse !== false ? "text-amber-400" : ""}
+              />{" "}
+              4. 1440分钟(24H)动能双层熔断
+              <ChevronRight
+                size={10}
+                className={`transition-transform duration-200 ${!is1440FuseCollapsed ? "rotate-90" : ""}`}
+              />
+            </span>
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfig((p) => ({
+                  ...p,
+                  enable1440Fuse: config.enable1440Fuse === false ? true : false,
+                }));
+              }}
+              className={`w-7 h-3.5 rounded-full p-0.5 transition-colors cursor-pointer ${config.enable1440Fuse !== false ? "bg-amber-600" : "bg-slate-700"}`}
+            >
+              <div
+                className={`w-2.5 h-2.5 bg-white rounded-full shadow transition-transform ${config.enable1440Fuse !== false ? "translate-x-3.5" : "translate-x-0"}`}
+              />
+            </div>
+          </div>
+
+          {!is1440FuseCollapsed && (
+            <div
+              className={`space-y-2 pt-2 animate-in slide-in-from-top-1 duration-200 ${config.enable1440Fuse !== false ? "opacity-100" : "opacity-40 pointer-events-none"}`}
+            >
+              {/* Long Section */}
+              <div className="bg-slate-800/50 p-2 rounded border border-slate-700/50 space-y-1.5">
+                <div className="text-[9px] font-bold text-emerald-400 uppercase flex items-center gap-1 bg-emerald-500/10 py-0.5 px-1.5 rounded w-fit">
+                  做多双向熔断 (防过热与防追高)
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-slate-900 p-1.5 rounded border border-slate-700/80 flex flex-col gap-1">
+                    <span className="text-[8px] text-slate-400 font-bold" title="1440分钟(24H)内最低点到最高点的整体涨幅比例上限">条件A: 总体振幅限制</span>
+                    <div className="flex items-center justify-between gap-1">
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        value={config.fuse1440Config?.longMaxAmplitude ?? 15}
+                        onChange={(e) => setFuse1440('longMaxAmplitude', parseFloat(e.target.value) || 0)}
+                        className="w-14 bg-slate-800 border border-slate-700 rounded text-center text-[10px] text-emerald-400 font-bold outline-none py-0.5"
+                      />
+                      <span className="text-[8px] text-slate-500">%</span>
+                    </div>
+                  </div>
+                  <div className="bg-slate-900 p-1.5 rounded border border-slate-700/80 flex flex-col gap-1">
+                    <span className="text-[8px] text-slate-400 font-bold" title="1440分钟(24H)内最低点到当前价格的实时涨幅上限">条件B: 当前追高限制</span>
+                    <div className="flex items-center justify-between gap-1">
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        value={config.fuse1440Config?.longMaxDistance ?? 10}
+                        onChange={(e) => setFuse1440('longMaxDistance', parseFloat(e.target.value) || 0)}
+                        className="w-14 bg-slate-800 border border-slate-700 rounded text-center text-[10px] text-emerald-400 font-bold outline-none py-0.5"
+                      />
+                      <span className="text-[8px] text-slate-500">%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Short Section */}
+              <div className="bg-slate-800/50 p-2 rounded border border-slate-700/50 space-y-1.5">
+                <div className="text-[9px] font-bold text-red-400 uppercase flex items-center gap-1 bg-red-500/10 py-0.5 px-1.5 rounded w-fit">
+                  做空双向熔断 (防过冷与防追跌)
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-slate-900 p-1.5 rounded border border-slate-700/80 flex flex-col gap-1">
+                    <span className="text-[8px] text-slate-400 font-bold" title="1440分钟(24H)内最高点到最低点的整体振幅比例上限">条件A: 总体振幅限制</span>
+                    <div className="flex items-center justify-between gap-1">
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        value={config.fuse1440Config?.shortMaxAmplitude ?? 15}
+                        onChange={(e) => setFuse1440('shortMaxAmplitude', parseFloat(e.target.value) || 0)}
+                        className="w-14 bg-slate-800 border border-slate-700 rounded text-center text-[10px] text-red-400 font-bold outline-none py-0.5"
+                      />
+                      <span className="text-[8px] text-slate-500">%</span>
+                    </div>
+                  </div>
+                  <div className="bg-slate-900 p-1.5 rounded border border-slate-700/80 flex flex-col gap-1">
+                    <span className="text-[8px] text-slate-400 font-bold" title="1440分钟(24H)内最高点到当前价格的实时跌幅上限">条件B: 当前追跌限制</span>
+                    <div className="flex items-center justify-between gap-1">
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        value={config.fuse1440Config?.shortMaxDistance ?? 10}
+                        onChange={(e) => setFuse1440('shortMaxDistance', parseFloat(e.target.value) || 0)}
+                        className="w-14 bg-slate-800 border border-slate-700 rounded text-center text-[10px] text-red-400 font-bold outline-none py-0.5"
+                      />
+                      <span className="text-[8px] text-slate-500">%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Anti-Chase Fuse - Collapsible with Time Settings */}

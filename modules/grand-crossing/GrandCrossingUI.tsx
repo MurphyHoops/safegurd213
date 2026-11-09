@@ -191,7 +191,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
             lastListSigRef.current = sig;
             onResultsUpdateRef.current?.(outputList);
         }
-    }, [sanitizedList2, config?.syncDirectionFilterToList3, config?.viewMode, openPositionSymbolsKey, openPositionSymbols]);
+    }, [sanitizedList2, config?.syncDirectionFilterToList3, config?.viewMode, openPositionSymbolsKey]);
 
     // --- LOCAL UI STATE ---
     const [activeFilterTf, setActiveFilterTf] = useState<string | null>(null);

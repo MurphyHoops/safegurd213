@@ -41,10 +41,11 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
     useEffect(() => {
         const activeFilter = scanConfig.antiChaseFilter || scanConfig.majorTrend?.antiChaseFilter;
         if (activeFilter) {
-            setConfig(prev => ({
-                ...prev,
-                ...activeFilter
-            }));
+            setConfig(prev => {
+                const next = { ...prev, ...activeFilter };
+                if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+                return next;
+            });
         }
     }, [
         scanConfig.antiChaseFilter,
