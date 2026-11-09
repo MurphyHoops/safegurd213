@@ -660,8 +660,19 @@ const List1_Selection: React.FC<Props> = ({
             });
         }
 
+        // 补齐防追高熔断底池中的币种 (仅在非固定选币模式下生效)
+        if (!scanConfig.useCustomOnly && antiChasePool && antiChasePool.length > 0) {
+            antiChasePool.forEach(p => {
+                const sym = typeof p === 'string' ? p : p.symbol || p.fullSymbol;
+                const norm = normalizeSym(sym);
+                if (norm && !poolMap.has(norm)) {
+                    poolMap.set(norm, enrichItem(sym, p));
+                }
+            });
+        }
+
         return Array.from(poolMap.values());
-    }, [startTrendPool, sidewaysPool, breakoutPool, lookbackPool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
+    }, [startTrendPool, sidewaysPool, breakoutPool, lookbackPool, antiChasePool, list1, effectiveMajorCandidates, scanConfig.useCustomOnly]);
 
     const list1SymbolsStr = baseList.map(item => item.symbol).join(',');
 
