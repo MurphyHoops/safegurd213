@@ -1140,17 +1140,49 @@ const List1_Selection: React.FC<Props> = ({
                 } catch (_) {}
             }
 
-            // 🎯【流水闸级联数据流】: 严格遵循每一级过滤规则设立独立底池，下一级从上一级获取数据；
-            // 若某项过滤规则开关未开启，直接向上穿透获取；终点根据所选最后一项开启的过滤规则推送至“市场初筛”！
-            if (isBreakoutActive) {
-                // 🌊 闸门 5: 趋势爆发综合过滤 (最后一项开启规则)
-                // 🛡️ 核心铁律：若前级“防追高熔断”开启，趋势爆发合格币种必须严格受限于防追高熔断底池！绝不可跳过防追高熔断！
-                let effectiveBreakoutPool = breakoutPool || [];
-                if (isAntiChaseActive) {
+            // 🎯【自底向上（从后往前）动态开关侦测与首个可用底池穿透机制】:
+            // 严格遵循 5 大递进底池优先级（从末级 5 初筛极值拦截到底池 1 交易额过滤底池），
+            // 依序检测各级开关与底池可用性，实行首个可用底池穿透与平滑回退级联机制。
+            const buildPoolResult = (rawPool: any[], isDirectional = false): ScannerItem[] | null => {
+                if (!rawPool || rawPool.length === 0) return null;
+                const poolNormSet = new Set<string>();
+                rawPool.forEach(p => {
+                    const sym = typeof p === 'string' ? p : p?.symbol || p?.fullSymbol;
+                    const dir = typeof p === 'object' ? (p.direction || p?.auditResult?.qualifiedDirection) : undefined;
+                    if (isDirectional) {
+                        const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
+                        const isShort = sym?.endsWith('_SHORT') || dir === 'SHORT';
+                        if (isLong && !enableLong) return;
+                        if (isShort && !enableShort) return;
+                    }
+                    if (sym) poolNormSet.add(normalizeSym(sym));
+                });
+                if (poolNormSet.size === 0) return null;
+
+                const matchedList = sortedList1.filter(item => poolNormSet.has(normalizeSym(item.symbol)));
+                const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
+                const additional: any[] = [];
+                poolNormSet.forEach(norm => {
+                    if (!matchedNorms.has(norm)) {
+                        const found = baseList.find(b => normalizeSym(b.symbol) === norm);
+                        if (found) additional.push(found);
+                    }
+                });
+                const res = [...matchedList, ...additional];
+                return res.length > 0 ? res : null;
+            };
+
+            let resolvedResult: ScannerItem[] | null = null;
+
+            // 1. 尝试末级 5：初筛极值拦截底池 / 趋势爆发综合过滤（若对应开关开启）
+            if (!resolvedResult && (isBreakoutActive || isAntiChaseActive)) {
+                let effectivePool = breakoutPool || [];
+                if (isBreakoutActive && isAntiChaseActive) {
                     let activeAntiPool = antiChasePool;
                     if (!activeAntiPool || activeAntiPool.length === 0) {
                         try {
-                            const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                            const key = selectedStrategyId ? `SCANNER_ANTI_CHASE_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_ANTI_CHASE_FILTERED_POOL';
+                            const raw = localStorage.getItem(key) || localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
                             if (raw) {
                                 const parsed = JSON.parse(raw);
                                 if (Array.isArray(parsed) && parsed.length > 0) activeAntiPool = parsed;
@@ -1169,164 +1201,61 @@ const List1_Selection: React.FC<Props> = ({
                             const norm = normalizeSym(sym);
                             if (norm) antiChaseValidSet.add(norm);
                         });
-                        effectiveBreakoutPool = effectiveBreakoutPool.filter(sym => antiChaseValidSet.has(normalizeSym(sym)));
-                    } else {
-                        effectiveBreakoutPool = [];
+                        effectivePool = effectivePool.filter(sym => antiChaseValidSet.has(normalizeSym(sym)));
                     }
+                } else if (isAntiChaseActive) {
+                    let activeAntiPool = antiChasePool;
+                    if (!activeAntiPool || activeAntiPool.length === 0) {
+                        try {
+                            const key = selectedStrategyId ? `SCANNER_ANTI_CHASE_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_ANTI_CHASE_FILTERED_POOL';
+                            const raw = localStorage.getItem(key) || localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                            if (raw) {
+                                const parsed = JSON.parse(raw);
+                                if (Array.isArray(parsed) && parsed.length > 0) activeAntiPool = parsed;
+                            }
+                        } catch (_) {}
+                    }
+                    effectivePool = activeAntiPool || [];
                 }
+                resolvedResult = buildPoolResult(effectivePool, true);
+            }
 
-                if (effectiveBreakoutPool.length > 0) {
-                    const breakoutNormSet = new Set(effectiveBreakoutPool.map(s => normalizeSym(s)));
-                    const matchedList = sortedList1.filter(item => {
-                        const norm = normalizeSym(item.symbol);
-                        return breakoutNormSet.has(norm);
-                    });
-                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
-                    const additional: any[] = [];
-                    effectiveBreakoutPool.forEach(sym => {
-                        const norm = normalizeSym(sym);
-                        if (!matchedNorms.has(norm)) {
-                            const found = baseList.find(b => normalizeSym(b.symbol) === norm);
-                            if (found) additional.push(found);
-                        }
-                    });
-                    finalResult = [...matchedList, ...additional];
-                } else {
-                    // 🔒【防断层平滑放行】：趋势爆发底池未就绪或为空时，平滑降级至交易额过滤底池，杜绝界面清零卡死
-                    finalResult = volumeFilteredList;
-                }
-            } else if (isAntiChaseActive) {
-                // 🛡️ 闸门 4: 第三组 防追高熔断过滤 (最后一项开启规则)
-                let activeAntiChasePool = antiChasePool;
-                if (!activeAntiChasePool || activeAntiChasePool.length === 0) {
-                    try {
-                        const key = selectedStrategyId ? `SCANNER_ANTI_CHASE_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_ANTI_CHASE_FILTERED_POOL';
-                        const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL') : null);
-                        if (raw) {
-                            const parsed = JSON.parse(raw);
-                            if (Array.isArray(parsed) && parsed.length > 0) activeAntiChasePool = parsed;
-                        }
-                    } catch (_) {}
-                }
-
-                if (activeAntiChasePool && activeAntiChasePool.length > 0) {
-                    const antiChaseValidSet = new Set<string>();
-                    activeAntiChasePool.forEach(item => {
-                        const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
-                        const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
-                        const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
-                        const isShort = sym?.endsWith('_SHORT') || dir === 'SHORT';
-                        if (isLong && !enableLong) return;
-                        if (isShort && !enableShort) return;
-                        const norm = normalizeSym(sym);
-                        if (norm) antiChaseValidSet.add(norm);
-                    });
-                    const matchedList = sortedList1.filter(item => antiChaseValidSet.has(normalizeSym(item.symbol)));
-                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
-                    const additional: any[] = [];
-                    activeAntiChasePool.forEach(item => {
-                        const sym = typeof item === 'string' ? item : item.fullSymbol || item.symbol;
-                        const dir = typeof item === 'object' ? (item.direction || item.auditResult?.qualifiedDirection) : undefined;
-                        const isLong = sym?.endsWith('_LONG') || dir === 'LONG';
-                        const isShort = sym?.endsWith('_SHORT') || dir === 'SHORT';
-                        if (isLong && !enableLong) return;
-                        if (isShort && !enableShort) return;
-                        const norm = normalizeSym(sym);
-                        if (norm && !matchedNorms.has(norm)) {
-                            const found = baseList.find(b => normalizeSym(b.symbol) === norm);
-                            if (found) additional.push(found);
-                        }
-                    });
-                    finalResult = [...matchedList, ...additional];
-                } else {
-                    // 🔒【防断层平滑放行】：防追高极值底池未就绪或过滤后无币时，平滑降级至交易额过滤底池，杜绝界面清零卡死
-                    finalResult = volumeFilteredList;
-                }
-            } else if (enableLookbackFilter) {
-                // 🌊 闸门 3: 回溯周期过滤 (最后一项开启规则)
-                // 整合 SCANNER_LOOKBACK_FILTERED_POOL 与 effectiveMajorCandidates
-                const lookbackNormSet = new Set<string>();
+            // 2. 尝试级联 4：回溯周期过滤底池（若开关开启）
+            if (!resolvedResult && enableLookbackFilter) {
+                const lookbackCombined: any[] = [];
                 if (effectiveMajorCandidates && effectiveMajorCandidates.size > 0) {
                     effectiveMajorCandidates.forEach(cand => {
                         if (isCandidateMatched(cand, cand.replace(/_LONG$|_SHORT$/i, ''), enableLong, enableShort)) {
-                            lookbackNormSet.add(normalizeSym(cand));
+                            lookbackCombined.push(cand);
                         }
                     });
                 }
                 if (lookbackPool && lookbackPool.length > 0) {
-                    lookbackPool.forEach(item => {
-                        const sym = typeof item === 'string' ? item : item.symbol || item.fullSymbol;
-                        const dir = typeof item === 'object' ? item.direction : undefined;
-                        if (dir === 'LONG' && !enableLong) return;
-                        if (dir === 'SHORT' && !enableShort) return;
-                        if (sym) lookbackNormSet.add(normalizeSym(sym));
-                    });
+                    lookbackPool.forEach(item => lookbackCombined.push(item));
                 }
+                resolvedResult = buildPoolResult(lookbackCombined, true);
+            }
 
-                if (lookbackNormSet.size > 0) {
-                    const matchedList = sortedList1.filter(item => lookbackNormSet.has(normalizeSym(item.symbol)));
-                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
-                    const additional: any[] = [];
-                    lookbackNormSet.forEach(norm => {
-                        if (!matchedNorms.has(norm)) {
-                            const found = baseList.find(b => normalizeSym(b.symbol) === norm);
-                            if (found) additional.push(found);
-                        }
-                    });
-                    finalResult = [...matchedList, ...additional];
-                } else {
-                    // 🔒【防断层平滑放行】：回溯周期底池未就绪时，平滑降级至交易额过滤底池，杜绝界面清零卡死
-                    finalResult = volumeFilteredList;
-                }
-            } else if (enableSideways) {
-                // 🌊 闸门 3: 横盘蓄势过滤 (最后一项开启规则)
+            // 3. 尝试级联 3：横盘蓄势过滤底池（若开关开启）
+            if (!resolvedResult && enableSideways) {
                 if (sidewaysPool && sidewaysPool.length > 0) {
-                    const sidewaysNormalizedSet = new Set(sidewaysPool.map(p => normalizeSym(typeof p === 'string' ? p : p?.symbol)).filter(Boolean));
-                    const matchedList = sortedList1.filter(item => 
-                        sidewaysNormalizedSet.has(normalizeSym(item.symbol)) || sidewaysPool.some(p => (typeof p === 'string' ? p : p?.symbol) === item.symbol)
-                    );
-                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
-                    const additional: any[] = [];
-                    sidewaysPool.forEach(p => {
-                        const normP = normalizeSym(typeof p === 'string' ? p : p?.symbol);
-                        if (!matchedNorms.has(normP)) {
-                            const found = baseList.find(b => normalizeSym(b.symbol) === normP);
-                            if (found) additional.push(found);
-                        }
-                    });
-                    finalResult = [...matchedList, ...additional];
+                    resolvedResult = buildPoolResult(sidewaysPool, false);
                 } else {
                     const matchedSideways = sortedList1.filter(item => {
                         const metrics = metricsCache[item.symbol];
                         return metrics && !metrics.loading && metrics.isSidewaysMatch === true;
                     });
-                    finalResult = matchedSideways.length > 0 ? matchedSideways : volumeFilteredList;
+                    if (matchedSideways.length > 0) resolvedResult = matchedSideways;
                 }
-            } else if (enableStartTrend) {
-                // 🌊 闸门 2: 行情启动趋势过滤 (最后一项开启规则)
-                if (startTrendPool && startTrendPool.length > 0) {
-                    const startTrendNormSet = new Set(startTrendPool.map(p => normalizeSym(typeof p === 'string' ? p : p?.symbol)).filter(Boolean));
-                    const matchedList = sortedList1.filter(item => 
-                        startTrendNormSet.has(normalizeSym(item.symbol)) || startTrendPool.some(p => (typeof p === 'string' ? p : p?.symbol) === item.symbol)
-                    );
-                    const matchedNorms = new Set(matchedList.map(i => normalizeSym(i.symbol)));
-                    const additional: any[] = [];
-                    startTrendPool.forEach(p => {
-                        const normP = normalizeSym(typeof p === 'string' ? p : p?.symbol);
-                        if (!matchedNorms.has(normP)) {
-                            const found = baseList.find(b => normalizeSym(b.symbol) === normP);
-                            if (found) additional.push(found);
-                        }
-                    });
-                    finalResult = [...matchedList, ...additional];
-                } else {
-                    // 🔒【防断层平滑放行】：行情启动底池未就绪时，平滑降级至交易额过滤底池，杜绝界面清零卡死
-                    finalResult = volumeFilteredList;
-                }
-            } else {
-                // 🌊 闸门 1: 基础交易额范围过滤 (后置所有规则均未开启，直通交易额底池)
-                finalResult = volumeFilteredList;
             }
+
+            // 4. 尝试级联 2：行情启动底池（若开关开启）
+            if (!resolvedResult && enableStartTrend) {
+                resolvedResult = buildPoolResult(startTrendPool, false);
+            }
+
+            // 5. 基础层 1：交易额过滤底池 (终极兜底保底)
+            finalResult = resolvedResult && resolvedResult.length > 0 ? resolvedResult : volumeFilteredList;
         }
 
         // 🔒 [严格数量限制 (Limit)]: 若设置了数量限制 (limit > 0)，截取前 limit 个初筛币种展示与输出
