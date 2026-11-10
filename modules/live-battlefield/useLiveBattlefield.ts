@@ -177,13 +177,24 @@ export const useLiveBattlefield = (
 
         const uniqueSymbols = new Set(curPositions.map(p => p.symbol));
 
-        setSortedPositions(sorted);
-        setStats({
-            symbolCount: uniqueSymbols.size,
-            totalValue: totalVal,
-            totalPnl: totalP,
-            symbolsWithNoPrice: missingSymbols.length,
-            missingSymbols
+        setSortedPositions(prev => {
+            if (JSON.stringify(prev) === JSON.stringify(sorted)) return prev;
+            return sorted;
+        });
+        setStats(prev => {
+            if (prev.symbolCount === uniqueSymbols.size &&
+                Math.abs(prev.totalPnl - totalP) < 0.0001 &&
+                Math.abs(prev.totalValue - totalVal) < 0.01 &&
+                prev.symbolsWithNoPrice === missingSymbols.length) {
+                return prev;
+            }
+            return {
+                symbolCount: uniqueSymbols.size,
+                totalValue: totalVal,
+                totalPnl: totalP,
+                symbolsWithNoPrice: missingSymbols.length,
+                missingSymbols
+            };
         });
 
         lastComputeTimeRef.current = Date.now();

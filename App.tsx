@@ -371,13 +371,13 @@ const AppContent: React.FC = () => {
         browserKeepAlive.init();
     }, [handleLog]);
 
-    // 补偿定时器：确保即便没有新日志进入，最后的缓冲日志也能被刷新
+    // 补偿定时器：物理解耦，使用 tradeLogsRef 规避 tradeLogs 变动反复重启定时器
     useEffect(() => {
         const interval = setInterval(() => {
-            simulatorRef.current?.verifyPositions(tradeLogs);
+            simulatorRef.current?.verifyPositions(tradeLogsRef.current);
         }, 5 * 60 * 1000);
         return () => clearInterval(interval);
-    }, [tradeLogs]);
+    }, []);
     useEffect(() => {
         const timer = setInterval(() => {
             if (logsPendingRef.current.length > 0) {
@@ -5041,12 +5041,14 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 onApply={handleApplyRecommendation}
                 onIgnore={() => setRecommendation(null)}
             />
-            <SaviorLab 
-                isOpen={saviorLabOpen} 
-                onClose={() => setSaviorLabOpen(false)} 
-                settings={settings}
-                initialTab={saviorLabTab}
-            />
+            {saviorLabOpen && (
+                <SaviorLab 
+                    isOpen={saviorLabOpen} 
+                    onClose={() => setSaviorLabOpen(false)} 
+                    settings={settings}
+                    initialTab={saviorLabTab}
+                />
+            )}
 
             {fuseAlertData && (
                 <FuseAlertModal 

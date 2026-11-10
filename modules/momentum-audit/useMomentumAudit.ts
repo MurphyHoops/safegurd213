@@ -860,7 +860,7 @@ export const useMomentumAudit = (
     }, [strategyId]);
 
     const candidatesKey = useMemo(() => {
-        return (candidates || []).map(c => `${c.symbol}_${c.direction}_${c.tf}_${c.price}`).join('|');
+        return (candidates || []).map(c => `${c.symbol}_${c.direction}_${c.tf}_${c.enterList4Time || c.lastUpdated || c.structure?.signalTime || 0}`).join('|');
     }, [candidates]);
 
     const serializedConfigKey = useMemo(() => JSON.stringify(config || {}), [config]);

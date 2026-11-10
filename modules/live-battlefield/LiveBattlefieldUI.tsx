@@ -24,17 +24,14 @@ export const LiveBattlefieldModule: React.FC<Props> = ({ positions, realPrices, 
     const lastStatsRef = useRef<string>("");
 
     // Sync stats up to Dashboard so List 6 can use them
-    // OPTIMIZED: Checks for value changes
+    // OPTIMIZED: Checks for value changes and syncs without tick lag
     React.useEffect(() => {
         // Only update if stats have materially changed (value or count)
-        // This prevents re-rendering parent if PnL is stagnant
-        const currentStatsStr = `${stats?.symbolCount || 0}-${(stats?.totalPnl ?? 0).toFixed(2)}`;
+        const currentStatsStr = `${stats?.symbolCount || 0}-${(stats?.totalPnl ?? 0).toFixed(4)}`;
         
         if (currentStatsStr !== lastStatsRef.current) {
             lastStatsRef.current = currentStatsStr;
-            setTimeout(() => {
-                onStatsUpdate(stats);
-            }, 0);
+            onStatsUpdate(stats);
         }
     }, [stats, onStatsUpdate]);
 

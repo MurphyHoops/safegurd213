@@ -152,6 +152,9 @@ const LiveMarketScannerModule: React.FC<Props> = ({
     const isScanningRef = React.useRef(isScanning);
     useEffect(() => { isScanningRef.current = isScanning; }, [isScanning]);
 
+    const refreshList1CandidatesRef = React.useRef(refreshList1Candidates);
+    useEffect(() => { refreshList1CandidatesRef.current = refreshList1Candidates; }, [refreshList1Candidates]);
+
     useEffect(() => {
         if (isPaused) {
             setNextScanTime(0);
@@ -167,22 +170,24 @@ const LiveMarketScannerModule: React.FC<Props> = ({
         const tick = () => {
             if (!isScanningRef.current) {
                 console.log("[ScannerUI] Auto-refresh tick.");
-                refreshList1Candidates(scanConfig, false);
+                refreshList1CandidatesRef.current(scanConfigRef.current, false);
             }
             // Update next scan time after refresh
-            setNextScanTime(Date.now() + intervalMs);
+            const targetTime = Date.now() + intervalMs;
+            setNextScanTime(prev => Math.abs(prev - targetTime) > 100 ? targetTime : prev);
         };
 
         const timer = setInterval(tick, intervalMs);
         
         // Only set initial next scan time if it's currently 0 or past
+        const targetTime = Date.now() + intervalMs;
         setNextScanTime(prev => {
-            if (prev <= Date.now()) return Date.now() + intervalMs;
+            if (prev <= Date.now()) return targetTime;
             return prev;
         });
         
         return () => clearInterval(timer);
-    }, [scanInterval, scanConfig, refreshList1Candidates, isPaused, selectedStrategyId, isBackground]);
+    }, [scanInterval, isPaused, selectedStrategyId, isBackground]);
 
     // --- HANDLERS ---
     const handleToggleSymbol = (symbol: string) => { 

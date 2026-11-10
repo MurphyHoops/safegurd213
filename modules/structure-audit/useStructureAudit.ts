@@ -1249,7 +1249,7 @@ export const useStructureAudit = (
         (c) =>
           `${c.symbol}:${(c.groupedResults || [])
             .filter((r) => !r.isPendingGray)
-            .map((r) => `${r.tf}_${r.direction}_${r.kHigh ?? 0}_${r.kLow ?? 0}`)
+            .map((r) => `${r.tf}_${r.direction}_${r.signalTime ?? 0}`)
             .join(",")}`,
       )
       .join("|");

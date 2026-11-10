@@ -32,6 +32,7 @@
 | **模块 8 [系统性能监视]** | `modules/system-monitor/` | 🔴 LOCKED | 实时内存、吞吐率、WS连接延迟与健康监控 |
 | **持仓管理中心** | `modules/positions-list/` | 🔴 LOCKED | 实时持仓列表、对冲状态展示、快捷平仓操作 |
 | **行情分发与注册中心** | `services/binanceWs.ts`<br>`services/priceRegistry.ts` | 🔴 LOCKED | WebSocket行情长连接、DOM Bypass价格高速订阅 |
+| **网络请求限速与熔断引擎** | `services/apiService.ts`<br>`services/binanceRateLimiter.ts` | 🔴 LOCKED | 全局并发信号量、令牌桶限速器、LRU缓存、Inflight去重、429全局熔断与权重监控引擎（绝对固化锁定，无指令严禁触碰修改） |
 | **模拟器与实盘内核** | `services/marketSimulator.ts`<br>`server.ts` | 🔴 LOCKED | 交易撮合、对冲补仓配对、币安实盘API桥接 |
 
 ---

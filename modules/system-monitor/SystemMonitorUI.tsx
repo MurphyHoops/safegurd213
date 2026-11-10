@@ -60,7 +60,11 @@ export const SystemMonitorModule: React.FC = () => {
     // Refresh crashes periodically
     useEffect(() => {
         const refreshCrashes = () => {
-            setCrashEntries(getCrashBlackbox());
+            const fresh = getCrashBlackbox();
+            setCrashEntries(prev => {
+                if (JSON.stringify(prev) === JSON.stringify(fresh)) return prev;
+                return fresh;
+            });
         };
         const timer = setInterval(refreshCrashes, 2500);
         return () => clearInterval(timer);
@@ -73,7 +77,10 @@ export const SystemMonitorModule: React.FC = () => {
                 const used = Math.round(perf.memory.usedJSHeapSize / 1048576);
                 const limit = Math.round(perf.memory.jsHeapSizeLimit / 1048576);
                 const pct = Math.round((used / limit) * 100);
-                setMemory({ used, limit, pct });
+                setMemory(prev => {
+                    if (prev && prev.used === used && prev.limit === limit && prev.pct === pct) return prev;
+                    return { used, limit, pct };
+                });
 
                 if (pct > 88) {
                     cacheManager.clearCache('LIGHT');

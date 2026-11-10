@@ -7,10 +7,15 @@ export const ReconciliationButton: React.FC = () => {
   const [manualCooldownSec, setManualCooldownSec] = useState<number>(0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
-  // 1. 订阅全局限频器状态更新
+  // 1. 订阅全局限频器状态更新（加入结构相等的去重判断，防止无限重渲染）
   useEffect(() => {
     const unsubscribe = binanceRateLimiter.subscribe((status) => {
-      setLimiterStatus(status);
+      setLimiterStatus((prev) => {
+        if (JSON.stringify(prev) === JSON.stringify(status)) {
+          return prev;
+        }
+        return status;
+      });
     });
 
     // 本地 1 秒定时器：计算手动点击的 60 秒硬冷却倒计时

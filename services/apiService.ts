@@ -1,9 +1,120 @@
+/**
+ * 🔒 LOCKED_MODULE: 网络请求限速与并发控制总引擎 (`services/apiService.ts`)
+ * 全局并发信号量 (Max 4)、令牌桶限速 (350ms pacing)、LRU 缓存、Inflight 去重与重试退避。
+ * 绝对固化锁定，无指令严禁触碰修改！
+ */
 
 import { binanceRateLimiter } from './binanceRateLimiter';
 
 let lastSuccessfulProxy: string | null = null;
 let continuousFailures = 0;
 let circuitBreakerUntil = 0;
+
+// === 模拟运行模式开关与拦截逻辑 ===
+let isSimulationMode = false; // 默认实盘运行
+
+export function setSimulationMode(enabled: boolean) {
+    isSimulationMode = enabled;
+    console.log(`[Mode Switch] 当前运行模式: ${enabled ? '模拟运行 (Simulation - 零外网/零API)' : '实盘运行 (Live Trading - 正常连接)'}`);
+}
+
+export function getSimulationMode(): boolean {
+    return isSimulationMode;
+}
+
+export const sanitizeSymbol = (symbol: string): string => {
+    if (!symbol || typeof symbol !== 'string') return '';
+    let clean = symbol.toUpperCase().trim();
+    const usdtIdx = clean.indexOf('USDT');
+    if (usdtIdx !== -1) {
+        clean = clean.substring(0, usdtIdx + 4);
+    }
+    clean = clean.replace(/[^A-Z0-9]/g, '');
+    return clean;
+};
+
+function isTradingEndpoint(url: string): boolean {
+    return url.includes('/fapi/') ||
+           url.includes('/api/proxy/fapi') ||
+           url.includes('/order') ||
+           url.includes('/account') ||
+           url.includes('/positionRisk') ||
+           url.includes('/klines') ||
+           url.includes('/ticker/');
+}
+
+function getMockResponse(url: string, options: any): Response {
+    let payload: any;
+    if (url.includes('/order')) {
+        payload = {
+            orderId: Date.now(),
+            status: 'NEW',
+            clientOrderId: 'sim_mock_' + Date.now(),
+            price: '0',
+            origQty: '1',
+            executedQty: '0',
+            cumQuote: '0',
+            time: Date.now(),
+            simulated: true
+        };
+    } else if (url.includes('/account')) {
+        payload = {
+            totalWalletBalance: "10000.00",
+            totalUnrealizedProfit: "0.00",
+            totalMarginBalance: "10000.00",
+            availableBalance: "10000.00",
+            simulated: true
+        };
+    } else if (url.includes('/positionRisk')) {
+        payload = [];
+    } else if (url.includes('/klines')) {
+        const now = Date.now();
+        const bars = [];
+        let price = 50000;
+        for (let i = 50; i >= 0; i--) {
+            const time = now - i * 60000;
+            const open = price;
+            const high = price * 1.005;
+            const low = price * 0.995;
+            const close = price * (1 + (Math.random() - 0.49) * 0.01);
+            price = close;
+            bars.push([
+                time,
+                open.toFixed(2),
+                high.toFixed(2),
+                low.toFixed(2),
+                close.toFixed(2),
+                "100.5",
+                time + 59999,
+                "5000000",
+                100,
+                "50",
+                "2500000",
+                "0"
+            ]);
+        }
+        payload = bars;
+    } else if (url.includes('ticker/price')) {
+        payload = { symbol: "BTCUSDT", price: "68000.00" };
+    } else if (url.includes('ticker/24hr')) {
+        payload = {
+            symbol: "BTCUSDT",
+            priceChange: "1500.00",
+            priceChangePercent: "2.25",
+            lastPrice: "68000.00",
+            highPrice: "69000.00",
+            lowPrice: "66500.00",
+            volume: "45000",
+            quoteVolume: "3000000000"
+        };
+    } else {
+        payload = { success: true, simulated: true, data: [] };
+    }
+    return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'X-Simulation': 'TRUE' }
+    });
+}
 
 // --- GLOBAL CONCURRENCY LOCK (Semaphore) ---
 // Bounded concurrency limit restricted to max 4 concurrent requests to prevent net::ERR_INSUFFICIENT_RESOURCES socket exhaustion
@@ -44,6 +155,43 @@ const releaseSlot = () => {
     } else {
         activeRequests--;
     }
+};
+
+// --- GLOBAL TOKEN BUCKET & RATE LIMITER ---
+// Enforce max ~2.8 requests per second (minimum 350ms pacing between outgoing HTTP requests) to eliminate HTTP 429 Too Many Requests
+const MIN_REQUEST_INTERVAL_MS = 350;
+let lastRequestTimestamp = 0;
+const rateLimitQueue: (() => void)[] = [];
+let isRateLimitProcessing = false;
+
+const acquireRateLimitSlot = async (priority: 'HIGH' | 'NORMAL' | 'LOW' = 'NORMAL') => {
+    return new Promise<void>(resolve => {
+        if (priority === 'HIGH') {
+            rateLimitQueue.unshift(resolve);
+        } else {
+            rateLimitQueue.push(resolve);
+        }
+        processRateLimitQueue();
+    });
+};
+
+const processRateLimitQueue = () => {
+    if (isRateLimitProcessing || rateLimitQueue.length === 0) return;
+    isRateLimitProcessing = true;
+
+    const now = Date.now();
+    const elapsed = now - lastRequestTimestamp;
+    const delay = Math.max(0, MIN_REQUEST_INTERVAL_MS - elapsed);
+
+    setTimeout(() => {
+        lastRequestTimestamp = Date.now();
+        const next = rateLimitQueue.shift();
+        isRateLimitProcessing = false;
+        if (next) next();
+        if (rateLimitQueue.length > 0) {
+            processRateLimitQueue();
+        }
+    }, delay);
 };
 
 // --- ERROR TRACKING ---
@@ -117,12 +265,41 @@ const getCacheTTL = (url: string): number => {
 };
 
 export const fetchWithFallback = async (
-    url: string, 
+    rawUrl: string, 
     options?: Omit<RequestInit, 'priority'> & { timeout?: number, priority?: 'HIGH' | 'NORMAL' | 'LOW' }, 
     validator?: (data: any) => boolean, 
     directMode: boolean = false
 ): Promise<Response> => {
     
+    // 🛡️ URL Normalization & Symbol Sanitization
+    let url = rawUrl;
+    if (url && typeof url === 'string') {
+        if (url.startsWith('/fapi/')) {
+            url = `https://fapi.binance.com${url}`;
+        } else if (url.startsWith('/api/') && !url.startsWith('/api/proxy')) {
+            url = `https://api.binance.com${url}`;
+        }
+
+        // Clean malformed symbols in query parameters (e.g. LTCUSDTLTONGUSDT -> LTCUSDT)
+        try {
+            const urlObj = new URL(url, typeof window !== 'undefined' ? window.location.origin : undefined);
+            const sym = urlObj.searchParams.get('symbol');
+            if (sym) {
+                const cleanedSym = sanitizeSymbol(sym);
+                if (cleanedSym && cleanedSym !== sym) {
+                    urlObj.searchParams.set('symbol', cleanedSym);
+                    url = urlObj.toString();
+                }
+            }
+        } catch (e) {}
+    }
+
+    // 【铁律】如果是模拟运行，且属于交易/账户敏感接口，直接本地 Mock 拦截，绝不外发请求！
+    if (isSimulationMode && isTradingEndpoint(url)) {
+        console.warn(`[Simulation Bypass] 模拟模式拦截真实外网请求: ${url}`);
+        return getMockResponse(url, options);
+    }
+
     // GUARD: Internet connectivity check
     if (typeof window !== 'undefined' && window.navigator && window.navigator.onLine === false) {
         throw new Error("Network is offline. Fetch aborted.");
@@ -296,10 +473,12 @@ const _fetchWithFallbackInner = async (
         url.includes('/time');
     binanceRateLimiter.checkCanRequest(isCoreOrder);
 
-    // 1. Enter Queue with priority (Charts, Klines and 24hr Ticker go higher priority than background scans)
+    // 1. Enter Token Bucket Rate Limiter & Concurrency Queue
     const isKlinePayload = url.includes('/klines');
     const isHeavyPayload = url.includes('ticker/24hr') || url.includes('ticker/price');
     const priority = options?.priority || (url.includes('ticker/24hr') || isKlinePayload ? 'HIGH' : 'NORMAL');
+    
+    await acquireRateLimitSlot(priority);
     const isHighPriority = priority === 'HIGH';
     if (!isHighPriority) {
         await acquireSlot(priority);

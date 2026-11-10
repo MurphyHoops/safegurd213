@@ -630,7 +630,7 @@ export const useScannerLogic = (
         } catch (err) {
             console.error("[Scanner] Instant re-filter failed:", err);
         }
-    }, [initialConfigJson, customSymbolSetKey, fixedModeView, blacklist, mode, majorTrendCandidatesContentKey, majorTrendLimits, hasRunMajorTrend]); // Stabilized dependencies
+    }, [initialConfigJson, customSymbolSetKey, fixedModeView, blacklistKey, mode, majorTrendCandidatesContentKey, majorTrendLimitsKey, hasRunMajorTrend]); // Stabilized dependencies
 
     const directModeRef = useRef(directMode);
     useEffect(() => { directModeRef.current = directMode; }, [directMode]);

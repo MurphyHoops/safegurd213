@@ -161,9 +161,9 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
     useEffect(() => {
         // If a new live position was opened, immediately force activeTab to 'LIVE'
         if (livePositionsFiltered.length > prevLiveCountRef.current) {
-            setActiveTab('LIVE');
+            setActiveTab(prev => prev === 'LIVE' ? prev : 'LIVE');
         } else if (hasBacktestPositions && livePositionsFiltered.length === 0) {
-            setActiveTab('BACKTEST');
+            setActiveTab(prev => prev === 'BACKTEST' ? prev : 'BACKTEST');
         }
         prevLiveCountRef.current = livePositionsFiltered.length;
     }, [hasBacktestPositions, livePositionsFiltered.length]);
@@ -793,10 +793,12 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
                 />
             )}
 
-            <SystemDiagnosticsModal 
-                isOpen={showDiagnosticsModal} 
-                onClose={() => setShowDiagnosticsModal(false)} 
-            />
+            {showDiagnosticsModal && (
+                <SystemDiagnosticsModal 
+                    isOpen={showDiagnosticsModal} 
+                    onClose={() => setShowDiagnosticsModal(false)} 
+                />
+            )}
         </div>
     );
 };

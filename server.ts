@@ -3548,6 +3548,19 @@ async function startServer() {
         let targetUrl = req.query.url as string;
         if (!targetUrl) return res.status(400).json({ error: "Missing URL parameter" });
 
+        // 🛡️ 稳健处理相对路径或不带协议的 URL，彻底杜绝 400 Bad Request / 404 Not Found
+        if (targetUrl.startsWith('/fapi/') || targetUrl.includes('fapi.binance.com')) {
+            if (!targetUrl.startsWith('http')) {
+                targetUrl = 'https://fapi.binance.com' + (targetUrl.startsWith('/') ? '' : '/') + targetUrl;
+            }
+        } else if (targetUrl.startsWith('/api/') || targetUrl.startsWith('/v3/')) {
+            if (!targetUrl.startsWith('http')) {
+                targetUrl = 'https://api.binance.com' + (targetUrl.startsWith('/') ? '' : '/') + targetUrl;
+            }
+        } else if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+            targetUrl = 'https://fapi.binance.com/' + targetUrl.replace(/^\/+/, '');
+        }
+
       // Clean & parse URL
       let symbolParam = "";
       try {
@@ -3686,12 +3699,15 @@ async function startServer() {
 
               // 1. 尝试官方 fapi 永续节点 (原生合约币种与全部 1000 开头合约)
               fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
+              fetchCandidates.push({ url: `https://fapi1.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
+              fetchCandidates.push({ url: `https://fapi3.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
 
               // 2. 如果是 Meme 币且未加 1000，补充尝试 1000 前缀永续合约 (例如 1000PEPEUSDT)
               if (isMeme && !rawSymbol.startsWith('1000')) {
                   const meme1000Params = new URLSearchParams(queryParams);
                   meme1000Params.set("symbol", `1000${cleanBase}USDT`);
                   fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}?${meme1000Params.toString()}`, isPublicProxy: false, isSpotScale1000: false });
+                  fetchCandidates.push({ url: `https://fapi1.binance.com${fapiPath}?${meme1000Params.toString()}`, isPublicProxy: false, isSpotScale1000: false });
               }
 
               // 3. 备选尝试官方 Vision 现货节点及 Binance 官方现货集群 (若为 1000 合约或 Meme 合约自动缩放 1000 倍)

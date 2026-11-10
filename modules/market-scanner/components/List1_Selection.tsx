@@ -1332,6 +1332,8 @@ const List1_Selection: React.FC<Props> = ({
         return finalResult;
     }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, scanConfig.antiChaseFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, lookbackPool, antiChasePool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
 
+    const filteredListSymbolsKey = useMemo(() => (filteredList || []).map(item => item?.symbol).filter(Boolean).sort().join(','), [filteredList]);
+
     // 🏛️ [中央行情数据总线]: 只要列表1 (市场初筛列表) 发生变动，自动同步预热入选币种在列表2所选周期 (300 根) 基线 K 线，并执行退池即焚
     useEffect(() => {
         if (filteredList && filteredList.length > 0) {
@@ -1346,7 +1348,7 @@ const List1_Selection: React.FC<Props> = ({
         } else {
             klineDailyStore.evictStaleCandidates([]);
         }
-    }, [filteredList]);
+    }, [filteredListSymbolsKey]);
 
     // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
     const pushConfig = scanConfig.list2PushConfig;

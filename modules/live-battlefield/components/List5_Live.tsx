@@ -42,6 +42,7 @@ const List5_Live: React.FC<List5Props> = ({
     const [filterPnL, setFilterPnL] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
     const [serverIp, setServerIp] = useState<string>("Loading...");
     const [showVisualizer, setShowVisualizer] = useState(false);
+    const [displayLimit, setDisplayLimit] = useState<number>(30);
 
     useEffect(() => {
         fetch("/api/network/ip")
@@ -73,6 +74,10 @@ const List5_Live: React.FC<List5Props> = ({
             return true;
         });
     }, [sortedActivePositions, filterSide, filterPnL]);
+
+    const visiblePositions = useMemo(() => {
+        return filteredList.slice(0, displayLimit);
+    }, [filteredList, displayLimit]);
 
     // Verify symbol on Binance Exchange (instant local cache first + fast lightweight single-ticker query)
     const handleVerifySymbol = async (targetSymbolOverride?: string) => {
@@ -695,7 +700,7 @@ const List5_Live: React.FC<List5Props> = ({
                         <span className="text-[10px] font-bold">无符合条件的持仓</span>
                     </div>
                 )}
-                {filteredList.map((pos, idx) => (
+                {visiblePositions.map((pos, idx) => (
                     <LivePositionRow 
                         key={`${pos.entryId}-${idx}`} 
                         position={pos} 
@@ -704,6 +709,46 @@ const List5_Live: React.FC<List5Props> = ({
                         onClosePosition={onClosePosition}
                     />
                 ))}
+
+                {filteredList.length > 30 && (
+                    <div className="mt-2 p-2 bg-slate-950/80 border border-slate-800 rounded flex flex-col sm:flex-row items-center justify-between gap-1.5 text-[10px] text-slate-400 font-mono shadow-md">
+                        <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span>
+                                当前展示前 <strong className="text-emerald-400 font-bold">{visiblePositions.length}</strong> / 共 <strong className="text-white font-bold">{filteredList.length}</strong> 项持仓
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                            {visiblePositions.length < filteredList.length && (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={() => setDisplayLimit(prev => Math.min(filteredList.length, prev + 30))}
+                                        className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded font-bold transition-all border border-slate-700 cursor-pointer active:scale-95"
+                                    >
+                                        +30 项
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setDisplayLimit(filteredList.length)}
+                                        className="px-2 py-0.5 bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/40 rounded font-bold transition-all cursor-pointer active:scale-95"
+                                    >
+                                        全部 ({filteredList.length})
+                                    </button>
+                                </>
+                            )}
+                            {displayLimit > 30 && (
+                                <button
+                                    type="button"
+                                    onClick={() => setDisplayLimit(30)}
+                                    className="px-2 py-0.5 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800 rounded font-bold transition-all cursor-pointer active:scale-95"
+                                >
+                                    恢复默认 30 项
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {showVisualizer && (
