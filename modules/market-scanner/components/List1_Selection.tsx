@@ -1192,14 +1192,16 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    finalResult = [];
+                    // 🔒【防断层平滑放行】：趋势爆发底池未就绪或为空时，平滑降级至交易额过滤底池，杜绝界面清零卡死
+                    finalResult = volumeFilteredList;
                 }
             } else if (isAntiChaseActive) {
                 // 🛡️ 闸门 4: 第三组 防追高熔断过滤 (最后一项开启规则)
                 let activeAntiChasePool = antiChasePool;
                 if (!activeAntiChasePool || activeAntiChasePool.length === 0) {
                     try {
-                        const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                        const key = selectedStrategyId ? `SCANNER_ANTI_CHASE_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_ANTI_CHASE_FILTERED_POOL';
+                        const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL') : null);
                         if (raw) {
                             const parsed = JSON.parse(raw);
                             if (Array.isArray(parsed) && parsed.length > 0) activeAntiChasePool = parsed;
@@ -1237,7 +1239,8 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    finalResult = [];
+                    // 🔒【防断层平滑放行】：防追高极值底池未就绪或过滤后无币时，平滑降级至交易额过滤底池，杜绝界面清零卡死
+                    finalResult = volumeFilteredList;
                 }
             } else if (enableLookbackFilter) {
                 // 🌊 闸门 3: 回溯周期过滤 (最后一项开启规则)
@@ -1272,7 +1275,8 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    finalResult = [];
+                    // 🔒【防断层平滑放行】：回溯周期底池未就绪时，平滑降级至交易额过滤底池，杜绝界面清零卡死
+                    finalResult = volumeFilteredList;
                 }
             } else if (enableSideways) {
                 // 🌊 闸门 3: 横盘蓄势过滤 (最后一项开启规则)
@@ -1292,10 +1296,11 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    finalResult = sortedList1.filter(item => {
+                    const matchedSideways = sortedList1.filter(item => {
                         const metrics = metricsCache[item.symbol];
                         return metrics && !metrics.loading && metrics.isSidewaysMatch === true;
                     });
+                    finalResult = matchedSideways.length > 0 ? matchedSideways : volumeFilteredList;
                 }
             } else if (enableStartTrend) {
                 // 🌊 闸门 2: 行情启动趋势过滤 (最后一项开启规则)
@@ -1315,7 +1320,8 @@ const List1_Selection: React.FC<Props> = ({
                     });
                     finalResult = [...matchedList, ...additional];
                 } else {
-                    finalResult = [];
+                    // 🔒【防断层平滑放行】：行情启动底池未就绪时，平滑降级至交易额过滤底池，杜绝界面清零卡死
+                    finalResult = volumeFilteredList;
                 }
             } else {
                 // 🌊 闸门 1: 基础交易额范围过滤 (后置所有规则均未开启，直通交易额底池)

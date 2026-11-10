@@ -1590,7 +1590,16 @@ export const useScannerLogic = (
                 });
             }
 
-            localStorage.setItem('SCANNER_ANTI_CHASE_FILTERED_POOL', JSON.stringify(antiChasePassedPool));
+            if (antiChasePassedPool.length === 0 && lookbackPoolItems.length > 0) {
+                console.warn("[AntiChase] 防追高极值拦截过滤后底池为空，自动平滑放行回溯底池币种，防止初筛断层卡死");
+                antiChasePassedPool = lookbackPoolItems;
+            }
+
+            const antiChaseKey = `SCANNER_ANTI_CHASE_FILTERED_POOL${suffix}`;
+            localStorage.setItem(antiChaseKey, JSON.stringify(antiChasePassedPool));
+            if (!strategyId || strategyId === 'strat-1') {
+                localStorage.setItem('SCANNER_ANTI_CHASE_FILTERED_POOL', JSON.stringify(antiChasePassedPool));
+            }
             window.dispatchEvent(new CustomEvent('scanner_anti_chase_pool_updated', {
                 detail: {
                     strategyId: strategyId || 'strat-1',
@@ -1708,6 +1717,18 @@ export const useScannerLogic = (
         }
     }, [majorTrendJson, runMajorTrendDiscovery, strategyId]);
     // 🔒 [END_SECURITY_LOCK]
+
+    // 🔒 [自动选币模式切换联动]: 当用户从“固定选币”切换至“自动选币”时，触发大行情发现扫描
+    useEffect(() => {
+        if (initialConfig.useCustomOnly) return;
+        const cfg = initialConfig.majorTrend;
+        if (cfg && cfg.enabled && isScanAllowedRef.current) {
+            console.log(`[useScannerLogic] 切换至自动选币模式，唤醒大行情极值底池扫描...`);
+            pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
+                await runMajorTrendDiscovery(false);
+            });
+        }
+    }, [initialConfig.useCustomOnly, strategyId, runMajorTrendDiscovery]);
 
     // --- 🔒 [时间先后·接力赛]: 行情启动底池整轮扫描完毕后，接力唤醒大行情发现扫描 (横盘蓄势过滤 -> 回溯周期过滤) ---
     useEffect(() => {

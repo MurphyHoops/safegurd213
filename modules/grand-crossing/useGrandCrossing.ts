@@ -2129,7 +2129,10 @@ export const useGrandCrossing = (
         }
       });
 
-      setCountdowns(newCountdowns);
+      setCountdowns(prev => {
+        if (JSON.stringify(prev) === JSON.stringify(newCountdowns)) return prev;
+        return newCountdowns;
+      });
     }, 1000);
 
     return () => clearInterval(timer);

@@ -1072,6 +1072,20 @@ const ScannerDashboardInner: React.FC<
   }, []);
   const [list3Config, setList3Config] = useState<List3Config | null>(null);
 
+  const handleList3ConfigUpdate = useCallback((newConfig: List3Config | null) => {
+    setList3Config(prev => {
+      if (JSON.stringify(prev) === JSON.stringify(newConfig)) return prev;
+      return newConfig;
+    });
+  }, []);
+
+  const handleActionConfigUpdate = useCallback((newConfig: ActionConfig | null) => {
+    setActionConfig(prev => {
+      if (JSON.stringify(prev) === JSON.stringify(newConfig)) return prev;
+      return newConfig;
+    });
+  }, []);
+
   // 🔒 同步持久化前台策略专属初筛与审计列表数据，确保策略切换时无缝还原
   useEffect(() => {
     if (list1Candidates.length > 0 && selectedStrategyId) {
@@ -2412,7 +2426,7 @@ const ScannerDashboardInner: React.FC<
                   <BacktestStructureAuditModule
                     candidates={list2Results}
                     onResultsUpdate={handleList3Results}
-                    onConfigUpdate={setList3Config}
+                    onConfigUpdate={handleList3ConfigUpdate}
                     onRemoveSignalReady={handleRemoveSignalReady}
                     realPrices={currentPrices}
                     setChartData={safeSetChartData}
@@ -2426,7 +2440,7 @@ const ScannerDashboardInner: React.FC<
                     key={selectedStrategyId}
                     candidates={list2Results}
                     onResultsUpdate={handleList3Results}
-                    onConfigUpdate={setList3Config}
+                    onConfigUpdate={handleList3ConfigUpdate}
                     onRemoveSignalReady={handleRemoveSignalReady}
                     realPrices={currentPrices}
                     setChartData={safeSetChartData}
@@ -2508,7 +2522,7 @@ const ScannerDashboardInner: React.FC<
                   <TacticalCommandModule
                     key={selectedStrategyId}
                     currentStats={liveStats}
-                    onConfigUpdate={setActionConfig}
+                    onConfigUpdate={handleActionConfigUpdate}
                     onPanicSell={handlePanicSell}
                     onSecureProfit={handleSecureProfit}
                     onCutLosses={handleCutLosses}
@@ -2934,6 +2948,20 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     });
   }, []);
 
+  const handleList3ConfigUpdate = useCallback((newConfig: List3Config | null) => {
+    setList3Config(prev => {
+      if (JSON.stringify(prev) === JSON.stringify(newConfig)) return prev;
+      return newConfig;
+    });
+  }, []);
+
+  const handleActionConfigUpdate = useCallback((newConfig: ActionConfig | null) => {
+    setActionConfig(prev => {
+      if (JSON.stringify(prev) === JSON.stringify(newConfig)) return prev;
+      return newConfig;
+    });
+  }, []);
+
   const bgRemoveSignalRef = useRef<((id: string) => void) | undefined>(undefined);
   const bgList2RemoveSignalRef = useRef<((id: string) => void) | undefined>(undefined);
 
@@ -3124,7 +3152,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
           key={`${strategyId}-structure-bt`}
           candidates={list2Results}
           onResultsUpdate={handleList3Results}
-          onConfigUpdate={setList3Config}
+          onConfigUpdate={handleList3ConfigUpdate}
           onRemoveSignalReady={handleBgRemoveSignalReady}
           realPrices={currentPrices}
           setChartData={() => {}}
@@ -3138,7 +3166,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
           key={`${strategyId}-structure`}
           candidates={list2Results}
           onResultsUpdate={handleList3Results}
-          onConfigUpdate={setList3Config}
+          onConfigUpdate={handleList3ConfigUpdate}
           onRemoveSignalReady={handleBgRemoveSignalReady}
           realPrices={currentPrices}
           setChartData={() => {}}

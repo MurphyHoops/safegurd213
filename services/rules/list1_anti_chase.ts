@@ -108,8 +108,8 @@ export function auditSymbolAntiChase(
     const highs = dailyKlines.map(k => parseVal(k, 2, 'high')).filter(v => v > 0);
     const lows = dailyKlines.map(k => parseVal(k, 3, 'low')).filter(v => v > 0);
 
-    if (!effectivePrice || effectivePrice <= 0 || !dailyKlines || dailyKlines.length === 0 || lows.length === 0) {
-        // 如果暂无历史K线，采取防误杀放行
+    if (!effectivePrice || effectivePrice <= 0 || !dailyKlines || dailyKlines.length < 2 || lows.length === 0) {
+        // 如果暂无完整历史K线（少于2根），采取防误杀放行
         return { passed: true, blocked: false, qualifiedDirection: direction };
     }
 
