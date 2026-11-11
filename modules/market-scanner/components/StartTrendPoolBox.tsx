@@ -82,15 +82,25 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
         };
     }, [setPool]);
 
-    // 🔒【纯净数据源】：直接完全从“交易额过滤底池” (SCANNER_VOLUME_FILTERED_POOL) 获取基础数据量信息，不混入任何其他源
+    // 🔒【数据源绑定】：当“涨跌幅过滤”开关开启时，从涨跌幅过滤底池(SCANNER_CHANGE_FILTERED_POOL)获取；若关闭则从交易额过滤底池(SCANNER_VOLUME_FILTERED_POOL)获取
     const getCandidateSymbols = (): string[] => {
         try {
-            const rawPool = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+            const enableChangeFilter = scanConfig.enableChangeFilter !== false;
+            const poolKey = enableChangeFilter ? 'SCANNER_CHANGE_FILTERED_POOL' : 'SCANNER_VOLUME_FILTERED_POOL';
+            const rawPool = localStorage.getItem(poolKey) || localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
             if (rawPool) {
                 const parsed = JSON.parse(rawPool);
                 if (Array.isArray(parsed) && parsed.length > 0) {
-                    return parsed;
+                    return parsed.map((item: any) => typeof item === 'string' ? item : item?.symbol).filter(Boolean);
                 }
+            }
+        } catch (_) {}
+
+        try {
+            const rawVol = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+            if (rawVol) {
+                const parsed = JSON.parse(rawVol);
+                if (Array.isArray(parsed) && parsed.length > 0) return parsed;
             }
         } catch (_) {}
 

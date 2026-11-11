@@ -475,6 +475,8 @@ export interface ScannerSettings {
     minVolume: number;
     maxVolume?: number;
     minChange: number;
+    minGainChange?: number;
+    minLossChange?: number;
     source: 'GAINERS' | 'LOSERS' | 'BOTH';
     timeBasis: '8AM' | '24H';
     limit: number;

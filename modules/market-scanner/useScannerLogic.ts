@@ -1100,25 +1100,41 @@ export const useScannerLogic = (
                 targetSymbols = startTrendSymbols;
                 console.log(`[MajorTrend] 当前生效输入源:【行情启动趋势底池】(共 ${startTrendSymbols.length} 个币)`);
             } else {
-                // 🎯 未开启【行情启动趋势】：直接读取上一级【交易额过滤底池】
-                let volumePoolSymbols: string[] = [];
+                // 🎯 未开启【行情启动趋势】：根据“涨跌幅过滤”开关决定从【涨跌幅过滤底池】还是【交易额过滤底池】获取
+                let inputPoolSymbols: string[] = [];
+                const enableChangeFilter = initialConfig.enableChangeFilter !== false;
+                const sourcePoolKey = enableChangeFilter ? 'SCANNER_CHANGE_FILTERED_POOL' : 'SCANNER_VOLUME_FILTERED_POOL';
                 try {
-                    const rawVolumePool = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
-                    if (rawVolumePool) {
-                        const parsed = JSON.parse(rawVolumePool);
+                    const rawPool = localStorage.getItem(sourcePoolKey) || localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+                    if (rawPool) {
+                        const parsed = JSON.parse(rawPool);
                         if (Array.isArray(parsed) && parsed.length > 0) {
-                            volumePoolSymbols = parsed.filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym));
+                            inputPoolSymbols = parsed
+                                .map((item: any) => typeof item === 'string' ? item : item?.symbol)
+                                .filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym.replace(/_LONG$|_SHORT$/i, '')));
                         }
                     }
                 } catch (_) {}
 
-                if (volumePoolSymbols.length === 0 && list1Ref.current && list1Ref.current.length > 0) {
-                    volumePoolSymbols = list1Ref.current
+                if (inputPoolSymbols.length === 0) {
+                    try {
+                        const rawVol = localStorage.getItem('SCANNER_VOLUME_FILTERED_POOL');
+                        if (rawVol) {
+                            const parsed = JSON.parse(rawVol);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                inputPoolSymbols = parsed.filter((sym: string) => Boolean(sym) && !blacklistRef.current.has(sym));
+                            }
+                        }
+                    } catch (_) {}
+                }
+
+                if (inputPoolSymbols.length === 0 && list1Ref.current && list1Ref.current.length > 0) {
+                    inputPoolSymbols = list1Ref.current
                         .map(i => i.symbol)
                         .filter(sym => Boolean(sym) && !blacklistRef.current.has(sym));
                 }
-                targetSymbols = volumePoolSymbols;
-                console.log(`[MajorTrend] 当前生效输入源:【交易额过滤底池】(共 ${volumePoolSymbols.length} 个币)`);
+                targetSymbols = inputPoolSymbols;
+                console.log(`[MajorTrend] 当前生效输入源:【${enableChangeFilter ? '涨跌幅过滤底池' : '交易额过滤底池'}】(共 ${inputPoolSymbols.length} 个币)`);
             }
 
             // 候选币种集合：初始继承已有大行情候选币（支持增量与方向剔除）

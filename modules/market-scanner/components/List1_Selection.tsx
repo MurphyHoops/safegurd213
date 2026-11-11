@@ -275,7 +275,7 @@ const List1_Selection: React.FC<Props> = ({
     useEffect(() => {
         const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
         const runState = localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true';
-        setHasRunMajorTrend(runState);
+        setHasRunMajorTrend(prev => prev === runState ? prev : runState);
 
         const key = selectedStrategyId ? `SCANNER_MAJOR_TREND_CANDIDATES_${selectedStrategyId}` : 'SCANNER_MAJOR_TREND_CANDIDATES';
         const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES') : null);
@@ -395,13 +395,13 @@ const List1_Selection: React.FC<Props> = ({
                     }
                     if (Array.isArray(e.detail.candidates)) {
                         updateCandidatesSet(e.detail.candidates);
-                        setHasRunMajorTrend(true);
+                        setHasRunMajorTrend(prev => prev === true ? prev : true);
                         return;
                     }
                     if (Array.isArray(e.detail)) {
                         if (!selectedStrategyId || selectedStrategyId === 'strat-1') {
                             updateCandidatesSet(e.detail);
-                            setHasRunMajorTrend(true);
+                            setHasRunMajorTrend(prev => prev === true ? prev : true);
                             return;
                         }
                     }
@@ -414,7 +414,7 @@ const List1_Selection: React.FC<Props> = ({
                 }
                 const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
                 if (localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true') {
-                    setHasRunMajorTrend(true);
+                    setHasRunMajorTrend(prev => prev === true ? prev : true);
                 }
             } catch (_) {}
         };
@@ -1071,6 +1071,45 @@ const List1_Selection: React.FC<Props> = ({
             return checkVolumeRule(item, scanConfig);
         });
 
+        // 📊 [第二步：涨跌幅过滤底池 (Change Filter Pool)]
+        const enableChangeFilter = scanConfig.enableChangeFilter !== false;
+        const enableGainers = scanConfig.enableGainers !== false;
+        const enableLosers = scanConfig.enableLosers !== false;
+        const minGain = scanConfig.minGainChange !== undefined ? Number(scanConfig.minGainChange) : (scanConfig.minChange !== undefined ? Number(scanConfig.minChange) : 1);
+        const minLoss = scanConfig.minLossChange !== undefined ? Number(scanConfig.minLossChange) : (scanConfig.minChange !== undefined ? Number(scanConfig.minChange) : 1);
+
+        const changeFilteredPoolItems: any[] = [];
+        const changeFilteredList = volumeFilteredList.filter(item => {
+            if (!enableChangeFilter) return true;
+            const chg = item.change !== undefined ? item.change : 0;
+            const absChg = Math.abs(chg);
+            let matches = false;
+            let type: 'GAINERS' | 'LOSERS' = 'GAINERS';
+
+            if (chg >= 0) {
+                if (enableGainers && chg >= minGain) {
+                    matches = true;
+                    type = 'GAINERS';
+                }
+            } else {
+                if (enableLosers && absChg >= minLoss) {
+                    matches = true;
+                    type = 'LOSERS';
+                }
+            }
+
+            if (matches) {
+                changeFilteredPoolItems.push({
+                    symbol: item.symbol,
+                    change: chg,
+                    price: item.price || 0,
+                    type,
+                    timestamp: Date.now()
+                });
+            }
+            return matches;
+        });
+
         // 判断“行情启动趋势”是否处于活动状态（必须在大行情发现模式开启且 enableStartTrend 总开关开启，且多或空至少开启一个）
         const isMajorTrendActive = Boolean(scanConfig.majorTrend?.enabled && scanConfig.timeBasis !== '8AM');
         const isStartTrendActive = Boolean(
@@ -1083,11 +1122,9 @@ const List1_Selection: React.FC<Props> = ({
             : null;
 
         // 🔒【行情启动趋势底池前置过滤】：
-        // 1. 若大行情发现模式下行情启动趋势多/空开启且启动底池有数据，凡不在启动趋势底池中的币种过滤剔除；
-        // 2. 若“大行情发现”未开启、或“行情启动趋势”关闭或底池为空，则不进行强制过滤拦截，保证常规模式初筛底池完整可用！
         const startTrendFilteredList = startTrendNormalizedSet
-            ? volumeFilteredList.filter(item => startTrendNormalizedSet.has(normalizeSym(item.symbol)) || (startTrendPool && startTrendPool.some(p => (typeof p === 'string' ? p : p?.symbol) === item.symbol)))
-            : volumeFilteredList;
+            ? changeFilteredList.filter(item => startTrendNormalizedSet.has(normalizeSym(item.symbol)) || (startTrendPool && startTrendPool.some(p => (typeof p === 'string' ? p : p?.symbol) === item.symbol)))
+            : changeFilteredList;
 
         // =========================================================================
         // 🌊 状态 1：当【配置 A (常规模式)】（即大行情发现未激活）时：
@@ -1097,7 +1134,7 @@ const List1_Selection: React.FC<Props> = ({
         let finalResult: ScannerItem[] = [];
 
         if (!isMajorTrendActive) {
-            finalResult = volumeFilteredList;
+            finalResult = changeFilteredList;
         } else {
             // =========================================================================
             // 🌊 状态 2：当【大行情发现】开启时！
@@ -1254,8 +1291,13 @@ const List1_Selection: React.FC<Props> = ({
                 resolvedResult = buildPoolResult(startTrendPool, false);
             }
 
-            // 5. 基础层 1：交易额过滤底池 (终极兜底保底)
-            finalResult = resolvedResult && resolvedResult.length > 0 ? resolvedResult : volumeFilteredList;
+            // 5. 尝试级联 1.5：涨跌幅过滤底池（若开关开启）
+            if (!resolvedResult && enableChangeFilter) {
+                resolvedResult = buildPoolResult(changeFilteredPoolItems, false);
+            }
+
+            // 6. 基础层 1：交易额过滤底池 (终极兜底保底)
+            finalResult = resolvedResult && resolvedResult.length > 0 ? resolvedResult : changeFilteredList;
         }
 
         // 🔒 [严格数量限制 (Limit)]: 若设置了数量限制 (limit > 0)，截取前 limit 个初筛币种展示与输出
@@ -1265,7 +1307,61 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return finalResult;
-    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, scanConfig.antiChaseFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, lookbackPool, antiChasePool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
+    }, [sortedList1, scanConfig.enableVol24h, scanConfig.minVolume, scanConfig.maxVolume, scanConfig.enableVol8am, scanConfig.minVolume8am, scanConfig.maxVolume8am, scanConfig.enableChangeFilter, scanConfig.enableGainers, scanConfig.enableLosers, scanConfig.minChange, scanConfig.minGainChange, scanConfig.minLossChange, scanConfig.timeBasis, scanConfig.limit, scanConfig.majorTrend, scanConfig.breakoutFilter, scanConfig.antiChaseFilter, isLong, metricsCache, majorTrendCandidates, localMajorTrendCandidates, effectiveMajorCandidates, hasRunMajorTrend, startTrendPool, sidewaysPool, lookbackPool, antiChasePool, breakoutPool, isMajorScanning, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.customSymbols, fixedModeView, baseList]);
+
+    const lastDispatchedChangePoolRef = useRef<string>('');
+    useEffect(() => {
+        try {
+            const enableChangeFilter = scanConfig.enableChangeFilter !== false;
+            const enableGainers = scanConfig.enableGainers !== false;
+            const enableLosers = scanConfig.enableLosers !== false;
+            const minGain = scanConfig.minGainChange !== undefined ? Number(scanConfig.minGainChange) : (scanConfig.minChange !== undefined ? Number(scanConfig.minChange) : 1);
+            const minLoss = scanConfig.minLossChange !== undefined ? Number(scanConfig.minLossChange) : (scanConfig.minChange !== undefined ? Number(scanConfig.minChange) : 1);
+
+            const volumeFilteredList = sortedList1.filter(item => checkVolumeRule(item, scanConfig));
+            const changeFilteredPoolItems: any[] = [];
+            volumeFilteredList.forEach(item => {
+                if (!enableChangeFilter) return;
+                const chg = item.change !== undefined ? item.change : 0;
+                const absChg = Math.abs(chg);
+                let matches = false;
+                let type: 'GAINERS' | 'LOSERS' = 'GAINERS';
+
+                if (chg >= 0) {
+                    if (enableGainers && chg >= minGain) {
+                        matches = true;
+                        type = 'GAINERS';
+                    }
+                } else {
+                    if (enableLosers && absChg >= minLoss) {
+                        matches = true;
+                        type = 'LOSERS';
+                    }
+                }
+
+                if (matches) {
+                    changeFilteredPoolItems.push({
+                        symbol: item.symbol,
+                        change: chg,
+                        price: item.price || 0,
+                        type,
+                        timestamp: Date.now()
+                    });
+                }
+            });
+
+            const jsonStr = JSON.stringify(changeFilteredPoolItems);
+            if (jsonStr === lastDispatchedChangePoolRef.current) return;
+            lastDispatchedChangePoolRef.current = jsonStr;
+
+            const changeKey = selectedStrategyId ? `SCANNER_CHANGE_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_CHANGE_FILTERED_POOL';
+            localStorage.setItem(changeKey, jsonStr);
+            localStorage.setItem('SCANNER_CHANGE_FILTERED_POOL', jsonStr);
+            window.dispatchEvent(new CustomEvent('scanner_change_pool_updated', {
+                detail: { pool: changeFilteredPoolItems, strategyId: selectedStrategyId || 'strat-1' }
+            }));
+        } catch (_) {}
+    }, [sortedList1, scanConfig.enableChangeFilter, scanConfig.enableGainers, scanConfig.enableLosers, scanConfig.minChange, scanConfig.minGainChange, scanConfig.minLossChange, selectedStrategyId]);
 
     const filteredListSymbolsKey = useMemo(() => (filteredList || []).map(item => item?.symbol).filter(Boolean).sort().join(','), [filteredList]);
 

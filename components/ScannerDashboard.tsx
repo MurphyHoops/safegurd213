@@ -350,11 +350,12 @@ const ScannerDashboardInner: React.FC<
   // --- AUTOMATIC STRATEGY ROTATION TIMER ---
   useEffect(() => {
     if (!isRotationEnabled) {
-      setRotationTimeLeft(0);
+      setRotationTimeLeft(prev => prev === 0 ? prev : 0);
       return;
     }
 
-    setRotationTimeLeft(rotationIntervalMinutesRef.current * 60);
+    const initialTime = rotationIntervalMinutesRef.current * 60;
+    setRotationTimeLeft(prev => prev === initialTime ? prev : initialTime);
 
     const intervalId = setInterval(() => {
       setRotationTimeLeft((prev) => {
@@ -369,7 +370,7 @@ const ScannerDashboardInner: React.FC<
 
             // Defer rotation update outside state reducer loop
             setTimeout(() => {
-              setRotationActiveStrategyId(nextStrat.id);
+              setRotationActiveStrategyId(prevId => prevId === nextStrat.id ? prevId : nextStrat.id);
               handleSelectStrategyRef.current?.(nextStrat.id);
               if (onLogRef.current) {
                 onLogRef.current("INFO", `[策略轮循] 当前前台界面与后台巡检策略同步聚焦为: "${nextStrat.name}"，所有已开启策略保持全速并发监控中。`);
@@ -388,15 +389,15 @@ const ScannerDashboardInner: React.FC<
   // Keep rotationActiveStrategyId valid
   useEffect(() => {
     if (!isRotationEnabled) return;
-    const activeStrats = strategies.filter(s => !s.unconfigured);
+    const activeStrats = strategiesRef.current.filter(s => !s.unconfigured);
     if (activeStrats.length > 0) {
       const exists = activeStrats.some(s => s.id === rotationActiveStrategyId);
-      if (!exists) {
+      if (!exists && activeStrats[0]) {
         setRotationActiveStrategyId(activeStrats[0].id);
         setRotationTimeLeft(rotationIntervalMinutes * 60);
       }
     }
-  }, [strategies, isRotationEnabled, rotationActiveStrategyId, rotationIntervalMinutes, setRotationActiveStrategyId]);
+  }, [isRotationEnabled, rotationActiveStrategyId, rotationIntervalMinutes, setRotationActiveStrategyId]);
 
   const handleSelectStrategy = useCallback((id: string) => {
     setSelectedStrategyId(id);

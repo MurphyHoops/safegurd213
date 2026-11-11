@@ -138,7 +138,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     scanner: {
         minVolume: 1, 
         maxVolume: 0,
-        minChange: 1, 
+        minChange: 1,
+        minGainChange: 1,
+        minLossChange: 1,
         source: 'BOTH',
         timeBasis: '24H',
         limit: 520,   

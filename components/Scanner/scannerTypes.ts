@@ -598,6 +598,11 @@ export interface ScanConfig {
     minVolume8am?: number;
     maxVolume8am?: number;
     minChange: number;
+    minGainChange?: number;
+    minLossChange?: number;
+    enableGainers?: boolean;
+    enableLosers?: boolean;
+    enableChangeFilter?: boolean;
     customSymbols: string;
     useCustomOnly: boolean;
     batchSize: number; 

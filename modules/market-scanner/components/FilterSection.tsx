@@ -15,6 +15,7 @@ import { StartTrendPoolBox } from './StartTrendPoolBox';
 import { SidewaysPoolBox } from './SidewaysPoolBox';
 import { LookbackPoolBox } from './LookbackPoolBox';
 import { AntiChasePoolBox } from './AntiChasePoolBox';
+import { ChangePoolBox } from './ChangePoolBox';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -260,15 +261,7 @@ export const FilterSection: React.FC<Props> = ({
                             </div>
                         </div>
 
-                        <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
-                            <span className="text-[9px] text-slate-500">涨跌 &gt; %</span>
-                            <SmartNumberInput 
-                                value={scanConfig.minChange} 
-                                onChange={val => setScanConfig(p => ({...p, minChange: val}))} 
-                                className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
-                            />
-                        </div>
-                        {/* 🔗 方向联动同步开关 (位于“涨跌”按钮右侧) */}
+                        {/* 🔗 方向联动同步开关 */}
                         <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
                             <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
                                 {isSyncLocked ? <Link2 size={11} className="text-indigo-400 shrink-0" /> : <Unlink size={11} className="text-slate-500 shrink-0" />}
@@ -294,6 +287,11 @@ export const FilterSection: React.FC<Props> = ({
                                 <option value="1w">周</option>
                             </select>
                         </div>
+                    </div>
+
+                    {/* Change Filter Pool Box for 8AM Mode */}
+                    <div id="submodule-change-pool-8am" className="contents">
+                        <ChangePoolBox scanConfig={scanConfig} setScanConfig={setScanConfig} />
                     </div>
                 </div>
             ) : (
@@ -424,15 +422,7 @@ export const FilterSection: React.FC<Props> = ({
                             </div>
                         </div>
 
-                        <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
-                            <span className="text-[9px] text-slate-500">Stage 2: 振幅 &gt; %</span>
-                            <SmartNumberInput 
-                                value={scanConfig.minChange} 
-                                onChange={val => setScanConfig(p => ({...p, minChange: val}))} 
-                                className="w-8 bg-transparent text-right font-mono text-white text-xs outline-none select-text"
-                            />
-                        </div>
-                        {/* 🔗 方向联动同步开关 (位于“振幅”按钮右侧) */}
+                        {/* 🔗 方向联动同步开关 */}
                         <div className="bg-[#1e2329] border border-slate-700 rounded p-1.5 flex items-center justify-between px-2">
                             <span className="text-[9px] text-slate-400 font-bold flex items-center gap-1">
                                 {isSyncLocked ? <Link2 size={11} className="text-indigo-400 shrink-0" /> : <Unlink size={11} className="text-slate-500 shrink-0" />}
@@ -453,9 +443,14 @@ export const FilterSection: React.FC<Props> = ({
                         </div>
                     </div>
 
-                    {/* Volume Filter Pool Box - Placed directly above Start Trend */}
+                    {/* Volume Filter Pool Box */}
                     <div id="submodule-volume-pool" className="contents">
                         <VolumePoolBox scanConfig={scanConfig} />
+                    </div>
+
+                    {/* Change Filter Pool Box */}
+                    <div id="submodule-change-pool" className="contents">
+                        <ChangePoolBox scanConfig={scanConfig} setScanConfig={setScanConfig} />
                     </div>
 
                     {/* Start Trend Configuration & Pool Box */}
