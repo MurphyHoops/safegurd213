@@ -1020,7 +1020,7 @@ const List1_Selection: React.FC<Props> = ({
         if (symbols.length > 0) {
             fetchVolume8amBatch(symbols);
         }
-    }, [sortedSymbolsKey, _8amUpdateTick, scanConfig.enableVol8am, scanConfig.timeBasis, scanConfig.list2PushConfig?.topNSortKey, scanConfig.list2PushConfig?.enableTopN]);
+    }, [sortedSymbolsKey, scanConfig.enableVol8am, scanConfig.timeBasis, scanConfig.list2PushConfig?.topNSortKey, scanConfig.list2PushConfig?.enableTopN]);
 
     const filteredList = useMemo(() => {
         // 🔒 [固定选币直通放行核心规则 (用户明确授权修改)]:
@@ -1103,8 +1103,7 @@ const List1_Selection: React.FC<Props> = ({
                     symbol: item.symbol,
                     change: chg,
                     price: item.price || 0,
-                    type,
-                    timestamp: Date.now()
+                    type
                 });
             }
             return matches;
@@ -1344,8 +1343,7 @@ const List1_Selection: React.FC<Props> = ({
                         symbol: item.symbol,
                         change: chg,
                         price: item.price || 0,
-                        type,
-                        timestamp: Date.now()
+                        type
                     });
                 }
             });
@@ -1357,11 +1355,13 @@ const List1_Selection: React.FC<Props> = ({
             const changeKey = selectedStrategyId ? `SCANNER_CHANGE_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_CHANGE_FILTERED_POOL';
             localStorage.setItem(changeKey, jsonStr);
             localStorage.setItem('SCANNER_CHANGE_FILTERED_POOL', jsonStr);
-            window.dispatchEvent(new CustomEvent('scanner_change_pool_updated', {
-                detail: { pool: changeFilteredPoolItems, strategyId: selectedStrategyId || 'strat-1' }
-            }));
+            setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('scanner_change_pool_updated', {
+                    detail: { pool: changeFilteredPoolItems, strategyId: selectedStrategyId || 'strat-1' }
+                }));
+            }, 0);
         } catch (_) {}
-    }, [sortedList1, scanConfig.enableChangeFilter, scanConfig.enableGainers, scanConfig.enableLosers, scanConfig.minChange, scanConfig.minGainChange, scanConfig.minLossChange, selectedStrategyId]);
+    }, [sortedSymbolsKey, scanConfig.enableChangeFilter, scanConfig.enableGainers, scanConfig.enableLosers, scanConfig.minChange, scanConfig.minGainChange, scanConfig.minLossChange, selectedStrategyId]);
 
     const filteredListSymbolsKey = useMemo(() => (filteredList || []).map(item => item?.symbol).filter(Boolean).sort().join(','), [filteredList]);
 

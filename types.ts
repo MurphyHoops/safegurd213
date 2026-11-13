@@ -416,6 +416,7 @@ export interface StopLossSettings {
     amputationReopenEnabled: boolean;
     maxReopenCount?: number; // Added: Max re-open count
     amputationHedgeOnlyExit?: boolean; // 新增：只清对冲、主仓续航
+    amputationRefillTarget?: 'SELF_ONLY' | 'SELF_OR_OPPOSITE'; // 新增：补仓触发位置基准
     fuseEnabled: boolean;
     maxHedgeRetries: number;
     fuseActionMode?: 'MANUAL' | 'AUTO_CLOSE'; // 熔断处置模式：人工处理 或 自动清仓

@@ -69,26 +69,34 @@ export function checkStrategy4_Amputation(
     const isMainAmputated = !!mainPosition.isAmputated && (mainPosition.amputatedAmount || 0) > 0;
     const isHedgeAmputated = !!hedgePosition && !!hedgePosition.isAmputated && (hedgePosition.amputatedAmount || 0) > 0;
 
+    const refillTarget = slSettings.amputationRefillTarget || 'SELF_OR_OPPOSITE';
+
     if (isMainAmputated) {
         const lastCutTime = mainPosition.lastAmputationTime || 0;
         const lastRefillTime = mainPosition.lastRefillTime || 0;
 
+        // 1.5秒冷却时间校验
         if ((now - lastCutTime >= 1500) && (now - lastRefillTime >= 1500)) {
-            // 必须穿越原始开仓均价或真实涨跌幅 > 0%
-            const isPriceBeyondEntry = mainPosition.side === PositionSide.LONG ? mainMark >= mainEntry : mainMark <= mainEntry;
+            // 主仓补仓判定
+            const isBeyondMainEntry = mainPosition.side === PositionSide.LONG ? mainMark >= mainEntry : mainMark <= mainEntry;
+            const isBeyondHedgeEntry = hedgePosition ? (mainPosition.side === PositionSide.LONG ? mainMark >= hedgeEntry : mainMark <= hedgeEntry) : false;
+            
+            const isPriceBeyondEntry = refillTarget === 'SELF_ONLY' ? isBeyondMainEntry : (isBeyondMainEntry || isBeyondHedgeEntry);
             const shouldRefill = realMainPnlPct >= 0 || isPriceBeyondEntry;
 
             if (shouldRefill) {
                 const refillQty = mainPosition.amputatedAmount || 0;
                 if (refillQty > 0) {
+                    // 重置断臂追踪状态
                     mainPosition.amputationTriggered = false;
                     delete mainPosition.maxPnLAfterAmputationTrigger;
                     delete mainPosition.maxPnLPercentAfterAmputationTrigger;
                     delete mainPosition.lastLoggedPeakPercent;
 
+                    // 执行补仓回调
                     refill(
                         mainPosition,
-                        `3. 断臂求生: 被砍多仓盈亏转正(真实变幅:${realMainPnlPct.toFixed(2)}% >= 0%, 现价:${mainMark} 到达均价:${mainEntry})，补回数量(${refillQty})`,
+                        `3. 断臂求生: 被砍多仓盈亏转正或触及开仓价(模式:${refillTarget}, 变幅:${realMainPnlPct.toFixed(2)}%, 现价:${mainMark}, 均价:${mainEntry})，补回数量(${refillQty})`,
                         refillQty
                     );
                     return true;
@@ -100,7 +108,11 @@ export function checkStrategy4_Amputation(
         const lastRefillTime = hedgePosition.lastRefillTime || 0;
 
         if ((now - lastCutTime >= 1500) && (now - lastRefillTime >= 1500)) {
-            const isPriceBeyondEntry = hedgePosition.side === PositionSide.LONG ? hedgeMark >= hedgeEntry : hedgeMark <= hedgeEntry;
+            // 对冲仓补仓判定
+            const isBeyondHedgeEntry = hedgePosition.side === PositionSide.LONG ? hedgeMark >= hedgeEntry : hedgeMark <= hedgeEntry;
+            const isBeyondMainEntry = hedgePosition.side === PositionSide.LONG ? hedgeMark >= mainEntry : hedgeMark <= mainEntry;
+
+            const isPriceBeyondEntry = refillTarget === 'SELF_ONLY' ? isBeyondHedgeEntry : (isBeyondHedgeEntry || isBeyondMainEntry);
             const shouldHedgeRefill = realHedgePnlPct >= 0 || isPriceBeyondEntry;
 
             if (shouldHedgeRefill) {
@@ -113,7 +125,7 @@ export function checkStrategy4_Amputation(
 
                     refill(
                         hedgePosition,
-                        `3. 断臂求生: 被砍对冲仓盈亏转正(真实变幅:${realHedgePnlPct.toFixed(2)}% >= 0%, 现价:${hedgeMark} 到达均价:${hedgeEntry})，补回数量(${refillQty})`,
+                        `3. 断臂求生: 被砍对冲仓盈亏转正或触及开仓价(模式:${refillTarget}, 变幅:${realHedgePnlPct.toFixed(2)}%, 现价:${hedgeMark}, 均价:${hedgeEntry})，补回数量(${refillQty})`,
                         refillQty
                     );
                     return true;

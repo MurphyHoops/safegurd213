@@ -111,6 +111,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         amputationBreathingSpace: 1,
         amputationReopenEnabled: false,
         amputationHedgeOnlyExit: false,
+        amputationRefillTarget: 'SELF_OR_OPPOSITE',
         fuseEnabled: false,
         maxHedgeRetries: 3,
         fuseActionMode: 'MANUAL',

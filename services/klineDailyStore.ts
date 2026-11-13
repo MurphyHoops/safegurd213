@@ -392,22 +392,10 @@ class KlineDailyStore {
             rawList.push(entry);
         });
 
-        // 🔒 [1分钟滑动窗口自动熔断与垃圾回收]: 
-        // 接收到广播传来的推送数据只保留1分钟，自动循环更新，1分钟以前的数据自动删除，防止撑死浏览器
-        if (now - this.lastTickerPurgeTime > 15000) {
-            this.lastTickerPurgeTime = now;
-            for (const [key, entry] of Array.from(this.tickerMemoryMap.entries())) {
-                if (now - entry.timestamp > 60000) {
-                    this.tickerMemoryMap.delete(key);
-                }
-            }
-        }
-
-        // 🔒 [全量增量无缝防蒸发铁律]: 
-        // 基于 tickerMemoryMap 保留 1 分钟内的有效行情，绝不无限堆积旧历史数据！
+        // 🏛️ [全量市场币种持久保留]: 保留所有有效的 USDT 交易对行情缓存，绝不因 1 分钟未推送而蒸发清空！
         const uniqueEntries = new Map<string, CachedTickerEntry>();
         this.tickerMemoryMap.forEach(v => {
-            if (v && v.symbol && (now - v.timestamp <= 60000)) {
+            if (v && v.symbol) {
                 uniqueEntries.set(v.symbol, v);
             }
         });
@@ -427,11 +415,7 @@ class KlineDailyStore {
                     const tx = this.db.transaction(STORE_TICKERS, 'readwrite');
                     const store = tx.objectStore(STORE_TICKERS);
                     uniqueToSave.forEach(item => {
-                        if (curTime - item.timestamp < 60000) {
-                            store.put(item);
-                        } else {
-                            store.delete(item.symbol);
-                        }
+                        store.put(item);
                     });
                 } catch (e) {
                     console.warn('[KlineDailyStore] Failed to persist 24h tickers to IndexedDB:', e);

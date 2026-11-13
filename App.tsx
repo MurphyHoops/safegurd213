@@ -467,6 +467,12 @@ const AppContent: React.FC = () => {
                         // 首次运行初始化记忆基准
                         localStorage.setItem(LAST_CONFIRMED_IP_KEY, currentIp);
                     } else if (lastConfirmed !== currentIp) {
+                        // 🔒 业务规则：当系统处于模拟盘运行时（realTrading 为 false），绝对不弹出 IP 变更提示弹窗，直接静默跳过
+                        const isReal = settingsRef.current.system.realTrading;
+                        if (!isReal) {
+                            return;
+                        }
+
                         // 检查用户是否在此会话中已主动点击了“跳过/暂不修改”
                         let skipped = skippedIpRef.current;
                         try {

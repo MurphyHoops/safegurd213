@@ -69,6 +69,17 @@ const Strategy4_Amputation: React.FC<Props> = ({ settings, onChange, toggleFeatu
                             <div className={`w-3 h-3 bg-white rounded-full shadow transition-transform ${settings.amputationHedgeOnlyExit ? 'translate-x-4' : 'translate-x-0'}`}/>
                         </div>
                     </div>
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-800 mt-2">
+                        <span className="text-[10px] text-purple-300 font-semibold">补仓触发位置基准</span>
+                        <select 
+                            className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-[10px] text-purple-200 outline-none"
+                            value={settings.amputationRefillTarget || 'SELF_OR_OPPOSITE'}
+                            onChange={(e) => onChange('amputationRefillTarget', e.target.value)}
+                        >
+                            <option value="SELF_OR_OPPOSITE">自身或对冲方开仓价 (双向互认)</option>
+                            <option value="SELF_ONLY">仅自身开仓价</option>
+                        </select>
+                    </div>
                     <div className="text-[9px] text-slate-500 bg-slate-800/50 p-1.5 rounded leading-relaxed border border-slate-700/30">
                         <strong>弃卒保车：</strong> 当一方盈利达到触发标准时，砍掉亏损方一半仓位。若亏损方回本(亏损为0)，则补回之前砍掉的仓位。最终利用盈利覆盖所有砍仓亏损和历史止损后，双向清仓。
                     </div>

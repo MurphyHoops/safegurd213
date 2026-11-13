@@ -54,7 +54,9 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                 // 若交易额过滤底池暂无币种，行情启动底池彻底清零，不叠加或残留任何历史老数据
                 localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify([]));
                 setPool([]);
-                window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
+                setTimeout(() => {
+                    window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
+                }, 0);
                 return;
             }
             const validSet = new Set(currentCandidates);

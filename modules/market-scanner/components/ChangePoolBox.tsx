@@ -21,7 +21,14 @@ export const ChangePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig }) =>
     const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('SCANNER_CHANGE_POOL_COLLAPSED', false);
     const [searchTerm, setSearchTerm] = useState('');
     const [copied, setCopied] = useState(false);
-    const [pool, setPool] = usePersistedState<ChangePoolItem[]>('SCANNER_CHANGE_FILTERED_POOL', []);
+    const [pool, setPool] = useState<ChangePoolItem[]>(() => {
+        try {
+            const raw = localStorage.getItem('SCANNER_CHANGE_FILTERED_POOL');
+            return raw ? JSON.parse(raw) : [];
+        } catch (_) {
+            return [];
+        }
+    });
     const isMountedRef = useRef(true);
 
     const enableChangeFilter = scanConfig.enableChangeFilter !== false;
@@ -44,7 +51,11 @@ export const ChangePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig }) =>
                     const raw = localStorage.getItem('SCANNER_CHANGE_FILTERED_POOL');
                     targetPool = raw ? JSON.parse(raw) : [];
                 }
-                setPool(targetPool);
+                setPool(prev => {
+                    const nextJson = JSON.stringify(targetPool);
+                    const prevJson = JSON.stringify(prev);
+                    return nextJson === prevJson ? prev : targetPool;
+                });
             } catch (_) {}
         };
 
@@ -55,7 +66,7 @@ export const ChangePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig }) =>
             isMountedRef.current = false;
             window.removeEventListener('scanner_change_pool_updated', handlePoolUpdated);
         };
-    }, [setPool]);
+    }, []);
 
     const filteredList = useMemo(() => {
         if (!searchTerm.trim()) return pool;
