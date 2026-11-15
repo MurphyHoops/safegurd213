@@ -75,8 +75,8 @@ export function checkStrategy4_Amputation(
         const lastCutTime = mainPosition.lastAmputationTime || 0;
         const lastRefillTime = mainPosition.lastRefillTime || 0;
 
-        // 1.5秒冷却时间校验
-        if ((now - lastCutTime >= 1500) && (now - lastRefillTime >= 1500)) {
+        // 15秒安全防抖冷却校验（杜绝限频或网络波动期每1.5秒高频强行重发补仓请求）
+        if ((now - lastCutTime >= 15000) && (now - lastRefillTime >= 15000)) {
             // 主仓补仓判定
             const isBeyondMainEntry = mainPosition.side === PositionSide.LONG ? mainMark >= mainEntry : mainMark <= mainEntry;
             const isBeyondHedgeEntry = hedgePosition ? (mainPosition.side === PositionSide.LONG ? mainMark >= hedgeEntry : mainMark <= hedgeEntry) : false;
@@ -107,7 +107,7 @@ export function checkStrategy4_Amputation(
         const lastCutTime = hedgePosition.lastAmputationTime || 0;
         const lastRefillTime = hedgePosition.lastRefillTime || 0;
 
-        if ((now - lastCutTime >= 1500) && (now - lastRefillTime >= 1500)) {
+        if ((now - lastCutTime >= 15000) && (now - lastRefillTime >= 15000)) {
             // 对冲仓补仓判定
             const isBeyondHedgeEntry = hedgePosition.side === PositionSide.LONG ? hedgeMark >= hedgeEntry : hedgeMark <= hedgeEntry;
             const isBeyondMainEntry = hedgePosition.side === PositionSide.LONG ? hedgeMark >= mainEntry : hedgeMark <= mainEntry;

@@ -2138,48 +2138,25 @@ const AppContent: React.FC = () => {
 
             // 🛡️ 防重机制：如果该币种已存在轮询定时器，先清除旧定时器，防止多个并发定时器轰炸交易所
             if (activePollingSymbols.has(cleanSym)) {
-                clearInterval(activePollingSymbols.get(cleanSym));
+                clearTimeout(activePollingSymbols.get(cleanSym));
                 activePollingSymbols.delete(cleanSym);
             }
 
-            // 阶段 1：0ms 立即执行首轮快速主动抓取
-            fetchInstantTradeRecords(targetSymbol, orderId, action);
-            
-            // 阶段 2：300ms 极速二次探针
-            setTimeout(() => {
-                fetchInstantTradeRecords(targetSymbol, orderId, action);
-            }, 300);
-
-            // 阶段 3：平滑延迟探针 (每 2.5 秒一次，最多 2 次探针，防止高频 REST 轰炸币安 API)
-            let secCount = 0;
-            const maxProbeAttempts = 2;
-            const secTimer = setInterval(async () => {
-                secCount++;
+            // ⚡ 单次轻量级延迟对账（服务端 /api/binance/order 已内置 0ms WS 推送与 300ms 流水补齐，此处仅在 800ms 后做一次兜底确认，杜绝高频连发）
+            const singleTimer = setTimeout(async () => {
+                activePollingSymbols.delete(cleanSym);
                 try {
                     if (orderId && simulatorRef.current?.tradeLogs) {
                         const isConfirmed = simulatorRef.current.tradeLogs.some(l => 
                             (l.binance_order_id && String(l.binance_order_id) === String(orderId))
                         );
-                        if (isConfirmed) {
-                            clearInterval(secTimer);
-                            activePollingSymbols.delete(cleanSym);
-                            return;
-                        }
+                        if (isConfirmed) return;
                     }
-                    const success = await fetchInstantTradeRecords(targetSymbol, orderId, action);
-                    if (success || secCount >= maxProbeAttempts) {
-                        clearInterval(secTimer);
-                        activePollingSymbols.delete(cleanSym);
-                    }
-                } catch (err) {
-                    if (secCount >= maxProbeAttempts) {
-                        clearInterval(secTimer);
-                        activePollingSymbols.delete(cleanSym);
-                    }
-                }
-            }, 2500);
+                    await fetchInstantTradeRecords(targetSymbol, orderId, action);
+                } catch (_) {}
+            }, 800);
 
-            activePollingSymbols.set(cleanSym, secTimer);
+            activePollingSymbols.set(cleanSym, singleTimer);
         };
 
         (window as any).fetchInstantTradeRecords = triggerInstantTradeFetch;
@@ -2190,14 +2167,12 @@ const AppContent: React.FC = () => {
             if (targetSymbol) {
                 triggerInstantTradeFetch(targetSymbol);
             }
-            if (force) {
-                if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
-                return await fetchRealState(false, true);
-            }
             if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+            // 当指定了单币 targetSymbol 时，避免使用 force=true 强制穿透 15 个币种的全量历史流水缓存，保护 IP 权重
+            const effectiveForce = targetSymbol ? false : force;
             syncDebounceTimer = setTimeout(() => {
-                fetchRealState(true, force);
-            }, targetSymbol ? 600 : 800);
+                fetchRealState(true, effectiveForce);
+            }, targetSymbol ? 800 : 1000);
         };
 
         // Initial instant sync (100ms)
@@ -2640,11 +2615,28 @@ const AppContent: React.FC = () => {
                     return;
                 } else {
                     const errMsg = resData.error || resData.message || "未知交易所错误";
-                    if (simulatorRef.current) {
-                        simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动开仓未获成功确认: ${errMsg}，正在启动对账同步...`);
-                    }
-                    if (typeof (window as any).triggerApiSync === "function") {
-                        (window as any).triggerApiSync(true, cleanSymbol);
+                    const isRateLimited = Boolean(
+                        resData?.rateLimited ||
+                        resData?.code === -1003 ||
+                        resData?.code === -1015 ||
+                        String(errMsg).includes("-1003") ||
+                        String(errMsg).includes("rate-limited") ||
+                        String(errMsg).includes("限频") ||
+                        String(errMsg).includes("418")
+                    );
+                    if (isRateLimited) {
+                        // 限频保护期内延长该币开仓冷却 60 秒，严禁触发二次对账请求风暴
+                        recentlyOpenedPositionsRef.current.set(cleanSymbol, Date.now() + 50000);
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("DANGER", `🚨 [币安实盘限频退避] 自动开仓被限频拦截 (${errMsg})，已暂停该币重复开仓与反查 60 秒！`);
+                        }
+                    } else {
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动开仓未获成功确认: ${errMsg}，正在启动对账同步...`);
+                        }
+                        if (typeof (window as any).triggerApiSync === "function") {
+                            (window as any).triggerApiSync(false, cleanSymbol);
+                        }
                     }
                     audioService.speak("自动开仓失败");
                 }
@@ -2974,12 +2966,25 @@ const AppContent: React.FC = () => {
                 }
             } else {
                 const errMsg = resData.error || "未知交易所错误";
+                const isRateLimited = Boolean(
+                    resData?.rateLimited ||
+                    resData?.code === -1003 ||
+                    resData?.code === -1015 ||
+                    String(errMsg).includes("-1003") ||
+                    String(errMsg).includes("rate-limited") ||
+                    String(errMsg).includes("限频") ||
+                    String(errMsg).includes("418")
+                );
+                if (isRateLimited) {
+                    lastHedgeAttemptRef.current.set(lockKey, Date.now() + 55000);
+                    lastHedgeAttemptRef.current.set(symbolLockKey, Date.now() + 55000);
+                }
                 if (simulatorRef.current) {
-                    simulatorRef.current.addLog("DANGER", `🚨 [对冲响应失败] 自动对冲开仓失败: ${errMsg}，正在启动对账同步...`);
-                    if (typeof (window as any).triggerApiSync === "function") {
-                        (window as any).triggerApiSync(true, cleanSymbol);
+                    simulatorRef.current.addLog("DANGER", `🚨 [对冲响应失败] 自动对冲开仓失败: ${errMsg}${isRateLimited ? ' (触发币安限频，已开启60秒退避保护)' : '，正在启动对账同步...'}`);
+                    if (!isRateLimited && typeof (window as any).triggerApiSync === "function") {
+                        (window as any).triggerApiSync(false, cleanSymbol);
                     }
-                    // Reset main position isHedged flag so future ticks/scans can retry
+                    // Reset main position isHedged flag so future ticks/scans can retry after cooldown
                     const simPositions = simulatorRef.current.getPositions();
                     const mainPos = simPositions.find(p => p.entryId === position.entryId || (normalizeSymbol(p.symbol) === cleanSymbol && p.side === position.side));
                     if (mainPos && !simPositions.some(p => normalizeSymbol(p.symbol) === cleanSymbol && p.side !== position.side)) {
@@ -3219,13 +3224,25 @@ const AppContent: React.FC = () => {
                 }
 
                 if (typeof (window as any).triggerApiSync === "function") {
-                    (window as any).triggerApiSync(true, cleanSymbol);
+                    (window as any).triggerApiSync(false, cleanSymbol);
                 }
             } else {
                 const errMsg = resData.error || "未知交易所错误";
-                // 🛡️ [实盘超时/未获确认主动对账保全引擎]
+                const isRateLimitedClose = Boolean(
+                    resData?.rateLimited ||
+                    resData?.code === -1003 ||
+                    resData?.code === -1015 ||
+                    String(errMsg).includes("-1003") ||
+                    String(errMsg).includes("rate-limited") ||
+                    String(errMsg).includes("限频") ||
+                    String(errMsg).includes("418")
+                );
+                // 失败或限频时强制写入防重冷却时间戳（限频退避 60 秒，普通失败退避 15 秒），严禁下一毫秒再次强行提交平仓
+                recentlyClosedPositionsRef.current.set(lockKey, Date.now() + (isRateLimitedClose ? 55000 : 10000));
+
+                // 🛡️ [实盘超时/未获确认主动对账保全引擎]（若明确因 -1003 限频被拒，严禁继续发射反查探针风暴）
                 let reconciled = false;
-                if (apiKey && apiSecret) {
+                if (apiKey && apiSecret && !isRateLimitedClose) {
                     try {
                         if (simulatorRef.current) {
                             simulatorRef.current.addLog("WARNING", `⚠️ [平仓未获确认] 正在启动对账通道核查币安实盘执行状态: ${cleanSymbol}...`);
@@ -3492,7 +3509,7 @@ const AppContent: React.FC = () => {
         const isRescueRefill = isManualOp || reason.includes('断臂') || reason.includes('求生');
         const now = Date.now();
         const lastRefillTime = inFlightRefillRef.current.get(refillLockKey) || 0;
-        const cooldownThreshold = isRescueRefill ? 1500 : 8000;
+        const cooldownThreshold = isManualOp ? 3000 : 15000;
         if (!isManualOp && now - lastRefillTime < cooldownThreshold) {
             console.warn(`[Auto Refill Intercepted] 🛡️ 补仓防抖拦截: ${cleanSymbol} ${position.side} (${now - lastRefillTime}ms)`);
             return;
@@ -3535,6 +3552,7 @@ const AppContent: React.FC = () => {
 
         const clientOrderId = `REF_${cleanSymbol}_${position.side}_${Date.now()}`.slice(0, 36);
         let cleanupTradeListener: (() => void) | null = null;
+        let refillBackoffMs = 15000;
 
         try {
             const fetchPromise = fetch("/api/binance/order", {
@@ -3589,10 +3607,10 @@ const AppContent: React.FC = () => {
             });
 
             const timeoutPromise = new Promise<{ isFromWs: false, ok: false, data: null, error: any }>((_, reject) =>
-                setTimeout(() => reject(new Error("Timeout")), 4000)
+                setTimeout(() => reject(new Error("Timeout")), 6000)
             );
 
-            // Race fetch, WS fast-track, and fast 4000ms timeout
+            // Race fetch, WS fast-track, and 6000ms timeout
             let raceResult: any = null;
             try {
                 raceResult = await Promise.race([fetchPromise, wsFastTrackPromise, timeoutPromise]);
@@ -3604,13 +3622,28 @@ const AppContent: React.FC = () => {
             const resData = raceResult?.data || {};
             let isRefillConfirmed = raceResult?.ok && resData?.success && resData?.orderId && resData?.orderId !== "EXISTING_POSITION_INTERCEPTED";
 
+            const errStr = String(resData?.error || raceResult?.error?.message || "");
+            const isRateLimitedRefill = Boolean(
+                resData?.rateLimited ||
+                resData?.code === -1003 ||
+                resData?.code === -1015 ||
+                errStr.includes("-1003") ||
+                errStr.includes("rate-limited") ||
+                errStr.includes("限频") ||
+                errStr.includes("418")
+            );
+            if (isRateLimitedRefill) {
+                refillBackoffMs = 60000;
+            }
+
             // 🛡️【方案1+方案2：超时/未获确认启动主动精准探针反查】
+            // ⚠️ 关键护栏：若明确是因为 -1003 IP 限频被拒，严禁启动反查探针与全量对账，杜绝在限频期间连环发包轰炸！
             let reconData: any = resData;
             let execRefillQty = Number(resData?.qty || qty || 0);
             let execRefillPrice = Number(resData?.price || position.markPrice || position.entryPrice || 0);
             let execOrderId = resData?.orderId;
 
-            if (!isRefillConfirmed) {
+            if (!isRefillConfirmed && !isRateLimitedRefill) {
                 if (simulatorRef.current) {
                     simulatorRef.current.addLog("WARNING", `⚠️ [补仓探针启动] 正在向币安反查订单(${clientOrderId})与实盘持仓以确认补仓状态: ${cleanSymbol}...`);
                 }
@@ -3666,6 +3699,7 @@ const AppContent: React.FC = () => {
             }
 
             if (isRefillConfirmed) {
+                refillBackoffMs = 15000;
                 if (simulatorRef.current) {
                     if (execOrderId) {
                         simulatorRef.current.registerExecutedOrderId(execOrderId);
@@ -3686,31 +3720,34 @@ const AppContent: React.FC = () => {
                 audioService.speak(`${cleanSym}已自动补仓`, true);
 
                 if (typeof (window as any).triggerApiSync === "function") {
-                    (window as any).triggerApiSync(true, cleanSymbol);
+                    (window as any).triggerApiSync(false, cleanSymbol);
                 }
             } else {
                 const errMsg = resData.error || (resData.orderId === "EXISTING_POSITION_INTERCEPTED" ? "币安持仓拦截" : "未获交易所成交确认");
-                if (simulatorRef.current) {
-                    simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动补位未获确认: ${errMsg}，正在启动对账同步...`);
-                }
-                if (typeof (window as any).triggerApiSync === "function") {
-                    (window as any).triggerApiSync(true, cleanSymbol);
+                if (isRateLimitedRefill) {
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("DANGER", `🚨 [币安实盘限频退避] ${cleanSymbol} 自动补仓触发币安 IP 频率限制 (-1003)，已暂停该币补仓与反查探针 60 秒！`);
+                    }
+                } else {
+                    if (simulatorRef.current) {
+                        simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动补位未获确认: ${errMsg}，将在冷却后对账同步...`);
+                    }
+                    if (typeof (window as any).triggerApiSync === "function") {
+                        (window as any).triggerApiSync(false, cleanSymbol);
+                    }
                 }
                 audioService.speak("自动补仓未获确认");
             }
         } catch (e: any) {
             if (simulatorRef.current) {
-                simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动补位网络异常: ${e.message || e}，正在启动对账同步...`);
-            }
-            if (typeof (window as any).triggerApiSync === "function") {
-                (window as any).triggerApiSync(true, cleanSymbol);
+                simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 自动补位网络异常: ${e.message || e}`);
             }
         } finally {
             if (cleanupTradeListener) cleanupTradeListener();
-            // ⚡【一键清仓级极速释放】立即清理补仓在途锁
-            inFlightRefillRef.current.delete(refillLockKey);
+            // 🔒 保留并延长冷却时间戳（普通 15s，限频 60s），严禁直接 delete 导致下一秒立即重发！
+            inFlightRefillRef.current.set(refillLockKey, Date.now() + Math.max(0, refillBackoffMs - 15000));
             if (simulatorRef.current) {
-                simulatorRef.current.releaseInFlightRefill(position.symbol, position.side);
+                simulatorRef.current.releaseInFlightRefill(position.symbol, position.side, refillBackoffMs);
             }
         }
     }, []);

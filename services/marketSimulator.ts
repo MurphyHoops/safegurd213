@@ -2537,13 +2537,13 @@ export class MarketSimulator {
             return;
         }
 
-        // 🔒 针对断臂求生回踩补仓，移除死板的10秒等待限制，仅保留1秒超短防抖
+        // 🔒 针对自动补仓增加15秒安全防抖冷却（手动操作保留3秒防连击），杜绝限频期间高频重发
         const now = Date.now();
         const lastRefill = Math.max(
             position.lastRefillTime || 0,
             this.lastRefillTimestampMap.get(lockKey) || 0
         );
-        const cooldownThreshold = isRescueRefill ? 1500 : 8000;
+        const cooldownThreshold = isManual ? 3000 : 15000;
         if (now - lastRefill < cooldownThreshold) {
             console.warn(`[Refill Cooldown] 🛡️ 补仓防抖中: ${position.symbol} ${position.side} (${now - lastRefill}ms)`);
             return;
@@ -2556,10 +2556,10 @@ export class MarketSimulator {
             this.lastRefillTimestampMap.set(lockKey, now);
             position.lastRefillTime = now;
 
-            // 2秒安全超时防死锁（防止前端网络阻塞或未正确返回回执）
+            // 10秒安全超时防死锁（防止前端网络阻塞或未正确返回回执）
             setTimeout(() => {
                 this.inFlightRefillPool.delete(lockKey);
-            }, 2000);
+            }, 10000);
 
             if (this.onRealOpen) {
                 this.onRealOpen(position, refillAmount, reason);
@@ -2681,12 +2681,21 @@ export class MarketSimulator {
     }
 
     /**
-     * 手动/异常释放补仓在途锁
+     * 手动/异常释放补仓在途锁（支持传入限频/失败退避冷却毫秒数）
      */
-    public releaseInFlightRefill(symbol: string, side: PositionSide) {
+    public releaseInFlightRefill(symbol: string, side: PositionSide, backoffMs: number = 0) {
         const cleanSym = normalizeSymbol(symbol);
         const lockKey = `${cleanSym}_${side}`;
         this.inFlightRefillPool.delete(lockKey);
+        if (backoffMs > 0) {
+            // 基础防抖为 15000ms，偏移时间戳使实际冷却延长至 backoffMs
+            const targetTimestamp = Date.now() + Math.max(0, backoffMs - 15000);
+            this.lastRefillTimestampMap.set(lockKey, targetTimestamp);
+            const position = this.positions.find(p => normalizeSymbol(p.symbol) === cleanSym && p.side === side);
+            if (position) {
+                position.lastRefillTime = targetTimestamp;
+            }
+        }
     }
 
     /**

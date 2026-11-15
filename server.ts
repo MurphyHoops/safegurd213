@@ -3430,6 +3430,19 @@ async function startServer() {
         apiSecret = typeof apiSecret === 'string' ? apiSecret.trim() : apiSecret;
         const formattedSymbol = formatBinanceSymbol(symbol);
 
+        // 🔒 限频保护期快速静默拦截，避免重复向币安发包
+        if (binanceBannedUntilTimestamp > Date.now()) {
+            const remaining = Math.ceil((binanceBannedUntilTimestamp - Date.now()) / 1000);
+            return res.json({
+                success: false,
+                rateLimited: true,
+                bannedUntil: binanceBannedUntilTimestamp,
+                remainingSeconds: remaining,
+                error: `Binance IP rate-limited (-1003). Outbound request paused for ${remaining}s.`,
+                trades: []
+            });
+        }
+
         // Auto pre-warm UserDataStream
         ensureUserDataStream(apiKey);
 
@@ -3476,6 +3489,18 @@ async function startServer() {
         apiKey = typeof apiKey === 'string' ? apiKey.trim() : apiKey;
         apiSecret = typeof apiSecret === 'string' ? apiSecret.trim() : apiSecret;
         const formattedSymbol = formatBinanceSymbol(symbol);
+
+        if (binanceBannedUntilTimestamp > Date.now()) {
+            const remaining = Math.ceil((binanceBannedUntilTimestamp - Date.now()) / 1000);
+            return res.json({
+                success: false,
+                rateLimited: true,
+                code: -1003,
+                bannedUntil: binanceBannedUntilTimestamp,
+                remainingSeconds: remaining,
+                error: `Binance IP rate-limited (-1003). Outbound request paused for ${remaining}s.`
+            });
+        }
 
         try {
             const timeOffset = await syncBinanceServerTime();
