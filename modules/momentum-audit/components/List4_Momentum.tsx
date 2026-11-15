@@ -119,7 +119,14 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                     <ScannerVisualizerModal 
                         title="4. 动能审计"
                         items={filteredList.map(i => {
-                            const m = i.momentum || { status: 'INVALID', midPoint: 0, entryTrigger: 0, invalidReason: 'Data Loading...' };
+                            const signalCandle = i.structure ? {
+                                high: i.structure.signalHigh,
+                                low: i.structure.signalLow,
+                                close: i.structure.signalPrice,
+                                open: i.structure.signalPrice,
+                                amplitude: i.structure.signalLow ? (i.structure.signalHigh - i.structure.signalLow) / i.structure.signalLow : 0,
+                                time: i.structure.signalTime
+                            } : undefined;
                             return {
                                 symbol: i.symbol,
                                 timeframe: i.tf || '15m',
@@ -128,6 +135,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                                 signals: i.structure?.signalTime ? [{ time: i.structure.signalTime, type: i.direction as any }] : [],
                                 entryPrice: i.structure?.signalPrice,
                                 entryTime: i.structure?.signalTime,
+                                signalCandle,
                                 currentPrice: i.price,
                                 highlightTime: i.enterList4Time,
                                 showAuditLines: false,
@@ -137,6 +145,7 @@ const List4_Momentum: React.FC<Props> = ({ config, setConfig, list4, list3Config
                             };
                         })}
                         defaultTf="15m"
+                        executeTradeSafe={executeTradeSafe}
                         onClose={() => setShowVisualizer(false)}
                     />
                 )}

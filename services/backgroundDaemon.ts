@@ -55,13 +55,16 @@ class BackgroundDaemon {
   /**
    * 保存持仓状态到磁盘 positions.json
    */
-  public savePositions(positions: any[]) {
+  public savePositions(positions: any[], clearedAt?: number) {
     try {
       this.ensureDataDir();
+      const now = Date.now();
+      const safePositions = Array.isArray(positions) ? positions : [];
       const payload = {
-        updatedAt: Date.now(),
-        updatedTimeStr: new Date().toISOString(),
-        positions
+        updatedAt: now,
+        updatedTimeStr: new Date(now).toISOString(),
+        clearedAt: safePositions.length === 0 ? (clearedAt || now) : (clearedAt || 0),
+        positions: safePositions
       };
       fs.writeFileSync(this.positionsFile, JSON.stringify(payload, null, 2), 'utf-8');
     } catch (e) {
@@ -70,19 +73,30 @@ class BackgroundDaemon {
   }
 
   /**
-   * 从磁盘 positions.json 加载持仓状态
+   * 从磁盘 positions.json 加载持仓状态及元数据
    */
-  public loadPositions(): any[] {
+  public loadPositionsPayload(): { positions: any[]; updatedAt: number; clearedAt: number } {
     try {
       if (fs.existsSync(this.positionsFile)) {
         const raw = fs.readFileSync(this.positionsFile, 'utf-8');
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed.positions) ? parsed.positions : [];
+        return {
+          positions: Array.isArray(parsed.positions) ? parsed.positions : [],
+          updatedAt: Number(parsed.updatedAt) || 0,
+          clearedAt: Number(parsed.clearedAt) || 0
+        };
       }
     } catch (e) {
       console.error('⚠️ [Daemon Storage] Failed to load positions from disk:', e);
     }
-    return [];
+    return { positions: [], updatedAt: 0, clearedAt: 0 };
+  }
+
+  /**
+   * 从磁盘 positions.json 加载持仓状态
+   */
+  public loadPositions(): any[] {
+    return this.loadPositionsPayload().positions;
   }
 
   /**

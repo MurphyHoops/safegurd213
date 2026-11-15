@@ -281,17 +281,22 @@ const List1_Selection: React.FC<Props> = ({
         const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES') : null);
         try {
             const parsed = raw ? JSON.parse(raw) : [];
-            setLocalMajorTrendCandidates(new Set(Array.isArray(parsed) ? parsed : []));
+            const nextSet = new Set<string>(Array.isArray(parsed) ? parsed : []);
+            setLocalMajorTrendCandidates(prev => {
+                if (prev.size === nextSet.size && Array.from(prev).every(x => nextSet.has(x))) return prev;
+                return nextSet;
+            });
         } catch (_) {
-            setLocalMajorTrendCandidates(new Set());
+            setLocalMajorTrendCandidates(prev => prev.size === 0 ? prev : new Set());
         }
 
         const sidewaysKey = selectedStrategyId ? `SCANNER_SIDEWAYS_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_SIDEWAYS_FILTERED_POOL';
         const rawSideways = localStorage.getItem(sidewaysKey) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL') : null);
         try {
-            setSidewaysPool(rawSideways ? JSON.parse(rawSideways) : []);
+            const nextSideways = rawSideways ? JSON.parse(rawSideways) : [];
+            setSidewaysPool(prev => JSON.stringify(prev) === JSON.stringify(nextSideways) ? prev : nextSideways);
         } catch (_) {
-            setSidewaysPool([]);
+            setSidewaysPool(prev => prev.length === 0 ? prev : []);
         }
     }, [selectedStrategyId]);
 

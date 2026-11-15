@@ -35,7 +35,7 @@ export const LookbackPoolBox: React.FC<Props> = ({ scanConfig, onRunDiscovery, i
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     if (Array.isArray(parsed)) {
-                        setPool(parsed);
+                        setPool(prev => JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed);
                         return;
                     }
                 }
@@ -52,10 +52,13 @@ export const LookbackPoolBox: React.FC<Props> = ({ scanConfig, onRunDiscovery, i
                                 symbol: sym,
                                 direction: isLong ? 'LONG' : (isShort ? 'SHORT' : 'BOTH'),
                                 fullSymbol: c,
-                                timestamp: Date.now()
+                                timestamp: 0
                             };
                         });
-                        setPool(legacyItems);
+                        setPool(prev => {
+                            const stripTs = (arr: LookbackPoolItem[]) => arr.map(({ timestamp, ...rest }) => rest);
+                            return JSON.stringify(stripTs(prev)) === JSON.stringify(stripTs(legacyItems)) ? prev : legacyItems;
+                        });
                     }
                 }
             } catch (_) {}

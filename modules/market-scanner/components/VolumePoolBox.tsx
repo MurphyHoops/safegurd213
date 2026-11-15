@@ -71,15 +71,25 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         return [];
     });
     const isMountedRef = useRef(true);
+    const lastDispatchedSymbolsJsonRef = useRef<string>('');
 
     useEffect(() => {
         isMountedRef.current = true;
 
+        const updateFeedbackIfChanged = (clean: string[]) => {
+            setFeedbackSymbols(prev => {
+                if (prev.length === clean.length && prev.every((v, i) => v === clean[i])) {
+                    return prev;
+                }
+                return clean;
+            });
+        };
+
         const handleCandidatesUpdate = (e: any) => {
-            const list = e.detail;
+            const list = e?.detail?.candidates || e?.detail;
             if (Array.isArray(list)) {
                 const clean = Array.from(new Set(list.map((s: string) => String(s).replace('_LONG', '').replace('_SHORT', '')).filter(Boolean))) as string[];
-                setFeedbackSymbols(clean);
+                updateFeedbackIfChanged(clean);
             } else {
                 try {
                     const raw = localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES');
@@ -87,7 +97,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                         const parsed = JSON.parse(raw);
                         if (Array.isArray(parsed)) {
                             const clean = Array.from(new Set(parsed.map((s: string) => String(s).replace('_LONG', '').replace('_SHORT', '')).filter(Boolean))) as string[];
-                            setFeedbackSymbols(clean);
+                            updateFeedbackIfChanged(clean);
                         }
                     }
                 } catch (_) {}
@@ -126,7 +136,8 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                             if (prev.length === 0) return items;
                             const map = new Map(prev.map(i => [i.symbol, i]));
                             items.forEach(it => map.set(it.symbol, it));
-                            return Array.from(map.values());
+                            const next = Array.from(map.values());
+                            return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
                         });
                         return;
                     }
@@ -159,7 +170,8 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                         // 🔒 增量合并无缝防掉包：若新数据包含局部币种，融合合并至已有全量底池中，杜绝突然丢包或骤减
                         const map = new Map(prev.map(i => [i.symbol, i]));
                         items.forEach(it => map.set(it.symbol, it));
-                        return Array.from(map.values());
+                        const next = Array.from(map.values());
+                        return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
                     });
                 }
             } else {
@@ -323,7 +335,10 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     useEffect(() => {
         try {
             const symbolsOnly = (filteredPool || []).map(i => i.symbol);
-            localStorage.setItem('SCANNER_VOLUME_FILTERED_POOL', JSON.stringify(symbolsOnly));
+            const symbolsJson = JSON.stringify(symbolsOnly);
+            if (lastDispatchedSymbolsJsonRef.current === symbolsJson) return;
+            lastDispatchedSymbolsJsonRef.current = symbolsJson;
+            localStorage.setItem('SCANNER_VOLUME_FILTERED_POOL', symbolsJson);
             window.dispatchEvent(new CustomEvent('scanner_volume_pool_updated', { detail: { symbols: symbolsOnly } }));
         } catch (_) {}
     }, [filteredPool]);

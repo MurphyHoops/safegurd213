@@ -487,9 +487,13 @@ async function startServer() {
 
   app.post("/api/daemon/save-state", (req, res) => {
       try {
-          const { key, data } = req.body;
+          const { key, data, clearedAt } = req.body;
           if (key === 'positions') {
-              backgroundDaemon.savePositions(Array.isArray(data) ? data : []);
+              const posArr = Array.isArray(data) ? data : [];
+              backgroundDaemon.savePositions(posArr, clearedAt);
+              if (posArr.length === 0 && typeof accountStateCache !== 'undefined') {
+                  accountStateCache.clear();
+              }
           } else if (key) {
               backgroundDaemon.saveScannerState(key, data);
           }
@@ -503,8 +507,13 @@ async function startServer() {
       try {
           const key = (req.query.key as string) || 'positions';
           if (key === 'positions') {
-              const positions = backgroundDaemon.loadPositions();
-              res.json({ success: true, positions });
+              const payload = backgroundDaemon.loadPositionsPayload();
+              res.json({
+                  success: true,
+                  positions: payload.positions,
+                  updatedAt: payload.updatedAt,
+                  clearedAt: payload.clearedAt
+              });
           } else {
               const data = backgroundDaemon.loadScannerState(key);
               res.json({ success: true, data });
@@ -589,12 +598,19 @@ async function startServer() {
   let lastHeartbeatTimestamp = 0;
   let hasReceivedHeartbeatOnce = false;
   let isHeartbeatTimeoutAlerted = false;
+  let isHeartbeatPaused = false;
   let lastHeartbeatHeapMB = 0;
 
   app.post("/api/telemetry/heartbeat", (req, res) => {
     try {
-      const { timestamp, heapMB, lastAction } = req.body || {};
+      const { timestamp, heapMB, lastAction, paused } = req.body || {};
       lastHeartbeatTimestamp = Date.now();
+      if (paused === true) {
+        isHeartbeatPaused = true;
+        isHeartbeatTimeoutAlerted = false;
+        return res.json({ success: true, paused: true, timestamp: Date.now() });
+      }
+      isHeartbeatPaused = false;
       hasReceivedHeartbeatOnce = true;
       isHeartbeatTimeoutAlerted = false;
       if (typeof heapMB === 'number') lastHeartbeatHeapMB = heapMB;
@@ -717,30 +733,34 @@ async function startServer() {
 
   app.post("/api/telemetry/acknowledge-crash", (req, res) => {
     try {
-      const { id } = req.body || {};
       if (fs.existsSync(CRASH_DUMP_FILE)) {
         try {
           const dumps = JSON.parse(fs.readFileSync(CRASH_DUMP_FILE, 'utf-8'));
           if (Array.isArray(dumps)) {
             dumps.forEach((d: any) => {
-              if (!id || d.id === id) {
+              if (d && typeof d === 'object') {
                 d.unacknowledged = false;
               }
             });
             fs.writeFileSync(CRASH_DUMP_FILE, JSON.stringify(dumps, null, 2), 'utf-8');
+            try {
+              fs.writeFileSync(CRASH_LOG_FILE, JSON.stringify(dumps.slice(0, 50), null, 2), 'utf-8');
+            } catch (_) {}
           }
         } catch (_) {}
       }
+      isHeartbeatTimeoutAlerted = false;
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Server-side Heartbeat Watchdog (🔒 优化为 15 秒容错阈值，彻底防止网络微抖动或切后台引发的误报暴毙)
+  // Server-side Heartbeat Watchdog (🔒 优化为 15 秒容错阈值，且仅当存在活跃前端 WS 连接且未处于退出/后台挂起态时才告警，彻底防止关窗/刷新/切后台引发的误报复活)
   setInterval(() => {
     const now = Date.now();
-    if (hasReceivedHeartbeatOnce && !isHeartbeatTimeoutAlerted) {
+    const hasActiveWsClients = typeof wss !== 'undefined' && wss.clients ? wss.clients.size > 0 : false;
+    if (hasReceivedHeartbeatOnce && !isHeartbeatTimeoutAlerted && !isHeartbeatPaused && hasActiveWsClients) {
       const elapsed = now - lastHeartbeatTimestamp;
       if (elapsed > 15000) { // 从激进的 4000ms (4s) 提升至合理的 15000ms (15s)
         isHeartbeatTimeoutAlerted = true;
@@ -1128,6 +1148,10 @@ async function startServer() {
           if (instance.keepAliveTimer) clearInterval(instance.keepAliveTimer);
           instance.keepAliveTimer = setInterval(async () => {
             try {
+              if (binanceBannedUntilTimestamp > Date.now()) {
+                console.log(`[Binance UserData Stream] Skipping keepalive ping due to active IP rate limit.`);
+                return;
+              }
               const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/listenKey?listenKey=${encodeURIComponent(instance.listenKey)}`, {
                 method: "PUT",
                 headers: { "X-MBX-APIKEY": cleanKey },
@@ -1144,7 +1168,12 @@ async function startServer() {
                 setTimeout(() => ensureUserDataStream(cleanKey), 5000);
               }
             } catch (e: any) {
-              console.warn(`[Binance UserData Stream] Keepalive error:`, e.message || e);
+              const errMsg = e.message || String(e);
+              if (errMsg.includes('rate-limited') || errMsg.includes('-1003') || errMsg.includes('paused')) {
+                console.log(`[Binance UserData Stream] Keepalive deferred due to rate limit: ${errMsg}`);
+              } else {
+                console.warn(`[Binance UserData Stream] Keepalive error:`, errMsg);
+              }
             }
           }, 20 * 60 * 1000); // 20 minutes cycle
         });
@@ -3009,7 +3038,7 @@ async function startServer() {
                             unrealizedPnL: unrealizedPnL,
                             unrealizedPnLPercentage: entryPrice > 0 ? (unrealizedPnL / (Math.abs(amount) * entryPrice)) * 100 : 0,
                             entryId: `real_${p.symbol}_${side}_${p.updateTime || Date.now()}`,
-                            entryTime: Date.now(),
+                            entryTime: (p.updateTime && Number(p.updateTime) > 0) ? Number(p.updateTime) : Date.now(),
                             leverage: leverage,
                             maintMargin: maintMargin
                         };

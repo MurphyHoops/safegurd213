@@ -90,6 +90,9 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
         JSON.stringify(config.shortThresholds)
     ]);
 
+    const serializePoolStable = (items: AntiChasePoolItem[]) =>
+        JSON.stringify((items || []).map(({ timestamp, ...rest }) => rest));
+
     // 监听本地存储与事件同步
     useEffect(() => {
         isMountedRef.current = true;
@@ -99,7 +102,7 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     if (Array.isArray(parsed)) {
-                        setPool(parsed);
+                        setPool(prev => serializePoolStable(prev) === serializePoolStable(parsed) ? prev : parsed);
                         return;
                     }
                 }
@@ -239,11 +242,20 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
                 currentPrice: u.currentPrice,
                 timestamp: Date.now()
             }));
-            setPool(directPool);
-            localStorage.setItem('SCANNER_ANTI_CHASE_FILTERED_POOL', JSON.stringify(directPool));
-            window.dispatchEvent(new CustomEvent('scanner_anti_chase_pool_updated', {
-                detail: { pool: directPool }
-            }));
+            let changed = false;
+            setPool(prev => {
+                if (serializePoolStable(prev) === serializePoolStable(directPool)) {
+                    return prev;
+                }
+                changed = true;
+                return directPool;
+            });
+            if (changed) {
+                localStorage.setItem('SCANNER_ANTI_CHASE_FILTERED_POOL', JSON.stringify(directPool));
+                window.dispatchEvent(new CustomEvent('scanner_anti_chase_pool_updated', {
+                    detail: { pool: directPool }
+                }));
+            }
             return;
         }
 
@@ -335,11 +347,20 @@ export const AntiChasePoolBox: React.FC<Props> = ({ scanConfig, setScanConfig, c
             }
 
             // 更新并广播
-            setPool(passedItems);
-            localStorage.setItem('SCANNER_ANTI_CHASE_FILTERED_POOL', JSON.stringify(passedItems));
-            window.dispatchEvent(new CustomEvent('scanner_anti_chase_pool_updated', {
-                detail: { pool: passedItems }
-            }));
+            let changed = false;
+            setPool(prev => {
+                if (serializePoolStable(prev) === serializePoolStable(passedItems)) {
+                    return prev;
+                }
+                changed = true;
+                return passedItems;
+            });
+            if (changed) {
+                localStorage.setItem('SCANNER_ANTI_CHASE_FILTERED_POOL', JSON.stringify(passedItems));
+                window.dispatchEvent(new CustomEvent('scanner_anti_chase_pool_updated', {
+                    detail: { pool: passedItems }
+                }));
+            }
         } catch (err) {
             console.error('[AntiChasePoolBox] Filter error:', err);
         } finally {

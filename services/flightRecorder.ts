@@ -89,11 +89,33 @@ export const clearFlightBuffer = () => {
  */
 let heartbeatIntervalTimer: any = null;
 
+let heartbeatLifecycleBound = false;
+
+const sendHeartbeatPauseSignal = () => {
+  try {
+    const payload = JSON.stringify({ timestamp: Date.now(), paused: true });
+    if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon('/api/telemetry/heartbeat', blob);
+    } else {
+      fetch('/api/telemetry/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true
+      }).catch(() => {});
+    }
+  } catch (_) {}
+};
+
 export const startHeartbeatWatchdog = () => {
   if (heartbeatIntervalTimer) return;
 
   const sendHeartbeat = () => {
     try {
+      if (typeof document !== 'undefined' && document.hidden) {
+        return;
+      }
       let heapMB = 0;
       if (typeof performance !== 'undefined' && (performance as any).memory) {
         heapMB = Math.round(((performance as any).memory.usedJSHeapSize || 0) / 1024 / 1024);
@@ -107,12 +129,28 @@ export const startHeartbeatWatchdog = () => {
         body: JSON.stringify({
           timestamp: Date.now(),
           heapMB,
+          paused: false,
           url: typeof window !== 'undefined' ? window.location.hash || window.location.pathname : '',
           lastAction
         })
       }).catch(() => {});
     } catch (_) {}
   };
+
+  if (!heartbeatLifecycleBound && typeof window !== 'undefined') {
+    heartbeatLifecycleBound = true;
+    window.addEventListener('beforeunload', sendHeartbeatPauseSignal);
+    window.addEventListener('pagehide', sendHeartbeatPauseSignal);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          sendHeartbeatPauseSignal();
+        } else {
+          sendHeartbeat();
+        }
+      });
+    }
+  }
 
   sendHeartbeat();
   heartbeatIntervalTimer = setInterval(sendHeartbeat, 1000);
@@ -123,4 +161,6 @@ export const stopHeartbeatWatchdog = () => {
     clearInterval(heartbeatIntervalTimer);
     heartbeatIntervalTimer = null;
   }
+  sendHeartbeatPauseSignal();
 };
+

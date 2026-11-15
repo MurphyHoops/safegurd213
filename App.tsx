@@ -119,21 +119,29 @@ const AppContent: React.FC = () => {
             const isReal = savedSettings?.system?.realTrading;
             const key = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
             const fallbackKey = 'SAVIOR_POSITIONS';
-            let saved = loadState<Position[]>(key, loadState<Position[]>(fallbackKey, []));
-            if (!Array.isArray(saved) || saved.length === 0) {
-                // Secondary fallback: check both SIM and LIVE keys in case mode switched or was saved in alternative key
-                const altKey = isReal ? 'SAVIOR_POSITIONS_SIM' : 'SAVIOR_POSITIONS_LIVE';
-                const altSaved = loadState<Position[]>(altKey, []);
-                if (Array.isArray(altSaved) && altSaved.length > 0) {
-                    saved = altSaved;
+            const rawPrimary = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+            let saved: Position[] = [];
+
+            if (rawPrimary !== null) {
+                // Primary mode key explicitly exists (even if '[]' after batch close) — respect it as authoritative and do NOT fallback to stale altKey
+                saved = loadState<Position[]>(key, []);
+            } else {
+                saved = loadState<Position[]>(fallbackKey, []);
+                if (!Array.isArray(saved) || saved.length === 0) {
+                    const altKey = isReal ? 'SAVIOR_POSITIONS_SIM' : 'SAVIOR_POSITIONS_LIVE';
+                    const altSaved = loadState<Position[]>(altKey, []);
+                    if (Array.isArray(altSaved) && altSaved.length > 0) {
+                        saved = altSaved;
+                    }
                 }
             }
             if (!Array.isArray(saved)) return [];
 
-            // Read recently closed graveyard keys with timestamp check:
-            // ONLY suppress if the position entryTime is older than or equal to the close event timestamp!
+            // Read recently closed graveyard keys & last batch close timestamp:
             let recentlyClosedMap = new Map<string, number>();
+            let lastBatchCloseTs = 0;
             try {
+                lastBatchCloseTs = Number(localStorage.getItem('SAVIOR_LAST_BATCH_CLOSE_TS') || 0);
                 const closedSaved = localStorage.getItem('SAVIOR_RECENTLY_CLOSED_KEYS');
                 if (closedSaved) {
                     const parsed = JSON.parse(closedSaved);
@@ -149,14 +157,18 @@ const AppContent: React.FC = () => {
             } catch (e) {}
 
             return saved
-                .filter(p => p && typeof p === 'object' && p.symbol && (p.amount || 0) > 0.0001)
+                .filter(p => p && typeof p === 'object' && p.symbol && (p.amount || 0) > 0.0001 && !p.isBeingClosed && !p.isAmputatedToZero)
                 .filter(p => {
                     const cleanSym = normalizeSymbol(p.symbol);
                     const lookupKey = `${cleanSym}_${p.side}`;
-                    const closedTs = recentlyClosedMap.get(lookupKey);
-                    // ONLY suppress if there is a recorded close timestamp AND the position was entered BEFORE that close
-                    if (closedTs && p.entryTime && p.entryTime <= closedTs) {
-                        console.log(`[Boot Filter] Suppressing genuinely stale closed position ${cleanSym} (${p.side}), closed at ${closedTs}, entered at ${p.entryTime}`);
+                    const closedTs = Math.max(
+                        recentlyClosedMap.get(lookupKey) || 0,
+                        recentlyClosedMap.get(cleanSym) || 0,
+                        lastBatchCloseTs
+                    );
+                    // Suppress if there is a recorded close timestamp AND the position has no entryTime or was entered BEFORE/AT that close
+                    if (closedTs > 0 && (!p.entryTime || p.entryTime <= closedTs)) {
+                        console.log(`[Boot Filter] Suppressing genuinely stale closed position ${cleanSym} (${p.side}), closed at ${closedTs}, entered at ${p.entryTime || 0}`);
                         return false;
                     }
                     return true;
@@ -898,18 +910,75 @@ const AppContent: React.FC = () => {
                             .then(res => res.ok ? res.json() : null)
                             .then(dJson => {
                                 if (dJson && Array.isArray(dJson.positions) && dJson.positions.length > 0) {
-                                    console.log(`[Boot Recovery] Restored ${dJson.positions.length} active positions from server disk (/data/positions.json)`);
-                                    const restored = dJson.positions.filter((p: any) => p && (p.amount || 0) > 0.0001);
+                                    const isReal = settingsRef.current?.system?.realTrading;
+                                    const key = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
+                                    const rawLocalMode = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+                                    const lastBatchCloseTs = Number(typeof localStorage !== 'undefined' ? (localStorage.getItem('SAVIOR_LAST_BATCH_CLOSE_TS') || 0) : 0);
+                                    const daemonUpdatedAt = Number(dJson.updatedAt) || 0;
+                                    const daemonClearedAt = Number(dJson.clearedAt) || 0;
+
+                                    // 🛡️ 防幽灵复活门禁 1：如果本地已明确记录一键清仓/空持仓 ('[]')，或清仓时间戳晚于/等于磁盘快照更新时间，绝不从旧磁盘快照恢复，并主动修正磁盘快照为空！
+                                    if (
+                                        rawLocalMode === '[]' ||
+                                        (daemonClearedAt > 0 && daemonClearedAt >= daemonUpdatedAt) ||
+                                        (lastBatchCloseTs > 0 && (daemonUpdatedAt === 0 || lastBatchCloseTs >= daemonUpdatedAt))
+                                    ) {
+                                        console.log(`[Boot Recovery] Intercepted stale disk positions (/data/positions.json) after explicit position clear (lastBatchCloseTs=${lastBatchCloseTs}, daemonUpdatedAt=${daemonUpdatedAt}). Purging stale disk file.`);
+                                        fetch('/api/daemon/save-state', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ key: 'positions', data: [], clearedAt: Date.now() })
+                                        }).catch(() => {});
+                                        return;
+                                    }
+
+                                    // 🛡️ 防幽灵复活门禁 2：逐笔比对 SAVIOR_RECENTLY_CLOSED_KEYS 墓地时间戳与 SAVIOR_LAST_BATCH_CLOSE_TS
+                                    const closedMap = new Map<string, number>();
+                                    try {
+                                        const closedSaved = localStorage.getItem('SAVIOR_RECENTLY_CLOSED_KEYS');
+                                        if (closedSaved) {
+                                            const parsed = JSON.parse(closedSaved);
+                                            if (Array.isArray(parsed)) {
+                                                const now = Date.now();
+                                                parsed.forEach(([k, ts]: [string, number]) => {
+                                                    if (now - ts < 43200000) closedMap.set(k, ts);
+                                                });
+                                            }
+                                        }
+                                    } catch (_) {}
+
+                                    const restored = dJson.positions.filter((p: any) => {
+                                        if (!p || (p.amount || 0) <= 0.0001 || p.isBeingClosed || p.isAmputatedToZero) return false;
+                                        const cleanSym = normalizeSymbol(p.symbol || '');
+                                        const lookupKey = `${cleanSym}_${p.side}`;
+                                        const closedTs = Math.max(
+                                            closedMap.get(lookupKey) || 0,
+                                            closedMap.get(cleanSym) || 0,
+                                            lastBatchCloseTs
+                                        );
+                                        if (closedTs > 0 && (!p.entryTime || p.entryTime <= closedTs)) {
+                                            console.log(`[Boot Recovery] Suppressing closed position from disk: ${cleanSym} (${p.side}), closedTs=${closedTs}, entryTime=${p.entryTime || 0}`);
+                                            return false;
+                                        }
+                                        return true;
+                                    });
+
                                     if (restored.length > 0) {
+                                        console.log(`[Boot Recovery] Restored ${restored.length} active positions from server disk (/data/positions.json)`);
                                         setPositions(restored);
                                         positionsRef.current = restored;
                                         if (simulatorRef.current) {
                                             simulatorRef.current.setPositions(restored);
                                         }
-                                        const isReal = settingsRef.current?.system?.realTrading;
-                                        const key = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
                                         saveState(key, restored);
                                         saveState('SAVIOR_POSITIONS', restored);
+                                    } else {
+                                        // 磁盘快照中所有持仓均已被平仓过滤，立即覆盖修复磁盘文件为空数组
+                                        fetch('/api/daemon/save-state', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ key: 'positions', data: [], clearedAt: Date.now() })
+                                        }).catch(() => {});
                                     }
                                 }
                             }).catch(() => {})
@@ -1217,20 +1286,26 @@ const AppContent: React.FC = () => {
     const [chartDirection, setChartDirection] = useState<'LONG' | 'SHORT' | undefined>(undefined);
     const [chartTimeframe, setChartTimeframe] = useState<string>('15m');
     const [chartSource, setChartSource] = useState<string | undefined>('positions');
+    const [chartSignalCandle, setChartSignalCandle] = useState<any>(undefined);
     const [recommendation, setRecommendation] = useState<any>(null);
 
-    const handleOpenChart = useCallback((symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string, side?: any, source: string = 'positions') => {
+    const handleOpenChart = useCallback((symbol: string, entryPrice?: number, entryTime?: number, timeframe?: string, side?: any, source: string = 'positions', signalCandle?: any) => {
         setChartSymbol(symbol);
         setChartEntryPrice(entryPrice);
         setChartEntryTime(entryTime);
         setChartSource(source);
+        const matchedPos = activePositionsRef.current?.find(p => p.symbol === symbol || p.symbol === `${symbol}USDT` || p.symbol.replace(/USDT$/, '') === symbol.replace(/USDT$/, ''));
+        setChartSignalCandle(signalCandle || matchedPos?.signalCandle);
         if (side) {
             const isLong = side === PositionSide.LONG || (side as any) === 'LONG' || (side as any) === 'BUY';
             setChartDirection(isLong ? 'LONG' : 'SHORT');
+        } else if (matchedPos?.side) {
+            setChartDirection(matchedPos.side === PositionSide.LONG ? 'LONG' : 'SHORT');
         } else {
             setChartDirection(undefined);
         }
         if (timeframe) setChartTimeframe(timeframe);
+        else if (matchedPos?.signalTf) setChartTimeframe(matchedPos.signalTf);
     }, []);
 
     const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -3721,9 +3796,32 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             const posTag = isHedge ? '【防爆对冲仓位】' : '【原主仓位】';
             const actLabel = isHedge ? '【防爆对冲减仓/平仓】' : '【市价平仓】';
 
-            // ⚡【一键清仓级极速响应】立即进行前端与本地内存毫秒级物理预清空，UI零卡顿零延迟！
+            // ⚡【一键清仓级极速响应】立即进行前端与本地内存毫秒级物理预清空，并同步落盘，UI零卡顿零延迟！
             setBinanceRealPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
-            setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
+            const remainingRealPositions = positionsRef.current.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side));
+            positionsRef.current = remainingRealPositions;
+            setPositions(remainingRealPositions);
+            saveState('SAVIOR_POSITIONS_LIVE', remainingRealPositions);
+            saveState('SAVIOR_POSITIONS', remainingRealPositions);
+            if (remainingRealPositions.length === 0) {
+                try {
+                    localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
+                    localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(Date.now()));
+                } catch (_) {}
+            }
+            fetch('/api/daemon/save-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    key: 'positions',
+                    data: remainingRealPositions,
+                    clearedAt: remainingRealPositions.length === 0 ? Date.now() : undefined
+                })
+            }).catch(() => {});
+            try {
+                window.dispatchEvent(new CustomEvent('SAVIOR_POSITIONS_CLEARED', { detail: { symbols: [cleanSymbol] } }));
+            } catch (_) {}
+
             if (simulatorRef.current) {
                 simulatorRef.current.registerInFlightClosing(cleanSymbol, side, posToClose.amount);
                 simulatorRef.current.removePositionLocally(cleanSymbol, side);
@@ -3866,7 +3964,30 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             }
         } else {
             simulatorRef.current?.closePosition(cleanSymbol, side, 'MANUAL');
-            setPositions(prev => prev.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)));
+            const remainingSimPositions = (simulatorRef.current ? simulatorRef.current.getPositions() : positionsRef.current)
+                .filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side));
+            positionsRef.current = remainingSimPositions;
+            setPositions(remainingSimPositions);
+            saveState('SAVIOR_POSITIONS_SIM', remainingSimPositions);
+            saveState('SAVIOR_POSITIONS', remainingSimPositions);
+            if (remainingSimPositions.length === 0) {
+                try {
+                    localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
+                    localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(Date.now()));
+                } catch (_) {}
+            }
+            fetch('/api/daemon/save-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    key: 'positions',
+                    data: remainingSimPositions,
+                    clearedAt: remainingSimPositions.length === 0 ? Date.now() : undefined
+                })
+            }).catch(() => {});
+            try {
+                window.dispatchEvent(new CustomEvent('SAVIOR_POSITIONS_CLEARED', { detail: { symbols: [cleanSymbol] } }));
+            } catch (_) {}
         }
     }, [combinedPositions, binanceRealPositions]);
 
@@ -3928,12 +4049,28 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 simulatorRef.current.addLog("INFO", `[实盘一键清仓] 启动全量极速平仓，共 ${activePositionsToClose.length} 个仓位，全并发实时平仓提交...`);
             }
 
-            // 🔒 [平仓在途缓冲与自愈保护]：立即注册进入批量平仓缓冲池，防止5秒内因轮询未撮合完而误弹回
+            // 🔒 [平仓在途缓冲与自愈保护]：立即注册进入批量平仓缓冲池，并同步清空本地与服务端磁盘缓存
             if (simulatorRef.current) {
                 simulatorRef.current.registerInFlightBatchClose(activePositionsToClose);
             }
+            positionsRef.current = [];
             setBinanceRealPositions([]);
             setPositions([]);
+            try {
+                localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
+                localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
+                localStorage.setItem('SAVIOR_POSITIONS', '[]');
+                localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(now));
+            } catch (e) {}
+            fetch('/api/daemon/save-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: 'positions', data: [], clearedAt: now })
+            }).catch(() => {});
+            try {
+                const clearedSyms = activePositionsToClose.map(p => normalizeSymbol(p.symbol));
+                window.dispatchEvent(new CustomEvent('SAVIOR_POSITIONS_CLEARED', { detail: { symbols: clearedSyms } }));
+            } catch (_) {}
             audioService.speak("全部持仓平仓指令已发送");
 
             // 🔒【分时段批量清仓与防拥塞引擎】：每批最多6个币，严格等待1秒间隔后再提交下一批6个币
@@ -4068,14 +4205,21 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             if (simulatorRef.current) {
                 simulatorRef.current.batchCloseAllPositions('一键全量批量平仓');
             }
+            const clearDoneTs = Date.now();
             try {
                 localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
                 localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
                 localStorage.setItem('SAVIOR_POSITIONS', '[]');
+                localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(clearDoneTs));
             } catch (e) {}
             positionsRef.current = [];
             setPositions([]);
             setBinanceRealPositions([]);
+            fetch('/api/daemon/save-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: 'positions', data: [], clearedAt: clearDoneTs })
+            }).catch(() => {});
 
             // Sync real-time positions instantly after order placement
             if (typeof (window as any).triggerApiSync === "function") {
@@ -4083,15 +4227,26 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             }
         } else {
             // Simulated Batch Close
+            const clearSimTs = Date.now();
+            const simClosedSyms = (positionsRef.current || []).map(p => normalizeSymbol(p.symbol));
             simulatorRef.current?.batchCloseAllPositions('一键全量批量平仓');
             try {
                 localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
                 localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
                 localStorage.setItem('SAVIOR_POSITIONS', '[]');
+                localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(clearSimTs));
             } catch (e) {}
             positionsRef.current = [];
             setPositions([]);
             setBinanceRealPositions([]);
+            fetch('/api/daemon/save-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: 'positions', data: [], clearedAt: clearSimTs })
+            }).catch(() => {});
+            try {
+                window.dispatchEvent(new CustomEvent('SAVIOR_POSITIONS_CLEARED', { detail: { symbols: simClosedSyms } }));
+            } catch (_) {}
             audioService.speak("全部持仓已平仓", true);
         }
     }, [combinedPositions, binanceRealPositions]);
@@ -4637,6 +4792,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
 
     // Periodic persistence
     useEffect(() => {
+        let lastSyncedDaemonEmpty = false;
         const interval = setInterval(() => {
             const isReal = settingsRef.current.system.realTrading;
             
@@ -4658,12 +4814,19 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             saveState('SAVIOR_SETTINGS', settingsRef.current);
 
             // 🛡️ 服务端物理磁盘双轨落盘备份 (/data/positions.json)
-            if (positionsRef.current && positionsRef.current.length > 0) {
+            // 当持仓非空时每 5 秒同步；当持仓归零时也必须同步写入空数组，消除旧快照残留！
+            const currentPosList = positionsRef.current || [];
+            if (currentPosList.length > 0 || !lastSyncedDaemonEmpty) {
+                lastSyncedDaemonEmpty = currentPosList.length === 0;
                 try {
                     fetch('/api/daemon/save-state', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ key: 'positions', data: positionsRef.current })
+                        body: JSON.stringify({
+                            key: 'positions',
+                            data: currentPosList,
+                            clearedAt: currentPosList.length === 0 ? Date.now() : undefined
+                        })
                     }).catch(() => {});
                 } catch (_) {}
             }
@@ -4677,22 +4840,27 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             const positionsKey = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
             const tradeLogsKey = isReal ? 'SAVIOR_TRADELOGS_LIVE' : 'SAVIOR_TRADELOGS_SIM';
             
+            const currentPosList = positionsRef.current || [];
             saveState(accountKey, accountRef.current);
-            saveState(positionsKey, positionsRef.current);
+            saveState(positionsKey, currentPosList);
             saveState(tradeLogsKey, tradeLogsRef.current, 800);
             
             saveState('SAVIOR_ACCOUNT', accountRef.current);
-            saveState('SAVIOR_POSITIONS', positionsRef.current);
+            saveState('SAVIOR_POSITIONS', currentPosList);
             saveState('SAVIOR_TRADELOGS', tradeLogsRef.current, 800);
             
             saveState('SAVIOR_LOGS', logsRef.current, 150);
             saveState('SAVIOR_SETTINGS', settingsRef.current);
 
-            if (positionsRef.current && positionsRef.current.length > 0) {
-                try {
-                    navigator.sendBeacon('/api/daemon/save-state', JSON.stringify({ key: 'positions', data: positionsRef.current }));
-                } catch (_) {}
-            }
+            try {
+                const payload = JSON.stringify({
+                    key: 'positions',
+                    data: currentPosList,
+                    clearedAt: currentPosList.length === 0 ? Date.now() : undefined
+                });
+                const blob = new Blob([payload], { type: 'application/json' });
+                navigator.sendBeacon('/api/daemon/save-state', blob);
+            } catch (_) {}
         };
         window.addEventListener('beforeunload', handleBeforeUnload);
         
@@ -5030,6 +5198,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     directMode={settings.system.directMode}
                     entryPrice={chartEntryPrice}
                     entryTime={chartEntryTime}
+                    signalCandle={chartSignalCandle}
                     tradeLogs={tradeLogs} // Added this
                     source={chartSource || 'positions'}
                     onClose={() => {
@@ -5038,6 +5207,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         setChartEntryTime(undefined);
                         setChartDirection(undefined);
                         setChartSource(undefined);
+                        setChartSignalCandle(undefined);
                     }}
                 />
             )}

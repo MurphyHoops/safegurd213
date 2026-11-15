@@ -666,21 +666,22 @@ export function analyzeList2Crossing(
 
                     // 必须在过去 N 根 K 线内按顺序同时完成对 EMA20/30/40 的连续金叉穿越 (cross20 <= cross30 <= checkIdx)
                     if (cross20IdxL !== null && cross30IdxL !== null && cross20IdxL <= cross30IdxL && cross30IdxL <= checkIdx) {
-                        // 🔒【第一根同向阳线确认逻辑】：
-                        // A. 若穿越当根 (checkIdx) 就是已收盘阳线，当根直接确认！
-                        // B. 若穿越当根为阴线/十字星，向右顺延寻找第一根已收盘阳线 (Close > Open) 确定为信号 K 线
-                        if (closes[checkIdx] > opens[checkIdx] && (idx - checkIdx > 0)) {
-                            maCrossConfirmedIdxL = checkIdx;
-                        } else {
-                            const maxForwardL = Math.min(idx - 1, checkIdx + retentionThreshold);
-                            for (let f = checkIdx + 1; f <= maxForwardL; f++) {
-                                const fE10 = getEmaVal(ema10, f, 10);
-                                const fE20 = getEmaVal(ema20, f, 20);
-                                if (fE10 === null || fE20 === null || fE10 <= fE20) break;
-                                if (closes[f] > opens[f]) {
-                                    maCrossConfirmedIdxL = f;
-                                    break;
-                                }
+                        // 🔒【严格同向阳线收盘 + EMA10/20/30/40向上发散确认铁律 (LOCKED)】：
+                        // A. 当 EMA10 穿越 EMA40 对应的 K 线 (checkIdx) 已收盘 (f < idx)，且满足 EMA10 > EMA20 > EMA30 > EMA40 向上发散 + 阳线收盘 (Close > Open)，当根直接确立为信号 K 线！
+                        // B. 若穿越当根未收盘、或方向相反（阴线/十字星）、或尚未完全形成四线向上发散，则严格等待后续已收盘 K 线同时满足【EMA10 > EMA20 > EMA30 > EMA40 向上发散】且【阳线收盘】时才确立为信号 K 线！
+                        const maxForwardL = Math.min(idx - 1, checkIdx + retentionThreshold);
+                        for (let f = checkIdx; f <= maxForwardL; f++) {
+                            const fE10 = getEmaVal(ema10, f, 10);
+                            const fE20 = getEmaVal(ema20, f, 20);
+                            const fE30 = getEmaVal(ema30, f, 30);
+                            const fE40 = getEmaVal(ema40, f, 40);
+                            if (fE10 === null || fE20 === null || fE30 === null || fE40 === null) break;
+                            // 若等待期间 EMA10 跌破任一均线破坏多头结构，立即终止本轮等待
+                            if (fE10 <= fE20 || fE10 <= fE30 || fE10 <= fE40) break;
+                            const isFAlignedLong = fE10 > fE20 && fE20 > fE30 && fE30 > fE40;
+                            if (isFAlignedLong && closes[f] > opens[f]) {
+                                maCrossConfirmedIdxL = f;
+                                break;
                             }
                         }
 
@@ -737,21 +738,22 @@ export function analyzeList2Crossing(
 
                     // 必须在过去 N 根 K 线内按顺序同时完成对 EMA20/30/40 的连续死叉穿越 (cross20 <= cross30 <= checkIdx)
                     if (cross20IdxS !== null && cross30IdxS !== null && cross20IdxS <= cross30IdxS && cross30IdxS <= checkIdx) {
-                        // 🔒【第一根同向阴线确认逻辑】：
-                        // A. 若穿越当根 (checkIdx) 就是已收盘阴线，当根直接确认！
-                        // B. 若穿越当根为阳线/十字星，向右顺延寻找第一根已收盘阴线 (Close < Open) 确定为信号 K 线
-                        if (closes[checkIdx] < opens[checkIdx] && (idx - checkIdx > 0)) {
-                            maCrossConfirmedIdxS = checkIdx;
-                        } else {
-                            const maxForwardS = Math.min(idx - 1, checkIdx + retentionThreshold);
-                            for (let f = checkIdx + 1; f <= maxForwardS; f++) {
-                                const fE10 = getEmaVal(ema10, f, 10);
-                                const fE20 = getEmaVal(ema20, f, 20);
-                                if (fE10 === null || fE20 === null || fE10 >= fE20) break;
-                                if (closes[f] < opens[f]) {
-                                    maCrossConfirmedIdxS = f;
-                                    break;
-                                }
+                        // 🔒【严格同向阴线收盘 + EMA10/20/30/40向下发散确认铁律 (LOCKED)】：
+                        // A. 当 EMA10 穿越 EMA40 对应的 K 线 (checkIdx) 已收盘 (f < idx)，且满足 EMA10 < EMA20 < EMA30 < EMA40 向下发散 + 阴线收盘 (Close < Open)，当根直接确立为信号 K 线！
+                        // B. 若穿越当根未收盘、或方向相反（阳线/十字星）、或尚未完全形成四线向下发散，则严格等待后续已收盘 K 线同时满足【EMA10 < EMA20 < EMA30 < EMA40 向下发散】且【阴线收盘】时才确立为信号 K 线！
+                        const maxForwardS = Math.min(idx - 1, checkIdx + retentionThreshold);
+                        for (let f = checkIdx; f <= maxForwardS; f++) {
+                            const fE10 = getEmaVal(ema10, f, 10);
+                            const fE20 = getEmaVal(ema20, f, 20);
+                            const fE30 = getEmaVal(ema30, f, 30);
+                            const fE40 = getEmaVal(ema40, f, 40);
+                            if (fE10 === null || fE20 === null || fE30 === null || fE40 === null) break;
+                            // 若等待期间 EMA10 升破任一均线破坏空头结构，立即终止本轮等待
+                            if (fE10 >= fE20 || fE10 >= fE30 || fE10 >= fE40) break;
+                            const isFAlignedShort = fE10 < fE20 && fE20 < fE30 && fE30 < fE40;
+                            if (isFAlignedShort && closes[f] < opens[f]) {
+                                maCrossConfirmedIdxS = f;
+                                break;
                             }
                         }
 
@@ -1179,25 +1181,37 @@ export function analyzeList2Crossing(
                 }
             }
 
-            if (isValidL) {
-                // 🔒 铁律硬门禁：确认信号K线绝对禁止处于空头死叉向下发散排列 (EMA10 < EMA20 且 EMA10 < EMA30)
+            if (isValidL && !isWaitPendingL) {
+                // 🔒 [USER MANDATORY RULE - LOCKED] 确认信号K线做多时：
+                // 1. 绝不可处于空头死叉向下发散排列 (EMA10 < EMA20 且 EMA10 < EMA30)
+                // 2. 当开启均线穿越 (reqMa) 或均线发散 (requireAlignment) 时，确认信号K线收盘时刻必须严格呈 EMA10 > EMA20 > EMA30 > EMA40 向上发散形态且收阳线！
                 const targetE10L = getEmaVal(ema10, targetIdxL, 10);
                 const targetE20L = getEmaVal(ema20, targetIdxL, 20);
                 const targetE30L = getEmaVal(ema30, targetIdxL, 30);
-                if (targetE10L !== null && targetE20L !== null && targetE10L < targetE20L && (targetE30L === null || targetE10L < targetE30L)) {
+                const targetE40L = getEmaVal(ema40, targetIdxL, 40);
+                if (reqMa || config.requireAlignment) {
+                    if (
+                        targetE10L === null || targetE20L === null || targetE30L === null || targetE40L === null ||
+                        !(targetE10L > targetE20L && targetE20L > targetE30L && targetE30L > targetE40L) ||
+                        !(closes[targetIdxL] > opens[targetIdxL])
+                    ) {
+                        isValidL = false;
+                    }
+                } else if (targetE10L !== null && targetE20L !== null && targetE10L < targetE20L && (targetE30L === null || targetE10L < targetE30L)) {
                     isValidL = false;
                 }
             }
 
-            if (isValidS) {
-                // 🔒 [USER MANDATORY RULE] 确认信号K线做空时，必须严格呈 EMA10 < EMA20 < EMA30 < EMA40 形态
+            if (isValidS && !isWaitPendingS) {
+                // 🔒 [USER MANDATORY RULE - LOCKED] 确认信号K线做空时，必须严格呈 EMA10 < EMA20 < EMA30 < EMA40 向下发散形态且收阴线！
                 const targetE10S = getEmaVal(ema10, targetIdxS, 10);
                 const targetE20S = getEmaVal(ema20, targetIdxS, 20);
                 const targetE30S = getEmaVal(ema30, targetIdxS, 30);
                 const targetE40S = getEmaVal(ema40, targetIdxS, 40);
                 if (
                     targetE10S === null || targetE20S === null || targetE30S === null || targetE40S === null ||
-                    !(targetE10S < targetE20S && targetE20S < targetE30S && targetE30S < targetE40S)
+                    !(targetE10S < targetE20S && targetE20S < targetE30S && targetE30S < targetE40S) ||
+                    !(closes[targetIdxS] < opens[targetIdxS])
                 ) {
                     isValidS = false;
                 }
@@ -1221,13 +1235,20 @@ export function analyzeList2Crossing(
                     const signalLagL = idx - targetIdxL;
                     // 🔒 [收盘确立时刻]：记录K线收盘闭合的瞬间，杜绝在开盘时就记录老旧时间戳
                     const signalTimeL = getCandleCloseTime(targetIdxL, timestamps, tf);
+                    const tE10L = getEmaVal(ema10, targetIdxL, 10);
+                    const tE20L = getEmaVal(ema20, targetIdxL, 20);
+                    const tE30L = getEmaVal(ema30, targetIdxL, 30);
+                    const tE40L = getEmaVal(ema40, targetIdxL, 40);
+                    const targetAlignedLong = (tE10L !== null && tE20L !== null && tE30L !== null && tE40L !== null)
+                        ? (tE10L > tE20L && tE20L > tE30L && tE30L > tE40L)
+                        : isAlignedLong;
                     longSignals.push({ 
                         lag: signalLagL, 
                         direction: 'LONG', 
                         amp: finalAmpL, 
                         time: signalTimeL, 
                         bodyRatio: finalBodyRatioL, 
-                        isAligned: isAlignedLong,
+                        isAligned: targetAlignedLong,
                         isCandleCrossed: isCrossing,
                         isMaCrossed: isMaCrossLong,
                         isFirstMaCross: isFirstMaCrossLong,
@@ -1270,13 +1291,20 @@ export function analyzeList2Crossing(
                     const signalLagS = idx - targetIdxS;
                     // 🔒 [收盘确立时刻]：记录K线收盘闭合的瞬间，杜绝在开盘时就记录老旧时间戳
                     const signalTimeS = getCandleCloseTime(targetIdxS, timestamps, tf);
+                    const tE10S = getEmaVal(ema10, targetIdxS, 10);
+                    const tE20S = getEmaVal(ema20, targetIdxS, 20);
+                    const tE30S = getEmaVal(ema30, targetIdxS, 30);
+                    const tE40S = getEmaVal(ema40, targetIdxS, 40);
+                    const targetAlignedShort = (tE10S !== null && tE20S !== null && tE30S !== null && tE40S !== null)
+                        ? (tE10S < tE20S && tE20S < tE30S && tE30S < tE40S)
+                        : isAlignedShort;
                     shortSignals.push({ 
                         lag: signalLagS, 
                         direction: 'SHORT', 
                         amp: finalAmpS, 
                         time: signalTimeS, 
                         bodyRatio: finalBodyRatioS, 
-                        isAligned: isAlignedShort,
+                        isAligned: targetAlignedShort,
                         isCandleCrossed: isCrossing,
                         isMaCrossed: isMaCrossShort,
                         isFirstMaCross: isFirstMaCrossShort,
@@ -1565,10 +1593,10 @@ export function analyzeList2Crossing(
                     }
                 }
             } 
-            // 阶段 2：多头无缝自动晋升 (EMA10 向上穿越 EMA40 且同时高于 EMA20、EMA30、EMA40 实现完全多头排列)
+            // 阶段 2：多头无缝自动晋升 (EMA10 向上穿越 EMA40，且必须严格满足已收盘阳线 + EMA10 > EMA20 > EMA30 > EMA40 向上发散)
             else if (curE10 > curE40 && curE10 > curE30 && curE20 !== null && curE10 > curE20) {
-                // 追溯过去设定根数内 EMA10 向上金叉穿越 EMA40
-                for (let pLag = 0; pLag <= maxCheckLag; pLag++) {
+                // 仅在已收盘K线 (pLag >= 1) 中追溯过去设定根数内 EMA10 向上金叉穿越 EMA40
+                for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
                     const pE10 = getEmaVal(ema10, cIdx, 10);
                     const pE40 = getEmaVal(ema40, cIdx, 40);
@@ -1576,32 +1604,46 @@ export function analyzeList2Crossing(
                     const prevE40 = getEmaVal(ema40, cIdx - 1, 40);
                     if (pE10 !== null && pE40 !== null && prevE10 !== null && prevE40 !== null) {
                         if ((prevE10 <= prevE40 && pE10 > pE40) || (prevE10 < prevE40 && pE10 >= pE40)) {
-                            // 寻找确认收盘K线 (优先当根，若未收盘或为阴线则向前/向后寻找已收盘阳线)
+                            // 🔒【严格同向收盘确认铁律 (LOCKED)】：
+                            // 从穿越 K 线 cIdx 向右（仅限已收盘 K 线 f <= idx - 1）寻找第一根同时满足
+                            // 【EMA10 > EMA20 > EMA30 > EMA40 向上发散】且【阳线收盘 (closes[f] > opens[f])】的 K 线作为信号 K 线。
+                            // 若穿越当根为阴线且后续尚未收出满足发散的阳线，严禁强行拿阴线兜底，继续保持折叠等待状态！
+                            const searchEnd = idx - 1;
+                            let foundBull = false;
                             let cTarget = cIdx;
-                            if (pLag > 0 && closes[cIdx] > opens[cIdx]) {
-                                cTarget = cIdx;
-                            } else {
-                                const searchEnd = Math.min(idx - 1, cIdx + 3);
-                                let foundBull = false;
-                                for (let f = cIdx; f <= searchEnd; f++) {
-                                    if (f >= 0 && f < idx && closes[f] > opens[f]) {
-                                        cTarget = f;
-                                        foundBull = true;
-                                        break;
-                                    }
+                            let aborted = false;
+                            for (let f = cIdx; f <= searchEnd; f++) {
+                                const fE10 = getEmaVal(ema10, f, 10);
+                                const fE20 = getEmaVal(ema20, f, 20);
+                                const fE30 = getEmaVal(ema30, f, 30);
+                                const fE40 = getEmaVal(ema40, f, 40);
+                                if (fE10 === null || fE20 === null || fE30 === null || fE40 === null) {
+                                    aborted = true;
+                                    break;
                                 }
-                                if (!foundBull && idx > 0) {
-                                    cTarget = idx - 1;
+                                if (fE10 <= fE20 || fE10 <= fE30 || fE10 <= fE40) {
+                                    aborted = true;
+                                    break;
+                                }
+                                const isFAlignedLong = fE10 > fE20 && fE20 > fE30 && fE30 > fE40;
+                                if (isFAlignedLong && closes[f] > opens[f]) {
+                                    cTarget = f;
+                                    foundBull = true;
+                                    break;
                                 }
                             }
 
-                            // 严密的多头均线排列确认：EMA10 必须同时高于 EMA20/30/40
-                            const isFullyBullAligned = curE20 !== null && curE10 > curE20 && curE10 > curE30 && curE10 > curE40;
-                            if (isFullyBullAligned) {
+                            const isCurrentBullAligned = curE20 !== null && curE10 > curE20 && curE20 > curE30 && curE30 > curE40;
+                            if (foundBull && !aborted && isCurrentBullAligned) {
                                 foundPromotedL = true;
                                 promotedLagL = Math.max(1, idx - cTarget);
                                 confirmedIdxL = cTarget;
-                                promotedTimeL = timestamps[cTarget] || timestamps[idx];
+                                promotedTimeL = getCandleCloseTime(cTarget, timestamps, tf);
+                                break;
+                            } else if (!aborted) {
+                                // 穿越已发生但对应K线方向相反或尚未收出同向发散阳线：继续留在折叠等待区等待同向阳线收盘
+                                foundPreWaitL = true;
+                                preWaitLagL = pLag;
                                 break;
                             }
                         }
@@ -1630,10 +1672,10 @@ export function analyzeList2Crossing(
                     }
                 }
             }
-            // 阶段 2：空头无缝自动晋升 (EMA10 向下死叉穿越 EMA40 且同时低于 EMA20、EMA30、EMA40 实现完全空头排列)
+            // 阶段 2：空头无缝自动晋升 (EMA10 向下死叉穿越 EMA40，且必须严格满足已收盘阴线 + EMA10 < EMA20 < EMA30 < EMA40 向下发散)
             else if (curE10 < curE40 && curE10 < curE30 && curE20 !== null && curE10 < curE20) {
-                // 追溯过去设定根数内 EMA10 向下死叉穿越 EMA40
-                for (let pLag = 0; pLag <= maxCheckLag; pLag++) {
+                // 仅在已收盘K线 (pLag >= 1) 中追溯过去设定根数内 EMA10 向下死叉穿越 EMA40
+                for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
                     const pE10 = getEmaVal(ema10, cIdx, 10);
                     const pE40 = getEmaVal(ema40, cIdx, 40);
@@ -1641,31 +1683,46 @@ export function analyzeList2Crossing(
                     const prevE40 = getEmaVal(ema40, cIdx - 1, 40);
                     if (pE10 !== null && pE40 !== null && prevE10 !== null && prevE40 !== null) {
                         if ((prevE10 >= prevE40 && pE10 < pE40) || (prevE10 > prevE40 && pE10 <= pE40)) {
+                            // 🔒【严格同向收盘确认铁律 (LOCKED)】：
+                            // 从穿越 K 线 cIdx 向右（仅限已收盘 K 线 f <= idx - 1）寻找第一根同时满足
+                            // 【EMA10 < EMA20 < EMA30 < EMA40 向下发散】且【阴线收盘 (closes[f] < opens[f])】的 K 线作为信号 K 线。
+                            // 若穿越当根为阳线且后续尚未收出满足发散的阴线，严禁强行拿阳线兜底，继续保持折叠等待状态！
+                            const searchEnd = idx - 1;
+                            let foundBear = false;
                             let cTarget = cIdx;
-                            if (pLag > 0 && closes[cIdx] < opens[cIdx]) {
-                                cTarget = cIdx;
-                            } else {
-                                const searchEnd = Math.min(idx - 1, cIdx + 3);
-                                let foundBear = false;
-                                for (let f = cIdx; f <= searchEnd; f++) {
-                                    if (f >= 0 && f < idx && closes[f] < opens[f]) {
-                                        cTarget = f;
-                                        foundBear = true;
-                                        break;
-                                    }
+                            let aborted = false;
+                            for (let f = cIdx; f <= searchEnd; f++) {
+                                const fE10 = getEmaVal(ema10, f, 10);
+                                const fE20 = getEmaVal(ema20, f, 20);
+                                const fE30 = getEmaVal(ema30, f, 30);
+                                const fE40 = getEmaVal(ema40, f, 40);
+                                if (fE10 === null || fE20 === null || fE30 === null || fE40 === null) {
+                                    aborted = true;
+                                    break;
                                 }
-                                if (!foundBear && idx > 0) {
-                                    cTarget = idx - 1;
+                                if (fE10 >= fE20 || fE10 >= fE30 || fE10 >= fE40) {
+                                    aborted = true;
+                                    break;
+                                }
+                                const isFAlignedShort = fE10 < fE20 && fE20 < fE30 && fE30 < fE40;
+                                if (isFAlignedShort && closes[f] < opens[f]) {
+                                    cTarget = f;
+                                    foundBear = true;
+                                    break;
                                 }
                             }
 
-                            // 严密的空头均线排列确认：EMA10 必须同时低于 EMA20/30/40
-                            const isFullyBearAligned = curE20 !== null && curE10 < curE20 && curE10 < curE30 && curE10 < curE40;
-                            if (isFullyBearAligned) {
+                            const isCurrentBearAligned = curE20 !== null && curE10 < curE20 && curE20 < curE30 && curE30 < curE40;
+                            if (foundBear && !aborted && isCurrentBearAligned) {
                                 foundPromotedS = true;
                                 promotedLagS = Math.max(1, idx - cTarget);
                                 confirmedIdxS = cTarget;
-                                promotedTimeS = timestamps[cTarget] || timestamps[idx];
+                                promotedTimeS = getCandleCloseTime(cTarget, timestamps, tf);
+                                break;
+                            } else if (!aborted) {
+                                // 穿越已发生但对应K线方向相反或尚未收出同向发散阴线：继续留在折叠等待区等待同向阴线收盘
+                                foundPreWaitS = true;
+                                preWaitLagS = pLag;
                                 break;
                             }
                         }

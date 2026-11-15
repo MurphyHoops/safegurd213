@@ -177,6 +177,12 @@ export function checkStrategy4_Amputation(
     // ==========================================
     // 🌟 第三执行顺位：终极算账与冲顶呼吸清仓 / 主仓续航
     // ==========================================
+    // 🛡️ [补仓后缓冲保护]: 刚完成回踩补仓的30秒内，免于触发清仓退出，给新补仓位留出足够的市场运行缓冲期
+    const lastRefillTimeCheck = Math.max(mainPosition.lastRefillTime || 0, hedgePosition?.lastRefillTime || 0);
+    if (now - lastRefillTimeCheck < 30000) {
+        return false;
+    }
+
     const hasActiveAmputation = isMainAmputated || isHedgeAmputated;
     const hasDebtOrAmputation = totalAccumulatedLoss > 0 || hasActiveAmputation;
 

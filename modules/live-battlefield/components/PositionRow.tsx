@@ -101,6 +101,18 @@ const LivePositionRowBase: React.FC<Props> = ({ position, realPrice, setChartDat
             });
         }
 
+        const signalsPayload: any[] = [];
+        if ((position.signalCandle as any)?.time) {
+            signalsPayload.push({
+                time: (position.signalCandle as any).time,
+                type: targetDirection,
+                price: position.signalCandle?.close || position.entryPrice,
+                direction: targetDirection,
+                tf: rawTf,
+                source: 'LIST5'
+            });
+        }
+
         setChartData({ 
             symbol: position.symbol, 
             tf: rawTf, // CRITICAL: Use raw TF for Binance API compatibility
@@ -108,18 +120,14 @@ const LivePositionRowBase: React.FC<Props> = ({ position, realPrice, setChartDat
             side: targetDirection,
             entryPrice: position.entryPrice, 
             entryTime: position.entryTime, 
+            signalCandle: position.signalCandle,
             extraLines: extraLines,
-            signals: [{
-                time: position.entryTime || Date.now(),
-                type: targetDirection,
-                price: position.entryPrice,
-                direction: targetDirection,
-                tf: rawTf,
-                source: 'LIST5'
-            }], 
+            signals: signalsPayload, 
             currentPrice: currentPrice,
-            showAuditLines: false
-        });
+            showAuditLines: false,
+            source: 'list5',
+            viewMode: 'TRADE'
+        } as any);
     };
 
     return (

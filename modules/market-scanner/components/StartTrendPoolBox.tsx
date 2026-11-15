@@ -52,11 +52,19 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
             const currentCandidates = getCandidateSymbols();
             if (currentCandidates.length === 0) {
                 // 若交易额过滤底池暂无币种，行情启动底池彻底清零，不叠加或残留任何历史老数据
-                localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify([]));
-                setPool([]);
-                setTimeout(() => {
-                    window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
-                }, 0);
+                try {
+                    const raw = localStorage.getItem('SCANNER_START_TREND_POOL');
+                    const prevPool: StartTrendPoolItem[] = raw ? JSON.parse(raw) : [];
+                    if (Array.isArray(prevPool) && prevPool.length > 0) {
+                        localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify([]));
+                        setPool(prev => prev.length === 0 ? prev : []);
+                        setTimeout(() => {
+                            window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: [] }));
+                        }, 0);
+                    } else {
+                        setPool(prev => prev.length === 0 ? prev : []);
+                    }
+                } catch (_) {}
                 return;
             }
             const validSet = new Set(currentCandidates);
@@ -68,7 +76,7 @@ export const StartTrendPoolBox: React.FC<Props> = ({ scanConfig }) => {
                     const filtered = prevPool.filter(item => validSet.has(item.symbol));
                     if (filtered.length !== prevPool.length) {
                         localStorage.setItem('SCANNER_START_TREND_POOL', JSON.stringify(filtered));
-                        setPool(filtered);
+                        setPool(prev => JSON.stringify(prev) === JSON.stringify(filtered) ? prev : filtered);
                         setTimeout(() => {
                             window.dispatchEvent(new CustomEvent('scanner_start_trend_pool_updated', { detail: filtered }));
                         }, 0);

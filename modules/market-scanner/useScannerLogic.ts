@@ -243,6 +243,16 @@ export const useScannerLogic = (
 
     // 🔒 实时事件与跨实例候选集同步：当后台巡检或任何扫描实例更新了该策略的大行情候选集时，实时响应同步
     useEffect(() => {
+        const updateCandidatesIfChanged = (nextSet: Set<string>) => {
+            majorTrendCandidatesRef.current = nextSet;
+            setMajorTrendCandidates(prev => {
+                if (prev.size === nextSet.size && Array.from(prev).every(x => nextSet.has(x))) {
+                    return prev;
+                }
+                return nextSet;
+            });
+        };
+
         const handleUpdate = (e: any) => {
             const targetStrat = strategyId || 'strat-1';
             if (e?.detail) {
@@ -251,9 +261,8 @@ export const useScannerLogic = (
                 }
                 if (Array.isArray(e.detail.candidates)) {
                     const s = new Set<string>(e.detail.candidates);
-                    majorTrendCandidatesRef.current = s;
-                    setMajorTrendCandidates(s);
-                    setHasRunMajorTrend(true);
+                    updateCandidatesIfChanged(s);
+                    setHasRunMajorTrend(prev => prev === true ? prev : true);
                     return;
                 }
             }
@@ -262,11 +271,10 @@ export const useScannerLogic = (
                 if (saved) {
                     const parsed = JSON.parse(saved);
                     const s = new Set<string>(Array.isArray(parsed) ? parsed : []);
-                    majorTrendCandidatesRef.current = s;
-                    setMajorTrendCandidates(s);
+                    updateCandidatesIfChanged(s);
                 }
                 if (localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true') {
-                    setHasRunMajorTrend(true);
+                    setHasRunMajorTrend(prev => prev === true ? prev : true);
                 }
             } catch (_) {}
         };

@@ -756,11 +756,12 @@ const List5_Live: React.FC<List5Props> = ({
                     title="5. 战场实况 (LIVE)"
                     items={filteredList.map(p => ({
                         symbol: p.symbol,
-                        timeframe: '15m',
+                        timeframe: p.signalTf || '15m',
                         direction: p.side,
                         side: p.side,
                         entryPrice: p.entryPrice,
                         entryTime: p.entryTime,
+                        signalCandle: p.signalCandle,
                         currentPrice: p.currentPrice || realPrices[p.symbol] || p.entryPrice,
                         extraLines: p.entryPrice ? [{
                             price: p.entryPrice,

@@ -263,6 +263,46 @@ export class MarketSimulator {
         this.saveRecentlyClosedKeys();
     }
 
+    /**
+     * 🔒 同步当前内存持仓至 localStorage 与后端磁盘 /data/positions.json，杜绝平仓后重启幽灵复活
+     */
+    public syncPositionsToStorage(isBatchClear: boolean = false) {
+        const now = Date.now();
+        const activeList = isBatchClear
+            ? []
+            : this.positions.filter(p => p && (p.amount || 0) > 0.0001 && !p.isBeingClosed && !p.isAmputatedToZero);
+        try {
+            if (typeof window !== 'undefined' && window.localStorage) {
+                const serialized = JSON.stringify(activeList);
+                if (isBatchClear || activeList.length === 0) {
+                    localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
+                    localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
+                    localStorage.setItem('SAVIOR_POSITIONS', '[]');
+                    localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(now));
+                } else {
+                    const isReal = !!this.settings?.system?.realTrading;
+                    const modeKey = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
+                    localStorage.setItem(modeKey, serialized);
+                    localStorage.setItem('SAVIOR_POSITIONS', serialized);
+                }
+            }
+        } catch (e) {}
+
+        try {
+            if (typeof fetch !== 'undefined') {
+                fetch('/api/daemon/save-state', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        key: 'positions',
+                        data: activeList,
+                        clearedAt: activeList.length === 0 ? now : undefined
+                    })
+                }).catch(() => {});
+            }
+        } catch (e) {}
+    }
+
     private savePendingAutoOpens() {
         try {
             localStorage.setItem('SAVIOR_PENDING_AUTO_OPENS', JSON.stringify(this.pendingAutoOpens));
@@ -372,15 +412,26 @@ export class MarketSimulator {
         const filteredNewPositions: Position[] = [];
         const validNewPositions = (newPositions || []).filter(np => np && (np.amount || 0) > 0.0001 && !np.isAmputatedToZero && !np.isBeingClosed);
 
+        let lastBatchCloseTs = 0;
+        try {
+            if (typeof window !== 'undefined' && window.localStorage) {
+                lastBatchCloseTs = Number(localStorage.getItem('SAVIOR_LAST_BATCH_CLOSE_TS') || 0);
+            }
+        } catch (e) {}
+
         for (const np of validNewPositions) {
             const sym = normalizeSymbol(np.symbol);
             const key = `${sym}_${np.side}`;
             const inFlight = this.inFlightClosingPool.get(key) || this.inFlightClosingPool.get(sym);
-            const closedTimestamp = this.recentlyClosedKeys.get(key) || this.recentlyClosedKeys.get(sym) || 0;
+            const closedTimestamp = Math.max(
+                this.recentlyClosedKeys.get(key) || 0,
+                this.recentlyClosedKeys.get(sym) || 0,
+                lastBatchCloseTs
+            );
 
-            // 🔒 1. 墓地关卡：只要处于 60 秒平仓/一键清仓保护期内，绝对物理拦截，严禁由于交易所 snapshot 延迟而导致幽灵复活！
-            if (closedTimestamp > 0 && (now - closedTimestamp < 60000)) {
-                console.log(`[MarketSimulator] Graveyard active for ${sym} (${np.side}) [closed ${now - closedTimestamp}ms ago]. Suppressing stale position.`);
+            // 🔒 1. 墓地关卡：处于 60 秒平仓保护期内，或该持仓的开仓时间早于/等于已记录的平仓时间戳（旧缓存快照），物理拦截，严禁幽灵复活！
+            if (closedTimestamp > 0 && ((now - closedTimestamp < 60000) || (np.entryTime && np.entryTime <= closedTimestamp))) {
+                console.log(`[MarketSimulator] Graveyard active for ${sym} (${np.side}) [closedTs=${closedTimestamp}, entryTime=${np.entryTime || 0}]. Suppressing stale position.`);
                 continue;
             }
 
@@ -990,7 +1041,12 @@ export class MarketSimulator {
             }
         }
 
+        const hadPositions = oldPositions.length > 0;
+        const countChanged = oldPositions.length !== finalPositions.length;
         this.positions = finalPositions;
+        if (countChanged) {
+            this.syncPositionsToStorage(hadPositions && finalPositions.length === 0);
+        }
         
         // 🔒【负债账单只记入一次与防重复污染校准】
         // 针对当前处于对冲中的币种，自动按唯一真实的砍仓流水核算负债，坚决剔除任何因历史轮询重复叠加造成的虚高污染
@@ -1070,6 +1126,7 @@ export class MarketSimulator {
         } else {
             this.recentlyClosedKeys.set(`${cleanSymbol}_${PositionSide.LONG}`, now);
             this.recentlyClosedKeys.set(`${cleanSymbol}_${PositionSide.SHORT}`, now);
+            this.recentlyClosedKeys.set(cleanSymbol, now);
         }
         this.saveRecentlyClosedKeys();
         this.positions.forEach(p => {
@@ -1079,6 +1136,7 @@ export class MarketSimulator {
         });
         this.positions = this.positions.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && (!side || p.side === side)));
         this.cleanAmputatedPositionsForSymbol(symbol);
+        this.syncPositionsToStorage(this.positions.length === 0);
         this.emitUpdate(true);
     }
 
@@ -1663,6 +1721,10 @@ export class MarketSimulator {
             }
 
             pos.isBeingClosed = true;
+            const nowClose = Date.now();
+            this.recentlyClosedKeys.set(`${cleanTarget}_${pos.side}`, nowClose);
+            this.saveRecentlyClosedKeys();
+
             if (this.settings?.system?.realTrading && this.onRealClose) {
                 this.onRealClose(pos, reason);
                 this.recordTradeLog(pos, reason);
@@ -1677,6 +1739,7 @@ export class MarketSimulator {
                 }
 
                 this.checkAndTriggerAutoReopen(pos, reason);
+                this.syncPositionsToStorage(this.positions.length === 0);
 
                 this.emitUpdate(true);
                 return;
@@ -1707,6 +1770,7 @@ export class MarketSimulator {
             this.addLog('INFO', `Closed Position on ${pos.symbol}: ${reason}`);
 
             this.checkAndTriggerAutoReopen(pos, reason);
+            this.syncPositionsToStorage(this.positions.length === 0);
 
             this.emitUpdate(true);
         }
@@ -1879,6 +1943,7 @@ export class MarketSimulator {
                 this.recentlyClosedKeys.set(`${cleanHedgeSym}_${hedge.side}`, now);
                 this.cooldowns[`${hedge.symbol}_${hedge.side}`] = now + 60000;
             }
+            this.saveRecentlyClosedKeys();
 
             // Record initial profitability states BEFORE closing positions
             const isHedgeProfitable = hedge ? (hedge.unrealizedPnL || 0) > 0 : false;
@@ -1964,6 +2029,7 @@ export class MarketSimulator {
                 }
             }
 
+            this.syncPositionsToStorage(this.positions.length === 0);
             this.emitUpdate(true);
         }
     }
@@ -3560,6 +3626,7 @@ export class MarketSimulator {
             // ⚡ [即时持仓同步] 收到币安成交回报后，毫秒级直接从持仓列表扣减或彻底移除已平仓位！
             const lookupKey = `${normSym}_${inferredDirection}`;
             this.recentlyClosedKeys.set(lookupKey, tradeTime);
+            this.saveRecentlyClosedKeys();
             this.inFlightClosingPool.delete(lookupKey);
             this.inFlightClosingPool.delete(normSym);
 
@@ -3602,6 +3669,7 @@ export class MarketSimulator {
                 );
             }
 
+            this.syncPositionsToStorage(this.positions.length === 0);
             this.emitUpdate(true);
         } else {
             // 开仓/加仓成交回报
@@ -4916,12 +4984,8 @@ export class MarketSimulator {
         this.saveCooldowns();
         this.positions = [];
 
-        // 🔒 强制清理 localStorage 中的所有持仓缓存
-        try {
-            localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
-            localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
-            localStorage.setItem('SAVIOR_POSITIONS', '[]');
-        } catch (e) {}
+        // 🔒 强制清理 localStorage 与后端磁盘 /data/positions.json 中的所有持仓缓存
+        this.syncPositionsToStorage(true);
 
         this.addLog('WARNING', `全部平仓: ${reasonStr}${!isSilent ? ` (总盈亏: ${totalPnL.toFixed(2)})` : ''}`);
         this.emitUpdate(true);

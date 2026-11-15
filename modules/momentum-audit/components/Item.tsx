@@ -480,6 +480,14 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
             e.preventDefault();
             e.stopPropagation();
         }
+        const signalCandle = item.structure ? {
+            high: item.structure.signalHigh,
+            low: item.structure.signalLow,
+            close: item.structure.signalPrice,
+            open: item.structure.signalPrice,
+            amplitude: item.structure.signalLow ? (item.structure.signalHigh - item.structure.signalLow) / item.structure.signalLow : 0,
+            time: item.structure.signalTime
+        } : undefined;
         setChartData({ 
             symbol: item.symbol, 
             tf: tf, 
@@ -488,6 +496,7 @@ const List4ItemComponent: React.FC<Props> = ({ item, executeTradeSafe, setChartD
             signals: item.structure?.signalTime ? [{ time: item.structure.signalTime, type: item.direction as any }] : [],
             entryPrice: item.structure?.signalPrice,
             entryTime: item.structure?.signalTime,
+            signalCandle,
             currentPrice: item.price,
             highlightTime: item.enterList4Time,
             showAuditLines: false,

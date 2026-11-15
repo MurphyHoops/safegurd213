@@ -34,7 +34,7 @@ export const SidewaysPoolBox: React.FC<Props> = ({ scanConfig, onRunDiscovery, i
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     if (Array.isArray(parsed)) {
-                        setPool(parsed);
+                        setPool(prev => JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed);
                     }
                 }
             } catch (_) {}

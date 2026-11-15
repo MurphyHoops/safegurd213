@@ -1,8 +1,9 @@
 
 import React, { useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Maximize2, Search, BarChart2, ChevronUp, ChevronDown, Plus, Check } from 'lucide-react';
+import { X, Maximize2, Search, BarChart2, ChevronUp, ChevronDown, Plus, Check, Zap } from 'lucide-react';
 import KlineChartModal from './KlineChartModal';
+import { PositionSide } from '../types';
 
 interface VisualizerItem {
   symbol: string;
@@ -11,6 +12,7 @@ interface VisualizerItem {
   signals?: any[];
   entryPrice?: number;
   entryTime?: number;
+  signalCandle?: any;
   currentPrice?: number;
   highlightTime?: number;
   showAuditLines?: boolean;
@@ -35,12 +37,14 @@ interface Props {
   list2Config?: any;
   watchlist?: string[];
   onAddToWatchlist?: (symbol: string) => void;
+  executeTradeSafe?: (symbol: string, side: any, price: number, reason: string, signalTf?: string, signalCandle?: any, entryEmas?: any) => boolean;
   onClose: () => void;
 }
 
-export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultTf = '15m', defaultLimit = 299, list2Config, watchlist, onAddToWatchlist, onClose }) => {
+export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultTf = '15m', defaultLimit = 299, list2Config, watchlist, onAddToWatchlist, executeTradeSafe, onClose }) => {
   const [selectedItem, setSelectedItem] = useState<VisualizerItem | null>(items[0] || null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [submittingSymbolKey, setSubmittingSymbolKey] = useState<string | null>(null);
 
   const filteredItems = useMemo(() => {
     return items.filter(i => i.symbol.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -98,6 +102,27 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
   };
 
   const isList5Mode = title.includes('5') || title.includes('战场') || title.includes('持仓');
+  const isList4Mode = Boolean(currentItem?.source === 'list4' || title.includes('4') || title.includes('动能'));
+
+  const autoOpenAmountLabel = useMemo(() => {
+    try {
+      const rawId = typeof window !== 'undefined' ? localStorage.getItem('SCANNER_SELECTED_STRATEGY_ID') : '';
+      const cleanId = rawId ? (rawId.startsWith('"') ? JSON.parse(rawId) : rawId) : '';
+      const savedAction = (cleanId ? localStorage.getItem(`SCANNER_ACTION_CONFIG_${cleanId}`) : null) ||
+                          localStorage.getItem('SCANNER_ACTION_CONFIG') ||
+                          localStorage.getItem('SCANNER_ACTION_CONFIG_strat-1');
+      if (savedAction) {
+        const parsed = JSON.parse(savedAction);
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.positionSizeMode === 'VARIABLE') {
+            return `${parsed.variablePercentage || 2}%`;
+          }
+          return `${parsed.openAmount || 10}U`;
+        }
+      }
+    } catch (e) {}
+    return '自动数量';
+  }, [selectedSymbol]);
 
   return createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/98 backdrop-blur-xl p-4">
@@ -120,6 +145,49 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
 
           {/* Navigation Controls in Header (Up/Down) */}
           <div className="flex items-center gap-4">
+             {isList4Mode && selectedSymbol && executeTradeSafe && (() => {
+                const rawDir = String(currentItem?.direction || currentItem?.side || 'LONG').toUpperCase();
+                const isShortDir = rawDir === 'SHORT' || rawDir === '空' || rawDir.includes('SHORT');
+                const tradeSide = isShortDir ? PositionSide.SHORT : PositionSide.LONG;
+                const actionKey = `${selectedSymbol}-${tradeSide}-${currentItem?.timeframe || defaultTf}`;
+                const isSubmitting = submittingSymbolKey === actionKey;
+                const targetPrice = Number(currentItem?.currentPrice || currentItem?.entryPrice || 0);
+
+                return (
+                  <button
+                    onClick={() => {
+                      if (isSubmitting) return;
+                      setSubmittingSymbolKey(actionKey);
+                      setTimeout(() => setSubmittingSymbolKey(prev => prev === actionKey ? null : prev), 2000);
+                      executeTradeSafe(
+                        selectedSymbol,
+                        tradeSide,
+                        targetPrice,
+                        "[列表4一键开仓] Manual L4 Force",
+                        currentItem?.timeframe || defaultTf,
+                        currentItem?.signalCandle
+                      );
+                    }}
+                    disabled={isSubmitting}
+                    title={`按当前策略自动开仓方向(${isShortDir ? '做空' : '做多'})与数量(${autoOpenAmountLabel})立即一键开仓`}
+                    className={`flex items-center gap-1.5 px-3.5 h-10 border rounded-lg text-xs font-bold transition-all shadow-sm ${
+                      isSubmitting
+                        ? 'bg-slate-800 border-slate-600 text-slate-300 cursor-not-allowed'
+                        : isShortDir
+                          ? 'bg-rose-600/90 hover:bg-rose-500 border-rose-400/50 text-white shadow-rose-950/50 active:scale-95 cursor-pointer'
+                          : 'bg-emerald-600/90 hover:bg-emerald-500 border-emerald-400/50 text-white shadow-emerald-950/50 active:scale-95 cursor-pointer'
+                    }`}
+                  >
+                    {isSubmitting ? <Check size={14} className="text-emerald-400" /> : <Zap size={14} className="fill-current" />}
+                    <span>
+                      {isSubmitting
+                        ? '已发开仓指令'
+                        : `一键开仓 (${isShortDir ? '空' : '多'} · ${autoOpenAmountLabel})`}
+                    </span>
+                  </button>
+                );
+             })()}
+
              {selectedSymbol && (
                 <div className="flex items-center bg-[#0b0e11] border border-slate-700/50 rounded-lg overflow-hidden h-10 divide-x divide-slate-800 shadow-sm animate-in zoom-in-95 duration-200">
                     <div className="px-4 flex flex-col justify-center min-w-[120px]">
@@ -229,8 +297,8 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   initialTimeframe={currentItem?.timeframe || defaultTf}
                   highlightTf={currentItem?.timeframe}
                   limit={defaultLimit}
-                  list2Config={isList5Mode ? undefined : list2Config}
-                  list4Config={isList5Mode ? undefined : currentItem?.list4Config}
+                  list2Config={list2Config}
+                  list4Config={currentItem?.list4Config}
                   disablePortal={true}
                   onClose={() => setSelectedItem(null)}
                   signals={modalSignals}
@@ -238,6 +306,7 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   side={currentItem?.side || currentItem?.direction}
                   entryPrice={currentItem?.entryPrice}
                   entryTime={currentItem?.entryTime}
+                  signalCandle={currentItem?.signalCandle}
                   currentPrice={currentItem?.currentPrice}
                   highlightTime={currentItem?.highlightTime}
                   showAuditLines={isList5Mode ? false : (currentItem?.showAuditLines || false)}
@@ -249,6 +318,7 @@ export const ScannerVisualizerModal: React.FC<Props> = ({ title, items, defaultT
                   source={currentItem?.source || ((title.includes('1') || title.includes('初筛')) ? 'list1' : isList5Mode ? 'list5' : (title.includes('2') || title.includes('防御')) ? (currentItem?.isPreWait ? 'list2_prewait' : 'list2') : (title.includes('3') || title.includes('结构') || title.includes('深度')) ? 'list3' : undefined)}
                   isPreWait={Boolean(currentItem?.isPreWait || currentItem?.source === 'list2_prewait' || currentItem?.source === 'prewait')}
                   viewMode={(currentItem?.viewMode as 'SIGNAL' | 'TRADE') || (isList5Mode ? 'TRADE' : undefined)}
+                  executeTradeSafe={executeTradeSafe}
                 />
               </div>
             ) : (

@@ -1,0 +1,52 @@
+{
+  "title": "Savior 救世之星 - 黑匣子崩溃遥测报告",
+  "exportedAt": "2026/11/15 09:05:46",
+  "crashDetails": {
+    "id": "timeout_mwgoznxf_weow",
+    "timestamp": 1794678078435,
+    "timeStr": "11/14/2026, 5:41:18 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 17 秒)",
+    "memoryRssMB": 287,
+    "memoryHeapMB": 170,
+    "unacknowledged": true
+  },
+  "flightActionsTrail": [
+    {
+      "id": "fa_mwg7e3n1_rt19",
+      "timestamp": 1794648518893,
+      "timeStr": "17:28:38",
+      "actionType": "BOOT_INIT",
+      "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+    },
+    {
+      "id": "fa_mwg7orrz_ufkd",
+      "timestamp": 1794649016735,
+      "timeStr": "17:36:56",
+      "actionType": "BOOT_INIT",
+      "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+    },
+    {
+      "id": "fa_mwggop8p_un5b",
+      "timestamp": 1794664129993,
+      "timeStr": "21:48:49",
+      "actionType": "BOOT_INIT",
+      "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+    },
+    {
+      "id": "fa_mwgldi31_vezw",
+      "timestamp": 1794672005581,
+      "timeStr": "00:00:05",
+      "actionType": "BOOT_INIT",
+      "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+    },
+    {
+      "id": "fa_mwh4so25_v3sh",
+      "timestamp": 1794704625869,
+      "timeStr": "09:03:45",
+      "actionType": "BOOT_INIT",
+      "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+    }
+  ]
+}

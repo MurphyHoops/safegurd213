@@ -26,9 +26,12 @@ import { normalizeSymbol, resolvePrice } from "../services/symbolUtils";
 import { logSignalOccurrence } from "../services/binanceLogger";
 import { l234DataStore } from "../services/l234DataStore";
 
-// 1. 冷却锁缓存结构：Symbol -> 冷却截止时间戳 (ms)
+// 1. 冷却锁与已开/已平仓持久化缓存结构：防止刷新或重启程序后 List 1 InstantOpen 重新自动开仓
 const PANIC_COOLDOWN_STORAGE_KEY = 'SAFREGUARD_PANIC_COOLDOWN_MAP';
+const LIST1_OPENED_STORAGE_KEY = 'SCANNER_LIST1_OPENED_SYMBOLS';
+const LIST1_CLOSED_TIMES_STORAGE_KEY = 'SCANNER_LIST1_CLOSED_TIMES';
 const COOLDOWN_DURATION_MS = 30 * 60 * 1000; // 清仓后冷却 30 分钟
+const CLOSED_MEMORY_DURATION_MS = 12 * 60 * 60 * 1000; // 已平仓/已开仓记忆保持 12 小时
 
 // 从本地存储恢复冷却状态，防止刷新页面后立即复开
 const getInitialCooldownMap = (): Map<string, number> => {
@@ -42,6 +45,84 @@ const getInitialCooldownMap = (): Map<string, number> => {
   } catch {
     return new Map();
   }
+};
+
+const getInitialList1ClosedTimes = (): Record<string, number> => {
+  const result: Record<string, number> = {};
+  const now = Date.now();
+  try {
+    const raw = localStorage.getItem(LIST1_CLOSED_TIMES_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        Object.entries(parsed).forEach(([sym, ts]) => {
+          if (typeof ts === 'number' && now - ts < CLOSED_MEMORY_DURATION_MS) {
+            result[normalizeSymbol(sym)] = ts;
+          }
+        });
+      }
+    }
+  } catch {}
+  try {
+    const recentRaw = localStorage.getItem('SAVIOR_RECENTLY_CLOSED_KEYS');
+    if (recentRaw) {
+      const parsed = JSON.parse(recentRaw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(([k, ts]: [string, number]) => {
+          if (typeof ts === 'number' && now - ts < CLOSED_MEMORY_DURATION_MS) {
+            const sym = normalizeSymbol(String(k).replace(/_(LONG|SHORT|BOTH)$/i, ''));
+            if (sym) {
+              result[sym] = Math.max(result[sym] || 0, ts);
+            }
+          }
+        });
+      }
+    }
+  } catch {}
+  return result;
+};
+
+const getInitialList1OpenedSet = (): Set<string> => {
+  const set = new Set<string>();
+  const now = Date.now();
+  try {
+    const raw = localStorage.getItem(LIST1_OPENED_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item: any) => {
+          if (typeof item === 'string') {
+            set.add(normalizeSymbol(item));
+          } else if (item && item.symbol && typeof item.ts === 'number' && now - item.ts < CLOSED_MEMORY_DURATION_MS) {
+            set.add(normalizeSymbol(item.symbol));
+          }
+        });
+      }
+    }
+  } catch {}
+  Object.keys(getInitialList1ClosedTimes()).forEach(sym => set.add(sym));
+  return set;
+};
+
+const persistList1OpenedSet = (set: Set<string>) => {
+  try {
+    const now = Date.now();
+    const arr = Array.from(set).slice(-300).map(symbol => ({ symbol, ts: now }));
+    localStorage.setItem(LIST1_OPENED_STORAGE_KEY, JSON.stringify(arr));
+  } catch {}
+};
+
+const persistList1ClosedTimes = (map: Record<string, number>) => {
+  try {
+    const now = Date.now();
+    const cleaned: Record<string, number> = {};
+    Object.entries(map).forEach(([sym, ts]) => {
+      if (typeof ts === 'number' && now - ts < CLOSED_MEMORY_DURATION_MS) {
+        cleaned[sym] = ts;
+      }
+    });
+    localStorage.setItem(LIST1_CLOSED_TIMES_STORAGE_KEY, JSON.stringify(cleaned));
+  } catch {}
 };
 import KlineChartModal from "./KlineChartModal";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -1697,29 +1778,63 @@ const ScannerDashboardInner: React.FC<
   );
 
   // --- LIST 1 INSTANT OPEN & REOPEN AUTOMATION ---
-  const list1OpenedSymbolsRef = useRef<Set<string>>(new Set());
-  const list1ClosedSymbolsRef = useRef<Set<string>>(new Set());
+  const initialClosedTimes = useMemo(() => getInitialList1ClosedTimes(), []);
+  const list1OpenedSymbolsRef = useRef<Set<string>>(getInitialList1OpenedSet());
+  const list1ClosedSymbolsRef = useRef<Set<string>>(new Set(Object.keys(initialClosedTimes)));
   const list1LastTriggerTimeRef = useRef<Record<string, number>>({});
   const prevPositionsRef = useRef<Position[]>([]);
-  const list1ClosedTimeRef = useRef<Record<string, number>>({});
+  const list1ClosedTimeRef = useRef<Record<string, number>>(initialClosedTimes);
+
+  // 监听来自 App.tsx (如持仓面板/顶部栏一键清仓或单笔平仓) 的全局清仓同步事件
+  useEffect(() => {
+    const handleGlobalPositionsCleared = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const syms: string[] = Array.isArray(detail?.symbols) ? detail.symbols : [];
+      const now = Date.now();
+      if (syms.length > 0) {
+        syms.forEach(s => {
+          const cleanSym = normalizeSymbol(s);
+          list1OpenedSymbolsRef.current.add(cleanSym);
+          list1ClosedSymbolsRef.current.add(cleanSym);
+          list1ClosedTimeRef.current[cleanSym] = now;
+        });
+        persistList1OpenedSet(list1OpenedSymbolsRef.current);
+        persistList1ClosedTimes(list1ClosedTimeRef.current);
+        lockAndPurgeClosedSymbols(syms);
+      }
+    };
+    window.addEventListener('SAVIOR_POSITIONS_CLEARED', handleGlobalPositionsCleared);
+    return () => window.removeEventListener('SAVIOR_POSITIONS_CLEARED', handleGlobalPositionsCleared);
+  }, [lockAndPurgeClosedSymbols]);
 
   // Real-time detection of closed positions
   useEffect(() => {
     const prevPosMap = new Map(prevPositionsRef.current.map(p => [normalizeSymbol(p.symbol), p]));
     const currentPosMap = new Map(filteredPositions.map(p => [normalizeSymbol(p.symbol), p]));
+    let changed = false;
 
     prevPosMap.forEach((pos, sym) => {
       if (!currentPosMap.has(sym)) {
+        list1OpenedSymbolsRef.current.add(sym);
         list1ClosedSymbolsRef.current.add(sym);
         list1ClosedTimeRef.current[sym] = Date.now();
+        changed = true;
       }
     });
 
     // If active in positions, ensure opened tracking is set and remove from closed set
     currentPosMap.forEach((pos, sym) => {
+      if (!list1OpenedSymbolsRef.current.has(sym)) {
+        changed = true;
+      }
       list1OpenedSymbolsRef.current.add(sym);
       list1ClosedSymbolsRef.current.delete(sym);
     });
+
+    if (changed) {
+      persistList1OpenedSet(list1OpenedSymbolsRef.current);
+      persistList1ClosedTimes(list1ClosedTimeRef.current);
+    }
 
     prevPositionsRef.current = filteredPositions;
   }, [filteredPositions]);
@@ -1944,7 +2059,9 @@ const ScannerDashboardInner: React.FC<
           if (task.isReopen) {
             delete list1ClosedTimeRef.current[task.symbol];
             list1ClosedSymbolsRef.current.delete(task.symbol);
+            persistList1ClosedTimes(list1ClosedTimeRef.current);
           }
+          persistList1OpenedSet(list1OpenedSymbolsRef.current);
 
           console.log(`[List 1 Batch Open] Triggering trade for ${task.symbol} @ ${task.price} (${task.side}) | Batch ${chunkIndex + 1}/${taskChunks.length}`);
           executeTradeSafe(
@@ -1969,8 +2086,11 @@ const ScannerDashboardInner: React.FC<
   const handleClosePositionInternal = useCallback(
     (symbol: string, side: PositionSide) => {
       const normSym = normalizeSymbol(symbol);
+      list1OpenedSymbolsRef.current.add(normSym);
       list1ClosedSymbolsRef.current.add(normSym);
       list1ClosedTimeRef.current[normSym] = Date.now();
+      persistList1OpenedSet(list1OpenedSymbolsRef.current);
+      persistList1ClosedTimes(list1ClosedTimeRef.current);
       lockAndPurgeClosedSymbols([normSym]);
       if (scannerMode === "BACKTEST") {
         setPositions((prev) => {
@@ -2008,6 +2128,14 @@ const ScannerDashboardInner: React.FC<
   const handlePanicSell = useCallback(() => {
     const targets = currentPositions.length > 0 ? currentPositions : filteredPositions;
     const syms = targets.map((p) => normalizeSymbol(p.symbol));
+    const now = Date.now();
+    syms.forEach(s => {
+      list1OpenedSymbolsRef.current.add(s);
+      list1ClosedSymbolsRef.current.add(s);
+      list1ClosedTimeRef.current[s] = now;
+    });
+    persistList1OpenedSet(list1OpenedSymbolsRef.current);
+    persistList1ClosedTimes(list1ClosedTimeRef.current);
     lockAndPurgeClosedSymbols(syms);
 
     if (scannerMode === "BACKTEST") {
@@ -2600,6 +2728,7 @@ const ScannerDashboardInner: React.FC<
           side={chartData.side || chartData.direction}
           entryPrice={chartData.entryPrice}
           entryTime={chartData.entryTime}
+          signalCandle={chartData.signalCandle}
           currentPrice={chartData.currentPrice}
           list2Config={chartData.list2Config}
           list4Config={chartData.list4Config}
@@ -2613,6 +2742,7 @@ const ScannerDashboardInner: React.FC<
           source={chartData.source}
           isPreWait={chartData.isPreWait}
           viewMode={chartData.viewMode}
+          executeTradeSafe={executeTradeSafe}
           onClose={() => setChartData(null)}
           onSymbolChange={(newSymbol, newTf) => {
             setChartData((prev: any) => prev ? {
@@ -3025,11 +3155,21 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     }
   }, [list3Results, strategyId]);
 
-  // 后台策略的即时开仓执行
-  const bgOpenedSymbolsRef = useRef<Set<string>>(new Set());
+  // 后台策略的即时开仓执行 (从 localStorage 初始化已开仓/已平仓集合，防止重启后重复开仓)
+  const bgOpenedSymbolsRef = useRef<Set<string>>(getInitialList1OpenedSet());
   const bgLastTriggerTimeRef = useRef<Record<string, number>>({});
   const bgCurrentPricesRef = useRef<Record<string, number>>({});
   bgCurrentPricesRef.current = currentPrices;
+
+  useEffect(() => {
+    const handleBgCleared = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const syms: string[] = Array.isArray(detail?.symbols) ? detail.symbols : [];
+      syms.forEach(s => bgOpenedSymbolsRef.current.add(normalizeSymbol(s)));
+    };
+    window.addEventListener('SAVIOR_POSITIONS_CLEARED', handleBgCleared);
+    return () => window.removeEventListener('SAVIOR_POSITIONS_CLEARED', handleBgCleared);
+  }, []);
 
   const bgCandidatesKey = useMemo(() => {
     return (list1Candidates || []).map(c => `${c.symbol}_${c.price || 0}`).join('|');
@@ -3060,12 +3200,19 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     if (allowedFixedSet && allowedFixedSet.size === 0) return;
 
     const now = Date.now();
+    const closedTimes = getInitialList1ClosedTimes();
+
     list1Candidates.forEach(item => {
       const symbol = normalizeSymbol(item.symbol);
       if (allowedFixedSet && !allowedFixedSet.has(symbol.replace('USDT', ''))) return;
 
       const hasActivePosition = filteredPositions.some(p => normalizeSymbol(p.symbol) === symbol);
       if (hasActivePosition) {
+        bgOpenedSymbolsRef.current.add(symbol);
+        return;
+      }
+
+      if (closedTimes[symbol] && !instantOpenAfterClose) {
         bgOpenedSymbolsRef.current.add(symbol);
         return;
       }
@@ -3078,6 +3225,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
         if (price > 0) {
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
           bgOpenedSymbolsRef.current.add(symbol);
+          persistList1OpenedSet(bgOpenedSymbolsRef.current);
           bgLastTriggerTimeRef.current[symbol] = now;
           wrappedExecuteTradeSafe(
             symbol,
