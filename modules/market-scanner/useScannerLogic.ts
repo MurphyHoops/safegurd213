@@ -12,6 +12,8 @@ import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../servic
 import { klineDailyStore } from '../../services/klineDailyStore';
 import { l234DataStore } from '../../services/l234DataStore';
 import { auditSymbolAntiChase, DEFAULT_LIST1_ANTI_CHASE_CONFIG } from '../../services/rules/list1_anti_chase';
+import { saveStateDebounced } from '../../utils/persistence';
+import { recordFlightActionThrottled } from '../../services/flightRecorder';
 
 
 // Helper for fast, isolated, non-blocking klines fetching through official proxy endpoints with hard abort timeout
@@ -160,25 +162,17 @@ export const useScannerLogic = (
         }
     }, [strategyId, list1CacheKey, blacklistKey, suffix, majorTrendCandidatesKey, majorTrendLimitsKey]);
 
-    // Persist List 1 (仅在当前状态确属于该 strategyId 时持久化)
+    // Persist List 1 (仅在当前状态确属于该 strategyId 时防抖异步持久化，消除 300 币高频同步写盘阻塞)
     useEffect(() => {
         if (activeStrategyRef.current === strategyId) {
-            try {
-                localStorage.setItem(list1CacheKey, JSON.stringify(list1));
-            } catch (e) {
-                console.warn("Failed to persist List 1 cache");
-            }
+            saveStateDebounced(list1CacheKey, list1, 1500, 1000);
         }
     }, [list1, list1CacheKey, strategyId]);
 
-    // Persist Blacklist (仅在当前状态确属于该 strategyId 时持久化)
+    // Persist Blacklist (仅在当前状态确属于该 strategyId 时防抖持久化)
     useEffect(() => {
         if (activeStrategyRef.current === strategyId) {
-            try {
-                localStorage.setItem(blacklistKey, JSON.stringify(Array.from(blacklist)));
-            } catch (e) {
-                console.warn("Failed to persist Blacklist");
-            }
+            saveStateDebounced(blacklistKey, Array.from(blacklist), 1000, 1000);
         }
     }, [blacklist, blacklistKey, strategyId]);
 
@@ -232,7 +226,7 @@ export const useScannerLogic = (
             try {
                 majorTrendCandidatesRef.current = majorTrendCandidates;
                 const candsList = Array.from(majorTrendCandidates);
-                localStorage.setItem(majorTrendCandidatesKey, JSON.stringify(candsList));
+                saveStateDebounced(majorTrendCandidatesKey, candsList, 1000, 1000);
                 // 🛡️ [Tier 2 精细化内存管理]: 联动 l234DataStore 同步精选列表，被踢出“市场初筛列表”的币种自动销毁小周期缓存
                 l234DataStore.syncActiveCandidates(candsList);
             } catch (e) {
@@ -296,6 +290,8 @@ export const useScannerLogic = (
     }, [strategyId, majorTrendCandidatesKey, suffix]);
 
     const [isMajorScanning, setIsMajorScanning] = useState(false);
+    const isMajorScanningRef = useRef(false);
+    isMajorScanningRef.current = isMajorScanning;
     const [majorProgress, setMajorProgress] = useState({ current: 0, total: 0 });
 
     const [majorTrendLimits, setMajorTrendLimits] = useState<Record<string, { maxZ: number, minZ: number }>>(() => {
@@ -307,7 +303,7 @@ export const useScannerLogic = (
 
     useEffect(() => {
         if (activeStrategyRef.current === strategyId) {
-            localStorage.setItem(majorTrendLimitsKey, JSON.stringify(majorTrendLimits));
+            saveStateDebounced(majorTrendLimitsKey, majorTrendLimits, 1200, 1000);
         }
     }, [majorTrendLimits, majorTrendLimitsKey, strategyId]);
 
@@ -698,6 +694,7 @@ export const useScannerLogic = (
         
         isFetchingRef.current = true; // ACQUIRE LOCK
         lastFetchStartTimeRef.current = Date.now(); // SET WATCHDOG START TIME
+        recordFlightActionThrottled('AUTO_MARKET_SCAN_START', { stage: 'list1_refresh', strategyId: strategyId || 'strat-1', forceFull }, 30000);
 
         try {
             // 🏛️ [中央行情数据总线]: 优先从本地内存/数据库直接秒级读取全量 24H 实时行情数据
@@ -765,10 +762,10 @@ export const useScannerLogic = (
                 return;
             }
 
-            // Save raw data for instant re-filtering
+            // Save raw data for instant re-filtering (防抖异步写入，防止 300+ 币全量 24h 行情大体积 JSON 同步写盘卡顿)
             rawDataRef.current = data;
             try {
-                localStorage.setItem('SCANNER_RAW_DATA_CACHE', JSON.stringify(data));
+                saveStateDebounced('SCANNER_RAW_DATA_CACHE', data, 1500, 2000);
                 window.dispatchEvent(new CustomEvent('scanner_raw_data_updated', { detail: data }));
 
                 // 🚀 [中央行情数据总线]: 若内存常驻日K数量不足（如冷启动），平滑触发中央日K预热同步
@@ -1072,10 +1069,12 @@ export const useScannerLogic = (
         }
         
         setIsMajorScanning(true);
+        isMajorScanningRef.current = true;
         (window as any).IS_MAJOR_TREND_SCANNING = true;
         (window as any).IS_MAJOR_TREND_SCANNING_TIME = Date.now();
         majorScanAbortRef.current = false;
         pruneRunIdRef.current++;
+        recordFlightActionThrottled('AUTO_MARKET_SCAN_START', { stage: 'major_trend_discovery', strategyId: strategyId || 'strat-1', isManual }, 30000);
 
         try {
             if (majorScanAbortRef.current) return;
@@ -1762,12 +1761,12 @@ export const useScannerLogic = (
 
         let debounceTimer: any = null;
         const handleStartTrendBaton = () => {
-            if (!isMountedRef.current || isMajorScanning) return;
+            if (!isMountedRef.current || isMajorScanningRef.current) return;
             if ((window as any).IS_START_TREND_SCANNING) return;
 
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
-                if (!isMountedRef.current || isMajorScanning) return;
+                if (!isMountedRef.current || isMajorScanningRef.current) return;
                 console.log(`[useScannerLogic] 行情启动底池扫描完成！接力唤醒【${strategyId || '默认策略'}】律动巡检...`);
                 pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
                     await runMajorTrendDiscovery(false);
@@ -1776,10 +1775,10 @@ export const useScannerLogic = (
         };
 
         const handleCentralDailyKlinesUpdated = () => {
-            if (!isMountedRef.current || isMajorScanning) return;
+            if (!isMountedRef.current || isMajorScanningRef.current) return;
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
-                if (!isMountedRef.current || isMajorScanning) return;
+                if (!isMountedRef.current || isMajorScanningRef.current) return;
                 console.log(`[useScannerLogic] 中央行情数据总线更新，唤醒【${strategyId || '默认策略'}】进行纯内存差量初筛...`);
                 pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
                     await runMajorTrendDiscovery(false);
@@ -1789,7 +1788,7 @@ export const useScannerLogic = (
 
         // 🔒【10秒律动高频循环定时器】：每 10 秒自动开启一轮完整 6 组管道巡检，确保不错过任何起爆行情
         const rhythmLoopTimer = setInterval(() => {
-            if (isMountedRef.current && !isMajorScanning && !(window as any).IS_SCANNER_PIPELINE_PAUSED && !(window as any).IS_START_TREND_SCANNING) {
+            if (isMountedRef.current && !isMajorScanningRef.current && !(window as any).IS_SCANNER_PIPELINE_PAUSED && !(window as any).IS_START_TREND_SCANNING) {
                 pipelineCoordinator.enqueue(strategyId ? `major_trend:${strategyId}` : 'major_trend', async () => {
                     await runMajorTrendDiscovery(false);
                 });
@@ -1805,7 +1804,7 @@ export const useScannerLogic = (
             window.removeEventListener('scanner_start_trend_pool_completed', handleStartTrendBaton);
             window.removeEventListener('CENTRAL_DAILY_KLINES_UPDATED', handleCentralDailyKlinesUpdated);
         };
-    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, isMajorScanning, runMajorTrendDiscovery, strategyId]);
+    }, [initialConfig.majorTrend?.enabled, initialConfig.majorTrend?.autoMode, runMajorTrendDiscovery, strategyId]);
 
 
     return {

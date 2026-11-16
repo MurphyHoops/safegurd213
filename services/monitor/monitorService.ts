@@ -33,7 +33,8 @@ export interface CrashBlackboxEntry {
 }
 
 const CRASH_BLACKBOX_KEY = 'SAVIOR_CRASH_BLACKBOX';
-const FLIGHT_RECORDER_KEY = 'SAVIOR_FLIGHT_RECORDER';
+const FLIGHT_RECORDER_KEY = 'SAVIOR_MONITOR_TELEMETRY_SNAPSHOT';
+const LEGACY_FLIGHT_RECORDER_KEY = 'SAVIOR_FLIGHT_RECORDER';
 const CLEAN_EXIT_KEY = 'SAVIOR_CLEAN_EXIT';
 
 // Rolling in-memory breadcrumbs
@@ -84,6 +85,7 @@ export const clearCrashBlackbox = (): void => {
     try {
         localStorage.removeItem(CRASH_BLACKBOX_KEY);
         localStorage.removeItem(FLIGHT_RECORDER_KEY);
+        localStorage.removeItem(LEGACY_FLIGHT_RECORDER_KEY);
         localStorage.removeItem('SAVIOR_CRASH_COUNT');
         localStorage.removeItem('SAVIOR_LAST_CRASH_TIME');
     } catch (_) {}

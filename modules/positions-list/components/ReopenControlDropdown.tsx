@@ -60,6 +60,7 @@ export const ReopenInlineCard: React.FC<InlineProps> = ({ onClose }) => {
     const updateConfig = (updater: (prev: ActionConfig) => ActionConfig) => {
         setConfigState(prev => {
             const next = updater(prev);
+            if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
             if (typeof window !== 'undefined' && window.localStorage) {
                 try {
                     localStorage.setItem('SCANNER_ACTION_CONFIG', JSON.stringify(next));
@@ -93,8 +94,10 @@ export const ReopenInlineCard: React.FC<InlineProps> = ({ onClose }) => {
                         }
                     }
 
-                    window.dispatchEvent(new Event('storage'));
-                    window.dispatchEvent(new CustomEvent('scanner_action_config_updated', { detail: next }));
+                    queueMicrotask(() => {
+                        window.dispatchEvent(new Event('storage'));
+                        window.dispatchEvent(new CustomEvent('scanner_action_config_updated', { detail: next }));
+                    });
                 } catch (e) {}
             }
             return next;
@@ -106,7 +109,10 @@ export const ReopenInlineCard: React.FC<InlineProps> = ({ onClose }) => {
             if (typeof window !== 'undefined' && window.localStorage) {
                 try {
                     const raw = localStorage.getItem('SCANNER_ACTION_CONFIG');
-                    if (raw) setConfigState({ ...DEFAULT_ACTION_CONFIG, ...JSON.parse(raw) });
+                    if (raw) {
+                        const next = { ...DEFAULT_ACTION_CONFIG, ...JSON.parse(raw) };
+                        setConfigState(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+                    }
                 } catch (e) {}
             }
         };

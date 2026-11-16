@@ -15,8 +15,9 @@ import { analyzeList2Crossing } from "../../services/rules/list2_crossing";
 import { fetchWithFallback } from "../../services/apiService";
 import { KLineSynthesizer } from "../../services/klineSynthesizer";
 import { KLine } from "../../types";
-import { saveState } from "../../utils/persistence";
+import { saveState, saveStateDebounced } from "../../utils/persistence";
 import { audioService } from "../../services/audioService";
+import { recordFlightActionThrottled } from "../../services/flightRecorder";
 import { priceRegistry } from "../../services/priceRegistry";
 import { normalizeSymbol, formatToBinanceSymbol, isValidSymbolFormat } from "../../services/symbolUtils";
 import { TimeframeDiagnosticRecord, PatternOccurrenceRecord } from "./types";
@@ -373,8 +374,11 @@ export const useGrandCrossing = (
 
   // --- PERFORMANCE REFS ---
   const lastUpdateTimestampRef = useRef<number>(0);
+  const lastPersistTimeRef = useRef<number>(0);
   const pendingUpdateRef = useRef<boolean>(false);
+  const scheduleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastListLengthRef = useRef<number>(list2.length);
+  const lastStructuralHashRef = useRef<string>("");
   const lastListSignalsHashRef = useRef<string>(
     list2
       .map(
@@ -546,28 +550,40 @@ export const useGrandCrossing = (
           if (squeezeVal < (cfg.squeezeThreshold || 0) || squeezeVal > (cfg.maxAmplitude || 50)) return false;
         }
 
-        // 压缩信号过滤 / 触发器过滤
+        // 压缩信号过滤 / 触发器过滤（完整覆盖 K线穿越、均线穿越、仅限首次穿越、均线发散 及 AND/OR/WAIT 组合关系）
+        const reqCandle = cfg.requireCandleCross !== undefined ? cfg.requireCandleCross : (cfg.requireCrossing ?? true);
+        const reqMa = cfg.requireMaCross ?? false;
+        const reqAlign = cfg.requireAlignment ?? false;
+        const reqFirstMaOnly = cfg.requireFirstMaCrossOnly ?? false;
+        const logicMode = cfg.crossingDivergenceLogic || 'AND';
+
         let satisfiesTrigger = false;
+        const candleOk = !!r.isCandleCrossed || (!r.isSqueeze && r.isCandleCrossed === undefined && !r.isMaCrossed);
+        const maOk = !!r.isMaCrossed && (!reqFirstMaOnly || !!r.isFirstMaCross);
+        const alignOk = !!r.isAligned;
+
         if (r.isPreWaitEma30) {
-          satisfiesTrigger = true;
-        } else if (cfg.requireCrossing && cfg.requireAlignment) {
-          // 同时选中时，信号必须满足穿越（非 squeeze）或者发散（isAligned 为 true）
-          if (!r.isSqueeze || r.isAligned) {
-            satisfiesTrigger = true;
-          }
-        } else if (cfg.requireCrossing) {
-          // 仅要求 K线穿越：必须是非 squeeze 信号
-          if (!r.isSqueeze) {
-            satisfiesTrigger = true;
-          }
-        } else if (cfg.requireAlignment) {
-          // 仅要求 EMA均线发散：必须是已发散状态
-          if (r.isAligned) {
-            satisfiesTrigger = true;
-          }
-        } else {
+          satisfiesTrigger = (cfg.enableEma30PreWait ?? true);
+        } else if (r.isWaitDivergencePending) {
+          satisfiesTrigger = logicMode === 'WAIT' && ((reqCandle && candleOk) || (reqMa && maOk));
+        } else if (!reqCandle && !reqMa && !reqAlign) {
           // 均未勾选时：经典压缩常规模式，直接放行
           satisfiesTrigger = true;
+        } else {
+          if (logicMode === 'OR') {
+            if (reqCandle && candleOk) satisfiesTrigger = true;
+            if (reqMa && maOk) satisfiesTrigger = true;
+            if (reqAlign && alignOk) satisfiesTrigger = true;
+          } else if (logicMode === 'WAIT') {
+            const crossOk = (reqCandle && candleOk) || (reqMa && maOk);
+            satisfiesTrigger = crossOk && alignOk;
+          } else {
+            // AND
+            satisfiesTrigger = true;
+            if (reqCandle && !candleOk) satisfiesTrigger = false;
+            if (reqMa && !maOk) satisfiesTrigger = false;
+            if (reqAlign && !alignOk) satisfiesTrigger = false;
+          }
         }
 
         if (!satisfiesTrigger) return false;
@@ -594,10 +610,10 @@ export const useGrandCrossing = (
       if (validSignals.length === 0) {
         itemIdsToDelete.push(`${item.symbol}-FULL`);
       } else {
-        // [DE-DUPLICATION] Only keep the latest signal per symbol-tf-direction
+        // [DE-DUPLICATION] 同一币种同一周期只保留最新方向信号（杜绝同周期一多一空同时残留在卡片上）
         const dedupedMap = new Map<string, any>();
         validSignals.forEach((s) => {
-          const key = `${s.tf}-${s.direction}`;
+          const key = `${s.tf}`;
           const current = dedupedMap.get(key);
           if (!current || (s.lag || 0) < (current.lag || 0)) {
             dedupedMap.set(key, s);
@@ -638,9 +654,9 @@ export const useGrandCrossing = (
       } else {
         // Merge groupedResults from duplicate entries
         const mergedSigMap = new Map<string, any>();
-        (existing.groupedResults || []).forEach((r) => mergedSigMap.set(`${r.tf}-${r.direction}`, r));
+        (existing.groupedResults || []).forEach((r) => mergedSigMap.set(`${r.tf}`, r));
         (item.groupedResults || []).forEach((r) => {
-          const sigKey = `${r.tf}-${r.direction}`;
+          const sigKey = `${r.tf}`;
           const cur = mergedSigMap.get(sigKey);
           if (!cur || (r.lag || 0) < (cur.lag || 0)) {
             mergedSigMap.set(sigKey, r);
@@ -714,16 +730,24 @@ export const useGrandCrossing = (
         };
       });
 
-    // --- 2. FAST HASH CHECK (Avoid JSON.stringify on huge data) ---
-    // Include price/change and pending gray state in hash to ensure UI updates when prices move
+    // --- 2. FAST HASH CHECK (Separate Structural Hash from Price-Tick Hash to eliminate disk I/O storms) ---
+    const structuralHash = items
+      .map(
+        (i) =>
+          `${i.symbol}-${i.groupedResults?.length}-${i.groupedResults?.map((r) => `${r.tf}-${r.direction}-${Math.floor(r.lag || 0)}-${r.isPendingGray ? 1 : 0}`).join(",")}-${i.lastUpdated}`,
+      )
+      .join("|");
     const currentSignalsHash = items
       .map(
         (i) =>
           `${i.symbol}-${i.groupedResults?.length}-${i.groupedResults?.map((r) => `${r.tf}-${r.direction}-${Math.floor(r.lag || 0)}-${r.isPendingGray ? 1 : 0}`).join(",")}-${i.lastUpdated}-${i.price}-${i.change}`,
       )
       .join("|");
-    const hasStructuralChange =
+    const hasStructuralDataChange =
       items.length !== lastListLengthRef.current ||
+      structuralHash !== lastStructuralHashRef.current;
+    const hasStructuralChange =
+      hasStructuralDataChange ||
       currentSignalsHash !== lastListSignalsHashRef.current;
 
     if (hasStructuralChange) {
@@ -767,6 +791,7 @@ export const useGrandCrossing = (
 
       setList2(items);
       lastListLengthRef.current = items.length;
+      lastStructuralHashRef.current = structuralHash;
       lastListSignalsHashRef.current = currentSignalsHash;
 
       // Stats update
@@ -786,30 +811,31 @@ export const useGrandCrossing = (
       }
     }
 
-    // Every 10s save to disk
-    const persistenceKey = "LAST_LS_PERSIST";
-    const lastPersist = Number(sessionStorage.getItem(persistenceKey) || 0);
-    if (now - lastPersist > 10000 || hasStructuralChange) {
+    // 仅在信号结构发生实际变化(>=2s冷却)或每 15 秒才防抖落盘一次，彻底消除行情价格跳动引起的全量 JSON 阻塞
+    const lastPersist = lastPersistTimeRef.current || 0;
+    if ((hasStructuralDataChange && now - lastPersist > 2000) || now - lastPersist > 15000) {
+      lastPersistTimeRef.current = now;
       const cacheArray = Array.from(cacheRef.current.entries()).map(
         ([key, value]) => ({ key, value }),
       );
-      saveState(cacheMapKey, cacheArray, 300); // Cap list 2 cache
-      saveState(
+      saveStateDebounced(cacheMapKey, cacheArray, 1500, 300); // Cap list 2 cache
+      saveStateDebounced(
         capturedSignalsKey,
         Array.from(capturedSignalsRef.current),
+        1500,
         500,
       ); // Cap signals
-      saveState(
+      saveStateDebounced(
         expiredSignalsKey,
         Array.from(expiredList2SignalCacheRef.current),
+        1500,
         1000,
       ); // Cap expired
-      sessionStorage.setItem(persistenceKey, now.toString());
     }
 
     pendingUpdateRef.current = false;
     lastUpdateTimestampRef.current = now;
-  }, []);
+  }, [cacheMapKey, capturedSignalsKey, expiredSignalsKey]);
 
   // --- THROTTLE SCHEDULER ---
   const scheduleUpdate = useCallback(() => {
@@ -819,12 +845,28 @@ export const useGrandCrossing = (
     const throttleMs = 500; // 🔒 [500ms UI 节流机制]: 固定每 500ms 将数据批量更新至 React 视图，保持 60 帧极速流畅
 
     if (timeSinceLast > throttleMs) {
+      if (scheduleTimerRef.current) {
+        clearTimeout(scheduleTimerRef.current);
+        scheduleTimerRef.current = null;
+      }
       performUpdate();
     } else if (!pendingUpdateRef.current) {
       pendingUpdateRef.current = true;
-      setTimeout(performUpdate, throttleMs - timeSinceLast);
+      scheduleTimerRef.current = setTimeout(() => {
+        scheduleTimerRef.current = null;
+        performUpdate();
+      }, throttleMs - timeSinceLast);
     }
   }, [performUpdate]);
+
+  useEffect(() => {
+    return () => {
+      if (scheduleTimerRef.current) {
+        clearTimeout(scheduleTimerRef.current);
+        scheduleTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // --- MANUAL ACTIONS ---
   const removeItem = useCallback(
@@ -1034,6 +1076,8 @@ export const useGrandCrossing = (
       for (const item of activeItems) {
         if (!active) break;
         if (!item.groupedResults || item.groupedResults.length === 0) continue;
+        await delay(5); // 让出主线程事件循环时间片，防止大批量缓存命中时同步微任务阻塞心跳
+        if (!active) break;
 
         const updatedResults = [];
         for (const r of item.groupedResults) {
@@ -1196,9 +1240,9 @@ export const useGrandCrossing = (
       sortedCandidatesRef.current = [];
     }
 
-    // Rapid response for candidates
-    performUpdate();
-  }, [candidatesKey, performUpdate]);
+    // Rapid throttled response for candidates
+    scheduleUpdate();
+  }, [candidatesKey, scheduleUpdate]);
 
   // ⚡ 订阅毫秒级 Tick 价格流：直接推动 list2FastScanner 执行 0ms 判定与直通派发
   useEffect(() => {
@@ -1252,6 +1296,8 @@ export const useGrandCrossing = (
     const existingItem = cacheRef.current.get(cacheKey) || cacheRef.current.get(`${symbol}-FULL`);
     const item = candidateItem || existingItem;
     if (!item) return;
+
+    recordFlightActionThrottled('KLINE_CALC_START', { source: 'useGrandCrossing', symbol, tf }, 30000);
 
     const retention = configRef.current.newModeRetention ?? 9;
 
@@ -1546,10 +1592,9 @@ export const useGrandCrossing = (
       const filteredResults = results.filter((r) => !checkSignalLocked(r));
 
       if (filteredResults.length > 0) {
-        // 🔒 [USER MANDATORY RULE] 多空独立存续：反向新信号出现时，不覆盖抹除仍在存续寿命内的旧方向信号
-        const newDirections = new Set(filteredResults.map((r) => r.direction));
+        // 🔒 同周期反方向旧信号互斥淘汰：同周期出现最新方向信号时，清理该周期旧信号，杜绝同屏多空打架
         mergedResults = mergedResults.filter(
-          (r) => !(r.tf === tf && newDirections.has(r.direction))
+          (r) => r.tf !== tf
         );
         mergedResults.push(...filteredResults);
 
@@ -1604,11 +1649,25 @@ export const useGrandCrossing = (
         sameTfSignals.forEach((prevSig) => {
           let currentSig = prevSig;
           // ⚡ 状态自愈与即时晋升：若历史缓存中的上一代信号为 preWait 折叠态 (isPreWaitEma30: true)，
-          // 检查当前实时均线是否已跨越 EMA40：若 EMA10 已跨过 EMA40，立即解除折叠态 (isPreWaitEma30 = false) 并设为 isMaCrossed: true
+          // 检查当前实时均线是否已跨越 EMA40：若满足穿三线站位（开启均线发散且非OR时同时核验四线顺序），立即解除折叠态并设为正式信号
           if (prevSig.isPreWaitEma30) {
-            if (prevSig.direction === 'LONG' && ema10 !== undefined && ema20 !== undefined && ema30 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema20) && !isNaN(ema30) && !isNaN(ema40) && ema10 > ema40 && ema10 > ema30 && ema10 > ema20) {
+            const pCfg = configRef.current;
+            const pNeedStrictAlign = (pCfg.requireAlignment ?? false) && ((pCfg.crossingDivergenceLogic || 'AND') !== 'OR' || !(pCfg.requireMaCross ?? false));
+            if (
+              prevSig.direction === 'LONG' &&
+              ema10 !== undefined && ema20 !== undefined && ema30 !== undefined && ema40 !== undefined &&
+              !isNaN(ema10) && !isNaN(ema20) && !isNaN(ema30) && !isNaN(ema40) &&
+              ema10 > ema20 && ema10 > ema30 && ema10 > ema40 &&
+              (!pNeedStrictAlign || (ema20 > ema30 && ema30 > ema40))
+            ) {
               currentSig = { ...prevSig, isPreWaitEma30: false, isMaCrossed: true, isClosed: true };
-            } else if (prevSig.direction === 'SHORT' && ema10 !== undefined && ema20 !== undefined && ema30 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema20) && !isNaN(ema30) && !isNaN(ema40) && ema10 < ema40 && ema10 < ema30 && ema10 < ema20) {
+            } else if (
+              prevSig.direction === 'SHORT' &&
+              ema10 !== undefined && ema20 !== undefined && ema30 !== undefined && ema40 !== undefined &&
+              !isNaN(ema10) && !isNaN(ema20) && !isNaN(ema30) && !isNaN(ema40) &&
+              ema10 < ema20 && ema10 < ema30 && ema10 < ema40 &&
+              (!pNeedStrictAlign || (ema20 < ema30 && ema30 < ema40))
+            ) {
               currentSig = { ...prevSig, isPreWaitEma30: false, isMaCrossed: true, isClosed: true };
             }
           }
@@ -1620,14 +1679,27 @@ export const useGrandCrossing = (
 
           if (effLag < retention && (currentSig.lag || 0) < retention) {
             let isTrulyDestroyed = false;
-            if (currentSig.direction === 'LONG') {
-              // 做多单真正形态破坏条件：EMA10 下穿 EMA30 (死叉)
-              if (ema10 !== undefined && ema30 !== undefined && !isNaN(ema10) && !isNaN(ema30) && ema10 < ema30) {
+            const curCfg = configRef.current;
+            if (currentSig.isPreWaitEma30 && !(curCfg.enableEma30PreWait ?? true)) {
+              isTrulyDestroyed = true;
+            } else if (currentSig.isWaitDivergencePending && (curCfg.crossingDivergenceLogic || 'AND') !== 'WAIT') {
+              isTrulyDestroyed = true;
+            } else if (currentSig.direction === 'LONG') {
+              // 做多单形态破坏条件：EMA10 下穿 EMA20 或 EMA30；若为正式确认信号，EMA10 亦不可位于 EMA40 下方
+              if (
+                (ema10 !== undefined && ema20 !== undefined && !isNaN(ema10) && !isNaN(ema20) && ema10 <= ema20) ||
+                (ema10 !== undefined && ema30 !== undefined && !isNaN(ema10) && !isNaN(ema30) && ema10 <= ema30) ||
+                (!currentSig.isPreWaitEma30 && !currentSig.isWaitDivergencePending && ema10 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema40) && ema10 <= ema40)
+              ) {
                 isTrulyDestroyed = true;
               }
             } else if (currentSig.direction === 'SHORT') {
-              // 做空单真正形态破坏条件：EMA10 上穿 EMA30 (金叉)
-              if (ema10 !== undefined && ema30 !== undefined && !isNaN(ema10) && !isNaN(ema30) && ema10 > ema30) {
+              // 做空单形态破坏条件：EMA10 上穿 EMA20 或 EMA30；若为正式确认信号，EMA10 亦不可位于 EMA40 上方
+              if (
+                (ema10 !== undefined && ema20 !== undefined && !isNaN(ema10) && !isNaN(ema20) && ema10 >= ema20) ||
+                (ema10 !== undefined && ema30 !== undefined && !isNaN(ema10) && !isNaN(ema30) && ema10 >= ema30) ||
+                (!currentSig.isPreWaitEma30 && !currentSig.isWaitDivergencePending && ema10 !== undefined && ema40 !== undefined && !isNaN(ema10) && !isNaN(ema40) && ema10 >= ema40)
+              ) {
                 isTrulyDestroyed = true;
               }
             }
@@ -1805,10 +1877,10 @@ export const useGrandCrossing = (
         }
       }
 
-      // ⚡ [WebSocket 计算高频防抖节流]: 同一币种同一周期 150ms 内只重新评估一次，避免毫秒级密集计算把主线程打满
+      // ⚡ [WebSocket 计算高频防抖节流]: 同一币种同一周期 250ms 内只重新评估一次（收盘帧直接放行），避免密集计算把主线程打满
       const now = Date.now();
       const lastEval = lastWsEvalTimeMap.get(key) || 0;
-      if (now - lastEval >= 150) {
+      if (update.isFinal || now - lastEval >= 250) {
         lastWsEvalTimeMap.set(key, now);
         evaluateKlinesRef.current(symbol, tf, updated, 0);
       }

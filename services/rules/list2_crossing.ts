@@ -664,11 +664,10 @@ export function analyzeList2Crossing(
                         if (cross20IdxL !== null && cross30IdxL !== null) break;
                     }
 
-                    // 必须在过去 N 根 K 线内按顺序同时完成对 EMA20/30/40 的连续金叉穿越 (cross20 <= cross30 <= checkIdx)
-                    if (cross20IdxL !== null && cross30IdxL !== null && cross20IdxL <= cross30IdxL && cross30IdxL <= checkIdx) {
-                        // 🔒【严格同向阳线收盘 + EMA10/20/30/40向上发散确认铁律 (LOCKED)】：
-                        // A. 当 EMA10 穿越 EMA40 对应的 K 线 (checkIdx) 已收盘 (f < idx)，且满足 EMA10 > EMA20 > EMA30 > EMA40 向上发散 + 阳线收盘 (Close > Open)，当根直接确立为信号 K 线！
-                        // B. 若穿越当根未收盘、或方向相反（阴线/十字星）、或尚未完全形成四线向上发散，则严格等待后续已收盘 K 线同时满足【EMA10 > EMA20 > EMA30 > EMA40 向上发散】且【阳线收盘】时才确立为信号 K 线！
+                    // 必须在过去 N 根 K 线内完成对 EMA20、EMA30 与 EMA40 的金叉穿越 (cross20 <= checkIdx 且 cross30 <= checkIdx)
+                    if (cross20IdxL !== null && cross30IdxL !== null && cross20IdxL <= checkIdx && cross30IdxL <= checkIdx) {
+                        // 🔒【严格同向阳线收盘 + EMA10 立于三线最外侧确认铁律】：
+                        // 不强制要求 EMA20 > EMA30 > EMA40 排好队，但要求 EMA10 严格站稳 EMA20/30/40 三线之上，且收出已收盘阳线 (Close > Open)！
                         const maxForwardL = Math.min(idx - 1, checkIdx + retentionThreshold);
                         for (let f = checkIdx; f <= maxForwardL; f++) {
                             const fE10 = getEmaVal(ema10, f, 10);
@@ -676,10 +675,9 @@ export function analyzeList2Crossing(
                             const fE30 = getEmaVal(ema30, f, 30);
                             const fE40 = getEmaVal(ema40, f, 40);
                             if (fE10 === null || fE20 === null || fE30 === null || fE40 === null) break;
-                            // 若等待期间 EMA10 跌破任一均线破坏多头结构，立即终止本轮等待
+                            // 若等待期间 EMA10 跌破任一均线破坏多头站位，立即终止本轮等待
                             if (fE10 <= fE20 || fE10 <= fE30 || fE10 <= fE40) break;
-                            const isFAlignedLong = fE10 > fE20 && fE20 > fE30 && fE30 > fE40;
-                            if (isFAlignedLong && closes[f] > opens[f]) {
+                            if (closes[f] > opens[f]) {
                                 maCrossConfirmedIdxL = f;
                                 break;
                             }
@@ -736,11 +734,10 @@ export function analyzeList2Crossing(
                         if (cross20IdxS !== null && cross30IdxS !== null) break;
                     }
 
-                    // 必须在过去 N 根 K 线内按顺序同时完成对 EMA20/30/40 的连续死叉穿越 (cross20 <= cross30 <= checkIdx)
-                    if (cross20IdxS !== null && cross30IdxS !== null && cross20IdxS <= cross30IdxS && cross30IdxS <= checkIdx) {
-                        // 🔒【严格同向阴线收盘 + EMA10/20/30/40向下发散确认铁律 (LOCKED)】：
-                        // A. 当 EMA10 穿越 EMA40 对应的 K 线 (checkIdx) 已收盘 (f < idx)，且满足 EMA10 < EMA20 < EMA30 < EMA40 向下发散 + 阴线收盘 (Close < Open)，当根直接确立为信号 K 线！
-                        // B. 若穿越当根未收盘、或方向相反（阳线/十字星）、或尚未完全形成四线向下发散，则严格等待后续已收盘 K 线同时满足【EMA10 < EMA20 < EMA30 < EMA40 向下发散】且【阴线收盘】时才确立为信号 K 线！
+                    // 必须在过去 N 根 K 线内完成对 EMA20、EMA30 与 EMA40 的死叉穿越 (cross20 <= checkIdx 且 cross30 <= checkIdx)
+                    if (cross20IdxS !== null && cross30IdxS !== null && cross20IdxS <= checkIdx && cross30IdxS <= checkIdx) {
+                        // 🔒【严格同向阴线收盘 + EMA10 立于三线最外侧确认铁律】：
+                        // 不强制要求 EMA20 < EMA30 < EMA40 排好队，但要求 EMA10 严格处于 EMA20/30/40 三线之下，且收出已收盘阴线 (Close < Open)！
                         const maxForwardS = Math.min(idx - 1, checkIdx + retentionThreshold);
                         for (let f = checkIdx; f <= maxForwardS; f++) {
                             const fE10 = getEmaVal(ema10, f, 10);
@@ -748,10 +745,9 @@ export function analyzeList2Crossing(
                             const fE30 = getEmaVal(ema30, f, 30);
                             const fE40 = getEmaVal(ema40, f, 40);
                             if (fE10 === null || fE20 === null || fE30 === null || fE40 === null) break;
-                            // 若等待期间 EMA10 升破任一均线破坏空头结构，立即终止本轮等待
+                            // 若等待期间 EMA10 升破任一均线破坏空头站位，立即终止本轮等待
                             if (fE10 >= fE20 || fE10 >= fE30 || fE10 >= fE40) break;
-                            const isFAlignedShort = fE10 < fE20 && fE20 < fE30 && fE30 < fE40;
-                            if (isFAlignedShort && closes[f] < opens[f]) {
+                            if (closes[f] < opens[f]) {
                                 maCrossConfirmedIdxS = f;
                                 break;
                             }
@@ -943,10 +939,11 @@ export function analyzeList2Crossing(
             const reqAlign = config.requireAlignment ?? false;
             const reqFirstMaOnly = config.requireFirstMaCrossOnly ?? false;
 
-            // 🔒 核心方向门禁：做多信号绝对禁止在 EMA10 < EMA20 且 EMA10 < EMA30 的空头排列下触发；
-            // 做空信号绝对禁止在 EMA10 > EMA20 且 EMA10 > EMA30 的多头排列下触发
-            const directionGuardL = !(e10 < e20 && (e30 === null || e10 < e30));
-            const directionGuardS = !(e10 > e20 && (e30 === null || e10 > e30));
+            // 🔒 核心方向门禁（收紧）：
+            // 做多信号要求当根均线至少处于 EMA10 > EMA20 且 EMA10 > EMA30 的多头向好状态（绝不允许在 EMA10 已下穿 EMA20 的死叉拐头途中触发做多）
+            // 做空信号要求当根均线至少处于 EMA10 < EMA20 且 EMA10 < EMA30 的空头向好状态
+            const directionGuardL = e10 > e20 && (e30 === null || e10 > e30);
+            const directionGuardS = e10 < e20 && (e30 === null || e10 < e30);
 
             // 🔒 严格过滤条件 (严格趋势/严格过滤)：振幅范围、放量倍数与实体比例
             const strictOkL = !strictFiltering || (ampValidL && volValidL && bodyValidL);
@@ -956,17 +953,8 @@ export function analyzeList2Crossing(
             const crossingValidL = isCrossing && !conflictL && strictOkL && directionGuardL && crossingIsBullish;
             const crossingValidS = isCrossing && !conflictS && strictOkS && directionGuardS && crossingIsBearish;
 
-            // 🔒 [USER MANDATORY RULE] 均线穿越 (reqMa) 专属两阶段阶梯式准入条件:
-            // 阶段 1：EMA10 穿越 EMA30 但未穿越 EMA40 -> 触发折叠等待区 (isWaitPending = true)
-            // 阶段 2：EMA10 穿越 EMA40 -> 正式解锁列表2主池 (isWaitPending = false)
-            const isMaCrossWaitLong = !isMaCrossLong && (e10 !== null && e30 !== null && e10 > e30) && (e40 !== null && e10 <= e40);
-            const isMaCrossWaitShort = !isMaCrossShort && (e10 !== null && e30 !== null && e10 < e30) && (e40 !== null && e10 >= e40);
-
             const maCrossValidL = isMaCrossLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL && (maCrossConfirmedIdxL !== null);
-            const maCrossWaitValidL = isMaCrossWaitLong && (!reqFirstMaOnly || isFirstMaCrossLong) && !conflictL && strictOkL && directionGuardL;
-
             const maCrossValidS = isMaCrossShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS && (maCrossConfirmedIdxS !== null);
-            const maCrossWaitValidS = isMaCrossWaitShort && (!reqFirstMaOnly || isFirstMaCrossShort) && !conflictS && strictOkS && directionGuardS;
 
             const divergenceStrictValidL = divergenceValidL && strictOkL;
             const divergenceStrictValidS = divergenceValidS && strictOkS && isAlignedShort;
@@ -1029,10 +1017,16 @@ export function analyzeList2Crossing(
                             patternMatchedL = true;
                             isWaitPendingL = false;
                         } else {
-                            const curE10 = getEmaVal(ema10, idx - 1, 10);
-                            const curE20 = getEmaVal(ema20, idx - 1, 20);
-                            const curE30 = getEmaVal(ema30, idx - 1, 30);
-                            const isNotDeadCrossed = !(curE10 !== null && curE20 !== null && curE10 <= curE20 && (curE30 === null || curE10 <= curE30));
+                            let isNotDeadCrossed = true;
+                            for (let f = checkIdx; f <= idx; f++) {
+                                const fE10 = getEmaVal(ema10, f, 10);
+                                const fE20 = getEmaVal(ema20, f, 20);
+                                const fE30 = getEmaVal(ema30, f, 30);
+                                if (fE10 === null || fE20 === null || fE10 <= fE20 || (fE30 !== null && fE10 <= fE30)) {
+                                    isNotDeadCrossed = false;
+                                    break;
+                                }
+                            }
 
                             if (isNotDeadCrossed) {
                                 targetIdxL = checkIdx;
@@ -1046,7 +1040,7 @@ export function analyzeList2Crossing(
                 }
 
                 // 做空：当前发生穿越且已收盘收阴，向后等待发散
-                if (hasCrossS && crossingIsBearish && !conflictS && strictOkS) {
+                if (hasCrossS && crossingIsBearish && !conflictS && strictOkS && directionGuardS) {
                     const elapsedBars = idx - checkIdx;
                     if (elapsedBars <= waitBars) {
                         let waitDivergenceFoundS = false;
@@ -1084,10 +1078,16 @@ export function analyzeList2Crossing(
                             patternMatchedS = true;
                             isWaitPendingS = false;
                         } else {
-                            const curE10 = getEmaVal(ema10, idx - 1, 10);
-                            const curE20 = getEmaVal(ema20, idx - 1, 20);
-                            const curE30 = getEmaVal(ema30, idx - 1, 30);
-                            const isNotGoldenCrossed = !(curE10 !== null && curE20 !== null && curE10 >= curE20 && (curE30 === null || curE10 >= curE30));
+                            let isNotGoldenCrossed = true;
+                            for (let f = checkIdx; f <= idx; f++) {
+                                const fE10 = getEmaVal(ema10, f, 10);
+                                const fE20 = getEmaVal(ema20, f, 20);
+                                const fE30 = getEmaVal(ema30, f, 30);
+                                if (fE10 === null || fE20 === null || fE10 >= fE20 || (fE30 !== null && fE10 >= fE30)) {
+                                    isNotGoldenCrossed = false;
+                                    break;
+                                }
+                            }
 
                             if (isNotGoldenCrossed) {
                                 targetIdxS = checkIdx;
@@ -1106,7 +1106,7 @@ export function analyzeList2Crossing(
                 if (reqMa) { matchL = matchL || maCrossValidL; matchS = matchS || maCrossValidS; }
                 if (reqAlign) { matchL = matchL || divergenceStrictValidL; matchS = matchS || divergenceStrictValidS; }
                 if (!reqCandle && !reqMa && !reqAlign) {
-                    matchL = strictOkL && !conflictL && crossingIsBullish;
+                    matchL = strictOkL && !conflictL && isAlignedLong && crossingIsBullish;
                     matchS = strictOkS && !conflictS && isAlignedShort && crossingIsBearish;
                 }
                 patternMatchedL = matchL;
@@ -1120,24 +1120,17 @@ export function analyzeList2Crossing(
                 if (reqMa) { matchL = matchL && maCrossValidL; matchS = matchS && maCrossValidS; countActive++; }
                 if (reqAlign) { matchL = matchL && divergenceStrictValidL; matchS = matchS && divergenceStrictValidS; countActive++; }
                 if (countActive === 0) {
-                    matchL = strictOkL && !conflictL && crossingIsBullish;
+                    matchL = strictOkL && !conflictL && isAlignedLong && crossingIsBullish;
                     matchS = strictOkS && !conflictS && isAlignedShort && crossingIsBearish;
                 }
                 patternMatchedL = matchL;
                 patternMatchedS = matchS;
             }
 
-            // 🔒 [USER MANDATORY RULE] 若开启“均线穿越 (reqMa)”且满足阶段1 (EMA10跨30未跨40)，推入折叠等待区
-            if (reqMa && !maCrossValidL && maCrossWaitValidL) {
-                patternMatchedL = true;
-                isWaitPendingL = true;
-            }
-            if (reqMa && !maCrossValidS && maCrossWaitValidS) {
-                patternMatchedS = true;
-                isWaitPendingS = true;
-            }
+            // (折叠等待区已完全收口至下方 enableEma30PreWait 专属区块，带 isPreWaitEma30: true 标记隔离，绝不混入正式主池)
 
-            // 🔒 [USER MANDATORY RULE] 做空时，若要求均线发散必须严格满足 EMA10 < EMA20 < EMA30 < EMA40，否则只需满足非金叉方向守卫
+            // 🔒 [USER MANDATORY RULE] 做多与做空方向守卫：若要求均线发散必须严格满足四线发散，否则必须满足同向守卫
+            patternMatchedL = patternMatchedL && (reqAlign ? isAlignedLong : directionGuardL);
             patternMatchedS = patternMatchedS && (reqAlign ? isAlignedShort : directionGuardS);
 
             // 🔒 [USER MANDATORY RULE] 若开启“发散回溯穿越”开关，所有信号必须严格经过方向性穿越校验过滤
@@ -1181,39 +1174,75 @@ export function analyzeList2Crossing(
                 }
             }
 
-            if (isValidL && !isWaitPendingL) {
-                // 🔒 [USER MANDATORY RULE - LOCKED] 确认信号K线做多时：
-                // 1. 绝不可处于空头死叉向下发散排列 (EMA10 < EMA20 且 EMA10 < EMA30)
-                // 2. 当开启均线穿越 (reqMa) 或均线发散 (requireAlignment) 时，确认信号K线收盘时刻必须严格呈 EMA10 > EMA20 > EMA30 > EMA40 向上发散形态且收阳线！
-                const targetE10L = getEmaVal(ema10, targetIdxL, 10);
-                const targetE20L = getEmaVal(ema20, targetIdxL, 20);
-                const targetE30L = getEmaVal(ema30, targetIdxL, 30);
-                const targetE40L = getEmaVal(ema40, targetIdxL, 40);
-                if (reqMa || config.requireAlignment) {
-                    if (
-                        targetE10L === null || targetE20L === null || targetE30L === null || targetE40L === null ||
-                        !(targetE10L > targetE20L && targetE20L > targetE30L && targetE30L > targetE40L) ||
-                        !(closes[targetIdxL] > opens[targetIdxL])
-                    ) {
+            const needStrictAlignL = reqAlign ? (logicMode !== 'OR' || !(reqMa && maCrossValidL)) : (!reqCandle && !reqMa);
+            if (isValidL) {
+                if (!isWaitPendingL) {
+                    // 🔒 [USER MANDATORY RULE - 均线穿越与发散解耦防线]：
+                    // 1. 所有正式确认信号必须满足 EMA10 严格立于 EMA20/30/40 三线之上且为已收盘阳线；
+                    // 2. 仅当要求【均线发散】时，额外强制 EMA20 > EMA30 > EMA40 顺序发散；
+                    // 3. 从信号K线之后到当前最新K线 (targetIdxL + 1 .. idx)，EMA10 绝不可跌回 EMA20/30/40 任一根之下！
+                    const targetE10L = getEmaVal(ema10, targetIdxL, 10);
+                    const targetE20L = getEmaVal(ema20, targetIdxL, 20);
+                    const targetE30L = getEmaVal(ema30, targetIdxL, 30);
+                    const targetE40L = getEmaVal(ema40, targetIdxL, 40);
+                    const isOutermostL =
+                        targetE10L !== null && targetE20L !== null && targetE30L !== null && targetE40L !== null &&
+                        targetE10L > targetE20L && targetE10L > targetE30L && targetE10L > targetE40L;
+                    const isSeqAlignL = !needStrictAlignL || (targetE20L !== null && targetE30L !== null && targetE40L !== null && targetE20L > targetE30L && targetE30L > targetE40L);
+                    if (!isOutermostL || !isSeqAlignL || !(closes[targetIdxL] > opens[targetIdxL])) {
                         isValidL = false;
                     }
-                } else if (targetE10L !== null && targetE20L !== null && targetE10L < targetE20L && (targetE30L === null || targetE10L < targetE30L)) {
-                    isValidL = false;
+                }
+                if (isValidL) {
+                    for (let f = targetIdxL + 1; f <= idx; f++) {
+                        const fE10 = getEmaVal(ema10, f, 10);
+                        const fE20 = getEmaVal(ema20, f, 20);
+                        const fE30 = getEmaVal(ema30, f, 30);
+                        const fE40 = getEmaVal(ema40, f, 40);
+                        if (
+                            fE10 !== null &&
+                            ((fE20 !== null && fE10 <= fE20) || (fE30 !== null && fE10 <= fE30) || (fE40 !== null && fE10 <= fE40))
+                        ) {
+                            isValidL = false;
+                            break;
+                        }
+                    }
                 }
             }
 
-            if (isValidS && !isWaitPendingS) {
-                // 🔒 [USER MANDATORY RULE - LOCKED] 确认信号K线做空时，必须严格呈 EMA10 < EMA20 < EMA30 < EMA40 向下发散形态且收阴线！
-                const targetE10S = getEmaVal(ema10, targetIdxS, 10);
-                const targetE20S = getEmaVal(ema20, targetIdxS, 20);
-                const targetE30S = getEmaVal(ema30, targetIdxS, 30);
-                const targetE40S = getEmaVal(ema40, targetIdxS, 40);
-                if (
-                    targetE10S === null || targetE20S === null || targetE30S === null || targetE40S === null ||
-                    !(targetE10S < targetE20S && targetE20S < targetE30S && targetE30S < targetE40S) ||
-                    !(closes[targetIdxS] < opens[targetIdxS])
-                ) {
-                    isValidS = false;
+            const needStrictAlignS = reqAlign ? (logicMode !== 'OR' || !(reqMa && maCrossValidS)) : (!reqCandle && !reqMa);
+            if (isValidS) {
+                if (!isWaitPendingS) {
+                    // 🔒 [USER MANDATORY RULE - 均线穿越与发散解耦防线]：
+                    // 1. 所有正式确认信号必须满足 EMA10 严格立于 EMA20/30/40 三线之下且为已收盘阴线；
+                    // 2. 仅当要求【均线发散】时，额外强制 EMA20 < EMA30 < EMA40 顺序发散；
+                    // 3. 从信号K线之后到当前最新K线 (targetIdxS + 1 .. idx)，EMA10 绝不可升回 EMA20/30/40 任一根之上！
+                    const targetE10S = getEmaVal(ema10, targetIdxS, 10);
+                    const targetE20S = getEmaVal(ema20, targetIdxS, 20);
+                    const targetE30S = getEmaVal(ema30, targetIdxS, 30);
+                    const targetE40S = getEmaVal(ema40, targetIdxS, 40);
+                    const isOutermostS =
+                        targetE10S !== null && targetE20S !== null && targetE30S !== null && targetE40S !== null &&
+                        targetE10S < targetE20S && targetE10S < targetE30S && targetE10S < targetE40S;
+                    const isSeqAlignS = !needStrictAlignS || (targetE20S !== null && targetE30S !== null && targetE40S !== null && targetE20S < targetE30S && targetE30S < targetE40S);
+                    if (!isOutermostS || !isSeqAlignS || !(closes[targetIdxS] < opens[targetIdxS])) {
+                        isValidS = false;
+                    }
+                }
+                if (isValidS) {
+                    for (let f = targetIdxS + 1; f <= idx; f++) {
+                        const fE10 = getEmaVal(ema10, f, 10);
+                        const fE20 = getEmaVal(ema20, f, 20);
+                        const fE30 = getEmaVal(ema30, f, 30);
+                        const fE40 = getEmaVal(ema40, f, 40);
+                        if (
+                            fE10 !== null &&
+                            ((fE20 !== null && fE10 >= fE20) || (fE30 !== null && fE10 >= fE30) || (fE40 !== null && fE10 >= fE40))
+                        ) {
+                            isValidS = false;
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -1377,6 +1406,10 @@ export function analyzeList2Crossing(
     const longClusters = getAllClusters(longSignals);
     const shortClusters = getAllClusters(shortSignals);
 
+    const reqCandleGlobal = config.requireCandleCross !== undefined ? config.requireCandleCross : (config.requireCrossing ?? true);
+    const reqMaGlobal = config.requireMaCross ?? false;
+    const reqAlignGlobal = config.requireAlignment ?? false;
+
     // [CRITICAL UPDATE] Only take the MOST RECENT cluster (the one with the smallest lag)
     // to satisfy the requirement: "当有重复行情（穿越）出现时，一定显示最新（穿越）时间的信号"
     
@@ -1384,7 +1417,7 @@ export function analyzeList2Crossing(
         // Filter clusters that satisfy the 'new' requirement (backtest/real-time catchup)
         // AND satisfy the retention requirement:
         // - A cluster of divergence/crossing signals is valid if its latest confirmed candle is within scanLookbackLimit and active within retentionThreshold.
-        const isAlignmentModeL = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
+        const isAlignmentModeL = (reqAlignGlobal && !reqCandleGlobal && !reqMaGlobal) || (!reqCandleGlobal && !reqMaGlobal && !reqAlignGlobal);
         const validClusters = longClusters.filter(cluster => {
             const latestMember = cluster[0];
             const isWithinRetention = latestMember.lag <= retentionThreshold;
@@ -1427,7 +1460,7 @@ export function analyzeList2Crossing(
                     tf,
                     lag: signalMember.lag, 
                     crossingCount: cluster.length,
-                    isSqueeze: !config.requireCrossing && !config.requireAlignment, 
+                    isSqueeze: !reqCandleGlobal && !reqMaGlobal && !reqAlignGlobal, 
                     squeezeVal: signalMember.amp,
                     direction: 'LONG',
                     crossingLags: reportLags,
@@ -1461,7 +1494,7 @@ export function analyzeList2Crossing(
     }
 
     if (shortClusters.length > 0) {
-        const isAlignmentModeS = config.requireAlignment || (!config.requireCrossing && !config.requireAlignment);
+        const isAlignmentModeS = (reqAlignGlobal && !reqCandleGlobal && !reqMaGlobal) || (!reqCandleGlobal && !reqMaGlobal && !reqAlignGlobal);
         const validClusters = shortClusters.filter(cluster => {
             const latestMember = cluster[0];
             const isWithinRetention = latestMember.lag <= retentionThreshold;
@@ -1503,7 +1536,7 @@ export function analyzeList2Crossing(
                     tf,
                     lag: signalMember.lag, 
                     crossingCount: cluster.length,
-                    isSqueeze: !config.requireCrossing && !config.requireAlignment, 
+                    isSqueeze: !reqCandleGlobal && !reqMaGlobal && !reqAlignGlobal, 
                     squeezeVal: signalMember.amp,
                     direction: 'SHORT',
                     crossingLags: reportLags,
@@ -1551,6 +1584,11 @@ export function analyzeList2Crossing(
     if (results.length === 0 && enableEma30PreWait && closes.length >= 40) {
         // 从当前K线往前追溯 EMA10 穿越 EMA30 / EMA40
         const maxCheckLag = Math.min(ema30PreWaitBars, closes.length - 35);
+        const maLookbackLimitPreWait = (config.maCrossLookbackBars !== undefined && !Number.isNaN(config.maCrossLookbackBars))
+            ? Math.max(1, config.maCrossLookbackBars)
+            : 15;
+        const reqFirstMaOnlyPreWait = config.requireFirstMaCrossOnly ?? false;
+
         let foundPreWaitL = false;
         let foundPreWaitS = false;
         let preWaitLagL = 0;
@@ -1564,19 +1602,35 @@ export function analyzeList2Crossing(
         let promotedTimeS = 0;
         let confirmedIdxL = idx;
         let confirmedIdxS = idx;
+        let promotedBodyRatioL = 100;
+        let promotedBodyRatioS = 100;
+        let promotedAmpL = 1;
+        let promotedAmpS = 1;
+        let promotedFirstMaCrossL = false;
+        let promotedFirstMaCrossS = false;
 
         // 当前 EMA 状态
         const curE10 = getEmaVal(ema10, idx, 10);
         const curE20 = getEmaVal(ema20, idx, 20);
         const curE30 = getEmaVal(ema30, idx, 30);
         const curE40 = getEmaVal(ema40, idx, 40);
+        const curE80 = checkEma80Conflict ? getEmaVal(ema80, idx, 80) : null;
 
         if (curE10 !== null && curE30 !== null && curE40 !== null) {
+            const curMinEma = curE20 !== null ? Math.min(curE10, curE20, curE30, curE40) : Math.min(curE10, curE30, curE40);
+            const curMaxEma = curE20 !== null ? Math.max(curE10, curE20, curE30, curE40) : Math.max(curE10, curE30, curE40);
+            const curConflictL = checkEma80Conflict && (curE80 === null || curE80 >= curMinEma);
+            const curConflictS = checkEma80Conflict && (curE80 === null || curE80 <= curMaxEma);
+
+            const needStrictAlignPreWait = reqAlignGlobal
+                ? ((config.crossingDivergenceLogic || 'AND') !== 'OR' || !reqMaGlobal)
+                : (!reqCandleGlobal && !reqMaGlobal);
+
             // =================================================================
             // 多头分支
             // =================================================================
             // 阶段 1：多头蓄势折叠区 (EMA10 > EMA30 但尚未完成 EMA40 穿越, 即 curE10 <= curE40)
-            if (curE10 > curE30 && curE10 <= curE40) {
+            if (!curConflictL && curE10 > curE30 && curE10 <= curE40 && (curE20 === null || curE10 > curE20)) {
                 for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
                     const pE10 = getEmaVal(ema10, cIdx, 10);
@@ -1592,9 +1646,9 @@ export function analyzeList2Crossing(
                         }
                     }
                 }
-            } 
-            // 阶段 2：多头无缝自动晋升 (EMA10 向上穿越 EMA40，且必须严格满足已收盘阳线 + EMA10 > EMA20 > EMA30 > EMA40 向上发散)
-            else if (curE10 > curE40 && curE10 > curE30 && curE20 !== null && curE10 > curE20) {
+            }
+            // 阶段 2：多头无缝自动晋升 (EMA10 向上穿越 EMA40，且回溯窗口内已完成 EMA20/30 穿越 + EMA10 站稳三线之上 + 已收盘阳线 + 严格过滤门禁)
+            else if (!curConflictL && curE10 > curE40 && curE10 > curE30 && curE20 !== null && curE10 > curE20) {
                 // 仅在已收盘K线 (pLag >= 1) 中追溯过去设定根数内 EMA10 向上金叉穿越 EMA40
                 for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
@@ -1604,10 +1658,43 @@ export function analyzeList2Crossing(
                     const prevE40 = getEmaVal(ema40, cIdx - 1, 40);
                     if (pE10 !== null && pE40 !== null && prevE10 !== null && prevE40 !== null) {
                         if ((prevE10 <= prevE40 && pE10 > pE40) || (prevE10 < prevE40 && pE10 >= pE40)) {
-                            // 🔒【严格同向收盘确认铁律 (LOCKED)】：
-                            // 从穿越 K 线 cIdx 向右（仅限已收盘 K 线 f <= idx - 1）寻找第一根同时满足
-                            // 【EMA10 > EMA20 > EMA30 > EMA40 向上发散】且【阳线收盘 (closes[f] > opens[f])】的 K 线作为信号 K 线。
-                            // 若穿越当根为阴线且后续尚未收出满足发散的阳线，严禁强行拿阴线兜底，继续保持折叠等待状态！
+                            // 1. 核验过去 maLookbackLimitPreWait 根 K 线内是否完成 EMA20 与 EMA30 金叉穿越
+                            let cross20IdxL: number | null = null;
+                            let cross30IdxL: number | null = null;
+                            const searchMinIdxL = Math.max(minHistoryNeeded, cIdx - maLookbackLimitPreWait);
+                            for (let b = cIdx; b >= searchMinIdxL; b--) {
+                                const bE10 = getEmaVal(ema10, b, 10);
+                                const pbE10 = getEmaVal(ema10, b - 1, 10);
+                                if (bE10 === null || pbE10 === null) continue;
+                                if (cross20IdxL === null) {
+                                    const bE20 = getEmaVal(ema20, b, 20);
+                                    const pbE20 = getEmaVal(ema20, b - 1, 20);
+                                    if (bE20 !== null && pbE20 !== null && pbE10 <= pbE20 && bE10 > bE20) cross20IdxL = b;
+                                }
+                                if (cross30IdxL === null) {
+                                    const bE30 = getEmaVal(ema30, b, 30);
+                                    const pbE30 = getEmaVal(ema30, b - 1, 30);
+                                    if (bE30 !== null && pbE30 !== null && pbE10 <= pbE30 && bE10 > bE30) cross30IdxL = b;
+                                }
+                                if (cross20IdxL !== null && cross30IdxL !== null) break;
+                            }
+                            const hasCrossedAllL = cross20IdxL !== null && cross30IdxL !== null && cross20IdxL <= cIdx && cross30IdxL <= cIdx;
+                            if (!hasCrossedAllL) continue;
+
+                            // 2. 核验【仅限首次穿越】
+                            let wasBelowL = true;
+                            const checkBackLimitL = Math.max(0, cIdx - 8);
+                            for (let b = cIdx - 2; b >= checkBackLimitL; b--) {
+                                const b10 = getEmaVal(ema10, b, 10);
+                                const b40 = getEmaVal(ema40, b, 40);
+                                if (b10 !== null && b40 !== null && b10 > b40) {
+                                    wasBelowL = false;
+                                    break;
+                                }
+                            }
+                            if (reqFirstMaOnlyPreWait && !wasBelowL) continue;
+
+                            // 3. 🔒【同向收盘确认铁律】：EMA10 站稳三线之上 + 已收盘阳线 (若要求均线发散则额外要求 20>30>40)
                             const searchEnd = idx - 1;
                             let foundBull = false;
                             let cTarget = cIdx;
@@ -1625,23 +1712,65 @@ export function analyzeList2Crossing(
                                     aborted = true;
                                     break;
                                 }
-                                const isFAlignedLong = fE10 > fE20 && fE20 > fE30 && fE30 > fE40;
-                                if (isFAlignedLong && closes[f] > opens[f]) {
+                                const isSeqOk = !needStrictAlignPreWait || (fE20 > fE30 && fE30 > fE40);
+                                if (isSeqOk && closes[f] > opens[f]) {
                                     cTarget = f;
                                     foundBull = true;
                                     break;
                                 }
                             }
 
-                            const isCurrentBullAligned = curE20 !== null && curE10 > curE20 && curE20 > curE30 && curE30 > curE40;
-                            if (foundBull && !aborted && isCurrentBullAligned) {
-                                foundPromotedL = true;
-                                promotedLagL = Math.max(1, idx - cTarget);
-                                confirmedIdxL = cTarget;
-                                promotedTimeL = getCandleCloseTime(cTarget, timestamps, tf);
-                                break;
+                            // 确保从确认 K 线 cTarget 到最新 K 线期间 EMA10 未跌破 20/30/40 任一均线
+                            if (foundBull && !aborted) {
+                                for (let f = cTarget + 1; f <= idx; f++) {
+                                    const fE10 = getEmaVal(ema10, f, 10);
+                                    const fE20 = getEmaVal(ema20, f, 20);
+                                    const fE30 = getEmaVal(ema30, f, 30);
+                                    const fE40 = getEmaVal(ema40, f, 40);
+                                    if (fE10 !== null && ((fE20 !== null && fE10 <= fE20) || (fE30 !== null && fE10 <= fE30) || (fE40 !== null && fE10 <= fE40))) {
+                                        aborted = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            const isCurrentBullReady = curE20 !== null && curE10 > curE20 && curE10 > curE30 && curE10 > curE40 && (!needStrictAlignPreWait || (curE20 > curE30 && curE30 > curE40));
+                            if (foundBull && !aborted && isCurrentBullReady) {
+                                // 4. 严格过滤条件核验 (振幅、实体占比、周期放量)
+                                const cRangeL = Math.max(0, highs[cTarget] - lows[cTarget]);
+                                const cAmpL = opens[cTarget] > 0 ? (cRangeL / opens[cTarget]) * 100 : 0;
+                                const cBodyRatioL = cRangeL > 0 ? ((closes[cTarget] - opens[cTarget]) / cRangeL) * 100 : 0;
+                                const cAmpOkL = cAmpL >= squeezeThreshold && cAmpL <= maxAmplitude;
+                                const cBodyOkL = cBodyRatioL >= minBodyRatio;
+
+                                const winBars = Math.max(1, strictVolWindow);
+                                const winStart = Math.max(0, idx - winBars + 1);
+                                const baseVolStart = Math.max(0, winStart - 20);
+                                const baseVolSlice = volumes.slice(baseVolStart, winStart);
+                                const avgBaseVol = baseVolSlice.length > 0 ? (baseVolSlice.reduce((a, b) => a + b, 0) / baseVolSlice.length) : (volumes[winStart] || 1);
+                                let maxVolRatioL = 0;
+                                let maxQuoteVolL = 0;
+                                for (let w = Math.min(winStart, cTarget); w <= idx; w++) {
+                                    const cVol = volumes[w] || 0;
+                                    const cQuote = (closes[w] || 0) * cVol;
+                                    const r = avgBaseVol > 0 ? cVol / avgBaseVol : 0;
+                                    if (r > maxVolRatioL) maxVolRatioL = r;
+                                    if (cQuote > maxQuoteVolL) maxQuoteVolL = cQuote;
+                                }
+                                const cVolOkL = maxVolRatioL >= Math.max(0.1, volMultiplier) && (strictMinQuoteVolume <= 0 || maxQuoteVolL >= strictMinQuoteVolume);
+
+                                if (!strictFiltering || (cAmpOkL && cBodyOkL && cVolOkL)) {
+                                    foundPromotedL = true;
+                                    promotedLagL = Math.max(1, idx - cTarget);
+                                    confirmedIdxL = cTarget;
+                                    promotedTimeL = getCandleCloseTime(cTarget, timestamps, tf);
+                                    promotedAmpL = cAmpL;
+                                    promotedBodyRatioL = cBodyRatioL;
+                                    promotedFirstMaCrossL = wasBelowL;
+                                    break;
+                                }
                             } else if (!aborted) {
-                                // 穿越已发生但对应K线方向相反或尚未收出同向发散阳线：继续留在折叠等待区等待同向阳线收盘
+                                // 穿越已发生但对应K线方向相反或尚未收出同向阳线：继续留在折叠等待区等待同向阳线收盘
                                 foundPreWaitL = true;
                                 preWaitLagL = pLag;
                                 break;
@@ -1655,7 +1784,7 @@ export function analyzeList2Crossing(
             // 空头分支
             // =================================================================
             // 阶段 1：空头蓄势折叠区 (EMA10 < EMA30 但尚未完成 EMA40 穿越, 即 curE10 >= curE40)
-            if (curE10 < curE30 && curE10 >= curE40) {
+            if (!curConflictS && curE10 < curE30 && curE10 >= curE40 && (curE20 === null || curE10 < curE20)) {
                 for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
                     const pE10 = getEmaVal(ema10, cIdx, 10);
@@ -1672,8 +1801,8 @@ export function analyzeList2Crossing(
                     }
                 }
             }
-            // 阶段 2：空头无缝自动晋升 (EMA10 向下死叉穿越 EMA40，且必须严格满足已收盘阴线 + EMA10 < EMA20 < EMA30 < EMA40 向下发散)
-            else if (curE10 < curE40 && curE10 < curE30 && curE20 !== null && curE10 < curE20) {
+            // 阶段 2：空头无缝自动晋升 (EMA10 向下死叉穿越 EMA40，且回溯窗口内已完成 EMA20/30 穿越 + EMA10 立于三线之下 + 已收盘阴线 + 严格过滤门禁)
+            else if (!curConflictS && curE10 < curE40 && curE10 < curE30 && curE20 !== null && curE10 < curE20) {
                 // 仅在已收盘K线 (pLag >= 1) 中追溯过去设定根数内 EMA10 向下死叉穿越 EMA40
                 for (let pLag = 1; pLag <= maxCheckLag; pLag++) {
                     const cIdx = idx - pLag;
@@ -1683,10 +1812,43 @@ export function analyzeList2Crossing(
                     const prevE40 = getEmaVal(ema40, cIdx - 1, 40);
                     if (pE10 !== null && pE40 !== null && prevE10 !== null && prevE40 !== null) {
                         if ((prevE10 >= prevE40 && pE10 < pE40) || (prevE10 > prevE40 && pE10 <= pE40)) {
-                            // 🔒【严格同向收盘确认铁律 (LOCKED)】：
-                            // 从穿越 K 线 cIdx 向右（仅限已收盘 K 线 f <= idx - 1）寻找第一根同时满足
-                            // 【EMA10 < EMA20 < EMA30 < EMA40 向下发散】且【阴线收盘 (closes[f] < opens[f])】的 K 线作为信号 K 线。
-                            // 若穿越当根为阳线且后续尚未收出满足发散的阴线，严禁强行拿阳线兜底，继续保持折叠等待状态！
+                            // 1. 核验过去 maLookbackLimitPreWait 根 K 线内是否完成 EMA20 与 EMA30 死叉穿越
+                            let cross20IdxS: number | null = null;
+                            let cross30IdxS: number | null = null;
+                            const searchMinIdxS = Math.max(minHistoryNeeded, cIdx - maLookbackLimitPreWait);
+                            for (let b = cIdx; b >= searchMinIdxS; b--) {
+                                const bE10 = getEmaVal(ema10, b, 10);
+                                const pbE10 = getEmaVal(ema10, b - 1, 10);
+                                if (bE10 === null || pbE10 === null) continue;
+                                if (cross20IdxS === null) {
+                                    const bE20 = getEmaVal(ema20, b, 20);
+                                    const pbE20 = getEmaVal(ema20, b - 1, 20);
+                                    if (bE20 !== null && pbE20 !== null && pbE10 >= pbE20 && bE10 < bE20) cross20IdxS = b;
+                                }
+                                if (cross30IdxS === null) {
+                                    const bE30 = getEmaVal(ema30, b, 30);
+                                    const pbE30 = getEmaVal(ema30, b - 1, 30);
+                                    if (bE30 !== null && pbE30 !== null && pbE10 >= pbE30 && bE10 < bE30) cross30IdxS = b;
+                                }
+                                if (cross20IdxS !== null && cross30IdxS !== null) break;
+                            }
+                            const hasCrossedAllS = cross20IdxS !== null && cross30IdxS !== null && cross20IdxS <= cIdx && cross30IdxS <= cIdx;
+                            if (!hasCrossedAllS) continue;
+
+                            // 2. 核验【仅限首次穿越】
+                            let wasAboveS = true;
+                            const checkBackLimitS = Math.max(0, cIdx - 8);
+                            for (let b = cIdx - 2; b >= checkBackLimitS; b--) {
+                                const b10 = getEmaVal(ema10, b, 10);
+                                const b40 = getEmaVal(ema40, b, 40);
+                                if (b10 !== null && b40 !== null && b10 < b40) {
+                                    wasAboveS = false;
+                                    break;
+                                }
+                            }
+                            if (reqFirstMaOnlyPreWait && !wasAboveS) continue;
+
+                            // 3. 🔒【同向收盘确认铁律】：EMA10 站稳三线之下 + 已收盘阴线 (若要求均线发散则额外要求 20<30<40)
                             const searchEnd = idx - 1;
                             let foundBear = false;
                             let cTarget = cIdx;
@@ -1704,23 +1866,65 @@ export function analyzeList2Crossing(
                                     aborted = true;
                                     break;
                                 }
-                                const isFAlignedShort = fE10 < fE20 && fE20 < fE30 && fE30 < fE40;
-                                if (isFAlignedShort && closes[f] < opens[f]) {
+                                const isSeqOk = !needStrictAlignPreWait || (fE20 < fE30 && fE30 < fE40);
+                                if (isSeqOk && closes[f] < opens[f]) {
                                     cTarget = f;
                                     foundBear = true;
                                     break;
                                 }
                             }
 
-                            const isCurrentBearAligned = curE20 !== null && curE10 < curE20 && curE20 < curE30 && curE30 < curE40;
-                            if (foundBear && !aborted && isCurrentBearAligned) {
-                                foundPromotedS = true;
-                                promotedLagS = Math.max(1, idx - cTarget);
-                                confirmedIdxS = cTarget;
-                                promotedTimeS = getCandleCloseTime(cTarget, timestamps, tf);
-                                break;
+                            // 确保从确认 K 线 cTarget 到最新 K 线期间 EMA10 未升破 20/30/40 任一均线
+                            if (foundBear && !aborted) {
+                                for (let f = cTarget + 1; f <= idx; f++) {
+                                    const fE10 = getEmaVal(ema10, f, 10);
+                                    const fE20 = getEmaVal(ema20, f, 20);
+                                    const fE30 = getEmaVal(ema30, f, 30);
+                                    const fE40 = getEmaVal(ema40, f, 40);
+                                    if (fE10 !== null && ((fE20 !== null && fE10 >= fE20) || (fE30 !== null && fE10 >= fE30) || (fE40 !== null && fE10 >= fE40))) {
+                                        aborted = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            const isCurrentBearReady = curE20 !== null && curE10 < curE20 && curE10 < curE30 && curE10 < curE40 && (!needStrictAlignPreWait || (curE20 < curE30 && curE30 < curE40));
+                            if (foundBear && !aborted && isCurrentBearReady) {
+                                // 4. 严格过滤条件核验 (振幅、实体占比、周期放量)
+                                const cRangeS = Math.max(0, highs[cTarget] - lows[cTarget]);
+                                const cAmpS = opens[cTarget] > 0 ? (cRangeS / opens[cTarget]) * 100 : 0;
+                                const cBodyRatioS = cRangeS > 0 ? ((opens[cTarget] - closes[cTarget]) / cRangeS) * 100 : 0;
+                                const cAmpOkS = cAmpS >= squeezeThreshold && cAmpS <= maxAmplitude;
+                                const cBodyOkS = cBodyRatioS >= minBodyRatio;
+
+                                const winBars = Math.max(1, strictVolWindow);
+                                const winStart = Math.max(0, idx - winBars + 1);
+                                const baseVolStart = Math.max(0, winStart - 20);
+                                const baseVolSlice = volumes.slice(baseVolStart, winStart);
+                                const avgBaseVol = baseVolSlice.length > 0 ? (baseVolSlice.reduce((a, b) => a + b, 0) / baseVolSlice.length) : (volumes[winStart] || 1);
+                                let maxVolRatioS = 0;
+                                let maxQuoteVolS = 0;
+                                for (let w = Math.min(winStart, cTarget); w <= idx; w++) {
+                                    const cVol = volumes[w] || 0;
+                                    const cQuote = (closes[w] || 0) * cVol;
+                                    const r = avgBaseVol > 0 ? cVol / avgBaseVol : 0;
+                                    if (r > maxVolRatioS) maxVolRatioS = r;
+                                    if (cQuote > maxQuoteVolS) maxQuoteVolS = cQuote;
+                                }
+                                const cVolOkS = maxVolRatioS >= Math.max(0.1, volMultiplier) && (strictMinQuoteVolume <= 0 || maxQuoteVolS >= strictMinQuoteVolume);
+
+                                if (!strictFiltering || (cAmpOkS && cBodyOkS && cVolOkS)) {
+                                    foundPromotedS = true;
+                                    promotedLagS = Math.max(1, idx - cTarget);
+                                    confirmedIdxS = cTarget;
+                                    promotedTimeS = getCandleCloseTime(cTarget, timestamps, tf);
+                                    promotedAmpS = cAmpS;
+                                    promotedBodyRatioS = cBodyRatioS;
+                                    promotedFirstMaCrossS = wasAboveS;
+                                    break;
+                                }
                             } else if (!aborted) {
-                                // 穿越已发生但对应K线方向相反或尚未收出同向发散阴线：继续留在折叠等待区等待同向阴线收盘
+                                // 穿越已发生但对应K线方向相反或尚未收出同向阴线：继续留在折叠等待区等待同向阴线收盘
                                 foundPreWaitS = true;
                                 preWaitLagS = pLag;
                                 break;
@@ -1733,24 +1937,23 @@ export function analyzeList2Crossing(
 
         // 优先推送已正式晋升的标准显示区信号 (isPreWaitEma30: false)
         if (foundPromotedL) {
-            const candleRangeL = Math.max(0, highs[confirmedIdxL] - lows[confirmedIdxL]);
-            const ampL = opens[confirmedIdxL] > 0 ? (candleRangeL / opens[confirmedIdxL]) * 100 : 1;
             results.push({
                 tf,
                 lag: promotedLagL,
                 crossingCount: 1,
                 isSqueeze: false,
-                squeezeVal: ampL,
+                squeezeVal: promotedAmpL,
                 direction: 'LONG',
                 crossingLags: [promotedLagL],
                 crossingTimes: [promotedTimeL],
-                bodyRatio: 100,
+                bodyRatio: promotedBodyRatioL,
                 ampValid: true,
                 volValid: true,
                 bodyValid: true,
                 isAligned: (curE10 !== null && curE20 !== null && curE30 !== null && curE40 !== null && curE10 > curE20 && curE20 > curE30 && curE30 > curE40),
-                isCandleCrossed: true,
+                isCandleCrossed: false,
                 isMaCrossed: true,
+                isFirstMaCross: promotedFirstMaCrossL,
                 isPreWaitEma30: false, // ⚡ 彻底解除折叠等待状态，正式晋升为列表2标准显示区！
                 isClosed: true,
                 kOpen: opens[confirmedIdxL],
@@ -1760,24 +1963,23 @@ export function analyzeList2Crossing(
                 signalTime: promotedTimeL
             });
         } else if (foundPromotedS) {
-            const candleRangeS = Math.max(0, highs[confirmedIdxS] - lows[confirmedIdxS]);
-            const ampS = opens[confirmedIdxS] > 0 ? (candleRangeS / opens[confirmedIdxS]) * 100 : 1;
             results.push({
                 tf,
                 lag: promotedLagS,
                 crossingCount: 1,
                 isSqueeze: false,
-                squeezeVal: ampS,
+                squeezeVal: promotedAmpS,
                 direction: 'SHORT',
                 crossingLags: [promotedLagS],
                 crossingTimes: [promotedTimeS],
-                bodyRatio: 100,
+                bodyRatio: promotedBodyRatioS,
                 ampValid: true,
                 volValid: true,
                 bodyValid: true,
                 isAligned: (curE10 !== null && curE20 !== null && curE30 !== null && curE40 !== null && curE10 < curE20 && curE20 < curE30 && curE30 < curE40),
-                isCandleCrossed: true,
+                isCandleCrossed: false,
                 isMaCrossed: true,
+                isFirstMaCross: promotedFirstMaCrossS,
                 isPreWaitEma30: false, // ⚡ 彻底解除折叠等待状态，正式晋升为列表2标准显示区！
                 isClosed: true,
                 kOpen: opens[confirmedIdxS],

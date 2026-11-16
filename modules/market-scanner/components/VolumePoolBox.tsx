@@ -5,6 +5,8 @@ import { usePersistedState } from '../../../hooks/usePersistedState';
 import { pipelineCoordinator } from '../../../services/pipelineQueue';
 import { fetchWithFallback } from '../../../services/apiService';
 import { getVolume8am, fetchVolume8amBatch, checkVolumeRule } from '../../../services/volume8amService';
+import { saveStateDebounced } from '../../../utils/persistence';
+import { recordFlightActionThrottled } from '../../../services/flightRecorder';
 
 interface Props {
     scanConfig: ScanConfig;
@@ -71,6 +73,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         return [];
     });
     const isMountedRef = useRef(true);
+    const hasInitialFetchedRef = useRef(false);
     const lastDispatchedSymbolsJsonRef = useRef<string>('');
 
     useEffect(() => {
@@ -190,6 +193,8 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     // Fetch latest tickers from Binance
     const fetchLatestTickers = async () => {
         if (!isMountedRef.current) return;
+        hasInitialFetchedRef.current = true;
+        recordFlightActionThrottled('AUTO_MARKET_SCAN_START', { stage: 'volume_pool_24h_sync' }, 30000);
         setIsFetching(true);
         // 🔒 [永不清零·平滑差量更新铁律]: 严禁在拉取时清空既有数据，保留现有池直至新数据到达无缝替换
         try {
@@ -198,7 +203,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                 const data = await res.json();
                 if (Array.isArray(data) && isMountedRef.current) {
                     try {
-                        localStorage.setItem('SCANNER_RAW_DATA_CACHE', JSON.stringify(data));
+                        saveStateDebounced('SCANNER_RAW_DATA_CACHE', data, 1500, 2000);
                         window.dispatchEvent(new CustomEvent('scanner_raw_data_updated', { detail: data }));
                     } catch (_) {}
                     const items: VolumePoolItem[] = data
@@ -230,7 +235,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         const intervalMs = Math.max(1, syncIntervalMin || 5) * 60 * 1000;
 
         // Auto trigger initial check if cache is empty
-        if (rawPool.length === 0) {
+        if (!hasInitialFetchedRef.current && rawPool.length === 0) {
             triggerScheduledFetch();
         }
 
@@ -241,7 +246,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         }, intervalMs);
 
         return () => clearInterval(interval);
-    }, [isAutoSync, syncIntervalMin, rawPool.length]);
+    }, [isAutoSync, syncIntervalMin]);
 
     // 📡 监听早上8点起缓存数据实时更新事件
     const [_8amTick, set8amTick] = useState(0);

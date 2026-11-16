@@ -45,10 +45,10 @@ class L234DataStoreService {
   private evictionTimers: Map<string, NodeJS.Timeout> = new Map();
   private listeners: Set<(symbol: string, tf: string) => void> = new Set();
 
-  // 150ms 高速消息缓冲池
+  // 300ms 高速消息缓冲池 (帧级背压批处理节拍)
   private klineUpdateBuffer: Map<string, PendingKlineItem[]> = new Map();
   private flushTimer: any = null;
-  private readonly BATCH_INTERVAL_MS = 150;
+  private readonly BATCH_INTERVAL_MS = 300;
 
   constructor() {
     this.startBatchProcessor();
@@ -212,7 +212,17 @@ class L234DataStoreService {
     }
 
     symbolMap.set(update.tf, klines);
-    klineMultiTfStore.saveKlines(symbol, update.tf, klines);
+    const existingBuf = klineMultiTfStore.getBuffer(symbol, update.tf);
+    const latestStored = existingBuf.getFromEnd(0);
+    if (latestStored) {
+      const useMs = latestStored.time > 2000000000;
+      const syncedTime = useMs
+        ? (candle.time < 2000000000 ? candle.time * 1000 : candle.time)
+        : (candle.time > 2000000000 ? Math.floor(candle.time / 1000) : candle.time);
+      klineMultiTfStore.updateRealtimeKline(symbol, update.tf, { ...candle, time: syncedTime }, update.isFinal);
+    } else if (klines.length > 0) {
+      klineMultiTfStore.saveKlines(symbol, update.tf, klines);
+    }
     this.recalculateEMA(symbol, update.tf, klines);
 
     if (update.tf === '5m' && registeredTfs && registeredTfs.has('10m')) {

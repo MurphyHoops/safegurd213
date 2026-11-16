@@ -152,7 +152,7 @@ export const GrandCrossingModule: React.FC<Props> = ({
         // 🔒 [USER MANDATORY RULE] 列表3承接列表2所有“非待定且非折叠等待”数据 (正式完成EMA40穿越并收盘确立)
         outputList = outputList.map(item => {
             if (!item || !item.groupedResults || item.groupedResults.length === 0) return null;
-            const validResults = item.groupedResults.filter(r => !r.isPendingGray && !r.isPreWaitEma30);
+            const validResults = item.groupedResults.filter(r => !r.isPendingGray && !r.isPreWaitEma30 && !r.isWaitDivergencePending);
             if (validResults.length === 0) return null;
             return {
                 ...item,

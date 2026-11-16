@@ -127,7 +127,7 @@ const persistList1ClosedTimes = (map: Record<string, number>) => {
 import KlineChartModal from "./KlineChartModal";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { usePersistedState } from "../hooks/usePersistedState";
-import { loadState, saveState } from "../utils/persistence";
+import { loadState, saveState, saveStateDebounced } from "../utils/persistence";
 import { eventBus } from "../core/EventBus";
 import { CoinContextMenu, CoinContextMenuState } from "./CoinContextMenu";
 import { QuickTradeModal } from "./QuickTradeModal";
@@ -1168,22 +1168,22 @@ const ScannerDashboardInner: React.FC<
     });
   }, []);
 
-  // 🔒 同步持久化前台策略专属初筛与审计列表数据，确保策略切换时无缝还原
+  // 🔒 同步持久化前台策略专属初筛与审计列表数据，确保策略切换时无缝还原（防抖异步写入避免大列表阻塞主线程）
   useEffect(() => {
     if (list1Candidates.length > 0 && selectedStrategyId) {
-      saveState(`SCANNER_LIST1_${selectedStrategyId}`, list1Candidates);
+      saveStateDebounced(`SCANNER_LIST1_${selectedStrategyId}`, list1Candidates, 2000);
     }
   }, [list1Candidates, selectedStrategyId]);
 
   useEffect(() => {
     if (list2Results.length > 0 && selectedStrategyId) {
-      saveState(`SCANNER_LIST2_${selectedStrategyId}`, list2Results);
+      saveStateDebounced(`SCANNER_LIST2_${selectedStrategyId}`, list2Results, 2000);
     }
   }, [list2Results, selectedStrategyId]);
 
   useEffect(() => {
     if (list3Results.length > 0 && selectedStrategyId) {
-      saveState(`SCANNER_LIST3_${selectedStrategyId}`, list3Results);
+      saveStateDebounced(`SCANNER_LIST3_${selectedStrategyId}`, list3Results, 2000);
     }
   }, [list3Results, selectedStrategyId]);
 
@@ -3136,22 +3136,22 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     return currentPositions.filter(p => (p.strategyId || 'strat-1') === strategyId);
   }, [currentPositions, strategyId]);
 
-  // 🔒 持久化后台策略专属初筛与审计数据
+  // 🔒 持久化后台策略专属初筛与审计数据（防抖异步写入避免切策略或高频刷新卡死主线程）
   useEffect(() => {
     if (list1Candidates.length > 0) {
-      saveState(`SCANNER_LIST1_${strategyId}`, list1Candidates);
+      saveStateDebounced(`SCANNER_LIST1_${strategyId}`, list1Candidates, 2500);
     }
   }, [list1Candidates, strategyId]);
 
   useEffect(() => {
     if (list2Results.length > 0) {
-      saveState(`SCANNER_LIST2_${strategyId}`, list2Results);
+      saveStateDebounced(`SCANNER_LIST2_${strategyId}`, list2Results, 2500);
     }
   }, [list2Results, strategyId]);
 
   useEffect(() => {
     if (list3Results.length > 0) {
-      saveState(`SCANNER_LIST3_${strategyId}`, list3Results);
+      saveStateDebounced(`SCANNER_LIST3_${strategyId}`, list3Results, 2500);
     }
   }, [list3Results, strategyId]);
 

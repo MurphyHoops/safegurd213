@@ -301,9 +301,19 @@ const List1_Selection: React.FC<Props> = ({
     }, [selectedStrategyId]);
 
     useEffect(() => {
+        const lastRawByKey = new Map<string, string | null>();
+        const hasRawChanged = (storageKey: string, raw: string | null): boolean => {
+            if (lastRawByKey.has(storageKey) && lastRawByKey.get(storageKey) === raw) {
+                return false;
+            }
+            lastRawByKey.set(storageKey, raw);
+            return true;
+        };
+
         const handleStartTrendUpdate = () => {
             try {
                 const raw = localStorage.getItem('SCANNER_START_TREND_POOL');
+                if (!hasRawChanged('SCANNER_START_TREND_POOL', raw)) return;
                 const parsed = raw ? JSON.parse(raw) : [];
                 setStartTrendPool(prev => JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed);
             } catch (_) {}
@@ -326,6 +336,7 @@ const List1_Selection: React.FC<Props> = ({
                 if (targetPool.length === 0) {
                     const key = selectedStrategyId ? `SCANNER_SIDEWAYS_FILTERED_POOL_${selectedStrategyId}` : 'SCANNER_SIDEWAYS_FILTERED_POOL';
                     const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_SIDEWAYS_FILTERED_POOL') : null);
+                    if (!hasRawChanged(key, raw)) return;
                     targetPool = raw ? JSON.parse(raw) : [];
                 }
                 setSidewaysPool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
@@ -338,9 +349,11 @@ const List1_Selection: React.FC<Props> = ({
                     targetPool = e.detail;
                 } else {
                     const raw = localStorage.getItem('SCANNER_BREAKOUT_FILTERED_POOL');
+                    if (!hasRawChanged('SCANNER_BREAKOUT_FILTERED_POOL', raw)) return;
                     targetPool = raw ? JSON.parse(raw) : [];
                 }
-                setBreakoutPool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
+                const serializeStable = (arr: any[]) => JSON.stringify((arr || []).map(({ timestamp, ...rest }) => rest));
+                setBreakoutPool(prev => serializeStable(prev) === serializeStable(targetPool) ? prev : targetPool);
             } catch (_) {}
         };
 
@@ -357,9 +370,11 @@ const List1_Selection: React.FC<Props> = ({
                 }
                 if (targetPool.length === 0) {
                     const raw = localStorage.getItem('SCANNER_LOOKBACK_FILTERED_POOL');
+                    if (!hasRawChanged('SCANNER_LOOKBACK_FILTERED_POOL', raw)) return;
                     targetPool = raw ? JSON.parse(raw) : [];
                 }
-                setLookbackPool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
+                const serializeStable = (arr: any[]) => JSON.stringify((arr || []).map(({ timestamp, ...rest }) => rest));
+                setLookbackPool(prev => serializeStable(prev) === serializeStable(targetPool) ? prev : targetPool);
             } catch (_) {}
         };
 
@@ -375,9 +390,11 @@ const List1_Selection: React.FC<Props> = ({
                 }
                 if (targetPool.length === 0) {
                     const raw = localStorage.getItem('SCANNER_ANTI_CHASE_FILTERED_POOL');
+                    if (!hasRawChanged('SCANNER_ANTI_CHASE_FILTERED_POOL', raw)) return;
                     targetPool = raw ? JSON.parse(raw) : [];
                 }
-                setAntiChasePool(prev => JSON.stringify(prev) === JSON.stringify(targetPool) ? prev : targetPool);
+                const serializeStable = (arr: any[]) => JSON.stringify((arr || []).map(({ timestamp, ...rest }) => rest));
+                setAntiChasePool(prev => serializeStable(prev) === serializeStable(targetPool) ? prev : targetPool);
             } catch (_) {}
         };
 
@@ -413,12 +430,15 @@ const List1_Selection: React.FC<Props> = ({
                 }
                 const key = selectedStrategyId ? `SCANNER_MAJOR_TREND_CANDIDATES_${selectedStrategyId}` : 'SCANNER_MAJOR_TREND_CANDIDATES';
                 const raw = localStorage.getItem(key) || (selectedStrategyId === 'strat-1' ? localStorage.getItem('SCANNER_MAJOR_TREND_CANDIDATES') : null);
+                const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
+                const runFlagRaw = localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`);
+                if (!hasRawChanged(`${key}__raw`, `${raw || ''}__${runFlagRaw || ''}`)) return;
+
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     updateCandidatesSet(Array.isArray(parsed) ? parsed : []);
                 }
-                const suffix = selectedStrategyId ? `_${selectedStrategyId}` : '';
-                if (localStorage.getItem(`SCANNER_HAS_RUN_MAJOR${suffix}`) === 'true') {
+                if (runFlagRaw === 'true') {
                     setHasRunMajorTrend(prev => prev === true ? prev : true);
                 }
             } catch (_) {}
@@ -444,7 +464,7 @@ const List1_Selection: React.FC<Props> = ({
             handleAntiChasePoolUpdate();
             handleBreakoutUpdate();
             handleMajorTrendUpdate();
-        }, 1000);
+        }, 10000);
         return () => {
             window.removeEventListener('storage', handleStartTrendUpdate);
             window.removeEventListener('storage', handleSidewaysUpdate);

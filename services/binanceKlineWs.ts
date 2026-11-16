@@ -1,6 +1,7 @@
 // 🔒 币安 WebSocket 长连接分片连接池、24H守护与动态 UNSUBSCRIBE 瘦身引擎
 import { klineMultiTfStore } from './klineMultiTfStore';
 import { l234DataStore } from './l234DataStore';
+import { recordFlightActionThrottled } from './flightRecorder';
 
 export interface WsKlineUpdate {
   symbol: string;
@@ -39,6 +40,14 @@ class WebSocketShardManager {
   private protectedPositionStreams: Set<string> = new Set();
 
   private unsubDebounceTimers: Map<string, any> = new Map();
+
+  // 🛡️ [WebSocket 背压控制与帧级批处理缓冲队列]
+  private pendingClosedUpdates: WsKlineUpdate[] = [];
+  private pendingLiveUpdates: Map<string, WsKlineUpdate> = new Map();
+  private flushTimer: any = null;
+  private flushRafId: number | null = null;
+  private isFlushing: boolean = false;
+  private readonly MAX_UPDATES_PER_SLICE = 60;
 
   constructor() {
     this.startRateLimitDispatcher();
@@ -372,7 +381,7 @@ class WebSocketShardManager {
           const msg = JSON.parse(event.data);
           const data = msg.data || msg;
           if (data && data.e === 'kline' && data.k) {
-            this.handleKlineEvent(data);
+            this.enqueueKlineEvent(data);
           }
         } catch (err) {
           // 忽略非 JSON 数据
@@ -413,12 +422,13 @@ class WebSocketShardManager {
   }
 
   /**
-   * 处理 WebSocket 实时广播推送
+   * 写入帧级批处理缓冲队列（不直接在 onmessage 同步阻塞主线程计算与重绘）
    */
-  private handleKlineEvent(msg: any): void {
+  private enqueueKlineEvent(msg: any): void {
     const k = msg.k;
     const symbol = (msg.s || k.s || '').toUpperCase();
     const tf = k.i;
+    if (!symbol || !tf) return;
     const isClosed = !!k.x;
 
     const update: WsKlineUpdate = {
@@ -433,6 +443,48 @@ class WebSocketShardManager {
       isFinal: isClosed,
     };
 
+    if (isClosed) {
+      // 收盘帧入独立 FIFO 队列（同币种同周期同开盘时间戳去重），绝不被下一根 K 线开盘跳动覆盖
+      const dupIdx = this.pendingClosedUpdates.findIndex(
+        (u) => u.symbol === update.symbol && u.tf === update.tf && u.time === update.time
+      );
+      if (dupIdx >= 0) {
+        this.pendingClosedUpdates[dupIdx] = update;
+      } else {
+        this.pendingClosedUpdates.push(update);
+      }
+      // 防止极端断线恢复积压导致队列无限增长
+      if (this.pendingClosedUpdates.length > 500) {
+        this.pendingClosedUpdates = this.pendingClosedUpdates.slice(-500);
+      }
+    } else {
+      const key = `${symbol}_${tf}`;
+      this.pendingLiveUpdates.set(key, update);
+    }
+
+    this.scheduleKlineFlush();
+  }
+
+  private scheduleKlineFlush(): void {
+    if (this.flushTimer !== null || this.flushRafId !== null || this.isFlushing) return;
+    const isHidden = typeof document !== 'undefined' && document.hidden;
+    const batchMs = isHidden ? 400 : 250;
+
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      if (!isHidden && typeof requestAnimationFrame === 'function') {
+        this.flushRafId = requestAnimationFrame(() => {
+          this.flushRafId = null;
+          this.flushKlineBatch();
+        });
+      } else {
+        this.flushKlineBatch();
+      }
+    }, batchMs);
+  }
+
+  private dispatchSingleKlineUpdate(update: WsKlineUpdate): void {
+    const { symbol, tf, isFinal: isClosed } = update;
     const unifiedKline = {
       time: update.time,
       open: update.open,
@@ -473,6 +525,80 @@ class WebSocketShardManager {
         }
       } catch (e) {}
     });
+  }
+
+  /**
+   * 批量冲刷缓冲队列，并在超大积压时分片让出主线程时间片
+   */
+  private flushKlineBatch(): void {
+    if (this.isFlushing) return;
+    const closedBatch = this.pendingClosedUpdates.splice(0, this.pendingClosedUpdates.length);
+    const liveBatch = Array.from(this.pendingLiveUpdates.values());
+    this.pendingLiveUpdates.clear();
+
+    const dispatchQueue: WsKlineUpdate[] = [...closedBatch, ...liveBatch];
+    if (dispatchQueue.length === 0) return;
+
+    recordFlightActionThrottled('KLINE_CALC_START', {
+      source: 'binanceKlineWs',
+      closedCount: closedBatch.length,
+      liveCount: liveBatch.length,
+      totalBatch: dispatchQueue.length,
+    }, 30000);
+
+    this.isFlushing = true;
+    let cursor = 0;
+
+    const processSlice = () => {
+      try {
+        const end = Math.min(cursor + this.MAX_UPDATES_PER_SLICE, dispatchQueue.length);
+        for (; cursor < end; cursor++) {
+          this.dispatchSingleKlineUpdate(dispatchQueue[cursor]);
+        }
+        if (cursor < dispatchQueue.length) {
+          setTimeout(processSlice, 16);
+        } else {
+          this.isFlushing = false;
+          if (this.pendingClosedUpdates.length > 0 || this.pendingLiveUpdates.size > 0) {
+            this.scheduleKlineFlush();
+          }
+        }
+      } catch (_) {
+        this.isFlushing = false;
+      }
+    };
+
+    processSlice();
+  }
+
+  public destroy(): void {
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.flushRafId !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this.flushRafId);
+      this.flushRafId = null;
+    }
+    if (this.rateLimitTimer) {
+      clearInterval(this.rateLimitTimer);
+      this.rateLimitTimer = null;
+    }
+    for (const shard of this.sockets.values()) {
+      this.clearShardTimers(shard);
+      if (shard.ws) {
+        try {
+          shard.ws.onopen = null;
+          shard.ws.onmessage = null;
+          shard.ws.onerror = null;
+          shard.ws.onclose = null;
+          shard.ws.close();
+        } catch (_) {}
+      }
+    }
+    this.sockets.clear();
+    this.pendingClosedUpdates = [];
+    this.pendingLiveUpdates.clear();
   }
 }
 

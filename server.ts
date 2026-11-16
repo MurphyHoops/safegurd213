@@ -599,17 +599,49 @@ async function startServer() {
   let hasReceivedHeartbeatOnce = false;
   let isHeartbeatTimeoutAlerted = false;
   let isHeartbeatPaused = false;
+  let isSystemSuspended = false;
+  let heartbeatGraceUntilTimestamp = 0;
+  let lastWatchdogCheckTimestamp = Date.now();
   let lastHeartbeatHeapMB = 0;
+
+  // 🛡️ [Power/Resume Event Endpoint]: 接收 Electron 主进程或前端唤醒通知，授予宽限期并重置心跳计时，杜绝休眠时钟跳跃误报假死
+  app.post("/api/telemetry/power-event", (req, res) => {
+    try {
+      const { event, graceMs } = req.body || {};
+      const now = Date.now();
+      const safeGraceMs = Math.min(Math.max(Number(graceMs) || 30000, 10000), 120000);
+      if (event === 'suspend') {
+        isSystemSuspended = true;
+        lastHeartbeatTimestamp = now;
+        isHeartbeatTimeoutAlerted = false;
+        heartbeatGraceUntilTimestamp = now + safeGraceMs;
+        return res.json({ success: true, suspended: true, graceUntil: heartbeatGraceUntilTimestamp });
+      }
+      isSystemSuspended = false;
+      lastHeartbeatTimestamp = now;
+      lastWatchdogCheckTimestamp = now;
+      isHeartbeatTimeoutAlerted = false;
+      heartbeatGraceUntilTimestamp = Math.max(heartbeatGraceUntilTimestamp, now + safeGraceMs);
+      return res.json({ success: true, event: event || 'resume', graceUntil: heartbeatGraceUntilTimestamp });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
 
   app.post("/api/telemetry/heartbeat", (req, res) => {
     try {
-      const { timestamp, heapMB, lastAction, paused } = req.body || {};
-      lastHeartbeatTimestamp = Date.now();
+      const { heapMB, lastAction, paused, clockJumpDetected } = req.body || {};
+      const now = Date.now();
+      lastHeartbeatTimestamp = now;
       if (paused === true) {
         isHeartbeatPaused = true;
         isHeartbeatTimeoutAlerted = false;
-        return res.json({ success: true, paused: true, timestamp: Date.now() });
+        return res.json({ success: true, paused: true, timestamp: now });
       }
+      if (clockJumpDetected) {
+        heartbeatGraceUntilTimestamp = Math.max(heartbeatGraceUntilTimestamp, now + 25000);
+      }
+      isSystemSuspended = false;
       isHeartbeatPaused = false;
       hasReceivedHeartbeatOnce = true;
       isHeartbeatTimeoutAlerted = false;
@@ -625,7 +657,7 @@ async function startServer() {
           } catch (_) {}
         }
       }
-      res.json({ success: true, timestamp: Date.now() });
+      res.json({ success: true, timestamp: now });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -756,9 +788,25 @@ async function startServer() {
     }
   });
 
-  // Server-side Heartbeat Watchdog (🔒 优化为 15 秒容错阈值，且仅当存在活跃前端 WS 连接且未处于退出/后台挂起态时才告警，彻底防止关窗/刷新/切后台引发的误报复活)
+  // Server-side Heartbeat Watchdog (🔒 15 秒容错阈值 + 休眠唤醒/时钟跳跃 30 秒宽限免疫 + 活跃 WS 校验)
   setInterval(() => {
     const now = Date.now();
+    const watchdogLoopDelta = now - lastWatchdogCheckTimestamp;
+    lastWatchdogCheckTimestamp = now;
+
+    // 检测到系统时钟跳跃 / 操作系统休眠恢复（3秒定时器实际间隔 > 10秒）：自动授予 30 秒宽限期并重置心跳计时，杜绝误报假死
+    if (watchdogLoopDelta > 10000) {
+      console.log(`🛡️ [Heartbeat Watchdog] 检测到时钟跳跃/休眠恢复 (+${Math.round(watchdogLoopDelta / 1000)}s)，授予 30 秒心跳宽限期并重置计时`);
+      lastHeartbeatTimestamp = now;
+      heartbeatGraceUntilTimestamp = Math.max(heartbeatGraceUntilTimestamp, now + 30000);
+      isHeartbeatTimeoutAlerted = false;
+      return;
+    }
+
+    if (isSystemSuspended || now < heartbeatGraceUntilTimestamp) {
+      return;
+    }
+
     const hasActiveWsClients = typeof wss !== 'undefined' && wss.clients ? wss.clients.size > 0 : false;
     if (hasReceivedHeartbeatOnce && !isHeartbeatTimeoutAlerted && !isHeartbeatPaused && hasActiveWsClients) {
       const elapsed = now - lastHeartbeatTimestamp;

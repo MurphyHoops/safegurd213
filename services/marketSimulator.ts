@@ -15,6 +15,7 @@ import { audioService } from './audioService';
 import { checkAutoReopenRules } from './rules/reopen_rules';
 import { ActionConfig } from '../components/Scanner/scannerTypes';
 import { debtManager } from './debtManager';
+import { recordFlightActionThrottled } from './flightRecorder';
 
 export class MarketSimulator {
     private account: AccountData;
@@ -5078,6 +5079,13 @@ export class MarketSimulator {
     public tick(enableStrategies: boolean = true) {
       const now = Date.now();
       let stateChanged = false;
+      if (this.positions.length > 0 || enableStrategies) {
+          recordFlightActionThrottled('RISK_RECONCILE_START', {
+              source: 'marketSimulator:tick',
+              positionCount: this.positions.length,
+              enableStrategies
+          }, 30000);
+      }
 
       // --- 0. SYSTEM HEARTBEAT LOG ---
       if (now - this.lastHeartbeatTime > 60000) {
@@ -5301,9 +5309,39 @@ export class MarketSimulator {
   }
 
     public verifyPositions(tradeLogs: TradeLog[]) {
-        this.positions.forEach(pos => {
-            this.verifyPosition(pos, tradeLogs);
+        if (!this.positions || this.positions.length === 0 || !Array.isArray(tradeLogs) || tradeLogs.length === 0) {
+            return;
+        }
+        recordFlightActionThrottled('RISK_RECONCILE_START', {
+            source: 'marketSimulator:verifyPositions',
+            positionCount: this.positions.length,
+            tradeLogCount: tradeLogs.length
+        }, 30000);
+
+        const logMap = new Map<string, TradeLog>();
+        for (let i = 0; i < tradeLogs.length; i++) {
+            const log = tradeLogs[i];
+            if (log && log.entry_id && !logMap.has(log.entry_id)) {
+                logMap.set(log.entry_id, log);
+            }
+        }
+
+        let updatedAny = false;
+        const nextPositions = this.positions.map(pos => {
+            const log = logMap.get(pos.entryId);
+            if (log && Math.abs(log.entry_price - pos.entryPrice) > 0.000001) {
+                const oldPrice = pos.entryPrice;
+                updatedAny = true;
+                this.addLog('SUCCESS', `价格手动/自动修正: ${pos.symbol} (${pos.side}) 开仓价格已从 ${oldPrice.toFixed(4)} 修正为 ${log.entry_price.toFixed(4)} (基于原始交易记录)`);
+                return { ...pos, entryPrice: log.entry_price };
+            }
+            return pos;
         });
+
+        if (updatedAny) {
+            this.positions = nextPositions;
+            this.emitUpdate(true);
+        }
     }
 
     public updateRealBalance(balance: number) {

@@ -26,7 +26,7 @@ import KlineChartModal from './components/KlineChartModal';
 import { FuseAlertModal, FuseAlertData } from './components/FuseAlertModal';
 import { IpChangeAlertModal, IpChangeAlertData } from './components/IpChangeAlertModal';
 import IpOutageAlertModal from './components/IpOutageAlertModal';
-import { startHeartbeatWatchdog, recordFlightAction, getFlightBuffer } from './services/flightRecorder';
+import { startHeartbeatWatchdog, recordFlightAction, recordFlightActionThrottled, getFlightBuffer } from './services/flightRecorder';
 import { startClientForensicProbe } from './services/clientForensicProbe';
 import { CrashRecoveryModal, CrashDumpRecord } from './components/CrashRecoveryModal';
 import { WifiOff, RefreshCw, ShieldAlert, Activity, Loader2, Zap, Clock, AlertTriangle, Trash2 } from 'lucide-react'; 
@@ -46,7 +46,7 @@ const fetch = binanceFetch;
 
 import { DEFAULT_SETTINGS } from './config/defaultSettings';
 
-import { deepMerge, loadState, saveState } from './utils/persistence';
+import { deepMerge, loadState, saveState, saveStateDebounced } from './utils/persistence';
 
 const arePositionsEqual = (prev: Position[], next: Position[]): boolean => {
     if (prev.length !== next.length) return false;
@@ -383,12 +383,40 @@ const AppContent: React.FC = () => {
         browserKeepAlive.init();
     }, [handleLog]);
 
-    // 补偿定时器：物理解耦，使用 tradeLogsRef 规避 tradeLogs 变动反复重启定时器
+    // 补偿定时器：物理解耦，使用 tradeLogsRef 规避 tradeLogs 变动反复重启定时器，并借助空闲时间片执行避免阻塞 5 分钟整点主线程
     useEffect(() => {
+        let scheduledTaskId: any = null;
+        let usesIdleCallback = false;
+
         const interval = setInterval(() => {
-            simulatorRef.current?.verifyPositions(tradeLogsRef.current);
+            const runVerify = () => {
+                scheduledTaskId = null;
+                recordFlightActionThrottled('RISK_RECONCILE_START', {
+                    source: 'App:5mVerifyPositions',
+                    posCount: positionsRef.current?.length || 0
+                }, 30000);
+                simulatorRef.current?.verifyPositions(tradeLogsRef.current);
+            };
+
+            if (typeof (window as any).requestIdleCallback === 'function' && (typeof document === 'undefined' || !document.hidden)) {
+                usesIdleCallback = true;
+                scheduledTaskId = (window as any).requestIdleCallback(runVerify, { timeout: 2000 });
+            } else {
+                usesIdleCallback = false;
+                scheduledTaskId = setTimeout(runVerify, 0);
+            }
         }, 5 * 60 * 1000);
-        return () => clearInterval(interval);
+
+        return () => {
+            clearInterval(interval);
+            if (scheduledTaskId !== null) {
+                if (usesIdleCallback && typeof (window as any).cancelIdleCallback === 'function') {
+                    (window as any).cancelIdleCallback(scheduledTaskId);
+                } else {
+                    clearTimeout(scheduledTaskId);
+                }
+            }
+        };
     }, []);
     useEffect(() => {
         const timer = setInterval(() => {
@@ -1053,12 +1081,19 @@ const AppContent: React.FC = () => {
                     if (data.type === 'SYSTEM') {
                         console.log('Server message:', data.message);
                     } else if (data.type === 'BINANCE_ORDER_TRADE_UPDATE' && data.data) {
-                        logBinancePushEvent('TRADE_UPDATE', data.data);
-                        try {
-                            window.dispatchEvent(new CustomEvent("BINANCE_TRADE_CONFIRMED", { detail: data.data }));
-                        } catch (e) {}
+                        // 实盘已启用专属 UserStream WS 监听时，避免两条 WS 对同一事件重复触发 UI 派发与日志写入
+                        const hasDedicatedStream = Boolean(settingsRef.current?.system?.realTrading && settingsRef.current?.system?.binanceApiKey);
+                        if (!hasDedicatedStream) {
+                            logBinancePushEvent('TRADE_UPDATE', data.data);
+                            try {
+                                window.dispatchEvent(new CustomEvent("BINANCE_TRADE_CONFIRMED", { detail: data.data }));
+                            } catch (e) {}
+                        }
                     } else if (data.type === 'BINANCE_ACCOUNT_UPDATE' && data.data) {
-                        logBinancePushEvent('ACCOUNT_UPDATE', data.data);
+                        const hasDedicatedStream = Boolean(settingsRef.current?.system?.realTrading && settingsRef.current?.system?.binanceApiKey);
+                        if (!hasDedicatedStream) {
+                            logBinancePushEvent('ACCOUNT_UPDATE', data.data);
+                        }
                     }
                 } catch (e) {
                     console.error('Failed to parse WS message', e);
@@ -1886,6 +1921,7 @@ const AppContent: React.FC = () => {
             }
 
             isSyncing = true;
+            recordFlightActionThrottled('RISK_RECONCILE_START', { source: 'App:fetchRealState', force }, 30000);
             try {
                 const controller = new AbortController();
                 const timeout = setTimeout(() => controller.abort(), 12000); // 12s timeout
@@ -2188,8 +2224,9 @@ const AppContent: React.FC = () => {
         return () => {
             clearTimeout(timer);
             clearInterval(interval);
+            if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
             for (const [, t] of activePollingSymbols.entries()) {
-                clearInterval(t);
+                clearTimeout(t);
             }
             activePollingSymbols.clear();
             delete (window as any).triggerApiSync;
@@ -4827,33 +4864,79 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
         setRecommendation(null);
     };
 
-    // Periodic persistence
+    // Periodic persistence (Dirty-checked + debounced idle writes to eliminate 5s 8x sync JSON blocking)
     useEffect(() => {
         let lastSyncedDaemonEmpty = false;
+        let lastDaemonSyncAt = 0;
+        let lastSavedIsReal: boolean | null = null;
+        let lastSavedAccount: any = null;
+        let lastSavedPositions: any = null;
+        let lastSavedTradeLogs: any = null;
+        let lastSavedLogs: any = null;
+        let lastSavedSettings: any = null;
+        let lastSavedDaemonPositions: any = null;
+
         const interval = setInterval(() => {
+            const now = Date.now();
             const isReal = settingsRef.current.system.realTrading;
-            
+            const modeChanged = lastSavedIsReal !== isReal;
+            lastSavedIsReal = isReal;
+
             // Determine active keys
             const accountKey = isReal ? 'SAVIOR_ACCOUNT_LIVE' : 'SAVIOR_ACCOUNT_SIM';
             const positionsKey = isReal ? 'SAVIOR_POSITIONS_LIVE' : 'SAVIOR_POSITIONS_SIM';
             const tradeLogsKey = isReal ? 'SAVIOR_TRADELOGS_LIVE' : 'SAVIOR_TRADELOGS_SIM';
-            
-            saveState(accountKey, accountRef.current);
-            saveState(positionsKey, positionsRef.current);
-            saveState(tradeLogsKey, tradeLogsRef.current, 800);
-            
-            // Standard/fallback keys
-            saveState('SAVIOR_ACCOUNT', accountRef.current);
-            saveState('SAVIOR_POSITIONS', positionsRef.current);
-            saveState('SAVIOR_TRADELOGS', tradeLogsRef.current, 800);
-            
-            saveState('SAVIOR_LOGS', logsRef.current, 150);
-            saveState('SAVIOR_SETTINGS', settingsRef.current);
+
+            let persistedAny = false;
+
+            if (modeChanged || accountRef.current !== lastSavedAccount) {
+                lastSavedAccount = accountRef.current;
+                saveStateDebounced(accountKey, accountRef.current, 1000);
+                saveStateDebounced('SAVIOR_ACCOUNT', accountRef.current, 1000);
+                persistedAny = true;
+            }
+
+            const currentPosList = positionsRef.current || [];
+            if (modeChanged || currentPosList !== lastSavedPositions) {
+                lastSavedPositions = currentPosList;
+                saveStateDebounced(positionsKey, currentPosList, 1000);
+                saveStateDebounced('SAVIOR_POSITIONS', currentPosList, 1000);
+                persistedAny = true;
+            }
+
+            if (modeChanged || tradeLogsRef.current !== lastSavedTradeLogs) {
+                lastSavedTradeLogs = tradeLogsRef.current;
+                saveStateDebounced(tradeLogsKey, tradeLogsRef.current, 1200, 800);
+                saveStateDebounced('SAVIOR_TRADELOGS', tradeLogsRef.current, 1200, 800);
+                persistedAny = true;
+            }
+
+            if (logsRef.current !== lastSavedLogs) {
+                lastSavedLogs = logsRef.current;
+                saveStateDebounced('SAVIOR_LOGS', logsRef.current, 1500, 150);
+                persistedAny = true;
+            }
+
+            if (settingsRef.current !== lastSavedSettings) {
+                lastSavedSettings = settingsRef.current;
+                saveStateDebounced('SAVIOR_SETTINGS', settingsRef.current, 1000);
+                persistedAny = true;
+            }
+
+            if (persistedAny) {
+                recordFlightActionThrottled('STATE_PERSIST_START', {
+                    source: 'App:periodicPersist',
+                    posCount: currentPosList.length,
+                    tradeLogCount: tradeLogsRef.current?.length || 0
+                }, 30000);
+            }
 
             // 🛡️ 服务端物理磁盘双轨落盘备份 (/data/positions.json)
-            // 当持仓非空时每 5 秒同步；当持仓归零时也必须同步写入空数组，消除旧快照残留！
-            const currentPosList = positionsRef.current || [];
-            if (currentPosList.length > 0 || !lastSyncedDaemonEmpty) {
+            // 仅当持仓变化（或每 30 秒心跳同步一次活跃持仓），以及持仓归零未同步时同步服务端，减少无效全量序列化
+            const posDirtyForDaemon = currentPosList !== lastSavedDaemonPositions || (currentPosList.length > 0 && now - lastDaemonSyncAt > 30000);
+            if ((currentPosList.length > 0 && posDirtyForDaemon) || (currentPosList.length === 0 && !lastSyncedDaemonEmpty)) {
+                lastSavedDaemonPositions = currentPosList;
+                lastDaemonSyncAt = now;
                 lastSyncedDaemonEmpty = currentPosList.length === 0;
                 try {
                     fetch('/api/daemon/save-state', {
@@ -4862,7 +4945,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                         body: JSON.stringify({
                             key: 'positions',
                             data: currentPosList,
-                            clearedAt: currentPosList.length === 0 ? Date.now() : undefined
+                            clearedAt: currentPosList.length === 0 ? now : undefined
                         })
                     }).catch(() => {});
                 } catch (_) {}

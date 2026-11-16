@@ -71,7 +71,10 @@ export const PositionsListModule: React.FC<PositionsListProps> = ({
             if (typeof window !== 'undefined' && window.localStorage) {
                 try {
                     const raw = localStorage.getItem('SCANNER_ACTION_CONFIG');
-                    if (raw) setIsReopenEnabled(!!JSON.parse(raw).autoReopenEnabled);
+                    if (raw) {
+                        const nextVal = !!JSON.parse(raw).autoReopenEnabled;
+                        setIsReopenEnabled(prev => (prev === nextVal ? prev : nextVal));
+                    }
                 } catch (e) {}
             }
         };

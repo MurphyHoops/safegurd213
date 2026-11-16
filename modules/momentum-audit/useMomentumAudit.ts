@@ -14,7 +14,8 @@ import { checkList3SignalPasses } from '../../services/rules/list3_structure';
 import { Position } from '../../types';
 import { normalizeSymbol, resolvePrice } from '../../services/symbolUtils';
 import { fetchWithFallback } from '../../services/apiService';
-import { saveState } from '../../utils/persistence';
+import { saveState, saveStateDebounced } from '../../utils/persistence';
+import { recordFlightActionThrottled } from '../../services/flightRecorder';
 import { db, auth } from '../../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { useAutoHistoryLogger } from './components/ScannerHistoryModal';
@@ -558,6 +559,9 @@ export const useMomentumAudit = (
         });
 
         const flatCandidates = Array.from(list4CacheRef.current.values());
+        if (flatCandidates.length > 0) {
+            recordFlightActionThrottled('KLINE_CALC_START', { source: 'useMomentumAudit', count: flatCandidates.length }, 30000);
+        }
 
         // 2. Run Momentum Math
         const analyzedItems = analyzeList4Momentum(flatCandidates, currentConfig);
@@ -608,9 +612,7 @@ export const useMomentumAudit = (
                     shouldKeep = false;
                     item.removalReason = reason || '中轴防守瓦解或突破偏离过大彻底清除';
                     expiredSignalCacheRef.current.add(uniqueId);
-                    try {
-                        localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
-                    } catch(e) {}
+                    saveStateDebounced(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1500, 1000);
                     list4CacheRef.current.delete(uniqueId);
                     safeRemoveSignal(uniqueId);
                     logToHistory(item, item.removalReason);
@@ -649,9 +651,7 @@ export const useMomentumAudit = (
 
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
-                        try {
-                            localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
-                        } catch(e) {}
+                        saveStateDebounced(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1500, 1000);
                         shouldKeep = false;
                         item.removalReason = `破中轴休眠超期彻底清除 [已休眠 ${Math.round(elapsedMs / (tfMinutes * 60 * 1000))} / ${maxCandles} 根K线]`;
                         list4CacheRef.current.delete(uniqueId);
@@ -678,9 +678,7 @@ export const useMomentumAudit = (
                     
                     if (elapsedMs >= maxMs) {
                         expiredSignalCacheRef.current.add(uniqueId);
-                        try {
-                            localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
-                        } catch(e) {}
+                        saveStateDebounced(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1500, 1000);
                         shouldKeep = false;
                         item.removalReason = `由列表4触发后超时规则删除 [已持续: ${Math.round(elapsedMs / 60000)}分钟]`;
                         list4CacheRef.current.delete(uniqueId);
@@ -725,9 +723,7 @@ export const useMomentumAudit = (
 
                 if (elapsedMs >= maxMs) {
                     expiredSignalCacheRef.current.add(uniqueId);
-                    try {
-                        localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
-                    } catch(e) {}
+                    saveStateDebounced(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1500, 1000);
                     shouldKeep = false;
                     item.removalReason = item.fuseReason || `由列表4防追高/方向锁/高级过滤规则超时清除 [已持续: ${Math.round(elapsedMs / 60000)}分钟]`;
                     
@@ -758,9 +754,7 @@ export const useMomentumAudit = (
                 shouldKeep = false;
                 item.removalReason = `满足动能突破开仓成功，已建立仓位，立即彻底清除 [已联动移出列表4、3、2]`;
                 expiredSignalCacheRef.current.add(uniqueId);
-                try {
-                    localStorage.setItem(expiredSignalsKey, JSON.stringify(Array.from(expiredSignalCacheRef.current)));
-                } catch(e) {}
+                saveStateDebounced(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1500, 1000);
                 tradedSignalCacheRef.current.delete(uniqueId);
                 list4CacheRef.current.delete(uniqueId);
                 safeRemoveSignal(uniqueId);
@@ -834,14 +828,14 @@ export const useMomentumAudit = (
             setList4(finalItems);
         }
 
-    // Persistence (every 10s or on change)
+        // Persistence (every 10s, debounced idle write)
         const persistenceKey = 'SCANNER_LIST4_PERSIST_TS';
         const lastPersist = Number(sessionStorage.getItem(persistenceKey) || 0);
         if (now - lastPersist > 10000) {
-            saveState(resultsKey, finalItems, 100);
-            saveState(fuseLatchKey, Array.from(fuseAuditLatchRef.current.entries()).map(([key, value]) => ({ key, value })), 500);
-            saveState(advFilterBlockTsKey, Array.from(advancedFilterBlockedSignalCacheRef.current.entries()).map(([key, value]) => ({ key, value })), 1000);
-            saveState(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1000);
+            saveStateDebounced(resultsKey, finalItems, 1500, 100);
+            saveStateDebounced(fuseLatchKey, Array.from(fuseAuditLatchRef.current.entries()).map(([key, value]) => ({ key, value })), 1500, 500);
+            saveStateDebounced(advFilterBlockTsKey, Array.from(advancedFilterBlockedSignalCacheRef.current.entries()).map(([key, value]) => ({ key, value })), 1500, 1000);
+            saveStateDebounced(expiredSignalsKey, Array.from(expiredSignalCacheRef.current), 1500, 1000);
             sessionStorage.setItem(persistenceKey, now.toString());
         }
     });

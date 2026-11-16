@@ -16,12 +16,15 @@ export interface FlightAction {
 }
 
 const MAX_RING_BUFFER = 50;
+const FLIGHT_RECORDER_STORAGE_KEY = 'SAVIOR_FLIGHT_RECORDER';
 let flightBuffer: FlightAction[] = [];
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+const throttledActionTimestamps = new Map<string, number>();
 
 // 初始化读取
 try {
   if (typeof window !== 'undefined') {
-    const raw = localStorage.getItem('SAVIOR_FLIGHT_RECORDER');
+    const raw = localStorage.getItem(FLIGHT_RECORDER_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -30,6 +33,28 @@ try {
     }
   }
 } catch (_) {}
+
+const flushFlightBufferToStorage = () => {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(FLIGHT_RECORDER_STORAGE_KEY, JSON.stringify(flightBuffer));
+    }
+  } catch (_) {}
+};
+
+const scheduleFlightBufferPersist = () => {
+  if (typeof window === 'undefined' || persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      localStorage.setItem(FLIGHT_RECORDER_STORAGE_KEY, JSON.stringify(flightBuffer));
+    } catch (_) {}
+  }, 400);
+};
 
 /**
  * 记录一条飞行行为事件
@@ -51,10 +76,8 @@ export const recordFlightAction = (actionType: string, details: string | object)
       flightBuffer = flightBuffer.slice(-MAX_RING_BUFFER);
     }
 
-    // 本地即时离线落盘
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('SAVIOR_FLIGHT_RECORDER', JSON.stringify(flightBuffer));
-    }
+    // 异步防抖写 LocalStorage，绝不阻塞当前计算主线程
+    scheduleFlightBufferPersist();
 
     // 异步非阻塞推送到服务端遥测接口
     fetch('/api/telemetry/flight-recorder', {
@@ -62,6 +85,25 @@ export const recordFlightAction = (actionType: string, details: string | object)
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(entry)
     }).catch(() => {});
+  } catch (_) {}
+};
+
+/**
+ * 带高频防重节流的自动化流水线轨迹埋点（默认同类型 30 秒内只记录一次）
+ */
+export const recordFlightActionThrottled = (
+  actionType: string,
+  details: string | object,
+  cooldownMs: number = 30000
+) => {
+  try {
+    const now = Date.now();
+    const lastTs = throttledActionTimestamps.get(actionType) || 0;
+    if (now - lastTs < cooldownMs) {
+      return;
+    }
+    throttledActionTimestamps.set(actionType, now);
+    recordFlightAction(actionType, details);
   } catch (_) {}
 };
 
@@ -77,9 +119,14 @@ export const getFlightBuffer = (): FlightAction[] => {
  */
 export const clearFlightBuffer = () => {
   flightBuffer = [];
+  throttledActionTimestamps.clear();
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
   try {
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('SAVIOR_FLIGHT_RECORDER');
+      localStorage.removeItem(FLIGHT_RECORDER_STORAGE_KEY);
     }
   } catch (_) {}
 };
@@ -87,11 +134,13 @@ export const clearFlightBuffer = () => {
 /**
  * 高频心跳定时器（每 1000ms 触发一次）
  */
-let heartbeatIntervalTimer: any = null;
-
+let heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null;
 let heartbeatLifecycleBound = false;
+let isHeartbeatInFlight = false;
+let lastHeartbeatLoopAt = 0;
 
 const sendHeartbeatPauseSignal = () => {
+  flushFlightBufferToStorage();
   try {
     const payload = JSON.stringify({ timestamp: Date.now(), paused: true });
     if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
@@ -110,31 +159,49 @@ const sendHeartbeatPauseSignal = () => {
 
 export const startHeartbeatWatchdog = () => {
   if (heartbeatIntervalTimer) return;
+  lastHeartbeatLoopAt = Date.now();
 
   const sendHeartbeat = () => {
     try {
+      const now = Date.now();
+      const loopDelta = lastHeartbeatLoopAt > 0 ? now - lastHeartbeatLoopAt : 1000;
+      lastHeartbeatLoopAt = now;
+      const clockJumpDetected = loopDelta > 8000;
+
       if (typeof document !== 'undefined' && document.hidden) {
         return;
       }
+      if (isHeartbeatInFlight) {
+        return;
+      }
+
       let heapMB = 0;
       if (typeof performance !== 'undefined' && (performance as any).memory) {
         heapMB = Math.round(((performance as any).memory.usedJSHeapSize || 0) / 1024 / 1024);
       }
 
       const lastAction = flightBuffer.length > 0 ? flightBuffer[flightBuffer.length - 1] : null;
+      isHeartbeatInFlight = true;
 
       fetch('/api/telemetry/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          timestamp: Date.now(),
+          timestamp: now,
           heapMB,
           paused: false,
+          clockJumpDetected,
           url: typeof window !== 'undefined' ? window.location.hash || window.location.pathname : '',
           lastAction
         })
-      }).catch(() => {});
-    } catch (_) {}
+      })
+        .catch(() => {})
+        .finally(() => {
+          isHeartbeatInFlight = false;
+        });
+    } catch (_) {
+      isHeartbeatInFlight = false;
+    }
   };
 
   if (!heartbeatLifecycleBound && typeof window !== 'undefined') {
@@ -146,6 +213,7 @@ export const startHeartbeatWatchdog = () => {
         if (document.hidden) {
           sendHeartbeatPauseSignal();
         } else {
+          lastHeartbeatLoopAt = Date.now();
           sendHeartbeat();
         }
       });
@@ -163,4 +231,5 @@ export const stopHeartbeatWatchdog = () => {
   }
   sendHeartbeatPauseSignal();
 };
+
 

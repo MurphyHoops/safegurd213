@@ -1399,7 +1399,9 @@ const KlineChartModal: React.FC<Props> = ({
       const { width, height } = entries[0].contentRect;
       cancelAnimationFrame(animationFrameId);
       animationFrameId = requestAnimationFrame(() => {
-        setDimensions({ width: width || 800, height: height || 500 });
+        const nextW = Math.round(width || 800);
+        const nextH = Math.round(height || 500);
+        setDimensions(prev => (prev.width === nextW && prev.height === nextH ? prev : { width: nextW, height: nextH }));
       });
     });
     observer.observe(containerRef.current);
@@ -1445,6 +1447,7 @@ const KlineChartModal: React.FC<Props> = ({
       
       const allSignals: Signal[] = [];
       results.forEach(res => {
+          if (res.isPreWaitEma30 || res.isWaitDivergencePending) return;
           if (res.crossingTimes) {
               res.crossingTimes.forEach(t => {
                   allSignals.push({ time: t, type: res.direction || 'LONG' });
@@ -1501,7 +1504,11 @@ const KlineChartModal: React.FC<Props> = ({
           const e10Arr = calculateEMA(closes, 10);
           const e20Arr = calculateEMA(closes, 20);
           const e30Arr = calculateEMA(closes, 30);
+          const e40Arr = calculateEMA(closes, 40);
           signals.forEach(s => {
+              if (!isTradeViewMode && ((s as any).isPreWait || (s as any).isPreWaitEma30 || (s as any).isWaitDivergencePending)) {
+                  return;
+              }
               const rawType = (s.type || (s as any).direction || '').toUpperCase();
               const sType: 'LONG' | 'SHORT' = (rawType === 'LONG' || rawType === 'BUY' || rawType === '多') ? 'LONG' : 'SHORT';
               const normSignal = { ...s, type: sType };
@@ -1516,7 +1523,41 @@ const KlineChartModal: React.FC<Props> = ({
                       return;
                   }
 
-                  if (sIdx >= 30) {
+                  if (!isTradeViewMode && sIdx >= 39) {
+                      const val10 = e10Arr[sIdx - 9];
+                      const val20 = e20Arr[sIdx - 19];
+                      const val30 = e30Arr[sIdx - 29];
+                      const val40 = e40Arr[sIdx - 39];
+                      if (val10 === undefined || val20 === undefined || val30 === undefined || val40 === undefined) {
+                          return;
+                      }
+                      const chartReqAlign = list2Config?.requireAlignment ?? false;
+                      const chartReqMa = list2Config?.requireMaCross ?? false;
+                      const chartReqCandle = list2Config?.requireCandleCross !== undefined ? list2Config.requireCandleCross : (list2Config?.requireCrossing ?? true);
+                      const chartLogic = list2Config?.crossingDivergenceLogic || 'AND';
+                      const chartNeedStrictAlign = chartReqAlign ? (chartLogic !== 'OR' || !chartReqMa) : (!chartReqCandle && !chartReqMa);
+
+                      // 🔒 铁律门禁：信号K线必须满足 EMA10 立于 EMA20/30/40 三线最外侧；仅当要求均线发散时额外校验 20>30>40 / 20<30<40
+                      if (sType === 'LONG') {
+                          if (!(val10 > val20 && val10 > val30 && val10 > val40)) return;
+                          if (chartNeedStrictAlign && !(val20 > val30 && val30 > val40)) return;
+                      } else {
+                          if (!(val10 < val20 && val10 < val30 && val10 < val40)) return;
+                          if (chartNeedStrictAlign && !(val20 < val30 && val30 < val40)) return;
+                      }
+                      for (let f = sIdx + 1; f < fullData.length; f++) {
+                          const f10 = e10Arr[f - 9];
+                          const f20 = e20Arr[f - 19];
+                          const f30 = e30Arr[f - 29];
+                          const f40 = e40Arr[f - 39];
+                          if (sType === 'LONG' && f10 !== undefined && ((f20 !== undefined && f10 <= f20) || (f30 !== undefined && f10 <= f30) || (f40 !== undefined && f10 <= f40))) {
+                              return;
+                          }
+                          if (sType === 'SHORT' && f10 !== undefined && ((f20 !== undefined && f10 >= f20) || (f30 !== undefined && f10 >= f30) || (f40 !== undefined && f10 >= f40))) {
+                              return;
+                          }
+                      }
+                  } else if (sIdx >= 30) {
                       const val10 = e10Arr[sIdx - 9];
                       const val20 = e20Arr[sIdx - 19];
                       const val30 = e30Arr[sIdx - 29];

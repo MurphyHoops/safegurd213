@@ -25,7 +25,15 @@ const DashboardHeader: React.FC<Props> = ({
 
     useEffect(() => {
         const unsubscribe = binanceWs.subscribeStatus((status) => {
-            setWsStatus(status);
+            setWsStatus(prev => {
+                if (
+                    prev.isConnected === status.isConnected &&
+                    Math.abs(prev.lastMessageTime - status.lastMessageTime) < 2500
+                ) {
+                    return prev;
+                }
+                return status;
+            });
         });
         return () => unsubscribe();
     }, []);

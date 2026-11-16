@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Loader2 } from 'lucide-react';
 import { getVolume8am, fetchVolume8amBatch, isCurrentTradingDay } from '../../services/volume8amService';
 import { klineDailyStore } from '../../services/klineDailyStore';
@@ -73,7 +73,8 @@ export const SmartNumberInput = ({ value, onChange, className, disabled }: { val
     useEffect(() => {
         if (!isFocused) {
             const currentSafeValue = (value === undefined || value === null || isNaN(value)) ? 0 : value;
-            setLocalVal(currentSafeValue.toString());
+            const nextStr = currentSafeValue.toString();
+            setLocalVal(prev => (prev === nextStr ? prev : nextStr));
         }
     }, [value, isFocused]);
 
@@ -102,19 +103,40 @@ export const SmartNumberInput = ({ value, onChange, className, disabled }: { val
 // Displays 24H & Since-8AM Up/Down counts for Binance USDT Perpetual Contracts and BTC change
 export const MarketSentimentWidget = ({ stats }: { stats: { up: number, down: number, total: number, btcChange: number, up8am?: number, down8am?: number, btcChange8am?: number } }) => {
     const [refreshTick, setRefreshTick] = useState(0);
+    const lastBumpTimeRef = useRef<number>(0);
+    const pendingBumpTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const lastBatchFetchTimeRef = useRef<number>(0);
+    const requestedMissingSetRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
         ensurePerpetualUsdtSymbols();
-        const bump = () => setRefreshTick(t => t + 1);
+        const bump = () => {
+            const now = Date.now();
+            const elapsed = now - lastBumpTimeRef.current;
+            if (elapsed >= 1500) {
+                lastBumpTimeRef.current = now;
+                setRefreshTick(t => t + 1);
+            } else if (!pendingBumpTimeoutRef.current) {
+                pendingBumpTimeoutRef.current = setTimeout(() => {
+                    pendingBumpTimeoutRef.current = null;
+                    lastBumpTimeRef.current = Date.now();
+                    setRefreshTick(t => t + 1);
+                }, 1500 - elapsed);
+            }
+        };
         window.addEventListener('scanner_8am_cache_updated', bump);
         window.addEventListener('scanner_raw_data_updated', bump);
         window.addEventListener('CENTRAL_DAILY_KLINES_UPDATED', bump);
-        const timer = setInterval(bump, 4000);
+        const timer = setInterval(bump, 5000);
         return () => {
             window.removeEventListener('scanner_8am_cache_updated', bump);
             window.removeEventListener('scanner_raw_data_updated', bump);
             window.removeEventListener('CENTRAL_DAILY_KLINES_UPDATED', bump);
             clearInterval(timer);
+            if (pendingBumpTimeoutRef.current) {
+                clearTimeout(pendingBumpTimeoutRef.current);
+                pendingBumpTimeoutRef.current = null;
+            }
         };
     }, []);
 
@@ -174,17 +196,37 @@ export const MarketSentimentWidget = ({ stats }: { stats: { up: number, down: nu
             }
         }
 
-        if (missingSymbols.length > 0) {
-            fetchVolume8amBatch(missingSymbols).catch(() => {});
-        }
-
         return {
             up8am: stats.up8am !== undefined ? stats.up8am : up8am,
             down8am: stats.down8am !== undefined ? stats.down8am : down8am,
             btcChange8am: stats.btcChange8am !== undefined ? stats.btcChange8am : btcChange8am,
-            btcReady: stats.btcChange8am !== undefined || btcReady
+            btcReady: stats.btcChange8am !== undefined || btcReady,
+            missingSymbols
         };
     }, [stats.up, stats.down, stats.total, stats.btcChange, stats.up8am, stats.down8am, stats.btcChange8am, refreshTick]);
+
+    useEffect(() => {
+        if (!stats8am.missingSymbols || stats8am.missingSymbols.length === 0) return;
+        const now = Date.now();
+        // Reset deduplication cache every 60s so un-fetched batches can progress safely without render-looping
+        if (now - lastBatchFetchTimeRef.current > 60000) {
+            requestedMissingSetRef.current.clear();
+        }
+        if (now - lastBatchFetchTimeRef.current < 8000) return;
+
+        const batchToFetch: string[] = [];
+        for (const sym of stats8am.missingSymbols) {
+            if (!requestedMissingSetRef.current.has(sym)) {
+                requestedMissingSetRef.current.add(sym);
+                batchToFetch.push(sym);
+                if (batchToFetch.length >= 100) break;
+            }
+        }
+        if (batchToFetch.length > 0) {
+            lastBatchFetchTimeRef.current = now;
+            fetchVolume8amBatch(batchToFetch).catch(() => {});
+        }
+    }, [stats8am.missingSymbols]);
 
     const riseRatio = stats.total > 0 ? (stats.up / stats.total) : 0.5;
     const breadthColor = riseRatio > 0.6 ? 'bg-emerald-500 shadow-emerald-500/50' : riseRatio < 0.4 ? 'bg-red-500 shadow-red-500/50' : 'bg-yellow-500 shadow-yellow-500/50';

@@ -1,3 +1,5 @@
+import { recordFlightActionThrottled } from '../services/flightRecorder';
+
 export const deepMerge = (target: any, source: any): any => {
     if (source === null || source === undefined) return target;
     if (target === null || target === undefined) return source;
@@ -197,28 +199,37 @@ autoHealLocalStorage();
 
 export const saveState = (key: string, data: any, maxSizeRows: number = 800): boolean => {
     let payload = cleanPayloadForPersistence(key, data);
+    let serialized = '';
     try {
         // Capping strategy: if it's an array, we slice it to prevent infinite growth
         if (Array.isArray(payload)) {
             // Positions are CRITICAL, we keep all of them (they are usually few anyway)
-            if (key === 'SAVIOR_POSITIONS') {
+            if (key === 'SAVIOR_POSITIONS' || key === 'SAVIOR_POSITIONS_LIVE' || key === 'SAVIOR_POSITIONS_SIM') {
                 // No cap for positions unless they are truly massive
             } else if (payload.length > maxSizeRows) {
                 payload = payload.slice(0, maxSizeRows);
             }
         }
         
-        const serialized = JSON.stringify(payload);
+        serialized = JSON.stringify(payload);
         
         // Basic size check (roughly 2.5MB limit per entry)
         if (serialized.length > 2.5 * 1024 * 1024) {
             console.warn(`[Persistence] Payload for ${key} is too large (${(serialized.length / 1024).toFixed(1)}KB). Capping...`);
-            if (Array.isArray(payload) && key !== 'SAVIOR_POSITIONS') {
+            if (Array.isArray(payload) && key !== 'SAVIOR_POSITIONS' && key !== 'SAVIOR_POSITIONS_LIVE' && key !== 'SAVIOR_POSITIONS_SIM') {
                 payload = payload.slice(0, Math.floor(payload.length / 2));
+                serialized = JSON.stringify(payload);
             }
         }
+
+        if (serialized.length > 16384 && key !== 'SAVIOR_FLIGHT_RECORDER') {
+            recordFlightActionThrottled('STATE_PERSIST_START', {
+                key,
+                sizeKB: Math.round(serialized.length / 1024)
+            }, 30000);
+        }
         
-        localStorage.setItem(key, JSON.stringify(payload));
+        localStorage.setItem(key, serialized);
         return true;
     } catch (e: any) {
         if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22) {
@@ -257,7 +268,7 @@ export const saveState = (key: string, data: any, maxSizeRows: number = 800): bo
 
             // 4. Try saving the CRITICAL data again
             try {
-                localStorage.setItem(key, JSON.stringify(payload));
+                localStorage.setItem(key, serialized || JSON.stringify(payload));
                 return true;
             } catch(inner) {
                 console.warn(`[Persistence] Emergency cleanup failed to free enough space for ${key}`);
@@ -271,17 +282,31 @@ export const saveState = (key: string, data: any, maxSizeRows: number = 800): bo
 };
 
 const saveStateDebounceTimers: Map<string, any> = new Map();
+const saveStatePendingPayloads: Map<string, { data: any; maxSizeRows: number }> = new Map();
 
 /**
- * ⚡ 2000ms 防抖异步落盘，消除每秒密集 IO 阻塞主线程
+ * ⚡ 防抖 + 浏览器空闲时间片异步落盘，消除高频同步 JSON 序列化阻塞主线程
  */
 export const saveStateDebounced = (key: string, data: any, delayMs: number = 2000, maxSizeRows: number = 800) => {
+    saveStatePendingPayloads.set(key, { data, maxSizeRows });
     if (saveStateDebounceTimers.has(key)) {
         clearTimeout(saveStateDebounceTimers.get(key));
     }
     const timer = setTimeout(() => {
         saveStateDebounceTimers.delete(key);
-        saveState(key, data, maxSizeRows);
+        const pending = saveStatePendingPayloads.get(key);
+        saveStatePendingPayloads.delete(key);
+        if (!pending) return;
+
+        const runFlush = () => {
+            saveState(key, pending.data, pending.maxSizeRows);
+        };
+
+        if (typeof window !== 'undefined' && typeof (window as any).requestIdleCallback === 'function' && (typeof document === 'undefined' || !document.hidden)) {
+            (window as any).requestIdleCallback(runFlush, { timeout: 1500 });
+        } else {
+            runFlush();
+        }
     }, delayMs);
     saveStateDebounceTimers.set(key, timer);
 };

@@ -14,7 +14,8 @@ import { checkEmaDivergence } from "../../services/indicators";
 import { fetchWithFallback } from "../../services/apiService";
 import { KLineSynthesizer } from "../../services/klineSynthesizer";
 import { KLine } from "../../types";
-import { saveState } from "../../utils/persistence";
+import { saveState, saveStateDebounced } from "../../utils/persistence";
+import { recordFlightActionThrottled } from "../../services/flightRecorder";
 import { normalizeSymbol } from "../../services/symbolUtils";
 import { priceRegistry } from "../../services/priceRegistry";
 import { klineMultiTfStore } from "../../services/klineMultiTfStore";
@@ -240,21 +241,29 @@ export const useStructureAudit = (
       (a, b) => (b.list3Results?.length || 0) - (a.list3Results?.length || 0),
     );
 
-    // Only update state if list actually changed
-    const currentListStr = JSON.stringify(allItems);
+    // Lightweight fingerprint check without deep-serializing huge historyExtremes arrays
+    const currentListStr = allItems
+      .map((item) => {
+        const resSig = (item.list3Results || [])
+          .map((r) => `${r.tf}:${r.direction}:${r.latched ? 1 : 0}:${Math.floor(r.structure?.lag || 0)}`)
+          .join(",");
+        return `${item.symbol}=${item.price || 0}=${resSig}`;
+      })
+      .join("|");
     if (currentListStr !== lastUpdateRef.current) {
       setList3(allItems);
       lastUpdateRef.current = currentListStr;
     }
 
-    // Persist to localStorage
+    // Async debounced persist to localStorage (prevents blocking UI thread with large JSON payloads)
     const cacheArray = Array.from(cacheRef.current.entries()).map(
       ([key, value]) => ({ key, value }),
     );
-    saveState(cacheMapKey, cacheArray, 200); // Cap list 3 cache
-    saveState(
+    saveStateDebounced(cacheMapKey, cacheArray, 2000, 200); // Cap list 3 cache
+    saveStateDebounced(
       expiredSignalsKey,
       Array.from(expiredSignalCacheRef.current),
+      2000,
       1000,
     ); // Cap expired
   }, [cacheMapKey, expiredSignalsKey]);
@@ -594,6 +603,7 @@ export const useStructureAudit = (
         return; // 限制规则未开启时绝对禁止后台执行审计
       }
 
+      recordFlightActionThrottled('KLINE_CALC_START', { source: 'useStructureAudit:priority', count: itemsToScan.length, reason: triggerReason }, 30000);
       console.log(`[List3 Priority] Starting ultra-fast priority analysis for ${itemsToScan.length} items. Reason: ${triggerReason}`);
 
       try {
@@ -909,6 +919,7 @@ export const useStructureAudit = (
         return;
       }
 
+      recordFlightActionThrottled('KLINE_CALC_START', { source: 'useStructureAudit:batch', count: itemsToScan.length, reason: triggerReason }, 30000);
       isScanningRef.current = true;
       setIsScanning(true);
 

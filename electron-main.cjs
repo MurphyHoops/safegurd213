@@ -191,27 +191,78 @@ if (app && typeof app.setLoginItemSettings === 'function') {
   }
 }
 
-// 通知后台守护引擎强制重置底层僵尸 WebSocket
+// 通知后台守护引擎与主服务处理电源/休眠唤醒事件
+let lastPowerSuspendAt = 0;
+let powerResumeGraceUntil = 0;
+let lastClockTickAt = Date.now();
+
+function notifyLocalServerPowerEvent(event, graceMs = 30000) {
+  try {
+    const payload = JSON.stringify({ event, graceMs, timestamp: Date.now() });
+    const req = http.request(
+      'http://127.0.0.1:3000/api/telemetry/power-event',
+      {
+        method: 'POST',
+        timeout: 3000,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload)
+        }
+      },
+      () => {}
+    );
+    req.on('error', () => {});
+    req.write(payload);
+    req.end();
+  } catch (_) {}
+}
+
 function notifyBackendPowerResume() {
   try {
     const req = http.request('http://127.0.0.1:8089/api/reconnect-ws', { method: 'GET', timeout: 3000 }, () => {});
     req.on('error', () => {});
     req.end();
   } catch (_) {}
+  notifyLocalServerPowerEvent('resume', 35000);
 }
+
+// 时钟跳跃保护：即便某些休眠场景未触发 powerMonitor:resume，也自动检测 5 秒巡检时间差跳跃并授予心跳宽限期
+const _clockJumpGuardTimer = setInterval(() => {
+  const now = Date.now();
+  const delta = now - lastClockTickAt;
+  lastClockTickAt = now;
+  if (delta > 15000) {
+    powerResumeGraceUntil = now + 35000;
+    console.log(`🛡️ [PowerMonitor] 检测到系统时钟跳跃 (+${Math.round(delta / 1000)}s)，授予 35 秒心跳恢复宽限期并重置计时`);
+    notifyLocalServerPowerEvent('clock_jump', 35000);
+  }
+}, 5000);
 
 // 🛡️ [Windows 会话与电源事件完整免疫守护 & 休眠恢复 Socket 重置]
 if (powerMonitor) {
   powerMonitor.on('suspend', () => {
-    console.log('🛡️ [PowerMonitor] 系统挂起事件，保持后台交易引擎运行');
+    lastPowerSuspendAt = Date.now();
+    powerResumeGraceUntil = Date.now() + 60000;
+    console.log('🛡️ [PowerMonitor] 系统挂起事件，通知看门狗暂停心跳超时判定并保持后台引擎');
     recordPhysicalExit('powerMonitor:suspend', {});
+    notifyLocalServerPowerEvent('suspend', 60000);
   });
   powerMonitor.on('resume', () => {
-    console.log('🛡️ [PowerMonitor] 系统恢复，强制清理僵尸 Socket 并刷盘重连');
-    recordPhysicalExit('powerMonitor:resume', {});
+    const now = Date.now();
+    const suspendDurationMs = lastPowerSuspendAt > 0 ? now - lastPowerSuspendAt : 0;
+    powerResumeGraceUntil = now + 35000;
+    lastClockTickAt = now;
+    console.log(`🛡️ [PowerMonitor] 系统恢复 (休眠时长 ${Math.round(suspendDurationMs / 1000)}s)，授予 35 秒宽限期并检查渲染进程健康态`);
+    recordPhysicalExit('powerMonitor:resume', { suspendDurationMs });
     notifyBackendPowerResume();
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.reload();
+      const isRendererCrashed = mainWindow.webContents && typeof mainWindow.webContents.isCrashed === 'function'
+        ? mainWindow.webContents.isCrashed()
+        : false;
+      if (isRendererCrashed) {
+        console.warn('🔄 [PowerMonitor] 检测到休眠恢复后渲染进程已崩溃 (isCrashed=true)，执行重载恢复...');
+        mainWindow.reload();
+      }
       if (!mainWindow.isVisible()) mainWindow.show();
     }
   });
@@ -219,7 +270,9 @@ if (powerMonitor) {
     console.log('🛡️ [PowerMonitor] 屏幕锁定/RDP断开，后台量化交易永续运行');
   });
   powerMonitor.on('unlock-screen', () => {
-    console.log('🛡️ [PowerMonitor] 屏幕解锁/RDP重连，恢复主窗口');
+    powerResumeGraceUntil = Math.max(powerResumeGraceUntil, Date.now() + 20000);
+    notifyLocalServerPowerEvent('resume', 20000);
+    console.log('🛡️ [PowerMonitor] 屏幕解锁/RDP重连，恢复主窗口并刷新宽限期');
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (!mainWindow.isVisible()) mainWindow.show();
     }
@@ -456,11 +509,41 @@ function createWindow() {
     }
   });
 
-  // 🛡️ [webContents 无响应与插件崩溃钩子]
+  // 🛡️ [webContents 无响应与插件崩溃钩子 (结合 isCrashed 与休眠宽限期容错)]
+  let unresponsiveConfirmTimer = null;
   mainWindow.webContents.on('unresponsive', () => {
-    const traceId = `tr_unresponsive_${Date.now().toString(36)}`;
-    console.warn('⚠️ [Electron Guard] 渲染窗口无响应挂起 (unresponsive)，系统维持运行...');
-    logCrashToFile('ELECTRON_RENDERER_UNRESPONSIVE', '渲染窗口无响应挂起 (unresponsive)', '', traceId);
+    const now = Date.now();
+    const isCrashed = mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && typeof mainWindow.webContents.isCrashed === 'function'
+      ? mainWindow.webContents.isCrashed()
+      : false;
+
+    // 如果是系统休眠刚唤醒或时钟跳跃造成的瞬时卡顿且未崩溃，授予宽限期并通知后端重置心跳计时，避免误报假死
+    if (!isCrashed && now < powerResumeGraceUntil) {
+      console.log('🛡️ [Electron Guard] 休眠唤醒宽限期内瞬时无响应，忽略误报并延长服务端心跳宽限期...');
+      notifyLocalServerPowerEvent('resume', 25000);
+      return;
+    }
+
+    if (isCrashed) {
+      const traceId = `tr_crashed_${now.toString(36)}`;
+      console.error('🚨 [Electron Guard] 渲染进程已物理崩溃 (webContents.isCrashed()=true)，触发恢复...');
+      logCrashToFile('ELECTRON_RENDERER_CRASHED', '渲染进程物理崩溃 (isCrashed=true)', '', traceId);
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+      } catch (_) {}
+      return;
+    }
+
+    if (unresponsiveConfirmTimer) clearTimeout(unresponsiveConfirmTimer);
+    unresponsiveConfirmTimer = setTimeout(() => {
+      unresponsiveConfirmTimer = null;
+      if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) return;
+      const stillCrashed = typeof mainWindow.webContents.isCrashed === 'function' && mainWindow.webContents.isCrashed();
+      if (Date.now() < powerResumeGraceUntil && !stillCrashed) return;
+      const traceId = `tr_unresponsive_${Date.now().toString(36)}`;
+      console.warn(`⚠️ [Electron Guard] 渲染窗口持续无响应挂起 (isCrashed=${stillCrashed})，记录诊断快照...`);
+      logCrashToFile('ELECTRON_RENDERER_UNRESPONSIVE', `渲染窗口无响应挂起 (unresponsive, isCrashed=${stillCrashed})`, '', traceId);
+    }, 10000);
   });
 
   mainWindow.webContents.on('plugin-crashed', (event, name, version) => {
@@ -470,7 +553,12 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('responsive', () => {
-    console.log('✅ [Electron Guard] 渲染窗口恢复响应');
+    if (unresponsiveConfirmTimer) {
+      clearTimeout(unresponsiveConfirmTimer);
+      unresponsiveConfirmTimer = null;
+    }
+    notifyLocalServerPowerEvent('resume', 15000);
+    console.log('✅ [Electron Guard] 渲染窗口恢复响应，重置看门狗宽限计时');
   });
 
   // 防假死显示兜底
