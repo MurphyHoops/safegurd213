@@ -137,6 +137,7 @@ export const clearFlightBuffer = () => {
 let heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null;
 let heartbeatLifecycleBound = false;
 let isHeartbeatInFlight = false;
+let lastHeartbeatInFlightSince = 0;
 let lastHeartbeatLoopAt = 0;
 
 const sendHeartbeatPauseSignal = () => {
@@ -171,7 +172,8 @@ export const startHeartbeatWatchdog = () => {
       if (typeof document !== 'undefined' && document.hidden) {
         return;
       }
-      if (isHeartbeatInFlight) {
+      // 🛡️ 防止同源 HTTP 连接池排队导致 isHeartbeatInFlight 长期锁死：超过 4.5s 自动破锁重发
+      if (isHeartbeatInFlight && (now - lastHeartbeatInFlightSince < 4500)) {
         return;
       }
 
@@ -182,10 +184,16 @@ export const startHeartbeatWatchdog = () => {
 
       const lastAction = flightBuffer.length > 0 ? flightBuffer[flightBuffer.length - 1] : null;
       isHeartbeatInFlight = true;
+      lastHeartbeatInFlightSince = now;
+
+      const abortSignal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(4000)
+        : undefined;
 
       fetch('/api/telemetry/heartbeat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: abortSignal,
         body: JSON.stringify({
           timestamp: now,
           heapMB,

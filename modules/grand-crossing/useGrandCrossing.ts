@@ -293,17 +293,25 @@ export const useGrandCrossing = (
     };
 
     let fetchRes = await tryFetch(safeSymbol);
-    // If not found and symbol is 1000-scaled meme or vice-versa, try fallback (skip for Chinese tokens)
+    // 仅当并非限流错误，且币种属于已知 1000 倍缩放 Meme 币列表时，才尝试 1000 前缀互转（杜绝盲目拼接 1000SOXLUSDT 等非法币种触发 400 惩罚）
     const isChinese = /[\u4e00-\u9fa5]/.test(safeSymbol);
-    if (!isChinese && fetchRes.data.length === 0 && (!signal || !signal.aborted)) {
+    const isRateLimitedErr = fetchRes.reason?.includes('429') || fetchRes.reason?.includes('限流');
+    if (!isChinese && !isRateLimitedErr && fetchRes.data.length === 0 && (!signal || !signal.aborted)) {
       if (safeSymbol.startsWith('1000')) {
         const base = safeSymbol.replace(/^1000/, '');
         const fallbackRes = await tryFetch(base);
         if (fallbackRes.data.length > 0) fetchRes = fallbackRes;
       } else {
-        const scaled = '1000' + safeSymbol;
-        const fallbackRes = await tryFetch(scaled);
-        if (fallbackRes.data.length > 0) fetchRes = fallbackRes;
+        const KNOWN_1000_BASES = new Set([
+          'PEPE', 'SHIB', 'BONK', 'FLOKI', 'LUNC', 'SATS', 'RATS',
+          'XEC', 'BABYDOGE', 'CATI', 'CAT', 'CHEEMS', 'WHY', 'MOG'
+        ]);
+        const rawBase = safeSymbol.replace(/USDT$/i, '');
+        if (KNOWN_1000_BASES.has(rawBase)) {
+          const scaled = '1000' + safeSymbol;
+          const fallbackRes = await tryFetch(scaled);
+          if (fallbackRes.data.length > 0) fetchRes = fallbackRes;
+        }
       }
     }
 

@@ -22,6 +22,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { audioService } from "../services/audioService";
+import { getVolume8am } from "../services/volume8amService";
 import { normalizeSymbol, resolvePrice } from "../services/symbolUtils";
 import { logSignalOccurrence } from "../services/binanceLogger";
 import { l234DataStore } from "../services/l234DataStore";
@@ -213,6 +214,420 @@ import {
   BacktestProvider,
   useBacktest,
 } from "../modules/backtester/BacktestContext";
+
+// 🔒 列表1单向顺势轨迹记忆表：记录每个币种在扫描周期内的实时价格与峰值轨迹，杜绝冲高回落(多)/超跌反弹(空)逆向开仓
+interface List1SymbolTrajectory {
+  lastPrice: number;
+  sessionMaxPrice: number;
+  sessionMinPrice: number;
+  maxDirChg24: number;
+  maxDirChg8am: number;
+  maxBounce24: number;
+  maxBounce8am: number;
+  updatedAt: number;
+}
+const list1SymbolTrajectoryMap = new Map<string, List1SymbolTrajectory>();
+
+// 🚀 Shared Helper: Filter List 1 candidates by List 2 push funnel rules (24H/8AM Chg, Vol, Bounce/Drop, OR/AND, TopN)
+const filterCandidatesByPushConfigShared = (
+  candidates: ScannerItem[],
+  pushConfig: any,
+  currentPricesMap: Record<string, number> = {},
+  openDirection: 'LONG' | 'SHORT' = 'LONG',
+  requireTrendThreshold: boolean = true
+): ScannerItem[] => {
+  if (!pushConfig) return requireTrendThreshold ? [] : candidates;
+  const isPushEffectivelyEnabled = Boolean(
+    pushConfig.enabled || pushConfig.enableTopN || pushConfig.enableChg24h ||
+    pushConfig.enableChg8am || pushConfig.enableVol24h || pushConfig.enableVol8am ||
+    pushConfig.enableBounce8am || pushConfig.enableBounce24h
+  );
+  if (!isPushEffectivelyEnabled && !requireTrendThreshold) return candidates;
+
+  const isShortMode = openDirection === 'SHORT';
+
+  // 🔒 核心铁律：当“立即开/平仓后续开”开启时，必须至少绑定一项有效的【① 趋势门槛过滤】涨跌幅条件（且下限阈值 > 0）
+  const minChg24 = Math.abs(Number(pushConfig.minChg24h) || 0);
+  const maxChg24 = Math.abs(Number(pushConfig.maxChg24h) || 0);
+  const minChg8am = Math.abs(Number(pushConfig.minChg8am) || 0);
+  const maxChg8am = Math.abs(Number(pushConfig.maxChg8am) || 0);
+  const minVol24 = Number(pushConfig.minVol24h) || 0;
+  const minVol8am = Number(pushConfig.minVol8am) || 0;
+  const minBounce24 = Math.abs(Number(pushConfig.minBounce24h) || 0);
+  const maxBounce24 = Math.abs(Number(pushConfig.maxBounce24h) || 0);
+  const minBounce8am = Math.abs(Number(pushConfig.minBounce8am) || 0);
+  const maxBounce8am = Math.abs(Number(pushConfig.maxBounce8am) || 0);
+
+  const hasValidTrendRule = Boolean(
+    (pushConfig.enableChg24h && minChg24 > 0) ||
+    (pushConfig.enableChg8am && minChg8am > 0) ||
+    (pushConfig.enableBounce24h && minBounce24 > 0) ||
+    (pushConfig.enableBounce8am && minBounce8am > 0)
+  );
+
+  if (requireTrendThreshold && !hasValidTrendRule) {
+    // 未勾选任何涨跌幅/极值涨跌幅趋势门槛（或正在清空输入框使阈值为0）时，严格拦截，禁止无门槛全量放行开仓
+    return [];
+  }
+
+  const rawLowMap: Record<string, number> = {};
+  const rawHighMap: Record<string, number> = {};
+  const rawOpenMap: Record<string, number> = {};
+  try {
+    let parsed: any = (typeof window !== 'undefined' && Array.isArray((window as any).__SCANNER_RAW_DATA_MEM__))
+      ? (window as any).__SCANNER_RAW_DATA_MEM__
+      : null;
+    if (!parsed) {
+      const rawCache = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
+      if (rawCache) {
+        parsed = JSON.parse(rawCache);
+        if (Array.isArray(parsed) && typeof window !== 'undefined') {
+          (window as any).__SCANNER_RAW_DATA_MEM__ = parsed;
+        }
+      }
+    }
+    if (Array.isArray(parsed)) {
+      for (let i = 0; i < parsed.length; i++) {
+        const d = parsed[i];
+        if (d && d.symbol) {
+          const norm = normalizeSymbol(d.symbol).replace(/USDT$/i, '');
+          const lp = parseFloat(d.lowPrice);
+          if (lp > 0) {
+            rawLowMap[norm] = lp;
+            rawLowMap[`${norm}USDT`] = lp;
+          }
+          const hp = parseFloat(d.highPrice);
+          if (hp > 0) {
+            rawHighMap[norm] = hp;
+            rawHighMap[`${norm}USDT`] = hp;
+          }
+          const op = parseFloat(d.openPrice);
+          if (op > 0) {
+            rawOpenMap[norm] = op;
+            rawOpenMap[`${norm}USDT`] = op;
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  const getV8 = (item: ScannerItem) => {
+    const norm = normalizeSymbol(item.symbol).replace(/USDT$/i, '');
+    return getVolume8am(`${norm}USDT`) || getVolume8am(item.symbol) || null;
+  };
+
+  const getVol24 = (item: ScannerItem): number => {
+    if (item.volume24h !== undefined && item.volume24h !== null && !isNaN(Number(item.volume24h)) && Number(item.volume24h) > 0) return Number(item.volume24h);
+    if (item.quoteVolume !== undefined && item.quoteVolume !== null && !isNaN(Number(item.quoteVolume))) return Number(item.quoteVolume) / 1_000_000;
+    if (item.price && item.volume) return (Number(item.price) * Number(item.volume)) / 1_000_000;
+    return 0;
+  };
+
+  const getVol8am = (item: ScannerItem): number => {
+    const v8 = getV8(item);
+    if (v8 && v8.volume8am !== undefined && !isNaN(Number(v8.volume8am))) return Number(v8.volume8am);
+    if (item.volume8am !== undefined && item.volume8am !== null && !isNaN(Number(item.volume8am))) return Number(item.volume8am);
+    return 0;
+  };
+
+  const getChg24 = (item: ScannerItem): number | null => {
+    const it = item as any;
+    if (item.change !== undefined && item.change !== null && !isNaN(Number(item.change))) return Number(item.change);
+    if (it.chg24h !== undefined && !isNaN(Number(it.chg24h))) return Number(it.chg24h);
+    if (it.priceChangePercent !== undefined && !isNaN(Number(it.priceChangePercent))) return Number(it.priceChangePercent);
+    return null;
+  };
+
+  // 🔒 严禁在 8AM 数据未就绪时用 24H 涨跌幅冒充兜底，缺失时必须返回 null
+  const getChg8am = (item: ScannerItem): number | null => {
+    const v8 = getV8(item);
+    if (v8 && v8.change8am !== undefined && v8.change8am !== null && !isNaN(Number(v8.change8am))) return Number(v8.change8am);
+    const it = item as any;
+    if (item.change8am !== undefined && item.change8am !== null && !isNaN(Number(item.change8am))) return Number(item.change8am);
+    if (it.chg8am !== undefined && it.chg8am !== null && !isNaN(Number(it.chg8am))) return Number(it.chg8am);
+    return null;
+  };
+
+  // 做多：8AM最低点到当前的涨幅；做空：8AM最高点到当前的跌幅
+  const getBounce8amVal = (item: ScannerItem): number | null => {
+    const v8 = getV8(item);
+    const curPrice = resolvePrice(item.symbol, currentPricesMap, Number(item.price || v8?.lastPrice || 0));
+    if (isShortMode) {
+      const high8 = Number(v8?.highPrice || (item as any).highPrice8am || 0);
+      if (high8 > 0 && curPrice > 0) {
+        return ((high8 - curPrice) / high8) * 100;
+      }
+      return null;
+    } else {
+      const low8 = Number(v8?.lowPrice || (item as any).lowPrice8am || 0);
+      if (low8 > 0 && curPrice > 0) {
+        return ((curPrice - low8) / low8) * 100;
+      }
+      return null;
+    }
+  };
+
+  // 做多：24H最低点到当前的涨幅；做空：24H最高点到当前的跌幅
+  const getBounce24hVal = (item: ScannerItem): number | null => {
+    const norm = normalizeSymbol(item.symbol).replace(/USDT$/i, '');
+    const curPrice = resolvePrice(item.symbol, currentPricesMap, Number(item.price || 0));
+    if (isShortMode) {
+      const high24 = Number((item as any).highPrice || (item as any).high || rawHighMap[norm] || rawHighMap[`${norm}USDT`] || 0);
+      if (high24 > 0 && curPrice > 0) {
+        return ((high24 - curPrice) / high24) * 100;
+      }
+      return null;
+    } else {
+      const low24 = Number((item as any).lowPrice || (item as any).low || rawLowMap[norm] || rawLowMap[`${norm}USDT`] || 0);
+      if (low24 > 0 && curPrice > 0) {
+        return ((curPrice - low24) / low24) * 100;
+      }
+      return null;
+    }
+  };
+
+  const nowTs = Date.now();
+
+  let filtered = candidates.filter(item => {
+    const norm = normalizeSymbol(item.symbol).replace(/USDT$/i, '');
+    const v8 = getV8(item);
+    const curPrice = resolvePrice(item.symbol, currentPricesMap, Number(item.price || v8?.lastPrice || 0));
+    const v24 = getVol24(item);
+    const v8am = getVol8am(item);
+    const c24 = getChg24(item);
+    const c8am = getChg8am(item);
+    const b8 = getBounce8amVal(item);
+    const b24 = getBounce24hVal(item);
+
+    const dirChg24 = c24 !== null ? (isShortMode ? -c24 : c24) : null;
+    const dirChg8am = c8am !== null ? (isShortMode ? -c8am : c8am) : null;
+
+    // 1. 提取/更新该币种的实时扫描轨迹与历史极值
+    let traj = list1SymbolTrajectoryMap.get(norm);
+    if (!traj || nowTs - traj.updatedAt > 6 * 3600 * 1000) {
+      traj = {
+        lastPrice: curPrice,
+        sessionMaxPrice: curPrice,
+        sessionMinPrice: curPrice,
+        maxDirChg24: dirChg24 ?? 0,
+        maxDirChg8am: dirChg8am ?? 0,
+        maxBounce24: b24 ?? 0,
+        maxBounce8am: b8 ?? 0,
+        updatedAt: nowTs,
+      };
+      list1SymbolTrajectoryMap.set(norm, traj);
+    }
+
+    const prevPrice = traj.lastPrice > 0 ? traj.lastPrice : curPrice;
+    if (curPrice > 0) {
+      traj.sessionMaxPrice = Math.max(traj.sessionMaxPrice, curPrice);
+      traj.sessionMinPrice = traj.sessionMinPrice > 0 ? Math.min(traj.sessionMinPrice, curPrice) : curPrice;
+      traj.lastPrice = curPrice;
+    }
+    if (dirChg24 !== null) traj.maxDirChg24 = Math.max(traj.maxDirChg24, dirChg24);
+    if (dirChg8am !== null) traj.maxDirChg8am = Math.max(traj.maxDirChg8am, dirChg8am);
+    if (b24 !== null) traj.maxBounce24 = Math.max(traj.maxBounce24, b24);
+    if (b8 !== null) traj.maxBounce8am = Math.max(traj.maxBounce8am, b8);
+    traj.updatedAt = nowTs;
+
+    // 2. 计算 24H 与 8AM 周期内真实达到过的历史最高涨幅(多) / 最大跌幅(空)
+    const high24 = Math.max(curPrice, Number((item as any).highPrice || (item as any).high || rawHighMap[norm] || rawHighMap[`${norm}USDT`] || 0));
+    const low24Raw = Number((item as any).lowPrice || (item as any).low || rawLowMap[norm] || rawLowMap[`${norm}USDT`] || 0);
+    const low24 = low24Raw > 0 ? Math.min(curPrice, low24Raw) : curPrice;
+    const open24 = rawOpenMap[norm] || rawOpenMap[`${norm}USDT`] || (c24 !== null && curPrice > 0 && (1 + c24 / 100) > 0 ? curPrice / (1 + c24 / 100) : 0);
+
+    const high8 = Math.max(curPrice, Number(v8?.highPrice || (item as any).highPrice8am || 0));
+    const low8Raw = Number(v8?.lowPrice || (item as any).lowPrice8am || 0);
+    const low8 = low8Raw > 0 ? Math.min(curPrice, low8Raw) : curPrice;
+    const open8 = Number(v8?.openPrice || (c8am !== null && curPrice > 0 && (1 + c8am / 100) > 0 ? curPrice / (1 + c8am / 100) : 0));
+
+    // 24H 曾经达到过的最大同向涨跌幅
+    const histPeakChg24 = (() => {
+      if (open24 <= 0) return traj.maxDirChg24;
+      if (isShortMode) {
+        return low24 > 0 ? Math.max(traj.maxDirChg24, ((open24 - low24) / open24) * 100) : traj.maxDirChg24;
+      } else {
+        return high24 > 0 ? Math.max(traj.maxDirChg24, ((high24 - open24) / open24) * 100) : traj.maxDirChg24;
+      }
+    })();
+
+    // 8AM 曾经达到过的最大同向涨跌幅
+    const histPeakChg8am = (() => {
+      if (open8 <= 0) return traj.maxDirChg8am;
+      if (isShortMode) {
+        return low8 > 0 ? Math.max(traj.maxDirChg8am, ((open8 - low8) / open8) * 100) : traj.maxDirChg8am;
+      } else {
+        return high8 > 0 ? Math.max(traj.maxDirChg8am, ((high8 - open8) / open8) * 100) : traj.maxDirChg8am;
+      }
+    })();
+
+    // 24H 极值涨跌幅曾经达到过的峰值
+    const histPeakBounce24 = (() => {
+      if (isShortMode) {
+        if (c24 !== null && c24 < 0 && high24 > 0 && low24 > 0) {
+          return Math.max(traj.maxBounce24, ((high24 - low24) / high24) * 100);
+        }
+        return traj.maxBounce24;
+      } else {
+        if (c24 !== null && c24 > 0 && low24 > 0 && high24 > 0) {
+          return Math.max(traj.maxBounce24, ((high24 - low24) / low24) * 100);
+        }
+        return traj.maxBounce24;
+      }
+    })();
+
+    // 8AM 极值涨跌幅曾经达到过的峰值
+    const histPeakBounce8am = (() => {
+      if (isShortMode) {
+        if (c8am !== null && c8am < 0 && high8 > 0 && low8 > 0) {
+          return Math.max(traj.maxBounce8am, ((high8 - low8) / high8) * 100);
+        }
+        return traj.maxBounce8am;
+      } else {
+        if (c8am !== null && c8am > 0 && low8 > 0 && high8 > 0) {
+          return Math.max(traj.maxBounce8am, ((high8 - low8) / low8) * 100);
+        }
+        return traj.maxBounce8am;
+      }
+    })();
+
+    // 3. 实时逆向运动检测：做多时若正在从高点向下跌（或当前价低于前一次扫描价 / 较本轮高点回落>0.35%），做空时若正在从低点向上反弹，判定为逆向回落/反弹
+    const isMovingReverseInSession = (() => {
+      if (curPrice <= 0) return false;
+      if (isShortMode) {
+        const bouncedFromSessionLow = traj.sessionMinPrice > 0 && ((curPrice - traj.sessionMinPrice) / traj.sessionMinPrice) * 100 > 0.35;
+        return curPrice > prevPrice || bouncedFromSessionLow;
+      } else {
+        const droppedFromSessionHigh = traj.sessionMaxPrice > 0 && ((traj.sessionMaxPrice - curPrice) / traj.sessionMaxPrice) * 100 > 0.35;
+        return curPrice < prevPrice || droppedFromSessionHigh;
+      }
+    })();
+
+    // 区间判定（三段式 + 单向顺势突破铁律）：
+    // 1. < 下限(min%)：不开仓
+    // 2. [下限 min% ~ 上限 max%]：
+    //    - 做多：必须是从下向上涨入区间（历史最高点未越过上限 max%，且未处于从高点向下回落过程）才立即开仓；若曾冲过上限再从上面跌下来，严禁直开并转交列表2
+    //    - 做空：必须是从上向下跌入区间（历史最低点未越过上限 max%，且未处于从低点向上反弹过程）才立即开仓；若曾跌破上限再从下面弹上来，严禁直开并转交列表2
+    // 3. > 上限(max%)：列表1拦截不直接开，转交列表2观察
+    const trendChecks: boolean[] = [];
+    let exceedsOrFallingFromUpperBound = false;
+
+    if (pushConfig.enableChg24h) {
+      const dirVal = dirChg24;
+      const hasUpper = maxChg24 > 0 && maxChg24 >= minChg24;
+      // 若当前已超上限，或历史/日内最高涨幅(多)/最大跌幅(空)曾超过上限后回落到区间内，或正从24H极值明显回落(>0.5%)
+      const pulledBackFrom24hExtreme = dirVal !== null && dirVal > 0 && (histPeakChg24 - dirVal > 0.5);
+      if (hasUpper && dirVal !== null && (dirVal > maxChg24 || histPeakChg24 > maxChg24 || pulledBackFrom24hExtreme || isMovingReverseInSession)) {
+        exceedsOrFallingFromUpperBound = true;
+      }
+      trendChecks.push(
+        minChg24 > 0 &&
+        dirVal !== null &&
+        dirVal >= minChg24 &&
+        (!hasUpper || (dirVal <= maxChg24 && histPeakChg24 <= maxChg24 && !pulledBackFrom24hExtreme && !isMovingReverseInSession))
+      );
+    }
+    if (pushConfig.enableChg8am) {
+      const dirVal = dirChg8am;
+      const hasUpper = maxChg8am > 0 && maxChg8am >= minChg8am;
+      const pulledBackFrom8amExtreme = dirVal !== null && dirVal > 0 && (histPeakChg8am - dirVal > 0.5);
+      if (hasUpper && dirVal !== null && (dirVal > maxChg8am || histPeakChg8am > maxChg8am || pulledBackFrom8amExtreme || isMovingReverseInSession)) {
+        exceedsOrFallingFromUpperBound = true;
+      }
+      trendChecks.push(
+        minChg8am > 0 &&
+        dirVal !== null &&
+        dirVal >= minChg8am &&
+        (!hasUpper || (dirVal <= maxChg8am && histPeakChg8am <= maxChg8am && !pulledBackFrom8amExtreme && !isMovingReverseInSession))
+      );
+    }
+    if (pushConfig.enableBounce24h) {
+      const hasUpper = maxBounce24 > 0 && maxBounce24 >= minBounce24;
+      const pulledBackFromBounce24Extreme = b24 !== null && (histPeakBounce24 - b24 > 0.5);
+      if (hasUpper && b24 !== null && (b24 > maxBounce24 || histPeakBounce24 > maxBounce24 || pulledBackFromBounce24Extreme || isMovingReverseInSession)) {
+        exceedsOrFallingFromUpperBound = true;
+      }
+      trendChecks.push(
+        minBounce24 > 0 &&
+        b24 !== null &&
+        b24 >= minBounce24 &&
+        (!hasUpper || (b24 <= maxBounce24 && histPeakBounce24 <= maxBounce24 && !pulledBackFromBounce24Extreme && !isMovingReverseInSession))
+      );
+    }
+    if (pushConfig.enableBounce8am) {
+      const hasUpper = maxBounce8am > 0 && maxBounce8am >= minBounce8am;
+      const pulledBackFromBounce8amExtreme = b8 !== null && (histPeakBounce8am - b8 > 0.5);
+      if (hasUpper && b8 !== null && (b8 > maxBounce8am || histPeakBounce8am > maxBounce8am || pulledBackFromBounce8amExtreme || isMovingReverseInSession)) {
+        exceedsOrFallingFromUpperBound = true;
+      }
+      trendChecks.push(
+        minBounce8am > 0 &&
+        b8 !== null &&
+        b8 >= minBounce8am &&
+        (!hasUpper || (b8 <= maxBounce8am && histPeakBounce8am <= maxBounce8am && !pulledBackFromBounce8amExtreme && !isMovingReverseInSession))
+      );
+    }
+
+    const volChecks: boolean[] = [];
+    if (pushConfig.enableVol24h) {
+      volChecks.push(minVol24 > 0 && v24 >= minVol24);
+    }
+    if (pushConfig.enableVol8am) {
+      volChecks.push(minVol8am > 0 && v8am >= minVol8am);
+    }
+
+    if (requireTrendThreshold) {
+      if (trendChecks.length === 0) return false;
+      // 🔒 若任意已开启且设置了上限(max%)的趋势指标已超过上限、或曾冲过上限再从上面跌下来(做多)/从下面弹上来(做空)，列表1严禁直开，自动转交列表2观察
+      if (exceedsOrFallingFromUpperBound) return false;
+      if (pushConfig.mode === 'AND') {
+        return trendChecks.every(Boolean) && volChecks.every(Boolean);
+      } else {
+        // OR 模式下：必须至少满足一项已勾选的【趋势涨跌幅/极值涨跌幅】区间条件（绝不允许仅凭交易额绕过涨跌幅门槛开仓）
+        const trendPassed = trendChecks.some(Boolean);
+        if (!trendPassed) return false;
+        return true;
+      }
+    }
+
+    const allChecks = [...trendChecks, ...volChecks];
+    if (allChecks.length === 0) {
+      return Boolean(pushConfig.enableTopN);
+    }
+    if (pushConfig.mode === 'AND') {
+      return allChecks.every(Boolean);
+    } else {
+      return allChecks.some(Boolean);
+    }
+  });
+
+  if (pushConfig.enableTopN && pushConfig.topNCount > 0) {
+    const key = pushConfig.topNSortKey || 'CHG_8AM_ABS';
+    filtered.sort((a, b) => {
+      const c24A = getChg24(a) ?? 0;
+      const c24B = getChg24(b) ?? 0;
+      const c8A = getChg8am(a) ?? 0;
+      const c8B = getChg8am(b) ?? 0;
+      const b8A = getBounce8amVal(a) ?? 0;
+      const b8B = getBounce8amVal(b) ?? 0;
+      const b24A = getBounce24hVal(a) ?? 0;
+      const b24B = getBounce24hVal(b) ?? 0;
+      if (key === 'VOL_24H') return getVol24(b) - getVol24(a);
+      if (key === 'VOL_8AM') return getVol8am(b) - getVol8am(a);
+      if (key === 'CHG_8AM_ABS') return Math.abs(c8B) - Math.abs(c8A);
+      if (key === 'CHG_8AM_DESC') return c8B - c8A;
+      if (key === 'CHG_8AM_ASC') return c8A - c8B;
+      if (key === 'CHG_24H_DESC') return c24B - c24A;
+      if (key === 'CHG_24H_ASC') return c24A - c24B;
+      if (key === 'BOUNCE_8AM') return b8B - b8A;
+      if (key === 'BOUNCE_24H') return b24B - b24A;
+      return Math.abs(c24B) - Math.abs(c24A);
+    });
+    filtered = filtered.slice(0, pushConfig.topNCount);
+  }
+
+  return filtered;
+};
 
 interface Props {
   networkStatus?: "healthy" | "delayed" | "disconnected";
@@ -1840,81 +2255,12 @@ const ScannerDashboardInner: React.FC<
   }, [filteredPositions]);
 
   // 🚀 Helper: Filter List 1 candidates by List 2 push funnel rules when instantOpenUsePushFilter is enabled
-  const filterCandidatesByPushConfig = (candidates: ScannerItem[], pushConfig: any): ScannerItem[] => {
-    if (!pushConfig) return candidates;
-    const isPushEffectivelyEnabled = Boolean(
-      pushConfig.enabled || pushConfig.enableTopN || pushConfig.enableChg24h || 
-      pushConfig.enableChg8am || pushConfig.enableVol24h || pushConfig.enableVol8am
-    );
-    if (!isPushEffectivelyEnabled) return candidates;
-
-    const getVol24 = (item: ScannerItem): number => {
-      if (item.volume24h !== undefined && item.volume24h !== null && !isNaN(Number(item.volume24h)) && Number(item.volume24h) > 0) return Number(item.volume24h);
-      if (item.quoteVolume !== undefined && item.quoteVolume !== null && !isNaN(Number(item.quoteVolume))) return Number(item.quoteVolume) / 1_000_000;
-      if (item.price && item.volume) return (Number(item.price) * Number(item.volume)) / 1_000_000;
-      return 0;
-    };
-
-    const getVol8am = (item: ScannerItem): number => {
-      if (item.volume8am !== undefined && !isNaN(Number(item.volume8am))) return Number(item.volume8am);
-      return getVol24(item);
-    };
-
-    const getChg24 = (item: ScannerItem): number => {
-      const it = item as any;
-      if (it.chg24h !== undefined && !isNaN(Number(it.chg24h))) return Number(it.chg24h);
-      if (it.priceChangePercent !== undefined && !isNaN(Number(it.priceChangePercent))) return Number(it.priceChangePercent);
-      return 0;
-    };
-
-    const getChg8am = (item: ScannerItem): number => {
-      const it = item as any;
-      if (it.chg8am !== undefined && !isNaN(Number(it.chg8am))) return Number(it.chg8am);
-      return getChg24(item);
-    };
-
-    let filtered = candidates.filter(item => {
-      const v24 = getVol24(item);
-      const v8am = getVol8am(item);
-      const c24 = getChg24(item);
-      const c8am = getChg8am(item);
-
-      const condChg24 = pushConfig.enableChg24h ? Math.abs(c24) >= (pushConfig.minChg24h || 0) : true;
-      const condChg8am = pushConfig.enableChg8am ? Math.abs(c8am) >= (pushConfig.minChg8am || 0) : true;
-      const condVol24 = pushConfig.enableVol24h ? v24 >= (pushConfig.minVol24h || 0) : true;
-      const condVol8am = pushConfig.enableVol8am ? v8am >= (pushConfig.minVol8am || 0) : true;
-
-      if (pushConfig.mode === 'AND') {
-        return condChg24 && condChg8am && condVol24 && condVol8am;
-      } else {
-        let activeConds = 0;
-        let metConds = 0;
-        if (pushConfig.enableChg24h) { activeConds++; if (condChg24) metConds++; }
-        if (pushConfig.enableChg8am) { activeConds++; if (condChg8am) metConds++; }
-        if (pushConfig.enableVol24h) { activeConds++; if (condVol24) metConds++; }
-        if (pushConfig.enableVol8am) { activeConds++; if (condVol8am) metConds++; }
-        return activeConds === 0 || metConds > 0;
-      }
-    });
-
-    if (pushConfig.enableTopN && pushConfig.topNCount > 0) {
-      const key = pushConfig.topNSortKey || 'CHG_24H_ABS';
-      filtered.sort((a, b) => {
-        if (key === 'VOL_24H') return getVol24(b) - getVol24(a);
-        if (key === 'VOL_8AM') return getVol8am(b) - getVol8am(a);
-        if (key === 'CHG_8AM_ABS') return Math.abs(getChg8am(b)) - Math.abs(getChg8am(a));
-        if (key === 'CHG_24H_DESC') return getChg24(b) - getChg24(a);
-        if (key === 'CHG_24H_ASC') return getChg24(a) - getChg24(b);
-        return Math.abs(getChg24(b)) - Math.abs(getChg24(a));
-      });
-      filtered = filtered.slice(0, pushConfig.topNCount);
-    }
-
-    return filtered;
-  };
+  const filterCandidatesByPushConfig = useCallback((candidates: ScannerItem[], pushConfig: any, dir: 'LONG' | 'SHORT' = 'LONG'): ScannerItem[] => {
+    return filterCandidatesByPushConfigShared(candidates, pushConfig, currentPricesRef.current, dir);
+  }, []);
 
   const list1CandidatesKey = useMemo(() => {
-    return (list1Candidates || []).map(c => `${c.symbol}_${c.price || 0}`).join('|');
+    return (list1Candidates || []).map(c => `${c.symbol}_${c.price || 0}_${c.change || 0}_${c.change8am || 0}_${c.volume24h || 0}_${c.volume8am || 0}_${c.lowPrice || 0}_${c.highPrice || 0}`).join('|');
   }, [list1Candidates]);
 
   const filteredPositionsKey = useMemo(() => {
@@ -1958,9 +2304,12 @@ const ScannerDashboardInner: React.FC<
       isReopen: boolean;
     }> = [];
 
-    const pushFilteredCandidates = scanConfig?.instantOpenUsePushFilter
-      ? filterCandidatesByPushConfig(list1Candidates, scanConfig.list2PushConfig)
-      : list1Candidates;
+    // 🔒 强制绑定趋势门槛过滤：无论立即开还是平仓后续开，必须经过定向推送趋势门槛二次核验
+    const pushFilteredCandidates = filterCandidatesByPushConfig(
+      list1Candidates,
+      scanConfig.list2PushConfig,
+      openDirection
+    );
 
     pushFilteredCandidates.forEach(item => {
       const symbol = normalizeSymbol(item.symbol);
@@ -2019,11 +2368,54 @@ const ScannerDashboardInner: React.FC<
         const price = resolvePrice(item.symbol, currentPricesRef.current, item.price);
         if (price > 0) {
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
+          
+          // 详细记录并显示由于“趋势门槛过滤”里的哪一个条件什么参数达成而开仓
+          const pCfg = scanConfig?.list2PushConfig;
+          const isShort = openDirection === 'SHORT';
+          const min24 = Math.abs(Number(pCfg?.minChg24h) || 0);
+          const max24 = Math.abs(Number(pCfg?.maxChg24h) || 0);
+          const min8 = Math.abs(Number(pCfg?.minChg8am) || 0);
+          const max8 = Math.abs(Number(pCfg?.maxChg8am) || 0);
+          const minB24 = Math.abs(Number(pCfg?.minBounce24h) || 0);
+          const maxB24 = Math.abs(Number(pCfg?.maxBounce24h) || 0);
+          const minB8 = Math.abs(Number(pCfg?.minBounce8am) || 0);
+          const maxB8 = Math.abs(Number(pCfg?.maxBounce8am) || 0);
+
+          const curP = price;
+          const c24Val = item.change !== undefined ? Number(item.change) : ((item as any).chg24h !== undefined ? Number((item as any).chg24h) : null);
+          const c8Val = item.change8am !== undefined ? Number(item.change8am) : null;
+          const d24 = c24Val !== null ? (isShort ? -c24Val : c24Val) : null;
+          const d8 = c8Val !== null ? (isShort ? -c8Val : c8Val) : null;
+          const low8 = Number((item as any).lowPrice8am || 0);
+          const high8 = Number((item as any).highPrice8am || 0);
+          const b8Val = isShort ? (high8 > 0 ? ((high8 - curP) / high8) * 100 : null) : (low8 > 0 ? ((curP - low8) / low8) * 100 : null);
+          const low24 = Number((item as any).lowPrice || 0);
+          const high24 = Number((item as any).highPrice || 0);
+          const b24Val = isShort ? (high24 > 0 ? ((high24 - curP) / high24) * 100 : null) : (low24 > 0 ? ((curP - low24) / low24) * 100 : null);
+
+          const matchedParts: string[] = [];
+          if (pCfg?.enableChg24h && min24 > 0 && d24 !== null && d24 >= min24) {
+            matchedParts.push(`${isShort ? '24H跌幅' : '24H涨幅'}: ${d24.toFixed(1)}% (要求≥${min24}%${max24 > 0 ? `~${max24}%` : ''})`);
+          }
+          if (pCfg?.enableChg8am && min8 > 0 && d8 !== null && d8 >= min8) {
+            matchedParts.push(`${isShort ? '8AM跌幅' : '8AM涨幅'}: ${d8.toFixed(1)}% (要求≥${min8}%${max8 > 0 ? `~${max8}%` : ''})`);
+          }
+          if (pCfg?.enableBounce24h && minB24 > 0 && b24Val !== null && b24Val >= minB24) {
+            matchedParts.push(`${isShort ? '24H高点跌幅' : '24H低点涨幅'}: ${b24Val.toFixed(1)}% (要求≥${minB24}%${maxB24 > 0 ? `~${maxB24}%` : ''})`);
+          }
+          if (pCfg?.enableBounce8am && minB8 > 0 && b8Val !== null && b8Val >= minB8) {
+            matchedParts.push(`${isShort ? '8AM高点跌幅' : '8AM低点涨幅'}: ${b8Val.toFixed(1)}% (要求≥${minB8}%${maxB8 > 0 ? `~${maxB8}%` : ''})`);
+          }
+
+          const detailedReason = matchedParts.length > 0 
+            ? `[List1 立即开] 趋势门槛达成: ${matchedParts.join(' | ')}`
+            : `[List1 Auto] InstantOpen`;
+
           pendingOpenTasks.push({
             symbol,
             side,
             price,
-            reason: `[List1 Auto] InstantOpen`,
+            reason: detailedReason,
             isReopen: false
           });
         }
@@ -2040,6 +2432,10 @@ const ScannerDashboardInner: React.FC<
     }
 
     (async () => {
+      // 🛡️ 600ms 阈值输入防抖保护：防止用户在输入框连续敲击数字（如输入 15 时先按出 1）的毫秒级中间态误触发首批发单
+      await new Promise(resolve => setTimeout(resolve, 600));
+      if (isCancelled) return;
+
       for (let chunkIndex = 0; chunkIndex < taskChunks.length; chunkIndex++) {
         if (isCancelled) break;
 
@@ -2054,17 +2450,10 @@ const ScannerDashboardInner: React.FC<
         for (const task of currentChunk) {
           if (isCancelled) break;
 
-          list1OpenedSymbolsRef.current.add(task.symbol);
           list1LastTriggerTimeRef.current[task.symbol] = Date.now();
-          if (task.isReopen) {
-            delete list1ClosedTimeRef.current[task.symbol];
-            list1ClosedSymbolsRef.current.delete(task.symbol);
-            persistList1ClosedTimes(list1ClosedTimeRef.current);
-          }
-          persistList1OpenedSet(list1OpenedSymbolsRef.current);
 
           console.log(`[List 1 Batch Open] Triggering trade for ${task.symbol} @ ${task.price} (${task.side}) | Batch ${chunkIndex + 1}/${taskChunks.length}`);
-          executeTradeSafe(
+          const tradeExecuted = executeTradeSafe(
             task.symbol,
             task.side,
             task.price,
@@ -2074,6 +2463,16 @@ const ScannerDashboardInner: React.FC<
             undefined,
             { isReopened: task.isReopen }
           );
+
+          if (tradeExecuted) {
+            list1OpenedSymbolsRef.current.add(task.symbol);
+            if (task.isReopen) {
+              delete list1ClosedTimeRef.current[task.symbol];
+              list1ClosedSymbolsRef.current.delete(task.symbol);
+              persistList1ClosedTimes(list1ClosedTimeRef.current);
+            }
+            persistList1OpenedSet(list1OpenedSymbolsRef.current);
+          }
         }
       }
     })();
@@ -3172,7 +3571,7 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
   }, []);
 
   const bgCandidatesKey = useMemo(() => {
-    return (list1Candidates || []).map(c => `${c.symbol}_${c.price || 0}`).join('|');
+    return (list1Candidates || []).map(c => `${c.symbol}_${c.price || 0}_${c.change || 0}_${c.change8am || 0}_${c.volume24h || 0}_${c.volume8am || 0}_${c.lowPrice || 0}_${c.highPrice || 0}`).join('|');
   }, [list1Candidates]);
 
   const bgPositionsKey = useMemo(() => {
@@ -3202,7 +3601,16 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
     const now = Date.now();
     const closedTimes = getInitialList1ClosedTimes();
 
-    list1Candidates.forEach(item => {
+    // 🔒 后台策略同样强制绑定趋势门槛过滤
+    const pushFilteredCandidates = filterCandidatesByPushConfigShared(
+      list1Candidates,
+      scanConfig.list2PushConfig,
+      bgCurrentPricesRef.current,
+      openDirection,
+      true
+    );
+
+    pushFilteredCandidates.forEach(item => {
       const symbol = normalizeSymbol(item.symbol);
       if (allowedFixedSet && !allowedFixedSet.has(symbol.replace('USDT', ''))) return;
 
@@ -3224,15 +3632,17 @@ const BackgroundStrategyRunner: React.FC<BackgroundStrategyRunnerProps> = ({
         const price = resolvePrice(item.symbol, bgCurrentPricesRef.current, item.price);
         if (price > 0) {
           const side = openDirection === "SHORT" ? PositionSide.SHORT : PositionSide.LONG;
-          bgOpenedSymbolsRef.current.add(symbol);
-          persistList1OpenedSet(bgOpenedSymbolsRef.current);
           bgLastTriggerTimeRef.current[symbol] = now;
-          wrappedExecuteTradeSafe(
+          const executed = wrappedExecuteTradeSafe(
             symbol,
             side,
             price,
             `[List1 Auto - ${strategyId}] InstantOpen`
           );
+          if (executed) {
+            bgOpenedSymbolsRef.current.add(symbol);
+            persistList1OpenedSet(bgOpenedSymbolsRef.current);
+          }
         }
       }
     });

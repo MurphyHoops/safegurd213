@@ -74,6 +74,8 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     });
     const isMountedRef = useRef(true);
     const hasInitialFetchedRef = useRef(false);
+    const isFetchingTickerRef = useRef(false);
+    const lastTickerFetchTimeRef = useRef<number>(0);
     const lastDispatchedSymbolsJsonRef = useRef<string>('');
 
     useEffect(() => {
@@ -118,7 +120,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     }, []);
 
     // Load & filter symbols from raw Binance data cache or API
-    const loadFromCache = () => {
+    const loadFromCache = (allowNetworkFallback = true) => {
         try {
             const raw = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
             if (raw) {
@@ -127,7 +129,9 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                 const isSpotCache = Array.isArray(parsed) && parsed.some((d: any) => d && (d.symbol === 'ETHBTC' || d.symbol === 'BNBBTC'));
                 if (isSpotCache) {
                     try { localStorage.removeItem('SCANNER_RAW_DATA_CACHE'); } catch (_) {}
-                    fetchLatestTickers();
+                    if (allowNetworkFallback) {
+                        fetchLatestTickers();
+                    }
                     return;
                 }
                 if (Array.isArray(parsed)) {
@@ -149,16 +153,18 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         } catch (e) {
             console.warn('[VolumePoolBox] Failed to parse raw data cache', e);
         }
-        fetchLatestTickers();
+        if (allowNetworkFallback) {
+            fetchLatestTickers();
+        }
     };
 
     useEffect(() => {
-        loadFromCache();
+        loadFromCache(true);
 
         // Listen for storage (cross-tab) and custom in-window update events
         const handleStorageUpdate = (e: StorageEvent) => {
             if (e.key === 'SCANNER_RAW_DATA_CACHE') {
-                loadFromCache();
+                loadFromCache(false);
             }
         };
         const handleRawDataUpdate = (e: any) => {
@@ -177,8 +183,6 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
                         return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
                     });
                 }
-            } else {
-                loadFromCache();
             }
         };
 
@@ -191,25 +195,35 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
     }, []);
 
     // Fetch latest tickers from Binance
-    const fetchLatestTickers = async () => {
-        if (!isMountedRef.current) return;
+    const fetchLatestTickers = async (forceManual = false) => {
+        if (!isMountedRef.current || isFetchingTickerRef.current) return;
+        const now = Date.now();
+        if (!forceManual && now - lastTickerFetchTimeRef.current < 8000) {
+            return;
+        }
+        isFetchingTickerRef.current = true;
+        lastTickerFetchTimeRef.current = now;
         hasInitialFetchedRef.current = true;
         recordFlightActionThrottled('AUTO_MARKET_SCAN_START', { stage: 'volume_pool_24h_sync' }, 30000);
         setIsFetching(true);
         // 🔒 [永不清零·平滑差量更新铁律]: 严禁在拉取时清空既有数据，保留现有池直至新数据到达无缝替换
         try {
-            const res = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/ticker/24hr?_t=${Date.now()}`);
+            const res = await fetchWithFallback(
+                `https://fapi.binance.com/fapi/v1/ticker/24hr?_t=${Date.now()}`,
+                undefined,
+                (d) => Array.isArray(d) && d.length > 0
+            );
             if (res.ok) {
                 const data = await res.json();
-                if (Array.isArray(data) && isMountedRef.current) {
-                    try {
-                        saveStateDebounced('SCANNER_RAW_DATA_CACHE', data, 1500, 2000);
-                        window.dispatchEvent(new CustomEvent('scanner_raw_data_updated', { detail: data }));
-                    } catch (_) {}
+                if (Array.isArray(data) && data.length > 0 && isMountedRef.current) {
                     const items: VolumePoolItem[] = data
                         .map(parseVolumePoolItem)
                         .filter((item): item is VolumePoolItem => item !== null);
                     if (items.length > 0) {
+                        try {
+                            saveStateDebounced('SCANNER_RAW_DATA_CACHE', data, 1500, 2000);
+                            window.dispatchEvent(new CustomEvent('scanner_raw_data_updated', { detail: data }));
+                        } catch (_) {}
                         setRawPool(items);
                     }
                 }
@@ -217,6 +231,7 @@ export const VolumePoolBox: React.FC<Props> = ({ scanConfig }) => {
         } catch (err) {
             console.warn('[VolumePoolBox] Fetch tickers warning:', err);
         } finally {
+            isFetchingTickerRef.current = false;
             if (isMountedRef.current) {
                 setIsFetching(false);
             }

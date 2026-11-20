@@ -124,7 +124,18 @@ class BinanceRateLimiter {
     this.frozenReason = reason;
 
     const remainingSec = Math.ceil((this.frozenUntil - Date.now()) / 1000);
-    console.error(`🚨 [CIRCUIT BREAKER ACTIVATED] 捕获币安限频封禁 (${reason})！全局熔断已激活，静默冷却 ${remainingSec} 秒。在此期间所有 REST 请求将被本地物理拦截，绝对禁止向币安发包！`);
+    console.warn(`🚨 [CIRCUIT BREAKER ACTIVATED] 捕获币安限频保护 (${reason})！全局静默冷却 ${remainingSec} 秒，期间非核心 REST 请求由本地缓存兜底。`);
+    this.notifyStatus();
+  }
+
+  /**
+   * 手动或自愈重置全局熔断锁与权重计数
+   */
+  public resetCircuitBreaker(): void {
+    this.isFrozen = false;
+    this.frozenUntil = 0;
+    this.frozenReason = '';
+    this.currentWeight1m = 0;
     this.notifyStatus();
   }
 

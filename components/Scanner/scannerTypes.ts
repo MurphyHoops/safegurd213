@@ -632,22 +632,32 @@ export interface ScanConfig {
     list2PushConfig?: {
         enabled: boolean; // 是否启用定向推送至列表2 (若关闭则全部初筛币进入列表2)
         mode: 'OR' | 'AND'; // 复合条件模式: 'OR' (满足任意一项) | 'AND' (必须全部满足)
-        // 条件1: 24H 涨跌幅绝对值 >= X%
+        // 条件1: 24H 涨跌幅区间 [minChg24h, maxChg24h] (max为0或不填表示不封顶；超过max仅推列表2不直开)
         enableChg24h: boolean;
         minChg24h: number;
-        // 条件2: 8AM 涨跌幅绝对值 >= X%
+        maxChg24h?: number;
+        // 条件2: 8AM 涨跌幅区间 [minChg8am, maxChg8am]
         enableChg8am: boolean;
         minChg8am: number;
+        maxChg8am?: number;
         // 条件3: 24H 交易额 >= X M
         enableVol24h: boolean;
         minVol24h: number;
         // 条件4: 8AM 交易额 >= X M
         enableVol8am: boolean;
         minVol8am: number;
+        // 条件5: 8AM 最低点涨幅/最高点跌幅区间 [minBounce8am, maxBounce8am]
+        enableBounce8am?: boolean;
+        minBounce8am?: number;
+        maxBounce8am?: number;
+        // 条件6: 24H 最低点涨幅/最高点跌幅区间 [minBounce24h, maxBounce24h]
+        enableBounce24h?: boolean;
+        minBounce24h?: number;
+        maxBounce24h?: number;
         // 头部 Top N 排序截取
         enableTopN: boolean;
         topNCount: number;
-        topNSortKey: 'CHG_24H_ABS' | 'CHG_8AM_ABS' | 'VOL_24H' | 'VOL_8AM' | 'CHG_24H_DESC' | 'CHG_24H_ASC' | 'CHG_8AM_DESC' | 'CHG_8AM_ASC';
+        topNSortKey: 'CHG_24H_ABS' | 'CHG_8AM_ABS' | 'VOL_24H' | 'VOL_8AM' | 'CHG_24H_DESC' | 'CHG_24H_ASC' | 'CHG_8AM_DESC' | 'CHG_8AM_ASC' | 'BOUNCE_8AM' | 'BOUNCE_24H';
     };
 }
 

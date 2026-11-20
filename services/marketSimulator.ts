@@ -92,15 +92,47 @@ export class MarketSimulator {
     public isRecentlyClosed(symbol: string, side?: PositionSide): boolean {
         const cleanSymbol = normalizeSymbol(symbol);
         const now = Date.now();
+        const bufferMs = this.settings?.system?.realTrading ? 8000 : 60000;
         if (side) {
             const key = `${cleanSymbol}_${side}`;
             const t = this.recentlyClosedKeys.get(key);
-            return !!(t && (now - t < 60000));
+            return !!(t && (now - t < bufferMs));
         }
         const t1 = this.recentlyClosedKeys.get(`${cleanSymbol}_${PositionSide.LONG}`);
         const t2 = this.recentlyClosedKeys.get(`${cleanSymbol}_${PositionSide.SHORT}`);
         const t3 = this.recentlyClosedKeys.get(cleanSymbol);
-        return !!((t1 && (now - t1 < 60000)) || (t2 && (now - t2 < 60000)) || (t3 && (now - t3 < 60000)));
+        return !!((t1 && (now - t1 < bufferMs)) || (t2 && (now - t2 < bufferMs)) || (t3 && (now - t3 < bufferMs)));
+    }
+
+    /**
+     * 🔓 当实盘平仓失败或币安权威核验发现仓位仍未平掉时，立即解除该仓位的在途平仓掩码与墓地锁，确保界面 100% 真实回显未平持仓
+     */
+    public unmarkPositionClosed(symbol: string, side?: PositionSide) {
+        const cleanSymbol = normalizeSymbol(symbol);
+        this.inFlightClosingPool.delete(cleanSymbol);
+        this.recentlyClosedKeys.delete(cleanSymbol);
+        if (side) {
+            const key = `${cleanSymbol}_${side}`;
+            this.inFlightClosingPool.delete(key);
+            this.recentlyClosedKeys.delete(key);
+        } else {
+            this.inFlightClosingPool.delete(`${cleanSymbol}_${PositionSide.LONG}`);
+            this.inFlightClosingPool.delete(`${cleanSymbol}_${PositionSide.SHORT}`);
+            this.recentlyClosedKeys.delete(`${cleanSymbol}_${PositionSide.LONG}`);
+            this.recentlyClosedKeys.delete(`${cleanSymbol}_${PositionSide.SHORT}`);
+        }
+        this.positions.forEach(p => {
+            if (normalizeSymbol(p.symbol) === cleanSymbol && (!side || p.side === side)) {
+                p.isClosing = false;
+                p.isBeingClosed = false;
+            }
+        });
+        try {
+            if (typeof window !== 'undefined' && window.localStorage) {
+                localStorage.removeItem('SAVIOR_LAST_BATCH_CLOSE_TS');
+            }
+        } catch (e) {}
+        this.saveRecentlyClosedKeys();
     }
 
     public registerInFlightClosing(symbol: string, side: PositionSide, amount: number, retainLocally: boolean = false) {
@@ -147,8 +179,6 @@ export class MarketSimulator {
             this.inFlightClosingPool.set(cleanSymbol, record);
             this.recentlyClosedKeys.set(key, now);
             this.recentlyClosedKeys.set(cleanSymbol, now);
-            pos.isClosing = true;
-            pos.isBeingClosed = true;
             this.removePositionLocally(cleanSymbol, pos.side);
         });
     }
@@ -430,33 +460,51 @@ export class MarketSimulator {
                 lastBatchCloseTs
             );
 
-            // 🔒 1. 墓地关卡：处于 60 秒平仓保护期内，或该持仓的开仓时间早于/等于已记录的平仓时间戳（旧缓存快照），物理拦截，严禁幽灵复活！
-            if (closedTimestamp > 0 && ((now - closedTimestamp < 60000) || (np.entryTime && np.entryTime <= closedTimestamp))) {
-                console.log(`[MarketSimulator] Graveyard active for ${sym} (${np.side}) [closedTs=${closedTimestamp}, entryTime=${np.entryTime || 0}]. Suppressing stale position.`);
-                continue;
-            }
+            if (isReal) {
+                // 🛡️ 实盘模式铁律：绝不允许用 entryTime <= closedTimestamp 永久屏蔽币安真实未平持仓！
+                // 仅在平仓请求刚刚发出的极短在途缓冲期（8秒内）屏蔽旧快照抖动；若超过 8 秒币安 API 仍返回该非零持仓，说明币安上确实未平掉，必须立即解除墓地锁并真实回显到“当前持仓”！
+                const activeCloseWindowMs = 8000;
+                const inFlightWindowMs = 12000;
+                const isWithinCloseBuffer = closedTimestamp > 0 && (now - closedTimestamp < activeCloseWindowMs);
+                const isWithinInFlight = !!(inFlight && (now - inFlight.requestTime < inFlightWindowMs));
 
-            if (inFlight) {
-                const elapsed = now - inFlight.requestTime;
-                
-                // Check if already closed in logs or recently closed keys
-                const isAlreadyClosed = this.isRecentlyClosed(sym, np.side) || this.tradeLogs.some(l => 
-                    normalizeSymbol(l.symbol) === sym && 
-                    l.status === 'CLOSED' && 
-                    l.direction === np.side && 
-                    !l.exit_reason?.includes('砍仓') &&
-                    !l.exit_reason?.includes('断臂') &&
-                    !l.exit_reason?.includes('减仓') &&
-                    (now - (l.exit_timestamp || 0) < 60000)
-                );
+                if (isWithinCloseBuffer || isWithinInFlight) {
+                    console.log(`[MarketSimulator] Real-mode transient close buffer active for ${sym} (${np.side}) [elapsed=${now - (closedTimestamp || inFlight?.requestTime || now)}ms].`);
+                    continue;
+                }
 
-                if (isAlreadyClosed || elapsed < 60000) {
-                    console.log(`[MarketSimulator] In-flight closing buffer active for ${sym} (${np.side}) [elapsed ${elapsed}ms < 60000ms]. Masking from UI positions.`);
-                    continue; // Suppress popping up during buffer period!
-                } else {
-                    // Buffer expired (> 60s).
+                // 缓冲期已过但币安仍返回该持仓 -> 自动清理残留墓地标记，确保前端界面与手机 App 100% 一致
+                if (closedTimestamp > 0 || inFlight) {
                     this.inFlightClosingPool.delete(key);
                     this.inFlightClosingPool.delete(sym);
+                    this.recentlyClosedKeys.delete(key);
+                    this.recentlyClosedKeys.delete(sym);
+                }
+            } else {
+                // 🔒 模拟盘墓地关卡：处于 60 秒平仓保护期内，或该持仓的开仓时间早于/等于已记录的平仓时间戳（旧缓存快照），物理拦截
+                if (closedTimestamp > 0 && ((now - closedTimestamp < 60000) || (np.entryTime && np.entryTime <= closedTimestamp))) {
+                    console.log(`[MarketSimulator] Sim graveyard active for ${sym} (${np.side}) [closedTs=${closedTimestamp}, entryTime=${np.entryTime || 0}]. Suppressing stale position.`);
+                    continue;
+                }
+
+                if (inFlight) {
+                    const elapsed = now - inFlight.requestTime;
+                    const isAlreadyClosed = this.isRecentlyClosed(sym, np.side) || this.tradeLogs.some(l => 
+                        normalizeSymbol(l.symbol) === sym && 
+                        l.status === 'CLOSED' && 
+                        l.direction === np.side && 
+                        !l.exit_reason?.includes('砍仓') &&
+                        !l.exit_reason?.includes('断臂') &&
+                        !l.exit_reason?.includes('减仓') &&
+                        (now - (l.exit_timestamp || 0) < 60000)
+                    );
+
+                    if (isAlreadyClosed || elapsed < 60000) {
+                        continue;
+                    } else {
+                        this.inFlightClosingPool.delete(key);
+                        this.inFlightClosingPool.delete(sym);
+                    }
                 }
             }
             filteredNewPositions.push(np);

@@ -39,7 +39,7 @@ export const CrashRecoveryModal: React.FC<Props> = ({
     onClose();
   };
 
-  const handleExportDiagnostics = () => {
+  const handleExportDiagnostics = async () => {
     setIsExporting(true);
     try {
       const payload = {
@@ -58,8 +58,17 @@ export const CrashRecoveryModal: React.FC<Props> = ({
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
+      // 导出后自动向后端标记已确认，防止后续刷新页面重复弹出同一条旧崩溃告警
+      try {
+        await fetch('/api/telemetry/acknowledge-crash', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: crashData.id })
+        });
+      } catch (_) {}
     } catch (err) {
-      alert('导出黑匣子报告失败: ' + String(err));
+      console.error('导出黑匣子报告失败:', err);
     } finally {
       setIsExporting(false);
     }

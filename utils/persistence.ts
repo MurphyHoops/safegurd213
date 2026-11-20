@@ -101,6 +101,25 @@ const cleanPayloadForPersistence = (key: string, data: any): any => {
             return newItem;
         };
 
+        if (key === 'SCANNER_RAW_DATA_CACHE' && Array.isArray(data)) {
+            if (typeof window !== 'undefined') {
+                (window as any).__SCANNER_RAW_DATA_MEM__ = data;
+            }
+            return data.map((d: any) => {
+                if (!d || typeof d !== 'object') return d;
+                return {
+                    symbol: d.symbol,
+                    lastPrice: d.lastPrice,
+                    priceChangePercent: d.priceChangePercent,
+                    quoteVolume: d.quoteVolume,
+                    volume: d.volume,
+                    highPrice: d.highPrice,
+                    lowPrice: d.lowPrice,
+                    openPrice: d.openPrice
+                };
+            });
+        }
+
         if (key.includes('SCANNER_LIST2') || key.includes('SCANNER_LIST3') || key.includes('SCANNER_LIST4')) {
             if (Array.isArray(data)) {
                 return data.map(item => {
@@ -120,6 +139,25 @@ const cleanPayloadForPersistence = (key: string, data: any): any => {
         console.error('[Persistence] Error cleaning payload', e);
     }
     return data;
+};
+
+export const getRawDataCacheSync = (): any[] => {
+    if (typeof window === 'undefined') return [];
+    const mem = (window as any).__SCANNER_RAW_DATA_MEM__;
+    if (Array.isArray(mem) && mem.length > 0) {
+        return mem;
+    }
+    try {
+        const raw = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                (window as any).__SCANNER_RAW_DATA_MEM__ = parsed;
+                return parsed;
+            }
+        }
+    } catch (_) {}
+    return [];
 };
 
 /**
@@ -288,6 +326,10 @@ const saveStatePendingPayloads: Map<string, { data: any; maxSizeRows: number }> 
  * ⚡ 防抖 + 浏览器空闲时间片异步落盘，消除高频同步 JSON 序列化阻塞主线程
  */
 export const saveStateDebounced = (key: string, data: any, delayMs: number = 2000, maxSizeRows: number = 800) => {
+    if (key === 'SCANNER_RAW_DATA_CACHE' && Array.isArray(data) && typeof window !== 'undefined') {
+        (window as any).__SCANNER_RAW_DATA_MEM__ = data;
+    }
+    const effectiveDelay = key === 'SCANNER_RAW_DATA_CACHE' ? Math.max(delayMs, 12000) : delayMs;
     saveStatePendingPayloads.set(key, { data, maxSizeRows });
     if (saveStateDebounceTimers.has(key)) {
         clearTimeout(saveStateDebounceTimers.get(key));
@@ -303,11 +345,11 @@ export const saveStateDebounced = (key: string, data: any, delayMs: number = 200
         };
 
         if (typeof window !== 'undefined' && typeof (window as any).requestIdleCallback === 'function' && (typeof document === 'undefined' || !document.hidden)) {
-            (window as any).requestIdleCallback(runFlush, { timeout: 1500 });
+            (window as any).requestIdleCallback(runFlush, { timeout: 2500 });
         } else {
             runFlush();
         }
-    }, delayMs);
+    }, effectiveDelay);
     saveStateDebounceTimers.set(key, timer);
 };
 

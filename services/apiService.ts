@@ -407,16 +407,19 @@ export const fetchWithFallback = async (
         if (!response.ok) {
             throw new Error(`HTTP error ${response.status}`);
         }
+        const isFallback = response.headers.get('X-Rate-Limit-Fallback') === 'true' || response.headers.get('x-rate-limit-fallback') === 'true';
         const text = await response.text();
         const parsed = JSON.parse(text);
         
-        // Cache successful responses
-        const ttl = getCacheTTL(url);
-        setWithLruCap(cacheKey, {
-            data: parsed,
-            timestamp: Date.now(),
-            ttl
-        });
+        // Cache successful responses (never cache empty rate-limit fallback payloads)
+        if (!isFallback) {
+            const ttl = getCacheTTL(url);
+            setWithLruCap(cacheKey, {
+                data: parsed,
+                timestamp: Date.now(),
+                ttl
+            });
+        }
         
         return parsed;
     })();
@@ -603,12 +606,19 @@ const _fetchWithFallbackInner = async (
                     signal: controller.signal,
                     headers: { 'Accept': 'application/json' }
                 });
+
+                try {
+                    binanceRateLimiter.handleResponse(res.status, res.headers);
+                } catch (_) {}
                 
                 if (!res.ok) {
                     if (res.status === 400 || res.status === 404) {
                         throw new Error(`HTTP ${res.status}: Invalid symbol or resource`);
                     }
-                    if (res.status === 403 || res.status === 429) {
+                    if (res.status === 429 || res.status === 418) {
+                        throw new Error(`HTTP ${res.status}: Rate Limited`);
+                    }
+                    if (res.status === 403) {
                         if (hostname && hostname !== 'localhost' && !hostname.startsWith('127.0.0.1') && !hostname.includes('binance')) {
                             blacklistedProxies.add(hostname);
                         }
@@ -639,6 +649,18 @@ const _fetchWithFallbackInner = async (
                     }
                 }
                 
+                const isRateLimitFallback = res.headers.get('x-rate-limit-fallback') === 'true';
+                if (isRateLimitFallback) {
+                    const innerCacheKey = normalizeUrlForCache(url);
+                    const staleCached = clientSideCache.get(innerCacheKey);
+                    if (staleCached && (!validator || validator(staleCached.data))) {
+                        return new Response(JSON.stringify(staleCached.data), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json', 'X-Cache': 'STALE_FALLBACK', 'X-Rate-Limit-Fallback': 'true' }
+                        });
+                    }
+                }
+
                 if (validator && !validator(content)) {
                     throw new Error(`Validation failed`);
                 }
@@ -647,9 +669,13 @@ const _fetchWithFallbackInner = async (
                     lastSuccessfulProxy = new URL(proxyUrl).hostname;
                 } catch (e) {}
                 
+                const respHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+                if (isRateLimitFallback) {
+                    respHeaders['X-Rate-Limit-Fallback'] = 'true';
+                }
                 return new Response(JSON.stringify(content), {
                     status: 200,
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: respHeaders
                 });
             } finally {
                 clearTimeout(timeoutId);
@@ -663,6 +689,7 @@ const _fetchWithFallbackInner = async (
             const proxy = proxies[idx];
             let attempts = 0;
             const maxAttempts = 3;
+            let shouldBreakProxyLoop = false;
             while (attempts < maxAttempts) {
                 attempts++;
                 try {
@@ -672,47 +699,66 @@ const _fetchWithFallbackInner = async (
                 } catch (e: any) {
                     lastError = e;
                     const errStr = e?.message || String(e);
+                    if (errStr.includes('HTTP 404') || errStr.includes('HTTP 400') || errStr.includes('HTTP 429') || errStr.includes('HTTP 418')) {
+                        shouldBreakProxyLoop = true;
+                        break;
+                    }
                     const isResourceOrNetworkError = errStr.includes('INSUFFICIENT_RESOURCES') || errStr.includes('Failed to fetch') || errStr.includes('NetworkError') || errStr.includes('timed out');
                     if (attempts < maxAttempts && isResourceOrNetworkError) {
                         const backoffMs = attempts * 1000; // 1000ms, 2000ms backoff
                         await new Promise(resolve => setTimeout(resolve, backoffMs));
                         continue;
                     }
-                    if (errStr.includes('HTTP 404') || errStr.includes('HTTP 400')) {
-                        break;
-                    }
                     if (attempts >= maxAttempts) {
                         break;
                     }
                 }
             }
+            if (shouldBreakProxyLoop) {
+                break;
+            }
         }
 
-        // 🛡️ Direct fetch fallback: ensures uninterrupted connectivity in Electron or during local server boot
-        try {
-            const directController = new AbortController();
-            const dTimeout = setTimeout(() => {
-                try { directController.abort(); } catch (_) {}
-            }, isHeavyPayload ? 15000 : 8000);
+        // 🛡️ Direct fetch fallback: ONLY allowed when not rate-limited and not a 400/404 invalid symbol error
+        const lastErrStr = lastError?.message || String(lastError || '');
+        const isTerminalOrRateLimitError =
+            lastErrStr.includes('HTTP 400') ||
+            lastErrStr.includes('HTTP 404') ||
+            lastErrStr.includes('HTTP 429') ||
+            lastErrStr.includes('HTTP 418') ||
+            binanceRateLimiter.getStatus().isFrozen ||
+            binanceRateLimiter.getStatus().isHighWeight;
 
-            const directRes = await fetch(url, {
-                signal: directController.signal,
-                headers: { 'Accept': 'application/json' }
-            });
-            clearTimeout(dTimeout);
+        if (!isTerminalOrRateLimitError) {
+            try {
+                const directController = new AbortController();
+                const dTimeout = setTimeout(() => {
+                    try { directController.abort(); } catch (_) {}
+                }, isHeavyPayload ? 15000 : 8000);
 
-            if (directRes.ok) {
-                const text = await directRes.text();
-                const json = JSON.parse(text);
-                if (!validator || validator(json)) {
-                    continuousFailures = 0;
-                    return new Response(JSON.stringify(json), {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' }
-                    });
+                const directRes = await fetch(url, {
+                    signal: directController.signal,
+                    headers: { 'Accept': 'application/json' }
+                });
+                clearTimeout(dTimeout);
+
+                try {
+                    binanceRateLimiter.handleResponse(directRes.status, directRes.headers);
+                } catch (_) {}
+
+                if (directRes.ok) {
+                    const text = await directRes.text();
+                    const json = JSON.parse(text);
+                    if (!validator || validator(json)) {
+                        continuousFailures = 0;
+                        return new Response(JSON.stringify(json), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
                 }
-            }
-        } catch (_) {}
+            } catch (_) {}
+        }
         
         continuousFailures++;
         if (continuousFailures > 25) {

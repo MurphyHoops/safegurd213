@@ -1092,6 +1092,9 @@ export async function binanceFetch(input: RequestInfo | URL, init?: RequestInit)
                             });
                         }
                     } else if (isBalanceRoute) {
+                        if (json?.silentSkip) {
+                            return;
+                        }
                         if (res.ok && json && json.success) {
                             const isForce = bodyJson?.force;
                             if (isForce || shouldLogPeriodicBalance()) {

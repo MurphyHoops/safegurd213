@@ -604,6 +604,37 @@ async function startServer() {
   let lastWatchdogCheckTimestamp = Date.now();
   let lastHeartbeatHeapMB = 0;
 
+  // 🛡️ [Self-Healing Timeout Cleaner]: 当渲染进程在瞬态网络排队后恢复心跳，自动将误报的 RENDERER_HEARTBEAT_TIMEOUT 标记为已恢复(unacknowledged=false)，杜绝后续刷新页面时翻旧账弹窗
+  const autoHealTransientTimeoutDumps = () => {
+    try {
+      if (!fs.existsSync(CRASH_DUMP_FILE)) return;
+      const dumps = JSON.parse(fs.readFileSync(CRASH_DUMP_FILE, 'utf-8'));
+      if (!Array.isArray(dumps) || dumps.length === 0) return;
+      let modified = false;
+      dumps.forEach((d: any) => {
+        if (d && d.unacknowledged && d.type === 'RENDERER_HEARTBEAT_TIMEOUT') {
+          d.unacknowledged = false;
+          d.autoRecoveredAt = Date.now();
+          modified = true;
+        }
+      });
+      if (modified) {
+        fs.writeFileSync(CRASH_DUMP_FILE, JSON.stringify(dumps, null, 2), 'utf-8');
+        try {
+          fs.writeFileSync(CRASH_LOG_FILE, JSON.stringify(dumps.slice(0, 50), null, 2), 'utf-8');
+        } catch (_) {}
+      }
+    } catch (_) {}
+  };
+
+  // 🛡️ [全接口生命体征联动]: 前端发起任何 /api/* 请求均代表渲染进程存活，同步刷新心跳时间戳，防止同源 6 连接池被 K 线请求占满时误判假死
+  app.use("/api", (req, _res, next) => {
+    if (hasReceivedHeartbeatOnce && !isHeartbeatPaused && req.path !== "/telemetry/last-crash") {
+      lastHeartbeatTimestamp = Date.now();
+    }
+    next();
+  });
+
   // 🛡️ [Power/Resume Event Endpoint]: 接收 Electron 主进程或前端唤醒通知，授予宽限期并重置心跳计时，杜绝休眠时钟跳跃误报假死
   app.post("/api/telemetry/power-event", (req, res) => {
     try {
@@ -641,6 +672,10 @@ async function startServer() {
       if (clockJumpDetected) {
         heartbeatGraceUntilTimestamp = Math.max(heartbeatGraceUntilTimestamp, now + 25000);
       }
+      if (isHeartbeatTimeoutAlerted) {
+        // 渲染进程已恢复正常心跳，自动销账刚才因连接池排队触发的瞬态超时记录
+        autoHealTransientTimeoutDumps();
+      }
       isSystemSuspended = false;
       isHeartbeatPaused = false;
       hasReceivedHeartbeatOnce = true;
@@ -667,6 +702,11 @@ async function startServer() {
     try {
       const entry = req.body;
       if (entry && entry.id) {
+        lastHeartbeatTimestamp = Date.now();
+        if (isHeartbeatTimeoutAlerted && entry.actionType !== 'BOOT_INIT') {
+          isHeartbeatTimeoutAlerted = false;
+          autoHealTransientTimeoutDumps();
+        }
         const existingIdx = flightBufferServer.findIndex(a => a.id === entry.id);
         if (existingIdx < 0) {
           flightBufferServer.push(entry);
@@ -749,6 +789,33 @@ async function startServer() {
         try {
           const dumps = JSON.parse(fs.readFileSync(CRASH_DUMP_FILE, 'utf-8'));
           if (Array.isArray(dumps) && dumps.length > 0) {
+            const now = Date.now();
+            let modified = false;
+            dumps.forEach((d: any) => {
+              if (!d || !d.unacknowledged || typeof d.timestamp !== 'number') return;
+              // 1. 超过 6 小时的陈旧未确认崩溃记录自动归档标记为已读
+              if (now - d.timestamp > 6 * 3600 * 1000) {
+                d.unacknowledged = false;
+                modified = true;
+                return;
+              }
+              // 2. 若该记录为 RENDERER_HEARTBEAT_TIMEOUT，但飞行轨迹中存在该时间点 5 秒之后、且非 BOOT_INIT 的正常业务动作，说明当时仅是瞬态排队并已自行恢复，自动销账
+              if (d.type === 'RENDERER_HEARTBEAT_TIMEOUT') {
+                const recoveredLater = flightBufferServer.some(
+                  a => a && a.actionType !== 'BOOT_INIT' && typeof a.timestamp === 'number' && a.timestamp > d.timestamp + 5000
+                );
+                if (recoveredLater) {
+                  d.unacknowledged = false;
+                  d.autoRecoveredAt = now;
+                  modified = true;
+                }
+              }
+            });
+            if (modified) {
+              try {
+                fs.writeFileSync(CRASH_DUMP_FILE, JSON.stringify(dumps, null, 2), 'utf-8');
+              } catch (_) {}
+            }
             unackCrash = dumps.find((d: any) => d.unacknowledged) || null;
           }
         } catch (_) {}
@@ -788,7 +855,7 @@ async function startServer() {
     }
   });
 
-  // Server-side Heartbeat Watchdog (🔒 15 秒容错阈值 + 休眠唤醒/时钟跳跃 30 秒宽限免疫 + 活跃 WS 校验)
+  // Server-side Heartbeat Watchdog (🔒 25 秒容错阈值 + 休眠唤醒/时钟跳跃 30 秒宽限免疫 + 活跃 WS 校验 + 瞬态恢复自动销账)
   setInterval(() => {
     const now = Date.now();
     const watchdogLoopDelta = now - lastWatchdogCheckTimestamp;
@@ -810,7 +877,7 @@ async function startServer() {
     const hasActiveWsClients = typeof wss !== 'undefined' && wss.clients ? wss.clients.size > 0 : false;
     if (hasReceivedHeartbeatOnce && !isHeartbeatTimeoutAlerted && !isHeartbeatPaused && hasActiveWsClients) {
       const elapsed = now - lastHeartbeatTimestamp;
-      if (elapsed > 15000) { // 从激进的 4000ms (4s) 提升至合理的 15000ms (15s)
+      if (elapsed > 25000) { // 提升至 25000ms (25s)，避开全市场 K 线并发拉取高峰期
         isHeartbeatTimeoutAlerted = true;
         const mem = process.memoryUsage();
         const rssMB = Math.round(mem.rss / 1024 / 1024);
@@ -821,7 +888,7 @@ async function startServer() {
           timestamp: now,
           timeStr: new Date(now).toLocaleString(),
           type: 'RENDERER_HEARTBEAT_TIMEOUT',
-          reason: 'Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)',
+          reason: 'Renderer Unresponsive / Frozen / Dead (No heartbeat for >25s)',
           message: `前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 ${Math.round(elapsed / 1000)} 秒)`,
           memoryRssMB: rssMB,
           memoryHeapMB: lastHeartbeatHeapMB,
@@ -972,13 +1039,16 @@ async function startServer() {
 
   // 🔒 全局币安 IP 限频/封禁状态守护（-1003 / 418 / 429 智能退避）
   let binanceBannedUntilTimestamp = 0;
-  const parseBinanceBanTimestamp = (text: string, defaultDurationMs = 30000): number => {
+  const parseBinanceBanTimestamp = (text: string, defaultDurationMs = 60000): number => {
       try {
           const match = text.match(/banned until (\d+)/i);
           if (match && match[1]) {
-              const raw = parseInt(match[1]);
+              const raw = parseInt(match[1], 10);
               const val = raw > 10000000000 ? raw : raw * 1000;
-              return Math.min(val, Date.now() + 60000);
+              if (val > Date.now()) {
+                  // 严格遵从币安真实解封时间戳 (+3秒安全缓冲，最高上限15分钟)，绝不截断为60秒导致封禁期内提前发包撞墙无限续期！
+                  return Math.min(val + 3000, Date.now() + 15 * 60 * 1000);
+              }
           }
       } catch (e) {}
       return Date.now() + defaultDurationMs;
@@ -1482,17 +1552,18 @@ async function startServer() {
     }
 
     const serverCache = new Map<string, ServerCacheEntry>();
+    const inflightProxyRequests = new Map<string, Promise<any>>();
     const invalidSymbolsCache = new Map<string, number>(); // Symbol -> Expiry Timestamp
 
     // 🛡️ [ANTI-OOM GLOBAL MEMORY SWEEPER]: Periodically purge expired cache entries across all server maps
     // Prevents Node.js heap accumulation from crashing the server and triggering container reboots
-    const MAX_SERVER_CACHE_ENTRIES = 100;
+    const MAX_SERVER_CACHE_ENTRIES = 2000;
     setInterval(() => {
       try {
         const now = Date.now();
-        // 1. serverCache TTL & Capacity
+        // 1. serverCache TTL & Capacity (Keep stale klines up to 3x TTL for rate-limit fallback)
         for (const [key, entry] of serverCache.entries()) {
-          if (now - entry.timestamp > entry.ttl) {
+          if (now - entry.timestamp > Math.max(entry.ttl * 3, 180000)) {
             serverCache.delete(key);
           }
         }
@@ -1517,12 +1588,12 @@ async function startServer() {
         for (const [k, item] of symbolMaxLeverageCache.entries()) {
           if (now - item.timestamp > 43200000) symbolMaxLeverageCache.delete(k);
         }
-        // 5. accountStateCache & userTradesCache (30s TTL)
+        // 5. accountStateCache & userTradesCache (10m retention for silent fallback during rate-limit cooldown)
         for (const [k, item] of accountStateCache.entries()) {
-          if (now - item.timestamp > 30000) accountStateCache.delete(k);
+          if (now - item.timestamp > 600000) accountStateCache.delete(k);
         }
         for (const [k, item] of userTradesCache.entries()) {
-          if (now - item.timestamp > 30000) userTradesCache.delete(k);
+          if (now - item.timestamp > 600000) userTradesCache.delete(k);
         }
         // 6. serverRefillFloodGuard (clean items older than 5m)
         for (const [k, timestamp] of serverRefillFloodGuard.entries()) {
@@ -1554,11 +1625,12 @@ async function startServer() {
     const getServerCacheTTL = (url: string): number => {
         if (url.includes("/klines")) {
             if (url.includes("interval=1d") || url.includes("interval=1w")) return 300000; // 5 minutes (300s)
-            return 10000; // 10s for other klines
+            if (url.includes("interval=15m") || url.includes("interval=30m") || url.includes("interval=1h") || url.includes("interval=2h") || url.includes("interval=4h")) return 35000; // 35s
+            return 20000; // 20s for short-tf klines
         }
-        if (url.includes("ticker/price")) return 2000; // 2s
-        if (url.includes("ticker/24hr")) return 5000; // 5s
-        return 2000; // 2s default
+        if (url.includes("ticker/price")) return 4000; // 4s
+        if (url.includes("ticker/24hr")) return 12000; // 12s
+        return 6000; // 6s default
     };
 
     const normalizeUrlForCache = (urlStr: string): string => {
@@ -1566,6 +1638,8 @@ async function startServer() {
             const urlObj = new URL(urlStr);
             urlObj.searchParams.delete('_t');
             urlObj.searchParams.delete('cb');
+            urlObj.searchParams.delete('isScanner');
+            urlObj.searchParams.delete('priority');
             return urlObj.toString();
         } catch (e) {
             return urlStr;
@@ -1684,13 +1758,13 @@ async function startServer() {
 
         const reqId = `ws_ord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         const timeOffset = await syncBinanceServerTime();
-        const timestamp = Date.now() + timeOffset;
+        const timestamp = Date.now() + timeOffset - 500;
 
         const rawParams: Record<string, any> = {
+          ...orderParams,
           apiKey,
           timestamp,
-          recvWindow: 10000,
-          ...orderParams
+          recvWindow: 60000
         };
 
         const queryString = Object.keys(rawParams)
@@ -1731,8 +1805,9 @@ async function startServer() {
 
     const binanceWsTradingEngine = new BinanceWsTradingEngine();
 
-    async function fetchWithFallback(urlStr: string, options: RequestInit & { isCoreOrder?: boolean } = {}, timeoutMs: number = 8000): Promise<Response> {
-        const isCoreOrder = Boolean(options.isCoreOrder) || 
+    async function fetchWithFallback(urlStr: string, options: RequestInit & { isCoreOrder?: boolean; isEmergencyOrder?: boolean } = {}, timeoutMs: number = 8000): Promise<Response> {
+        const isEmergencyOrder = Boolean(options.isEmergencyOrder);
+        const isCoreOrder = isEmergencyOrder || Boolean(options.isCoreOrder) || 
           urlStr.includes('/order') || 
           urlStr.includes('/batchOrders') || 
           urlStr.includes('/leverage') || 
@@ -1740,12 +1815,15 @@ async function startServer() {
           urlStr.includes('/positionSide') ||
           urlStr.includes('/listenKey') ||
           urlStr.includes('/time');
-        binanceRateLimiter.checkCanRequest(isCoreOrder);
 
-        if (binanceBannedUntilTimestamp > Date.now()) {
-            const waitSec = Math.ceil((binanceBannedUntilTimestamp - Date.now()) / 1000);
-            console.warn(`[Binance Gateway Guard] Pausing outbound request to ${urlStr} (${waitSec}s rate-limit backoff remaining)...`);
-            throw new Error(`Binance IP rate-limited (-1003). Outbound request paused for ${waitSec}s.`);
+        if (!isEmergencyOrder) {
+            binanceRateLimiter.checkCanRequest(isCoreOrder);
+
+            if (binanceBannedUntilTimestamp > Date.now()) {
+                const waitSec = Math.ceil((binanceBannedUntilTimestamp - Date.now()) / 1000);
+                console.warn(`[Binance Gateway Guard] Pausing outbound request to ${urlStr} (${waitSec}s rate-limit backoff remaining)...`);
+                throw new Error(`Binance IP rate-limited (-1003). Outbound request paused for ${waitSec}s.`);
+            }
         }
 
         const candidateUrls = [urlStr];
@@ -1767,19 +1845,21 @@ async function startServer() {
                     throw new Error(`Endpoint returned unexpected redirect ${res.status}`);
                 }
 
-                binanceRateLimiter.handleResponse(res.status, res.headers);
-
                 if (res.status === 418 || res.status === 429) {
                     try {
                         const clone = res.clone();
                         const text = await clone.text();
+                        binanceRateLimiter.handleResponse(res.status, res.headers, text);
                         binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, res.status === 418 ? 120000 : 60000);
                         binanceRateLimiter.triggerCircuitBreaker(res.status === 418 ? 'IP 418 封禁' : '429 频控', Math.max(binanceBannedUntilTimestamp - Date.now(), 60000));
                         console.error(`🚨 [Binance Ban Intercept] IP rate-limited until ${binanceBannedUntilTimestamp} (${Math.round((binanceBannedUntilTimestamp - Date.now()) / 1000)}s remaining).`);
                     } catch (e) {
+                        binanceRateLimiter.handleResponse(res.status, res.headers);
                         binanceBannedUntilTimestamp = Date.now() + (res.status === 418 ? 120000 : 60000);
                         binanceRateLimiter.triggerCircuitBreaker(res.status === 418 ? 'IP 418 封禁' : '429 频控', res.status === 418 ? 120000 : 60000);
                     }
+                } else {
+                    binanceRateLimiter.handleResponse(res.status, res.headers);
                 }
                 return res;
             } catch (err: any) {
@@ -1841,11 +1921,13 @@ async function startServer() {
             return res.status(400).json({ success: false, error: "缺少必要参数 (apiKey, apiSecret, symbol, side, action)" });
         }
 
-        // 🔒 [服务端最高级门禁：币安 IP 限频保护期直接原地熔断拦截，不浪费后续探针与资源]
-        if (binanceBannedUntilTimestamp > Date.now()) {
+        // 🔒 [保命交易最高特权通道]: 平仓(CLOSE)、防爆对冲(isHedge)、断臂减仓(isAmputation)以及已建立长连接的 WS 交易通道，在限频保护期依然允许执行，绝不因本地限频锁死导致无法平仓/对冲而爆仓！
+        const isLifeSavingOrder = action === "CLOSE" || req.body.isHedge === true || req.body.isAmputation === true;
+        const canBypassViaWs = binanceWsTradingEngine.isReady();
+        if (binanceBannedUntilTimestamp > Date.now() && !isLifeSavingOrder && !canBypassViaWs) {
             const remaining = Math.ceil((binanceBannedUntilTimestamp - Date.now()) / 1000);
             const remainingMin = Math.ceil(remaining / 60);
-            console.warn(`[Binance Order] 🛡️ IP Rate Limit (-1003) active until ${new Date(binanceBannedUntilTimestamp).toLocaleTimeString()} (${remaining}s remaining). Rejecting order.`);
+            console.warn(`[Binance Order] 🛡️ IP Rate Limit (-1003) active until ${new Date(binanceBannedUntilTimestamp).toLocaleTimeString()} (${remaining}s remaining). Rejecting non-emergency HTTP OPEN order.`);
             return res.status(502).json({
                 success: false,
                 rateLimited: true,
@@ -1897,10 +1979,11 @@ async function startServer() {
         try {
             // 确保与币安服务器时间毫秒级对齐，杜绝由于时钟偏差导致的 -1021 错误
             const timeOffset = await syncBinanceServerTime();
+            const getSyncedTimestamp = () => Date.now() + binanceTimeOffsetMs - 500;
 
             const setLeverageFn = async (lev: number) => {
-                const levTimestamp = Date.now() + timeOffset;
-                const levQueryString = `leverage=${lev}&symbol=${formattedSymbol}&timestamp=${levTimestamp}&recvWindow=10000`;
+                const levTimestamp = getSyncedTimestamp();
+                const levQueryString = `leverage=${lev}&symbol=${formattedSymbol}&timestamp=${levTimestamp}&recvWindow=60000`;
                 const levSignature = crypto
                     .createHmac("sha256", apiSecret)
                     .update(levQueryString)
@@ -1913,8 +1996,8 @@ async function startServer() {
 
             const getSafeLeverageForNotional = async (notional: number, preferredLev: number): Promise<number | null> => {
                 try {
-                    const bracketTimestamp = Date.now() + timeOffset;
-                    const bracketQuery = `symbol=${formattedSymbol}&timestamp=${bracketTimestamp}&recvWindow=10000`;
+                    const bracketTimestamp = getSyncedTimestamp();
+                    const bracketQuery = `symbol=${formattedSymbol}&timestamp=${bracketTimestamp}&recvWindow=60000`;
                     const bracketSig = crypto.createHmac("sha256", apiSecret).update(bracketQuery).digest("hex");
                     const bracketRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/leverageBracket?${bracketQuery}&signature=${bracketSig}`, {
                         method: "GET",
@@ -1945,9 +2028,8 @@ async function startServer() {
                 return null;
             };
 
-            // 1. Set leverage ONLY if action is OPEN and NOT an auto-hedge order
-            // (Skipping for CLOSE/amputation and hedge orders: on Binance Futures, symbol leverage is already set by the main position)
-            if (action === "OPEN" && !req.body.isHedge) {
+            // 1. Set leverage ONLY if action is OPEN and NOT an auto-hedge order (skip optional REST leverage probe if currently under HTTP rate limit so WS order can proceed cleanly)
+            if (action === "OPEN" && !req.body.isHedge && binanceBannedUntilTimestamp <= Date.now()) {
                 const targetLeverage = parseInt(leverage || "20");
                 appliedLeverage = targetLeverage;
                 try {
@@ -2020,8 +2102,8 @@ async function startServer() {
                         // 途径 2 (权威精准): 实时查询币安官方 leverageBracket 接口获取该币种允许的真实最大杠杆
                         if (!adaptiveSuccess) {
                             try {
-                                const bracketTimestamp = Date.now() + timeOffset;
-                                const bracketQuery = `symbol=${formattedSymbol}&timestamp=${bracketTimestamp}&recvWindow=10000`;
+                                const bracketTimestamp = getSyncedTimestamp();
+                                const bracketQuery = `symbol=${formattedSymbol}&timestamp=${bracketTimestamp}&recvWindow=60000`;
                                 const bracketSig = crypto
                                     .createHmac("sha256", apiSecret)
                                     .update(bracketQuery)
@@ -2233,8 +2315,8 @@ async function startServer() {
             if (cachedDual && cachedDual.expiry > Date.now()) {
                 isHedgeMode = cachedDual.isHedge;
             } else {
-                const timestamp = Date.now();
-                const dualQueryString = `timestamp=${timestamp}&recvWindow=5000`;
+                const timestamp = getSyncedTimestamp();
+                const dualQueryString = `timestamp=${timestamp}&recvWindow=60000`;
                 const dualSignature = crypto
                     .createHmac("sha256", apiSecret)
                     .update(dualQueryString)
@@ -2261,8 +2343,8 @@ async function startServer() {
 
             // 3.5 Handle CLOSE action safety checks (Optimized for lightning-fast execution & zero slippage delay)
             if (action === "CLOSE") {
-                const cancelTimestamp = Date.now();
-                const cancelQueryString = `symbol=${formattedSymbol}&timestamp=${cancelTimestamp}&recvWindow=5000`;
+                const cancelTimestamp = getSyncedTimestamp();
+                const cancelQueryString = `symbol=${formattedSymbol}&timestamp=${cancelTimestamp}&recvWindow=60000`;
                 const cancelSignature = crypto
                     .createHmac("sha256", apiSecret)
                     .update(cancelQueryString)
@@ -2294,12 +2376,12 @@ async function startServer() {
                 serverRefillFloodGuard.set(refillKey, now);
             }
 
-            // 🔒 REFILL (断臂求生补仓/对冲加仓/平仓后复开) 允许在现有持仓上继续开仓买回，严禁拦截！
+            // 🔒 REFILL (断臂求生补仓/对冲加仓/平仓后复开) 允许在现有持仓上继续开仓买回，严禁拦截！（限频保护期跳过此可选REST预检，节省5权重）
             const isRefillOrHedge = req.body.isRefill === true || req.body.allowExisting === true || req.body.isHedge === true || req.body.isReopened === true;
-            if (action === "OPEN" && !isRefillOrHedge) {
+            if (action === "OPEN" && !isRefillOrHedge && binanceBannedUntilTimestamp <= Date.now() && !binanceRateLimiter.getStatus().isHighWeight) {
                 try {
-                    const posTimestamp = Date.now();
-                    const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=5000`;
+                    const posTimestamp = getSyncedTimestamp();
+                    const posQueryString = `symbol=${formattedSymbol}&timestamp=${posTimestamp}&recvWindow=60000`;
                     const posSignature = crypto
                         .createHmac("sha256", apiSecret)
                         .update(posQueryString)
@@ -2383,46 +2465,57 @@ async function startServer() {
                 ? req.body.clientOrderId
                 : `x-408z613X_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
 
-            const serverTimeOffset = await syncBinanceServerTime();
-            const orderTimestamp = Date.now() + serverTimeOffset;
-
-            const orderParams: any = {
+            const baseOrderParams: any = {
                 symbol: formattedSymbol,
                 side: binanceSide,
                 type: "MARKET",
                 quantity: formattedQtyStr,
                 newClientOrderId: generatedClientOrderId,
-                timestamp: orderTimestamp.toString(),
-                recvWindow: "10000"
+                recvWindow: "60000"
             };
 
             if (binancePositionSide) {
-                orderParams.positionSide = binancePositionSide;
+                baseOrderParams.positionSide = binancePositionSide;
             } else if (action === "CLOSE") {
-                orderParams.reduceOnly = "true";
+                baseOrderParams.reduceOnly = "true";
             }
 
-            // Convert parameters to sorted query string for signature
-            const orderQueryString = Object.keys(orderParams)
-                .sort()
-                .map(key => `${key}=${encodeURIComponent(orderParams[key])}`)
-                .join("&");
-
-            const orderSignature = crypto
-                .createHmac("sha256", apiSecret)
-                .update(orderQueryString)
-                .digest("hex");
-
-            const finalOrderUrl = `https://fapi.binance.com/fapi/v1/order?${orderQueryString}&signature=${orderSignature}`;
+            const buildSignedOrderRequest = async (customClientOrderId?: string, forceSync = false) => {
+                const latestOffset = await syncBinanceServerTime(forceSync);
+                const freshTimestamp = Date.now() + latestOffset - 500;
+                const params: any = {
+                    ...baseOrderParams,
+                    newClientOrderId: customClientOrderId || generatedClientOrderId,
+                    timestamp: freshTimestamp.toString(),
+                    recvWindow: "60000"
+                };
+                const queryString = Object.keys(params)
+                    .sort()
+                    .map(key => `${key}=${encodeURIComponent(params[key])}`)
+                    .join("&");
+                const signature = crypto
+                    .createHmac("sha256", apiSecret)
+                    .update(queryString)
+                    .digest("hex");
+                return {
+                    params,
+                    url: `https://fapi.binance.com/fapi/v1/order?${queryString}&signature=${signature}`
+                };
+            };
 
             console.log(`[Binance Order] Executing real MARKET order on Binance: ${formattedSymbol} | Side: ${binanceSide} | positionSide: ${binancePositionSide || 'N/A'} | Qty: ${finalQty} | ClientOrderId: ${generatedClientOrderId}`);
 
             let orderData: any = null;
             let orderResponseOk = false;
             let orderText = "";
+            let orderParams: any = baseOrderParams;
 
             try {
                 await enqueueBinanceOrderTask(async () => {
+                    // 🔒 核心修复：在出站队列真正轮到本订单执行时才实时生成 timestamp 与签名，彻底根除排队等待或 WS 超时回退导致的 -1021 过期报错
+                    const signedReq = await buildSignedOrderRequest();
+                    orderParams = signedReq.params;
+
                     // ⚡ [第一通道：币安 WS API 直通下单 (50~150ms 极速响应)]
                     if (binanceWsTradingEngine.isReady()) {
                         try {
@@ -2441,8 +2534,13 @@ async function startServer() {
                         }
                     }
 
-                    const orderPromise = fetchWithFallback(finalOrderUrl, {
+                    // 若经历了 WS 超时回退，重新生成最新时间戳签名后再走 HTTP POST
+                    const httpSignedReq = await buildSignedOrderRequest();
+                    orderParams = httpSignedReq.params;
+
+                    const orderPromise = fetchWithFallback(httpSignedReq.url, {
                         method: "POST",
+                        isEmergencyOrder: isLifeSavingOrder,
                         headers: {
                             "X-MBX-APIKEY": apiKey,
                             "Content-Type": "application/json"
@@ -2614,6 +2712,9 @@ async function startServer() {
 
                 // ⚡ 2. Non-blocking single background reconciliation (300ms later) to capture tradeId and final realizedPnl without rate-limit spam
                 setTimeout(async () => {
+                    if (binanceBannedUntilTimestamp > Date.now() || binanceRateLimiter.getStatus().isHighWeight) {
+                        return; // 限频或高权重期完全依靠 UserDataStream WS 0权重推送，跳过 REST userTrades 查询
+                    }
                     try {
                         const timeOffset = await syncBinanceServerTime();
                         const immediateTimestamp = Date.now() + timeOffset;
@@ -2686,13 +2787,13 @@ async function startServer() {
                 const errorCode = orderData.code;
                 const errorMsg = orderData.msg || orderText;
 
-                // Handle code -2022: "ReduceOnly Order is rejected"
-                if (errorCode === -2022 && action === "CLOSE") {
-                    console.log(`[Binance Order] ReduceOnly rejected for ${formattedSymbol} (${side}). Checking if position is already closed on Binance...`);
+                // Handle code -2022 / quantity mismatch on CLOSE: verify real remaining position on Binance and auto-close if remAmt > 0
+                if (action === "CLOSE" && (errorCode === -2022 || errorCode === -2019 || errorCode === -1111)) {
+                    console.log(`[Binance Order] Close order rejected (${errorCode}) for ${formattedSymbol} (${side}). Checking real remaining position on Binance...`);
                     try {
-                        const timeOffset = await syncBinanceServerTime();
+                        const timeOffset = await syncBinanceServerTime(true);
                         const checkPosTimestamp = Date.now() + timeOffset;
-                        const checkPosQuery = `symbol=${formattedSymbol}&timestamp=${checkPosTimestamp}&recvWindow=5000`;
+                        const checkPosQuery = `symbol=${formattedSymbol}&timestamp=${checkPosTimestamp}&recvWindow=60000`;
                         const checkPosSig = crypto.createHmac("sha256", apiSecret).update(checkPosQuery).digest("hex");
                         const checkPosRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${checkPosQuery}&signature=${checkPosSig}`, {
                             headers: { "X-MBX-APIKEY": apiKey }
@@ -2700,22 +2801,17 @@ async function startServer() {
                         if (checkPosRes.ok) {
                             const pData = await checkPosRes.json();
                             if (Array.isArray(pData)) {
-                                let remAmt = 0;
-                                if (isHedgeMode) {
-                                    const tSide = side === "LONG" ? "LONG" : "SHORT";
-                                    const match = pData.find((p: any) => p.positionSide === tSide);
-                                    if (match) remAmt = Math.abs(parseFloat(match.positionAmt || "0"));
-                                } else {
-                                    const match = pData.find((p: any) => p.positionSide === "BOTH");
-                                    if (match) {
-                                        const raw = parseFloat(match.positionAmt || "0");
-                                        if ((side === "LONG" && raw > 0) || (side === "SHORT" && raw < 0)) {
-                                            remAmt = Math.abs(raw);
-                                        }
-                                    }
-                                }
+                                const exactMatch = pData.find((p: any) => {
+                                    const raw = parseFloat(p.positionAmt || "0");
+                                    if (Math.abs(raw) <= 0) return false;
+                                    if (side === "LONG") return p.positionSide === "LONG" || (p.positionSide === "BOTH" && raw > 0);
+                                    if (side === "SHORT") return p.positionSide === "SHORT" || (p.positionSide === "BOTH" && raw < 0);
+                                    return false;
+                                });
+                                const remAmt = exactMatch ? Math.abs(parseFloat(exactMatch.positionAmt || "0")) : 0;
+
                                 if (remAmt === 0) {
-                                    console.log(`[Binance Order] Verified position for ${formattedSymbol} (${side}) is already 0. Treating as successful close.`);
+                                    console.log(`[Binance Order] Verified position for ${formattedSymbol} (${side}) is already 0 on Binance. Treating as successful close.`);
                                     return res.json({
                                         success: true,
                                         orderId: "ALREADY_CLOSED",
@@ -2727,11 +2823,63 @@ async function startServer() {
                                         leverage: appliedLeverage,
                                         message: `仓位在币安已处于已结清/已平仓状态`
                                     });
+                                } else if (exactMatch && remAmt > 0) {
+                                    // 🛡️ 币安仍存在真实未平持仓 remAmt > 0，立即以币安真实剩余数量与真实 positionSide 发起二次精准平仓！
+                                    const rawAbsStr = String(exactMatch.positionAmt || "").replace("-", "").trim() || String(remAmt);
+                                    const actualPosSide = exactMatch.positionSide;
+                                    console.warn(`⚡ [Binance Order] 检测到 ${formattedSymbol} (${side}) 在币安仍有真实未平持仓 ${rawAbsStr} (positionSide=${actualPosSide})，立即按真实剩余量发起二次强制平仓...`);
+                                    const retryCloseParams: Record<string, string> = {
+                                        symbol: formattedSymbol,
+                                        side: side === "LONG" ? "SELL" : "BUY",
+                                        type: "MARKET",
+                                        quantity: rawAbsStr,
+                                        newClientOrderId: `savior_${Date.now()}_rclose`,
+                                        timestamp: String(Date.now() + timeOffset - 300),
+                                        recvWindow: "60000"
+                                    };
+                                    if (actualPosSide === "LONG" || actualPosSide === "SHORT") {
+                                        retryCloseParams.positionSide = actualPosSide;
+                                    } else {
+                                        retryCloseParams.reduceOnly = "true";
+                                    }
+                                    const retryCloseQs = Object.keys(retryCloseParams)
+                                        .sort()
+                                        .map(k => `${k}=${encodeURIComponent(retryCloseParams[k])}`)
+                                        .join("&");
+                                    const retryCloseSig = crypto.createHmac("sha256", apiSecret).update(retryCloseQs).digest("hex");
+                                    const retryCloseRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/order?${retryCloseQs}&signature=${retryCloseSig}`, {
+                                        method: "POST",
+                                        headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" }
+                                    }, 12000);
+                                    if (retryCloseRes.ok) {
+                                        const retryCloseData = await retryCloseRes.json().catch(() => null);
+                                        if (retryCloseData && (retryCloseData.orderId || retryCloseData.status === "FILLED" || retryCloseData.status === "NEW")) {
+                                            console.log(`✅ [Binance Order] 二次按真实剩余持仓量 (${rawAbsStr}) 强制平仓成功！OrderId=${retryCloseData.orderId}`);
+                                            const trimmedApiKey = typeof apiKey === 'string' ? apiKey.trim() : (apiKey || '');
+                                            for (const k of accountStateCache.keys()) {
+                                                if (k.startsWith(trimmedApiKey.substring(0, 10))) accountStateCache.delete(k);
+                                            }
+                                            return res.json({
+                                                success: true,
+                                                orderId: retryCloseData.orderId,
+                                                clientOrderId: retryCloseData.clientOrderId,
+                                                symbol: formattedSymbol,
+                                                side: retryCloseParams.side,
+                                                positionSide: actualPosSide,
+                                                qty: remAmt,
+                                                price: parseFloat(retryCloseData.avgPrice || "0") || currentPrice,
+                                                leverage: appliedLeverage,
+                                                trades: [],
+                                                latestTrade: null,
+                                                message: `已按币安真实剩余持仓量 (${rawAbsStr}) 完成平仓！`
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
                     } catch (e) {
-                        console.warn(`[Binance Order] Error re-checking position on -2022:`, e);
+                        console.warn(`[Binance Order] Error re-checking/re-closing position on ${errorCode}:`, e);
                     }
                 }
 
@@ -2751,12 +2899,9 @@ async function startServer() {
                             console.log(`[Binance Order] 杠杆已成功下调至 ${appliedLeverage}x，正在重新提交订单...`);
                             
                             const retryClientOrderId = `savior_${Date.now()}_r2027`;
-                            const retryParams: any = { ...orderParams, newClientOrderId: retryClientOrderId };
-                            const retryQueryString = Object.keys(retryParams).sort().map(k => `${k}=${encodeURIComponent(retryParams[k])}`).join("&");
-                            const retrySig = crypto.createHmac("sha256", apiSecret).update(retryQueryString).digest("hex");
-                            const retryUrl = `https://fapi.binance.com/fapi/v1/order?${retryQueryString}&signature=${retrySig}`;
+                            const retrySigned = await buildSignedOrderRequest(retryClientOrderId);
                             
-                            const retryOrderRes = await fetchWithFallback(retryUrl, {
+                            const retryOrderRes = await fetchWithFallback(retrySigned.url, {
                                 method: "POST",
                                 headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" }
                             }, 10000);
@@ -2790,10 +2935,48 @@ async function startServer() {
                         }
                     }
                 }
+
+                // 🛡️ [自愈重试 -1021]: 捕获时间戳偏差报错，立即强制重新校准币安服务器时间并就地重签重试发单
+                if (errorCode === -1021) {
+                    console.warn(`[Binance Order] ⚠️ 收到币安 -1021 时间戳报错，立即强制重校准币安服务器时钟并自动重试下单...`);
+                    try {
+                        const retry1021ClientOrderId = `savior_${Date.now()}_r1021`;
+                        const retry1021Signed = await buildSignedOrderRequest(retry1021ClientOrderId, true);
+                        const retry1021Res = await fetchWithFallback(retry1021Signed.url, {
+                            method: "POST",
+                            headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" }
+                        }, 10000);
+                        if (retry1021Res.ok) {
+                            const retry1021Data = await retry1021Res.json().catch(() => null);
+                            if (retry1021Data && (retry1021Data.orderId || retry1021Data.status === "FILLED" || retry1021Data.status === "NEW")) {
+                                console.log(`⚡ [Binance Order] -1021 时钟重校准自愈重试下单成功！OrderId=${retry1021Data.orderId}`);
+                                if (action === "OPEN" && !isRefillOrHedge) {
+                                    serverRecentOpenedPositions.set(openSymbolLockKey, Date.now());
+                                }
+                                return res.json({
+                                    success: true,
+                                    orderId: retry1021Data.orderId,
+                                    clientOrderId: retry1021Data.clientOrderId || retry1021ClientOrderId,
+                                    symbol: formattedSymbol,
+                                    side: binanceSide,
+                                    positionSide: binancePositionSide,
+                                    qty: finalQty,
+                                    price: currentPrice,
+                                    leverage: appliedLeverage,
+                                    trades: [],
+                                    latestTrade: null,
+                                    message: `成功在币安下单 (时钟自动校准后完成): ${action === "OPEN" ? "开仓" : "平仓"} ${side} ${formattedSymbol} ${finalQty} 手！`
+                                });
+                            }
+                        }
+                    } catch (r1021Err: any) {
+                        console.warn(`[Binance Order] -1021 自愈重发异常:`, r1021Err?.message || r1021Err);
+                    }
+                }
                 
                 let userFriendlyError = `币安交易所请求失败: ${errorMsg}`;
                 if (errorCode === -2022) {
-                    userFriendlyError = "【只减仓订单被拒绝/仓位已平】该仓位在币安当前已无持仓或已被平仓完毕，无需重复提交平仓。";
+                    userFriendlyError = `【只减仓订单被拒绝 (code: -2022)】币安拒绝了该平仓请求 (${errorMsg})，请核实币安持仓状态。`;
                 } else if (errorCode === -2015) {
                     const ipMatch = String(errorMsg || '').match(/request ip:\s*([\d\.]+)/i);
                     if (ipMatch && ipMatch[1]) {
@@ -2840,13 +3023,204 @@ async function startServer() {
         }
     });
 
+    // 🛡️ 服务端权威全仓扫描与一键清仓兜底接口：直接读取币安 /fapi/v2/positionRisk 真实非零持仓并强制清零
+    app.post("/api/binance/close-all-positions", async (req, res) => {
+        let { apiKey, apiSecret } = req.body || {};
+        if (!apiKey || !apiSecret) {
+            return res.status(400).json({ success: false, error: "缺少 API Key 或 Secret Key" });
+        }
+        apiKey = typeof apiKey === "string" ? apiKey.trim() : apiKey;
+        apiSecret = typeof apiSecret === "string" ? apiSecret.trim() : apiSecret;
+
+        const signQuery = (qs: string) => crypto.createHmac("sha256", apiSecret).update(qs).digest("hex");
+
+        const fetchLivePositionRisk = async (forceTimeSync = false): Promise<any[]> => {
+            const offset = await syncBinanceServerTime(forceTimeSync);
+            const ts = Date.now() + offset - 300;
+            const qs = `timestamp=${ts}&recvWindow=60000`;
+            const sig = signQuery(qs);
+            const r = await fetchWithFallback(`https://fapi.binance.com/fapi/v2/positionRisk?${qs}&signature=${sig}`, {
+                headers: { "X-MBX-APIKEY": apiKey }
+            }, 12000);
+            if (!r.ok) {
+                const txt = await r.text().catch(() => "");
+                throw new Error(`positionRisk 조회 실패 (HTTP ${r.status}): ${txt}`);
+            }
+            const json = await r.json();
+            return Array.isArray(json) ? json : [];
+        };
+
+        const mapPositionRiskToUi = (list: any[]) => {
+            return list
+                .filter((p: any) => p && Math.abs(parseFloat(p.positionAmt || "0")) > 0)
+                .map((p: any) => {
+                    const amount = parseFloat(p.positionAmt);
+                    const side = (p.positionSide && (p.positionSide === "LONG" || p.positionSide === "SHORT"))
+                        ? p.positionSide
+                        : (amount > 0 ? "LONG" : "SHORT");
+                    const entryPrice = parseFloat(p.entryPrice || "0");
+                    const markPrice = parseFloat(p.markPrice || p.entryPrice || "0");
+                    const unrealizedPnL = parseFloat(p.unRealizedProfit || p.unrealizedProfit || "0");
+                    const liquidationPrice = parseFloat(p.liquidationPrice || "0");
+                    const leverage = parseFloat(p.leverage || "20");
+                    const maintMargin = parseFloat(p.maintMargin || "0");
+                    return {
+                        symbol: p.symbol,
+                        side,
+                        amount: Math.abs(amount),
+                        entryPrice,
+                        markPrice,
+                        liquidationPrice,
+                        unrealizedPnL,
+                        unrealizedPnLPercentage: entryPrice > 0 ? (unrealizedPnL / (Math.abs(amount) * entryPrice)) * 100 : 0,
+                        entryId: `real_${p.symbol}_${side}_${p.updateTime || Date.now()}`,
+                        entryTime: (p.updateTime && Number(p.updateTime) > 0) ? Number(p.updateTime) : Date.now(),
+                        leverage,
+                        maintMargin
+                    };
+                });
+        };
+
+        try {
+            const closedPositions: any[] = [];
+            const errors: string[] = [];
+
+            // 最多执行 2 轮权威扫描与追平，确保任何首轮残留的仓位在第二轮被彻底平掉
+            for (let pass = 1; pass <= 2; pass++) {
+                const allRisk = await fetchLivePositionRisk(pass > 1);
+                const openRiskList = allRisk.filter((p: any) => p && Math.abs(parseFloat(p.positionAmt || "0")) > 0);
+                if (openRiskList.length === 0) {
+                    break;
+                }
+
+                console.log(`⚡ [Binance Close-All Pass #${pass}] 发现币安账户存在 ${openRiskList.length} 个真实未平持仓，立即按币安真实数量强制市价平仓...`);
+                const BATCH = 5;
+                for (let i = 0; i < openRiskList.length; i += BATCH) {
+                    const slice = openRiskList.slice(i, i + BATCH);
+                    await Promise.all(slice.map(async (p: any) => {
+                        const sym = String(p.symbol || "").trim().toUpperCase();
+                        const rawAmt = parseFloat(p.positionAmt || "0");
+                        if (!sym || Math.abs(rawAmt) <= 0) return;
+
+                        const rawAbsStr = String(p.positionAmt || "").replace("-", "").trim() || String(Math.abs(rawAmt));
+                        const actualPosSide = p.positionSide; // "LONG", "SHORT", or "BOTH"
+                        const closeSide = rawAmt > 0 ? "SELL" : "BUY";
+                        const logicalSide = (actualPosSide === "LONG" || actualPosSide === "SHORT")
+                            ? actualPosSide
+                            : (rawAmt > 0 ? "LONG" : "SHORT");
+
+                        // 异步撤销该币种挂单
+                        try {
+                            const cancelOffset = await syncBinanceServerTime();
+                            const cancelQs = `symbol=${sym}&timestamp=${Date.now() + cancelOffset - 300}&recvWindow=60000`;
+                            fetchWithFallback(`https://fapi.binance.com/fapi/v1/allOpenOrders?${cancelQs}&signature=${signQuery(cancelQs)}`, {
+                                method: "DELETE",
+                                headers: { "X-MBX-APIKEY": apiKey }
+                            }).catch(() => {});
+                        } catch {}
+
+                        try {
+                            const offset = await syncBinanceServerTime();
+                            const orderParams: Record<string, string> = {
+                                symbol: sym,
+                                side: closeSide,
+                                type: "MARKET",
+                                quantity: rawAbsStr,
+                                newClientOrderId: `savior_ca_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                                timestamp: String(Date.now() + offset - 300),
+                                recvWindow: "60000"
+                            };
+                            if (actualPosSide === "LONG" || actualPosSide === "SHORT") {
+                                orderParams.positionSide = actualPosSide;
+                            } else {
+                                orderParams.reduceOnly = "true";
+                            }
+                            const qs = Object.keys(orderParams)
+                                .sort()
+                                .map(k => `${k}=${encodeURIComponent(orderParams[k])}`)
+                                .join("&");
+                            const sig = signQuery(qs);
+                            const orderRes = await fetchWithFallback(`https://fapi.binance.com/fapi/v1/order?${qs}&signature=${sig}`, {
+                                method: "POST",
+                                headers: { "X-MBX-APIKEY": apiKey, "Content-Type": "application/json" }
+                            }, 12000);
+
+                            const orderText = await orderRes.text().catch(() => "");
+                            let orderJson: any = null;
+                            try { orderJson = JSON.parse(orderText); } catch {}
+
+                            if (orderRes.ok && orderJson && (orderJson.orderId || orderJson.status === "FILLED" || orderJson.status === "NEW")) {
+                                console.log(`✅ [Binance Close-All] 成功平仓 ${sym} (${logicalSide}) 数量=${rawAbsStr}, OrderId=${orderJson.orderId}`);
+                                closedPositions.push({
+                                    symbol: sym,
+                                    side: logicalSide,
+                                    qty: Math.abs(rawAmt),
+                                    orderId: orderJson.orderId,
+                                    price: parseFloat(orderJson.avgPrice || p.markPrice || p.entryPrice || "0")
+                                });
+                            } else if (orderJson && orderJson.code === -2022) {
+                                // Already closed by concurrent request
+                                closedPositions.push({
+                                    symbol: sym,
+                                    side: logicalSide,
+                                    qty: Math.abs(rawAmt),
+                                    orderId: "ALREADY_CLOSED",
+                                    price: parseFloat(p.markPrice || p.entryPrice || "0")
+                                });
+                            } else {
+                                const errStr = `${sym}(${logicalSide}): ${orderJson?.msg || orderText || `HTTP ${orderRes.status}`}`;
+                                console.warn(`⚠️ [Binance Close-All] 平仓失败 -> ${errStr}`);
+                                if (pass === 2) errors.push(errStr);
+                            }
+                        } catch (err: any) {
+                            const errStr = `${sym}(${logicalSide}): ${err?.message || err}`;
+                            console.warn(`⚠️ [Binance Close-All] 平仓异常 -> ${errStr}`);
+                            if (pass === 2) errors.push(errStr);
+                        }
+                    }));
+                    if (i + BATCH < openRiskList.length) {
+                        await new Promise(r => setTimeout(r, 250));
+                    }
+                }
+                // 短暂等待撮合落账后进行下一轮复核
+                await new Promise(r => setTimeout(r, 350));
+            }
+
+            // 清除服务端账户与成交缓存，确保前端同步拿到 100% 实时状态
+            for (const k of accountStateCache.keys()) {
+                if (k.startsWith(apiKey.substring(0, 10))) accountStateCache.delete(k);
+            }
+            for (const k of userTradesCache.keys()) {
+                if (k.startsWith(apiKey.substring(0, 10))) userTradesCache.delete(k);
+            }
+
+            const finalRisk = await fetchLivePositionRisk(false).catch(() => []);
+            const remainingPositions = mapPositionRiskToUi(finalRisk);
+
+            return res.json({
+                success: remainingPositions.length === 0,
+                closedCount: closedPositions.length,
+                closedPositions,
+                remainingPositions,
+                errors
+            });
+        } catch (err: any) {
+            console.warn("[Binance Close-All] Exception:", err?.message || err);
+            return res.status(500).json({
+                success: false,
+                error: err?.message || String(err)
+            });
+        }
+    });
+
     // 动态维护本地与币安服务器的时间偏差 (毫秒)
     let binanceTimeOffsetMs = 0;
     let lastTimeSyncTimestamp = 0;
 
-    async function syncBinanceServerTime(): Promise<number> {
+    async function syncBinanceServerTime(force = false): Promise<number> {
         const now = Date.now();
-        if (lastTimeSyncTimestamp > 0 && (now - lastTimeSyncTimestamp < 60000)) {
+        // 🔒 限频静默期或30秒有效期内直接复用已知时钟偏移，绝不额外向 /fapi/v1/time 发送 REST 请求延长封禁
+        if (!force && ((lastTimeSyncTimestamp > 0 && (now - lastTimeSyncTimestamp < 60000)) || binanceBannedUntilTimestamp > now || binanceRateLimiter.getStatus().isFrozen)) {
             return binanceTimeOffsetMs;
         }
         const timeEndpoints = [
@@ -2860,6 +3234,7 @@ async function startServer() {
                 const timeout = setTimeout(() => controller.abort(), 3000);
                 const res = await fetch(endpoint, { signal: controller.signal });
                 clearTimeout(timeout);
+                binanceRateLimiter.handleResponse(res.status, res.headers);
                 if (res.ok) {
                     const data = await res.json();
                     const reqEnd = Date.now();
@@ -2870,6 +3245,8 @@ async function startServer() {
                         console.log(`[Binance TimeSync] Server time synced offset: ${binanceTimeOffsetMs}ms (RTT: ${rtt}ms)`);
                         return binanceTimeOffsetMs;
                     }
+                } else if (res.status === 418 || res.status === 429) {
+                    break;
                 }
             } catch (e) {}
         }
@@ -2919,34 +3296,56 @@ async function startServer() {
         const now = Date.now();
         const cached = accountStateCache.get(cacheKey);
 
-        // 🔒 如果当前处于币安临时限频保护期，绝对避免重复请求撞墙
-        if (binanceBannedUntilTimestamp > now) {
-            const remaining = Math.ceil((binanceBannedUntilTimestamp - now) / 1000);
+        // 🔒 如果当前处于币安临时限频保护期或高权重期，绝对避免重复请求撞墙
+        const limiterStatus = binanceRateLimiter.getStatus();
+        const effectiveBanUntil = Math.max(binanceBannedUntilTimestamp, limiterStatus.frozenUntil);
+        if (effectiveBanUntil > now || (!force && !bypassCache && limiterStatus.isHighWeight)) {
+            const remaining = Math.max(1, Math.ceil((effectiveBanUntil - now) / 1000));
             const remainingMin = Math.ceil(remaining / 60);
 
-            // 如果是用户主动手动点击校验，或没有缓存，必须真实反馈当前限频状态，严禁返回残缺虚假成功
-            if (force || bypassCache || !cached) {
+            // 后台静默定时巡检 (!force && !bypassCache)：优先返回缓存；若无缓存则静默跳过(silentSkip)，彻底杜绝每60秒刷屏红字 HTTP 418 报警！
+            if (!force && !bypassCache) {
+                if (cached) {
+                    return res.json({
+                        ...cached.data,
+                        isCachedFallback: true,
+                        rateLimited: true,
+                        silentSkip: true,
+                        bannedUntil: effectiveBanUntil,
+                        remainingSeconds: remaining
+                    });
+                }
                 return res.json({
-                    success: false,
+                    success: true,
+                    isCachedFallback: true,
                     rateLimited: true,
-                    bannedUntil: binanceBannedUntilTimestamp,
-                    remainingSeconds: remaining,
-                    error: `币安官方网络出口限频保护中 (HTTP 418)，请等待约 ${remainingMin} 分钟 (${remaining} 秒) 待币安自动解封后再试。`
+                    silentSkip: true,
+                    bannedUntil: effectiveBanUntil,
+                    remainingSeconds: remaining
                 });
             }
 
-            // 仅在后台静默查询且有真实缓存时，平滑降级返回缓存
+            // 仅当用户主动手动点击校验且无缓存时，才提示当前处于限频保护期
+            if (cached) {
+                return res.json({
+                    ...cached.data,
+                    isCachedFallback: true,
+                    rateLimited: true,
+                    bannedUntil: effectiveBanUntil,
+                    remainingSeconds: remaining
+                });
+            }
             return res.json({
-                ...cached.data,
-                isCachedFallback: true,
+                success: false,
                 rateLimited: true,
-                bannedUntil: binanceBannedUntilTimestamp,
-                remainingSeconds: remaining
+                bannedUntil: effectiveBanUntil,
+                remainingSeconds: remaining,
+                error: `币安官方网络出口限频保护中 (HTTP 418)，请等待约 ${remainingMin} 分钟 (${remaining} 秒) 待币安自动解封后再试。`
             });
         }
 
-        // Return fresh cache if within 5 seconds to reduce rate limit pressure (unless explicitly forced)
-        if (!force && !bypassCache && cached && (now - cached.timestamp < 5000)) {
+        // Return fresh cache if within 10 seconds to reduce rate limit pressure (unless explicitly forced)
+        if (!force && !bypassCache && cached && (now - cached.timestamp < 10000)) {
             return res.json(cached.data);
         }
 
@@ -2992,6 +3391,7 @@ async function startServer() {
                     }
 
                     if (response.ok && response.status === 200) {
+                        binanceRateLimiter.handleResponse(response.status, response.headers);
                         const responseText = await response.text();
                         if (!responseText || !responseText.trim()) {
                             throw new Error("币安返回空数据");
@@ -3014,12 +3414,15 @@ async function startServer() {
                         if (response.status === 429 || response.status === 418) {
                             isRateLimitHit = true;
                             const errText = await response.text();
-                            binanceBannedUntilTimestamp = parseBinanceBanTimestamp(errText, 60000);
-                            console.error(`🚨 [Binance Rate Limit] IP banned until ${binanceBannedUntilTimestamp}`);
+                            binanceRateLimiter.handleResponse(response.status, response.headers, errText);
+                            binanceBannedUntilTimestamp = parseBinanceBanTimestamp(errText, response.status === 418 ? 120000 : 60000);
+                            binanceRateLimiter.triggerCircuitBreaker(response.status === 418 ? 'IP 418 封禁' : '429 频控', Math.max(binanceBannedUntilTimestamp - Date.now(), 60000));
+                            console.error(`🚨 [Binance Rate Limit] IP banned until ${binanceBannedUntilTimestamp} (${Math.round((binanceBannedUntilTimestamp - Date.now()) / 1000)}s)`);
                             lastError = `币安报错 (HTTP ${response.status}): ${errText}`;
                             // 🔒 立即跳出循环，绝不继续向其余节点重复发包冲击
                             break;
                         }
+                        binanceRateLimiter.handleResponse(response.status, response.headers);
                         const errText = await response.text();
                         let errMsg = errText;
                         let errCode: number | undefined;
@@ -3113,12 +3516,22 @@ async function startServer() {
                 return res.json(formattedResult);
             }
 
-            // If rate limited or transient error but we have recent cache, return cache smoothly
-            if (cached && (now - cached.timestamp < 120000)) {
+            // If rate limited or transient error, return cache smoothly or silent fallback for background polls
+            if (cached) {
                 return res.json({
                     ...cached.data,
                     isCachedFallback: true,
-                    rateLimited: isRateLimitHit
+                    rateLimited: isRateLimitHit,
+                    silentSkip: !force && !bypassCache
+                });
+            }
+
+            if (isRateLimitHit && !force && !bypassCache) {
+                return res.json({
+                    success: true,
+                    isCachedFallback: true,
+                    rateLimited: true,
+                    silentSkip: true
                 });
             }
 
@@ -3126,7 +3539,7 @@ async function startServer() {
                 return res.json({
                     success: false,
                     rateLimited: true,
-                    error: `币安接口请求频率受限 (429 Rate Exceeded)，系统已启动自动退避与平滑重试机制。`
+                    error: `币安接口请求频率受限 (429/418 Rate Exceeded)，系统已启动自动退避与平滑恢复机制。`
                 });
             }
 
@@ -3301,16 +3714,17 @@ async function startServer() {
         const now = Date.now();
         const cached = userTradesCache.get(cacheKey);
 
-        // 🔒 如果当前处于币安临时限频保护期，立即优先返回缓存数据，避免重复撞墙
-        if (binanceBannedUntilTimestamp > now) {
+        // 🔒 如果当前处于币安临时限频保护期或高权重期，立即优先返回缓存数据，避免重复撞墙
+        const tradeLimiterStatus = binanceRateLimiter.getStatus();
+        if (binanceBannedUntilTimestamp > now || tradeLimiterStatus.isFrozen || (!force && !bypassCache && tradeLimiterStatus.isHighWeight)) {
             const filteredCached = startTimestamp > 0 && cached
                 ? (cached.data || []).filter((t: any) => (parseInt(t.time || t.timestamp || "0") || 0) > startTimestamp)
                 : (cached ? cached.data : []);
             return res.json({ success: true, trades: filteredCached || [], rateLimited: true });
         }
 
-        // 10 seconds cache for trades during fast polling to protect Binance API rate limits (bypass if forced)
-        if (!force && !bypassCache && cached && (now - cached.timestamp < 10000)) {
+        // 15 seconds cache for trades during fast polling to protect Binance API rate limits (bypass if forced)
+        if (!force && !bypassCache && cached && (now - cached.timestamp < 15000)) {
             const filteredCached = startTimestamp > 0 
                 ? (cached.data || []).filter((t: any) => (parseInt(t.time || t.timestamp || "0") || 0) > startTimestamp)
                 : cached.data;
@@ -3319,7 +3733,6 @@ async function startServer() {
 
         try {
             const timeOffset = await syncBinanceServerTime();
-            const timestamp = Date.now() + timeOffset;
             const baseUrls = [
                 "https://fapi.binance.com"
             ];
@@ -3331,22 +3744,31 @@ async function startServer() {
             // Auto pre-warm UserDataStream if not already active
             ensureUserDataStream(apiKey);
 
-            // 1. Determine target symbols list
-            const targetSymbols: string[] = [];
+            // 1. Determine deduplicated & valid Binance Futures target symbols list
+            const rawSymbols: string[] = [];
             if (symbol) {
-                targetSymbols.push(formatBinanceSymbol(symbol));
+                rawSymbols.push(formatBinanceSymbol(symbol));
             } else if (Array.isArray(req.body.symbols) && req.body.symbols.length > 0) {
                 for (const s of req.body.symbols) {
-                    if (s) targetSymbols.push(formatBinanceSymbol(s));
+                    if (s) rawSymbols.push(formatBinanceSymbol(s));
                 }
             }
+            const hasExchangeFilter = symbolFilterCache.size > 50;
+            const targetSymbols = Array.from(new Set(rawSymbols)).filter(sym => {
+                if (!sym || /[\u4e00-\u9fa5]/.test(sym)) return false;
+                const invalidUntil = invalidSymbolsCache.get("fapi:" + sym);
+                if (invalidUntil && invalidUntil > Date.now()) return false;
+                if (hasExchangeFilter && !symbolFilterCache.has(sym)) return false;
+                return true;
+            });
 
             if (targetSymbols.length === 0) {
                 return res.json({ success: true, trades: [] });
             }
 
-            // Fetch true executed userTrades for each target symbol in parallel with clock-skew immunity
+            // Fetch true executed userTrades for each target symbol with rate-limit awareness
             const fetchTradesForSymbol = async (sym: string) => {
+                if (isRateLimited || binanceBannedUntilTimestamp > Date.now()) return [];
                 const queryParts: string[] = [
                     `symbol=${sym}`,
                     `limit=${Math.min(parseInt(limit || "50") || 50, 100)}`,
@@ -3375,6 +3797,7 @@ async function startServer() {
                             break;
                         }
                         if (response.ok && response.status === 200) {
+                            binanceRateLimiter.handleResponse(response.status, response.headers);
                             const data = await response.json();
                             if (Array.isArray(data)) {
                                 return data;
@@ -3384,11 +3807,18 @@ async function startServer() {
                                 isRateLimited = true;
                                 try {
                                     const text = await response.text();
-                                    binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, 60000);
+                                    binanceRateLimiter.handleResponse(response.status, response.headers, text);
+                                    binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, response.status === 418 ? 120000 : 60000);
+                                    binanceRateLimiter.triggerCircuitBreaker(response.status === 418 ? 'IP 418 封禁' : '429 频控', Math.max(binanceBannedUntilTimestamp - Date.now(), 60000));
                                 } catch (e) {
+                                    binanceRateLimiter.handleResponse(response.status, response.headers);
                                     binanceBannedUntilTimestamp = Date.now() + 60000;
                                 }
                                 break;
+                            }
+                            binanceRateLimiter.handleResponse(response.status, response.headers);
+                            if (response.status === 400) {
+                                invalidSymbolsCache.set("fapi:" + sym, Date.now() + 30 * 60 * 1000);
                             }
                             const errText = await response.text();
                             lastError = errText;
@@ -3400,15 +3830,16 @@ async function startServer() {
                 return [];
             };
 
-            const slicedTargets = targetSymbols.slice(0, 25);
+            const slicedTargets = targetSymbols.slice(0, 10);
             const results: any[][] = [];
-            const BATCH_SIZE = 4;
+            const BATCH_SIZE = 2;
             for (let i = 0; i < slicedTargets.length; i += BATCH_SIZE) {
+                if (isRateLimited || binanceBannedUntilTimestamp > Date.now()) break;
                 const chunk = slicedTargets.slice(i, i + BATCH_SIZE);
                 const chunkResults = await Promise.all(chunk.map(s => fetchTradesForSymbol(s)));
                 results.push(...chunkResults);
                 if (i + BATCH_SIZE < slicedTargets.length) {
-                    await new Promise(r => setTimeout(r, 40));
+                    await new Promise(r => setTimeout(r, 150));
                 }
             }
             allTrades = results.flat();
@@ -3461,6 +3892,7 @@ async function startServer() {
         try {
             binanceBannedUntilTimestamp = 0;
             orderQueuePauseUntil = 0;
+            binanceRateLimiter.resetCircuitBreaker();
             console.log("🔓 [Binance Rate Limit] 用户手动重置了解除币安 IP 限频/封禁锁定状态。");
             return res.json({ success: true, message: "已成功解除币安 IP 限频锁定，您可以继续正常下单与查询。" });
         } catch (e: any) {
@@ -3747,14 +4179,6 @@ async function startServer() {
           }
       }
 
-      // SERVER-SIDE CACHE HIT
-      const cacheKey = normalizeUrlForCache(targetUrl);
-      const cached = serverCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < cached.ttl) {
-          return res.json(cached.data);
-      }
-
-      const isHighPriority = (req.query.priority === "high") || targetUrl.includes("/klines");
       let parsedTarget: URL | null = null;
       try {
           parsedTarget = new URL(targetUrl);
@@ -3763,12 +4187,79 @@ async function startServer() {
       }
 
       const isFuturesReq = targetUrl.includes("/fapi/") || targetUrl.includes("fapi.binance");
-      const rawSymbol = parsedTarget.searchParams.get("symbol") || "";
-      const is1000Symbol = rawSymbol.startsWith("1000") && rawSymbol.endsWith("USDT");
-      const spotSymbol = is1000Symbol ? rawSymbol.slice(4) : rawSymbol;
+      let rawSymbol = parsedTarget.searchParams.get("symbol") || "";
       const isKlineReq = targetUrl.includes("/klines");
       const isTickerPriceReq = targetUrl.includes("/ticker/price");
       const isTicker24hrReq = targetUrl.includes("/ticker/24hr");
+
+      // 🛡️ [权威合约交易对内存白名单秒级校验]:
+      // 若请求带有 symbol 且 exchangeInfo 已就绪，直接在内存核验该币种是否为合法币安 USDT 永续合约：
+      // 1. 如 PEPEUSDT 自动映射为 1000PEPEUSDT；
+      // 2. 如 1000SOXLUSDT、BASEDUSDT 等非币安合约币种，0ms 直接在本地拦截返回 400 并记入 invalidSymbolsCache，绝不向币安连发无效请求！
+      if (isFuturesReq && rawSymbol && symbolFilterCache.size > 50) {
+          if (!symbolFilterCache.has(rawSymbol)) {
+              const cleanBase = rawSymbol.toUpperCase().replace(/^1000/, '').replace(/USDT$/, '');
+              const alt1000 = `1000${cleanBase}USDT`;
+              const altBase = `${cleanBase}USDT`;
+              if (symbolFilterCache.has(alt1000)) {
+                  rawSymbol = alt1000;
+                  symbolParam = alt1000;
+                  parsedTarget.searchParams.set("symbol", alt1000);
+                  targetUrl = parsedTarget.toString();
+              } else if (symbolFilterCache.has(altBase)) {
+                  rawSymbol = altBase;
+                  symbolParam = altBase;
+                  parsedTarget.searchParams.set("symbol", altBase);
+                  targetUrl = parsedTarget.toString();
+              } else {
+                  invalidSymbolsCache.set("fapi:" + rawSymbol, Date.now() + 30 * 60 * 1000);
+                  return res.status(400).json({ code: -1121, msg: `Invalid symbol '${rawSymbol}' (Not in Futures exchangeInfo).` });
+              }
+          }
+      }
+
+      // SERVER-SIDE CACHE HIT (computed after symbol normalization so PEPEUSDT and 1000PEPEUSDT share cache)
+      const cacheKey = normalizeUrlForCache(targetUrl);
+      const cached = serverCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < cached.ttl) {
+          return res.json(cached.data);
+      }
+
+      // SERVER-SIDE IN-FLIGHT DEDUPLICATION (prevents duplicate concurrent upstream requests for the same URL)
+      const existingInflight = inflightProxyRequests.get(cacheKey);
+      if (existingInflight) {
+          try {
+              const sharedData = await existingInflight;
+              if (sharedData !== undefined) {
+                  return res.json(sharedData);
+              }
+          } catch (_) {}
+      }
+
+      // 🛡️ [第一道防爆仓权重护城河 & 418 静默熔断锁]:
+      // 1. 若当前处于真实 418/429 封禁冷却期，优先返回缓存；若无缓存则静默返回空集(200)，严禁既向币安发包又向前端抛 429 引发连环报错弹窗！
+      // 2. 当 fapi 1 分钟已用权重达到 1400/2400 (58%) 时，激活【实盘交易保命护城河】：暂停 fapi 节点的行情/K线扫描，自动切流至独立权重的 data-api.binance.vision 或返回本地缓存，保留 1000 点 fapi 权重专供实盘下单！
+      const proxyLimiterStatus = binanceRateLimiter.getStatus();
+      const isProxyRateLimited = binanceBannedUntilTimestamp > Date.now() || proxyLimiterStatus.isFrozen;
+      const isScannerWeightMoatTriggered = proxyLimiterStatus.currentWeight1m >= 1400;
+
+      if (isProxyRateLimited) {
+          if (cached && cached.data) {
+              return res.json(cached.data);
+          }
+          res.setHeader("x-rate-limit-paused", "true");
+          if (isKlineReq || (isTicker24hrReq && !rawSymbol) || (isTickerPriceReq && !rawSymbol)) {
+              return res.status(200).json([]);
+          }
+          return res.status(200).json({ rateLimited: true, cachedFallback: true });
+      }
+
+      if (isScannerWeightMoatTriggered && cached && cached.data) {
+          return res.json(cached.data);
+      }
+
+      const is1000Symbol = rawSymbol.startsWith("1000") && rawSymbol.endsWith("USDT");
+      const spotSymbol = is1000Symbol ? rawSymbol.slice(4) : rawSymbol;
 
       // Build prioritized candidate URL list
       const fetchCandidates: { url: string; isPublicProxy: boolean; isSpotScale1000: boolean }[] = [];
@@ -3795,29 +4286,25 @@ async function startServer() {
           const spotQuery = queryParams.toString();
 
           if (isFuturesReq) {
-              // 🛡️ 币安USDT永续合约 (Futures) 官方节点集群
+              // 🛡️ 币安USDT永续合约 (Futures) 官方节点
               const fapiPath = parsedTarget.pathname;
               const fapiQueryStr = rawQuery ? `?${rawQuery}` : "";
+              const needScale1000 = is1000Symbol || isMeme;
 
-              // 1. 尝试官方 fapi 永续节点 (原生合约币种与全部 1000 开头合约)
-              fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
-              fetchCandidates.push({ url: `https://fapi1.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
-              fetchCandidates.push({ url: `https://fapi3.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
-
-              // 2. 如果是 Meme 币且未加 1000，补充尝试 1000 前缀永续合约 (例如 1000PEPEUSDT)
-              if (isMeme && !rawSymbol.startsWith('1000')) {
-                  const meme1000Params = new URLSearchParams(queryParams);
-                  meme1000Params.set("symbol", `1000${cleanBase}USDT`);
-                  fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}?${meme1000Params.toString()}`, isPublicProxy: false, isSpotScale1000: false });
-                  fetchCandidates.push({ url: `https://fapi1.binance.com${fapiPath}?${meme1000Params.toString()}`, isPublicProxy: false, isSpotScale1000: false });
+              // 当 fapi 权重达到 700 以上（或触发 1400 实盘护城河）且为 K 线请求时，优先使用 data-api.binance.vision 独立行情镜像分流（0 消耗 fapi 权重！）
+              const preferVisionMirror = isKlineReq && (isScannerWeightMoatTriggered || (!is1000Symbol && !isMeme && proxyLimiterStatus.currentWeight1m >= 700));
+              if (preferVisionMirror) {
+                  fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: needScale1000 });
               }
 
-              // 3. 备选尝试官方 Vision 现货节点及 Binance 官方现货集群 (若为 1000 合约或 Meme 合约自动缩放 1000 倍)
-              const needScale1000 = is1000Symbol || isMeme;
-              if (isKlineReq) {
+              // 1. 仅在未触发 1400 实盘权重护城河时请求官方 fapi 永续主节点（一旦 >= 1400 严格锁死留给实盘下单）
+              if (!isScannerWeightMoatTriggered) {
+                  fetchCandidates.push({ url: `https://fapi.binance.com${fapiPath}${fapiQueryStr}`, isPublicProxy: false, isSpotScale1000: false });
+              }
+
+              // 2. 备选尝试官方 Vision 独立行情节点 (data-api.binance.vision 与 fapi 权重池完全物理隔离！)
+              if (isKlineReq && !preferVisionMirror) {
                   fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: needScale1000 });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: needScale1000 });
-                  fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: needScale1000 });
               }
           } else {
               if (is1000Symbol) {
@@ -3827,20 +4314,16 @@ async function startServer() {
 
               if (isKlineReq) {
                   fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
                   fetchCandidates.push({ url: `https://api.binance.com/api/v3/klines?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               } else if (isTickerPriceReq) {
                   fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
                   fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/price?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               } else if (isTicker24hrReq) {
                   fetchCandidates.push({ url: `https://data-api.binance.vision/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
-                  fetchCandidates.push({ url: `https://api1.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
                   fetchCandidates.push({ url: `https://api.binance.com/api/v3/ticker/24hr?${spotQuery}`, isPublicProxy: false, isSpotScale1000: is1000Symbol });
               } else {
                   const spotPath = parsedTarget.pathname.replace(/^\/fapi\/v[12]/, "/api/v3");
                   fetchCandidates.push({ url: `https://data-api.binance.vision${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
-                  fetchCandidates.push({ url: `https://api1.binance.com${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
                   fetchCandidates.push({ url: `https://api.binance.com${spotPath}?${spotQuery}`, isPublicProxy: false, isSpotScale1000: false });
               }
           }
@@ -3849,9 +4332,8 @@ async function startServer() {
       }
 
       const officialCandidates = fetchCandidates.filter(c => !c.isPublicProxy);
-      const publicCandidates = fetchCandidates.filter(c => c.isPublicProxy);
-
       let isInvalidSymbolError = false;
+      let isRateLimitHitInProxy = false;
 
       // Master controller tied to client disconnect and race winner
       const masterController = new AbortController();
@@ -3899,22 +4381,43 @@ async function startServer() {
                   throw new Error(`Upstream node returned unexpected redirect ${response.status}`);
               }
 
+              // 仅对 fapi 合约节点更新合约 IP 权重，避免 spot/vision 权重混淆
+              if (candidate.url.includes("fapi.binance")) {
+                  const weightHeader = response.headers.get("x-mbx-used-weight-1m");
+                  if (weightHeader) {
+                      res.setHeader("x-mbx-used-weight-1m", weightHeader);
+                  }
+              }
+
               if (!response.ok) {
                   if (response.status === 418 || response.status === 429) {
+                      isRateLimitHitInProxy = true;
                       try {
                           const clone = response.clone();
                           const text = await clone.text();
-                          binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, 60000);
-                          console.error(`🚨 [Proxy Intercept] Binance IP rate-limited until ${binanceBannedUntilTimestamp}.`);
+                          binanceRateLimiter.handleResponse(response.status, response.headers, text);
+                          binanceBannedUntilTimestamp = parseBinanceBanTimestamp(text, response.status === 418 ? 120000 : 60000);
+                          binanceRateLimiter.triggerCircuitBreaker(response.status === 418 ? 'IP 418 封禁' : '429 频控', Math.max(binanceBannedUntilTimestamp - Date.now(), 60000));
+                          console.error(`🚨 [Proxy Intercept] Binance IP rate-limited (${response.status}) until ${binanceBannedUntilTimestamp} (${Math.round((binanceBannedUntilTimestamp - Date.now()) / 1000)}s).`);
                       } catch (_) {
-                          binanceBannedUntilTimestamp = Date.now() + 60000;
+                          binanceRateLimiter.handleResponse(response.status, response.headers);
+                          binanceBannedUntilTimestamp = Date.now() + (response.status === 418 ? 120000 : 60000);
+                          binanceRateLimiter.triggerCircuitBreaker(response.status === 418 ? 'IP 418 封禁' : '429 频控', response.status === 418 ? 120000 : 60000);
                       }
+                      throw new Error(`HTTP ${response.status}`);
+                  }
+                  if (candidate.url.includes("fapi.binance")) {
+                      binanceRateLimiter.handleResponse(response.status, response.headers);
                   }
                   const isMatchingTarget = targetUrl.includes("/fapi/") ? candidate.url.includes("/fapi/") : candidate.url.includes("/api/v3/");
                   if ((response.status === 400 || response.status === 404) && isMatchingTarget) {
                       isInvalidSymbolError = true;
                   }
                   throw new Error(`HTTP ${response.status}`);
+              }
+
+              if (candidate.url.includes("fapi.binance")) {
+                  binanceRateLimiter.handleResponse(response.status, response.headers);
               }
 
               const text = await response.text();
@@ -3929,7 +4432,6 @@ async function startServer() {
               // Scale 1000-prefixed contracts if served from spot
               if (candidate.isSpotScale1000) {
                   if (Array.isArray(data) && Array.isArray(data[0])) {
-                      // K-Line data array: [openTime, open, high, low, close, volume, closeTime, quoteAssetVolume, ...]
                       data = data.map((k: any[]) => {
                           const open = (parseFloat(k[1]) * 1000).toString();
                           const high = (parseFloat(k[2]) * 1000).toString();
@@ -3956,61 +4458,67 @@ async function startServer() {
           }
       };
 
-      // 1. Fetch official Binance endpoints sequentially (Vision preferred, zero connection waste)
+      // Fetch official Binance endpoints sequentially with in-flight deduplication, immediately breaking on 429/418 or 400 Invalid Symbol
       if (officialCandidates.length > 0) {
-          for (const candidate of officialCandidates) {
-              try {
-                  const data = await fetchCandidate(candidate);
-                  masterController.abort();
+          const executeUpstreamTask = async () => {
+              for (const candidate of officialCandidates) {
+                  try {
+                      const data = await fetchCandidate(candidate);
+                      masterController.abort();
 
-                  const ttl = getServerCacheTTL(targetUrl);
-                  serverCache.set(cacheKey, {
-                      data,
-                      timestamp: Date.now(),
-                      ttl
-                  });
-                  return res.json(data);
-              } catch (candidateErr) {
-                  // try next candidate before concluding symbol is invalid
+                      const ttl = getServerCacheTTL(targetUrl);
+                      serverCache.set(cacheKey, {
+                          data,
+                          timestamp: Date.now(),
+                          ttl
+                      });
+                      return data;
+                  } catch (candidateErr) {
+                      // 🔒 一旦遭遇 429/418 限频或明确 400 非法交易对，立即终止后续候选节点循环，杜绝连环轰炸！
+                      if (isRateLimitHitInProxy || isInvalidSymbolError) {
+                          break;
+                      }
+                  }
               }
-          }
-      }
+              return undefined;
+          };
 
-      // If all official candidates failed and at least one confirmed invalid symbol
-      if (isInvalidSymbolError && publicCandidates.length === 0) {
-          masterController.abort();
-          const isChineseSymbol = symbolParam ? /[\u4e00-\u9fa5]/.test(symbolParam) : false;
-          if (symbolParam && !isChineseSymbol) {
-              const marketPrefix = isFuturesReq ? "fapi:" : "spot:";
-              invalidSymbolsCache.set(marketPrefix + symbolParam, Date.now() + 5 * 60 * 1000);
-          }
-          return res.status(400).json({ code: -1121, msg: `Invalid symbol '${symbolParam || 'unknown'}'.` });
-      }
-
-      // 2. Fallback to public proxies sequentially if official candidates failed
-      if (!isInvalidSymbolError) {
-          for (const candidate of publicCandidates) {
-              try {
-                  const data = await fetchCandidate(candidate);
-                  masterController.abort();
-                  const ttl = getServerCacheTTL(targetUrl);
-                  serverCache.set(cacheKey, {
-                      data,
-                      timestamp: Date.now(),
-                      ttl
-                  });
-                  return res.json(data);
-              } catch (pubErr) {
-                  // try next public proxy
+          const taskPromise = executeUpstreamTask();
+          inflightProxyRequests.set(cacheKey, taskPromise);
+          try {
+              const resultData = await taskPromise;
+              if (resultData !== undefined) {
+                  return res.json(resultData);
               }
+          } finally {
+              inflightProxyRequests.delete(cacheKey);
           }
       }
 
       masterController.abort();
-      if (isTicker24hrReq && cached && cached.data) {
-          console.warn("[Proxy] Upstream 24hr ticker unreachable, serving stale cached tickers");
+
+      // Serve stale cache if available on rate limit or transient failure
+      if (cached && cached.data) {
           return res.json(cached.data);
       }
+
+      if (isRateLimitHitInProxy || isScannerWeightMoatTriggered) {
+          res.setHeader("x-rate-limit-paused", "true");
+          if (isKlineReq || (isTicker24hrReq && !rawSymbol) || (isTickerPriceReq && !rawSymbol)) {
+              return res.status(200).json([]);
+          }
+          return res.status(200).json({ rateLimited: true, cachedFallback: true });
+      }
+
+      if (isInvalidSymbolError) {
+          const isChineseSymbol = symbolParam ? /[\u4e00-\u9fa5]/.test(symbolParam) : false;
+          if (symbolParam && !isChineseSymbol) {
+              const marketPrefix = isFuturesReq ? "fapi:" : "spot:";
+              invalidSymbolsCache.set(marketPrefix + symbolParam, Date.now() + 15 * 60 * 1000);
+          }
+          return res.status(400).json({ code: -1121, msg: `Invalid symbol '${symbolParam || 'unknown'}'.` });
+      }
+
       return res.status(502).json({ error: "All backend proxy and rotation paths exhausted. Upstream is unreachable." });
     } catch (routeErr: any) {
       return res.status(500).json({ error: routeErr?.message || "Proxy routing error" });

@@ -11,6 +11,7 @@
 import { klineMultiTfStore } from './klineMultiTfStore';
 import { fetchWithFallback, getProxyUrl } from './apiService';
 import { KLineSynthesizer } from './klineSynthesizer';
+import { binanceRateLimiter } from './binanceRateLimiter';
 
 export interface CachedKlineEntry {
     symbol: string;
@@ -552,10 +553,15 @@ class KlineDailyStore {
 
         if (tasks.length === 0) return;
 
-        // 4 并发轻量平滑拉取
+        // 4 并发轻量平滑拉取 (接入全局限流器护城河，高权重或限流期立即让路)
         const BATCH_SIZE = 4;
         for (let i = 0; i < tasks.length; i += BATCH_SIZE) {
+            const limiterStatus = binanceRateLimiter.getStatus();
+            if (limiterStatus.isFrozen || limiterStatus.isHighWeight) {
+                break;
+            }
             const batch = tasks.slice(i, i + BATCH_SIZE);
+            let hitRateLimit = false;
             await Promise.all(batch.map(async ({ sym, tf }) => {
                 try {
                     const safeSym = sym.endsWith('USDT') ? sym : `${sym}USDT`;
@@ -582,14 +588,13 @@ class KlineDailyStore {
                             const url5m = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=5m&limit=${limit * 2}&isScanner=true`;
                             try {
                                 const res = await fetch(getProxyUrl(url5m, 'normal'));
+                                binanceRateLimiter.handleResponse(res.status, res.headers);
+                                if (res.status === 429 || res.status === 418) {
+                                    hitRateLimit = true;
+                                    return;
+                                }
                                 if (res.ok) source5m = await res.json();
                             } catch (_) {}
-                            if (!Array.isArray(source5m) || source5m.length === 0) {
-                                try {
-                                    const res2 = await fetchWithFallback(url5m, { cache: "no-store", timeout: 4000, priority: 'NORMAL' }, (d) => Array.isArray(d));
-                                    if (res2.ok) source5m = await res2.json();
-                                } catch (_) {}
-                            }
                             if (Array.isArray(source5m) && source5m.length > 0) {
                                 this.saveShortlistMultiTfKlines(safeSym, '5m', source5m);
                             }
@@ -605,15 +610,13 @@ class KlineDailyStore {
                         const targetUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSym}&interval=${tf}&limit=${limit}&isScanner=true`;
                         try {
                             const res = await fetch(getProxyUrl(targetUrl, 'normal'));
+                            binanceRateLimiter.handleResponse(res.status, res.headers);
+                            if (res.status === 429 || res.status === 418) {
+                                hitRateLimit = true;
+                                return;
+                            }
                             if (res.ok) data = await res.json();
                         } catch (_) {}
-
-                        if (!Array.isArray(data) || data.length === 0) {
-                            try {
-                                const res2 = await fetchWithFallback(targetUrl, { cache: "no-store", timeout: 4000, priority: 'NORMAL' }, (d) => Array.isArray(d));
-                                if (res2.ok) data = await res2.json();
-                            } catch (_) {}
-                        }
 
                         if (Array.isArray(data) && data.length > 0) {
                             this.saveShortlistMultiTfKlines(safeSym, tf, data);
@@ -621,7 +624,8 @@ class KlineDailyStore {
                     }
                 } catch (_) {}
             }));
-            await new Promise(r => setTimeout(r, 40));
+            if (hitRateLimit) break;
+            await new Promise(r => setTimeout(r, 150));
         }
     }
 
@@ -726,14 +730,24 @@ class KlineDailyStore {
             if (symbolsToFetch.length > 0) {
                 console.log(`[KlineDailyStore] 中央日K数据总线启动同步: ${symbolsToFetch.length}/${total} 个币种需网络拉取，其余已直接命中内存缓存...`);
                 
-                // 采用温和批次请求 (每批 4 个，间隔 40ms，确保 API 权重安全)
+                // 采用温和批次请求 (每批 4 个，间隔 150ms，接入限流器护城河确保 API 权重安全)
                 const BATCH_SIZE = 4;
                 for (let i = 0; i < symbolsToFetch.length; i += BATCH_SIZE) {
+                    const limiterStatus = binanceRateLimiter.getStatus();
+                    if (limiterStatus.isFrozen || limiterStatus.isHighWeight) {
+                        break;
+                    }
                     const batch = symbolsToFetch.slice(i, i + BATCH_SIZE);
+                    let hitRateLimit = false;
                     await Promise.all(batch.map(async (sym) => {
                         try {
                             const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=1d&limit=320&isScanner=true`;
                             const res = await fetch(`/api/proxy?url=${encodeURIComponent(url)}&priority=normal`);
+                            binanceRateLimiter.handleResponse(res.status, res.headers);
+                            if (res.status === 429 || res.status === 418) {
+                                hitRateLimit = true;
+                                return;
+                            }
                             if (res.ok) {
                                 const data = await res.json();
                                 if (Array.isArray(data) && data.length >= 2) {
@@ -749,7 +763,8 @@ class KlineDailyStore {
                     if (onProgress) {
                         onProgress(successful, total);
                     }
-                    await new Promise(r => setTimeout(r, 40));
+                    if (hitRateLimit) break;
+                    await new Promise(r => setTimeout(r, 150));
                 }
             }
 

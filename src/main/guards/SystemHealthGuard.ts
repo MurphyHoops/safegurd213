@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import axios, { AxiosRequestConfig } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { binanceRateLimiter } from '../../../services/binanceRateLimiter';
 
 export enum SystemStatus {
   HEALTHY = 'HEALTHY',
@@ -212,6 +213,12 @@ export class SystemHealthGuard extends EventEmitter {
           this.currentIp = detectedIp;
         }
 
+        // 🔒 若当前处于 429/418 全局熔断静默期或高权重期，绝对禁止发送 /fapi/v1/ping 刺激币安防火墙
+        const limiterStatus = binanceRateLimiter.getStatus();
+        if (limiterStatus.isFrozen || limiterStatus.isHighWeight) {
+          return;
+        }
+
         // 2. 交易所连通性交叉轮询（支持自动发现拔网线，以及拔网线后的自动复苏）
         if (this.currentStatus === SystemStatus.HEALTHY || this.currentStatus === SystemStatus.EXCHANGE_OUTAGE) {
           try {
@@ -224,6 +231,7 @@ export class SystemHealthGuard extends EventEmitter {
               } catch (_) {}
             }
             const pingRes = await axios.get('https://fapi.binance.com/fapi/v1/ping', pingConfig);
+            binanceRateLimiter.handleResponse(pingRes.status, pingRes.headers);
             if (pingRes.status === 200 && this.currentStatus === SystemStatus.EXCHANGE_OUTAGE) {
               console.log('[SystemHealthGuard] 探测到币安接口已恢复通畅，系统自动恢复运行');
               this.currentStatus = SystemStatus.HEALTHY;
@@ -231,9 +239,16 @@ export class SystemHealthGuard extends EventEmitter {
               this.emit('recovered', this.getHealthState());
             }
           } catch (err: any) {
-            // 418 是币安防爬或频控暂态限制，绝不误判为交易所拔网线熔断
-            const isRateLimit418 = err.response && err.response.status === 418;
-            if (this.currentStatus === SystemStatus.HEALTHY && !isRateLimit418) {
+            if (err.response) {
+              binanceRateLimiter.handleResponse(
+                err.response.status,
+                err.response.headers,
+                typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data || {})
+              );
+            }
+            // 418/429 是币安防爬或频控暂态限制，绝不误判为交易所拔网线熔断
+            const isRateLimit = err.response && (err.response.status === 418 || err.response.status === 429);
+            if (this.currentStatus === SystemStatus.HEALTHY && !isRateLimit) {
               this.triggerExchangeOutage(`主动巡检发现币安接口超时/中断: ${err.message}`);
             }
           }

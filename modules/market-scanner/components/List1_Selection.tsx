@@ -580,23 +580,33 @@ const List1_Selection: React.FC<Props> = ({
         const poolMap = new Map<string, any>();
         const startTrendSymbolSet = startTrendPool && startTrendPool.length > 0 ? new Set(startTrendPool.map(p => typeof p === 'string' ? p : p?.symbol).filter(Boolean)) : null;
 
-        // 辅助读取 24H 原始数据缓存以补齐价格与 24H 交易额
-        const rawCacheMap = new Map<string, { volM: number, price: number, change: number }>();
+        // 辅助读取 24H 原始数据缓存以补齐价格、最低价、最高价与 24H 交易额（优先直读 0ms 内存单例，杜绝 209KB JSON.parse 阻塞主线程）
+        const rawCacheMap = new Map<string, { volM: number, price: number, change: number, lowPrice: number, highPrice: number }>();
         try {
-            const rawCache = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
-            if (rawCache) {
-                const parsed = JSON.parse(rawCache);
-                if (Array.isArray(parsed)) {
-                    parsed.forEach((d: any) => {
-                        if (d && d.symbol) {
-                            rawCacheMap.set(d.symbol, {
-                                volM: +(parseFloat(d.quoteVolume || '0') / 1000000).toFixed(2),
-                                price: parseFloat(d.lastPrice || '0') || 0,
-                                change: parseFloat(d.priceChangePercent || '0') || 0
-                            });
-                        }
-                    });
+            let parsed: any = (typeof window !== 'undefined' && Array.isArray((window as any).__SCANNER_RAW_DATA_MEM__))
+                ? (window as any).__SCANNER_RAW_DATA_MEM__
+                : null;
+            if (!parsed) {
+                const rawCache = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
+                if (rawCache) {
+                    parsed = JSON.parse(rawCache);
+                    if (Array.isArray(parsed) && typeof window !== 'undefined') {
+                        (window as any).__SCANNER_RAW_DATA_MEM__ = parsed;
+                    }
                 }
+            }
+            if (Array.isArray(parsed)) {
+                parsed.forEach((d: any) => {
+                    if (d && d.symbol) {
+                        rawCacheMap.set(d.symbol, {
+                            volM: +(parseFloat(d.quoteVolume || '0') / 1000000).toFixed(2),
+                            price: parseFloat(d.lastPrice || '0') || 0,
+                            change: parseFloat(d.priceChangePercent || '0') || 0,
+                            lowPrice: parseFloat(d.lowPrice || '0') || 0,
+                            highPrice: parseFloat(d.highPrice || '0') || 0
+                        });
+                    }
+                });
             }
         } catch (_) {}
 
@@ -613,6 +623,10 @@ const List1_Selection: React.FC<Props> = ({
             let volume24h = partial?.volume24h !== undefined ? partial.volume24h : (existing?.volume24h !== undefined ? existing.volume24h : (raw?.volM || 0));
             let volume8am = partial?.volume8am !== undefined ? partial.volume8am : (existing?.volume8am !== undefined ? existing.volume8am : cached8am?.volume8am);
             let change8am = partial?.change8am !== undefined ? partial.change8am : (existing?.change8am !== undefined ? existing.change8am : cached8am?.change8am);
+            let lowPrice = partial?.lowPrice || existing?.lowPrice || raw?.lowPrice || 0;
+            let highPrice = partial?.highPrice || existing?.highPrice || raw?.highPrice || 0;
+            let lowPrice8am = partial?.lowPrice8am || (existing as any)?.lowPrice8am || cached8am?.lowPrice || 0;
+            let highPrice8am = partial?.highPrice8am || (existing as any)?.highPrice8am || cached8am?.highPrice || 0;
 
             const displaySymbol = existing?.symbol || startItem?.symbol || (sym.includes('/') ? sym : `${norm}/USDT`);
 
@@ -628,6 +642,10 @@ const List1_Selection: React.FC<Props> = ({
                 volume: existing?.volume || raw?.volM,
                 volume8am: volume8am !== undefined ? Number(volume8am) : undefined,
                 change8am: change8am !== undefined ? Number(change8am) : undefined,
+                lowPrice: lowPrice > 0 ? Number(lowPrice) : undefined,
+                highPrice: highPrice > 0 ? Number(highPrice) : undefined,
+                lowPrice8am: lowPrice8am > 0 ? Number(lowPrice8am) : undefined,
+                highPrice8am: highPrice8am > 0 ? Number(highPrice8am) : undefined,
             };
         };
 
@@ -769,9 +787,9 @@ const List1_Selection: React.FC<Props> = ({
                         data = KLINE_LIMIT_CACHE[`${symbol}_1d`] || KLINE_LIMIT_CACHE[`${safeSymbol}_1d`];
                     } else {
                         const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${safeSymbol}&interval=1d&limit=${limit}`;
-                        const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d), directMode);
+                        const res = await fetchWithFallback(url, { timeout: 15000 }, (d) => Array.isArray(d) && d.length > 0, directMode);
                         data = await res.json();
-                        if (Array.isArray(data)) {
+                        if (Array.isArray(data) && data.length > 0) {
                             if (!KLINE_LIMIT_CACHE[symbol]) KLINE_LIMIT_CACHE[symbol] = {};
                             if (!KLINE_LIMIT_CACHE[safeSymbol]) KLINE_LIMIT_CACHE[safeSymbol] = {};
                             KLINE_LIMIT_CACHE[symbol][lookbackDays] = {
@@ -795,7 +813,7 @@ const List1_Selection: React.FC<Props> = ({
                         }
                     }
 
-                    if (Array.isArray(data) && active) {
+                    if (Array.isArray(data) && data.length > 0 && active) {
                         const periodKlines = data.slice(-lookbackDays);
                         const highs = periodKlines.map((k: any) => parseFloat(k[2]));
                         const lows = periodKlines.map((k: any) => parseFloat(k[3]));
@@ -1039,13 +1057,13 @@ const List1_Selection: React.FC<Props> = ({
 
     const sortedSymbolsKey = useMemo(() => sortedList1.map(i => i.symbol).filter(Boolean).join(','), [sortedList1]);
 
-    // 保证总是批量拉取日K线获取真实8点数据以呈现在列表中，并支持8H涨跌幅/8H交易额排序
+    // 保证总是批量拉取日K线获取真实8点数据以呈现在列表中，并支持8H涨跌幅/8H交易额/8AM最低反弹过滤与排序
     useEffect(() => {
-        const symbols = sortedList1.map(i => i.symbol).filter(Boolean);
+        const symbols = sortedList1.map(i => `${normalizeSym(i.symbol)}USDT`).filter(Boolean);
         if (symbols.length > 0) {
             fetchVolume8amBatch(symbols);
         }
-    }, [sortedSymbolsKey, scanConfig.enableVol8am, scanConfig.timeBasis, scanConfig.list2PushConfig?.topNSortKey, scanConfig.list2PushConfig?.enableTopN]);
+    }, [sortedSymbolsKey, scanConfig.enableVol8am, scanConfig.timeBasis, scanConfig.list2PushConfig?.topNSortKey, scanConfig.list2PushConfig?.enableTopN, scanConfig.list2PushConfig?.enableChg8am, scanConfig.list2PushConfig?.enableBounce8am]);
 
     const filteredList = useMemo(() => {
         // 🔒 [固定选币直通放行核心规则 (用户明确授权修改)]:
@@ -1408,18 +1426,86 @@ const List1_Selection: React.FC<Props> = ({
 
     // 🚀 [核心引擎: 定向推送至列表2智能漏斗与选币过滤]
     const pushConfig = scanConfig.list2PushConfig;
-    const isPushEffectivelyEnabled = Boolean(pushConfig?.enabled || pushConfig?.enableTopN || pushConfig?.enableChg24h || pushConfig?.enableChg8am || pushConfig?.enableVol24h || pushConfig?.enableVol8am);
+    const requireTrendThreshold = Boolean(scanConfig.instantOpenEnabled || scanConfig.instantReopenEnabled);
+    const hasAnyPushSubRule = Boolean(
+        pushConfig?.enableTopN || pushConfig?.enableChg24h || pushConfig?.enableChg8am || 
+        pushConfig?.enableVol24h || pushConfig?.enableVol8am || pushConfig?.enableBounce8am || pushConfig?.enableBounce24h
+    );
+    const isPushEffectivelyEnabled = Boolean(
+        (pushConfig?.enabled !== false && hasAnyPushSubRule) || 
+        pushConfig?.enabled || 
+        scanConfig.instantOpenEnabled ||
+        scanConfig.instantReopenEnabled
+    );
 
     const list2PushCandidates = useMemo(() => {
-        // 🔒 [固定选币直通放行]: 固定选币模式下，市场初筛中的币种全部直接进入列表2进行扫描，只要符合列表2的规则即可！
-        if (scanConfig.useCustomOnly && fixedModeView === 'MONITOR') {
+        // 🔒 [固定选币直通放行]: 固定选币模式下（且未开启立即开精筛时），市场初筛中的币种直接进入列表2进行扫描
+        if (scanConfig.useCustomOnly && fixedModeView === 'MONITOR' && !scanConfig.instantOpenEnabled && !scanConfig.instantReopenEnabled && !scanConfig.instantOpenUsePushFilter) {
             return filteredList;
         }
 
         if (!pushConfig || !isPushEffectivelyEnabled) {
+            if (requireTrendThreshold) return [];
             // 未启用定向推送时，默认初筛列表全量直接进入列表2
             return filteredList;
         }
+
+        const isShortMode = scanConfig.instantOpenDirection === 'SHORT';
+
+        const minChg24 = Math.abs(Number(pushConfig.minChg24h) || 0);
+        const minChg8am = Math.abs(Number(pushConfig.minChg8am) || 0);
+        const minVol24 = Number(pushConfig.minVol24h) || 0;
+        const minVol8am = Number(pushConfig.minVol8am) || 0;
+        const minBounce24 = Math.abs(Number(pushConfig.minBounce24h) || 0);
+        const minBounce8am = Math.abs(Number(pushConfig.minBounce8am) || 0);
+
+        const hasValidTrendRule = Boolean(
+            (pushConfig.enableChg24h && minChg24 > 0) ||
+            (pushConfig.enableChg8am && minChg8am > 0) ||
+            (pushConfig.enableBounce24h && minBounce24 > 0) ||
+            (pushConfig.enableBounce8am && minBounce8am > 0)
+        );
+
+        // 🔒 核心铁律：只要开启“立即开”或“平仓后续开”，必须绑定并启用至少一项有效的【趋势涨跌幅/极值涨跌幅】过滤条件
+        if (requireTrendThreshold && !hasValidTrendRule) {
+            return [];
+        }
+
+        // 读取全量行情缓存中的 24H 最高/最低价兜底映射，与 ScannerDashboard 保持 100% 一致
+        const rawLowMap: Record<string, number> = {};
+        const rawHighMap: Record<string, number> = {};
+        try {
+            let parsed: any = (typeof window !== 'undefined' && Array.isArray((window as any).__SCANNER_RAW_DATA_MEM__))
+                ? (window as any).__SCANNER_RAW_DATA_MEM__
+                : null;
+            if (!parsed) {
+                const rawCache = localStorage.getItem('SCANNER_RAW_DATA_CACHE');
+                if (rawCache) {
+                    parsed = JSON.parse(rawCache);
+                    if (Array.isArray(parsed) && typeof window !== 'undefined') {
+                        (window as any).__SCANNER_RAW_DATA_MEM__ = parsed;
+                    }
+                }
+            }
+            if (Array.isArray(parsed)) {
+                for (let i = 0; i < parsed.length; i++) {
+                    const d = parsed[i];
+                    if (d && d.symbol) {
+                        const norm = normalizeSym(d.symbol);
+                        const lp = parseFloat(d.lowPrice);
+                        if (lp > 0) {
+                            rawLowMap[norm] = lp;
+                            rawLowMap[`${norm}USDT`] = lp;
+                        }
+                        const hp = parseFloat(d.highPrice);
+                        if (hp > 0) {
+                            rawHighMap[norm] = hp;
+                            rawHighMap[`${norm}USDT`] = hp;
+                        }
+                    }
+                }
+            }
+        } catch (_) {}
 
         // 统一提取24H交易额 (单位: 百万M USDT)
         const getVol24 = (item: ScannerItem): number => {
@@ -1439,7 +1525,8 @@ const List1_Selection: React.FC<Props> = ({
 
         // 统一提取8AM交易额 (单位: 百万M USDT)
         const getVol8 = (item: ScannerItem): number => {
-            const v8 = getVolume8am(item.symbol);
+            const normSym = `${normalizeSym(item.symbol)}USDT`;
+            const v8 = getVolume8am(item.symbol) || getVolume8am(normSym);
             if (v8?.volume8am !== undefined && !isNaN(Number(v8.volume8am))) {
                 return Number(v8.volume8am);
             }
@@ -1450,60 +1537,153 @@ const List1_Selection: React.FC<Props> = ({
         };
 
         // 统一提取24H涨跌幅 (%)
-        const getChg24 = (item: ScannerItem): number => {
-            return item.change !== undefined && !isNaN(Number(item.change)) ? Number(item.change) : 0;
+        const getChg24 = (item: ScannerItem): number | null => {
+            const it = item as any;
+            if (item.change !== undefined && item.change !== null && !isNaN(Number(item.change))) return Number(item.change);
+            if (it.chg24h !== undefined && !isNaN(Number(it.chg24h))) return Number(it.chg24h);
+            if (it.priceChangePercent !== undefined && !isNaN(Number(it.priceChangePercent))) return Number(it.priceChangePercent);
+            return null;
         };
 
-        // 统一提取8AM涨跌幅 (%)，优先使用日K8AM计算值，兜底降级至当前24H涨跌幅
-        const getChg8 = (item: ScannerItem): number => {
-            const v8 = getVolume8am(item.symbol);
-            if (v8?.change8am !== undefined && !isNaN(Number(v8.change8am))) {
+        // 🔒 统一提取8AM涨跌幅 (%)：严禁在8AM数据未加载完成时拿24H涨跌幅冒充兜底，缺失时必须返回 null
+        const getChg8 = (item: ScannerItem): number | null => {
+            const normSym = `${normalizeSym(item.symbol)}USDT`;
+            const v8 = getVolume8am(item.symbol) || getVolume8am(normSym);
+            if (v8?.change8am !== undefined && v8?.change8am !== null && !isNaN(Number(v8.change8am))) {
                 return Number(v8.change8am);
             }
             if (item.change8am !== undefined && item.change8am !== null && !isNaN(Number(item.change8am))) {
                 return Number(item.change8am);
             }
-            return item.change !== undefined && !isNaN(Number(item.change)) ? Number(item.change) : 0;
+            const it = item as any;
+            if (it.chg8am !== undefined && it.chg8am !== null && !isNaN(Number(it.chg8am))) {
+                return Number(it.chg8am);
+            }
+            return null;
         };
 
-        // 1. 获取已启用的过滤指标判断条件
-        const activeFilterChecks: ((item: ScannerItem) => boolean)[] = [];
+        const resolveLivePrice = (item: ScannerItem, fallback: number): number => {
+            if (currentPrices) {
+                const rawSym = item.symbol;
+                const norm = normalizeSym(rawSym);
+                const p = currentPrices[rawSym] || currentPrices[`${norm}USDT`] || currentPrices[norm];
+                if (p !== undefined && p > 0) return Number(p);
+            }
+            return fallback;
+        };
+
+        // 做多：8AM最低点到当前的涨幅；做空：8AM最高点到当前的跌幅
+        const getBounce8am = (item: ScannerItem): number | null => {
+            const normSym = `${normalizeSym(item.symbol)}USDT`;
+            const v8 = getVolume8am(item.symbol) || getVolume8am(normSym);
+            const curPrice = resolveLivePrice(item, Number(item.price || v8?.lastPrice || 0));
+            if (isShortMode) {
+                const high8 = Number(v8?.highPrice || (item as any).highPrice8am || 0);
+                if (high8 > 0 && curPrice > 0) {
+                    return ((high8 - curPrice) / high8) * 100;
+                }
+                return null;
+            } else {
+                const low8 = Number(v8?.lowPrice || (item as any).lowPrice8am || 0);
+                if (low8 > 0 && curPrice > 0) {
+                    return ((curPrice - low8) / low8) * 100;
+                }
+                return null;
+            }
+        };
+
+        // 做多：24H最低点到当前的涨幅；做空：24H最高点到当前的跌幅
+        const getBounce24h = (item: ScannerItem): number | null => {
+            const norm = normalizeSym(item.symbol);
+            const curPrice = resolveLivePrice(item, Number(item.price || 0));
+            if (isShortMode) {
+                const high24 = Number(item.highPrice || (item as any).high || rawHighMap[norm] || rawHighMap[`${norm}USDT`] || 0);
+                if (high24 > 0 && curPrice > 0) {
+                    return ((high24 - curPrice) / high24) * 100;
+                }
+                return null;
+            } else {
+                const low24 = Number(item.lowPrice || (item as any).low || rawLowMap[norm] || rawLowMap[`${norm}USDT`] || 0);
+                if (low24 > 0 && curPrice > 0) {
+                    return ((curPrice - low24) / low24) * 100;
+                }
+                return null;
+            }
+        };
+
+        // 1. 拆分【趋势涨跌幅门槛】与【成交额门槛】判断条件（随“多/空”方向严格联动涨幅/跌幅）
+        const trendFilterChecks: ((item: ScannerItem) => boolean)[] = [];
+        const volFilterChecks: ((item: ScannerItem) => boolean)[] = [];
 
         if (pushConfig.enableChg24h) {
-            const minVal = Number(pushConfig.minChg24h) || 0;
-            activeFilterChecks.push((item) => {
-                return Math.abs(getChg24(item)) >= minVal;
+            trendFilterChecks.push((item) => {
+                if (minChg24 <= 0) return false;
+                const c24 = getChg24(item);
+                if (c24 === null) return false;
+                return isShortMode ? (-c24 >= minChg24) : (c24 >= minChg24);
             });
         }
 
         if (pushConfig.enableChg8am) {
-            const minVal = Number(pushConfig.minChg8am) || 0;
-            activeFilterChecks.push((item) => {
-                return Math.abs(getChg8(item)) >= minVal;
+            trendFilterChecks.push((item) => {
+                if (minChg8am <= 0) return false;
+                const c8 = getChg8(item);
+                if (c8 === null) return false;
+                return isShortMode ? (-c8 >= minChg8am) : (c8 >= minChg8am);
+            });
+        }
+
+        if (pushConfig.enableBounce24h) {
+            trendFilterChecks.push((item) => {
+                if (minBounce24 <= 0) return false;
+                const b24 = getBounce24h(item);
+                if (b24 === null) return false;
+                return b24 >= minBounce24;
+            });
+        }
+
+        if (pushConfig.enableBounce8am) {
+            trendFilterChecks.push((item) => {
+                if (minBounce8am <= 0) return false;
+                const b8 = getBounce8am(item);
+                if (b8 === null) return false;
+                return b8 >= minBounce8am;
             });
         }
 
         if (pushConfig.enableVol24h) {
-            const minVal = Number(pushConfig.minVol24h) || 0;
-            activeFilterChecks.push((item) => {
-                return getVol24(item) >= minVal;
+            volFilterChecks.push((item) => {
+                return minVol24 > 0 && getVol24(item) >= minVol24;
             });
         }
 
         if (pushConfig.enableVol8am) {
-            const minVal = Number(pushConfig.minVol8am) || 0;
-            activeFilterChecks.push((item) => {
-                return getVol8(item) >= minVal;
+            volFilterChecks.push((item) => {
+                return minVol8am > 0 && getVol8(item) >= minVol8am;
             });
         }
 
         // 第一步：根据 OR / AND 模式执行指标阈值过滤
         let candidates = filteredList.filter(item => {
-            if (activeFilterChecks.length === 0) return true; // 未勾选任何门槛条件时默认全部通过第一步
+            if (requireTrendThreshold) {
+                if (trendFilterChecks.length === 0) return false;
+                if (pushConfig.mode === 'AND') {
+                    return trendFilterChecks.every(check => check(item)) && volFilterChecks.every(check => check(item));
+                } else {
+                    // OR 模式下：开启“立即开”时，必须至少满足一项已勾选的【趋势涨跌幅/极值涨跌幅】条件
+                    return trendFilterChecks.some(check => check(item));
+                }
+            }
+
+            const allFilterChecks = [...trendFilterChecks, ...volFilterChecks];
+            if (allFilterChecks.length === 0) {
+                // 未勾选任何门槛条件时，仅当开启了 TopN 排序截取时允许进入第二步截取；否则返回 false 避免全量假命中
+                return Boolean(pushConfig.enableTopN);
+            }
             if (pushConfig.mode === 'AND') {
-                return activeFilterChecks.every(check => check(item));
+                return allFilterChecks.every(check => check(item));
             } else {
-                return activeFilterChecks.some(check => check(item));
+                return allFilterChecks.some(check => check(item));
             }
         });
 
@@ -1513,10 +1693,10 @@ const List1_Selection: React.FC<Props> = ({
             const count = Math.max(1, Number(pushConfig.topNCount) || 10);
 
             const sorted = [...candidates].sort((a, b) => {
-                const chg24_a = getChg24(a);
-                const chg24_b = getChg24(b);
-                const chg8_a = getChg8(a);
-                const chg8_b = getChg8(b);
+                const chg24_a = getChg24(a) ?? 0;
+                const chg24_b = getChg24(b) ?? 0;
+                const chg8_a = getChg8(a) ?? 0;
+                const chg8_b = getChg8(b) ?? 0;
                 const vol24_a = getVol24(a);
                 const vol24_b = getVol24(b);
                 const vol8_a = getVol8(a);
@@ -1548,6 +1728,12 @@ const List1_Selection: React.FC<Props> = ({
                     case 'CHG_8AM_ASC':
                         diff = chg8_a - chg8_b;
                         break;
+                    case 'BOUNCE_8AM':
+                        diff = (getBounce8am(b) ?? 0) - (getBounce8am(a) ?? 0);
+                        break;
+                    case 'BOUNCE_24H':
+                        diff = (getBounce24h(b) ?? 0) - (getBounce24h(a) ?? 0);
+                        break;
                     default:
                         diff = Math.abs(chg8_b) - Math.abs(chg8_a);
                         break;
@@ -1564,7 +1750,7 @@ const List1_Selection: React.FC<Props> = ({
         }
 
         return candidates;
-    }, [filteredList, pushConfig, isPushEffectivelyEnabled, _8amUpdateTick, scanConfig.useCustomOnly, fixedModeView]);
+    }, [filteredList, pushConfig, isPushEffectivelyEnabled, requireTrendThreshold, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.instantOpenDirection, fixedModeView, currentPrices]);
 
     // 映射 Top N 排名 (用于在初筛卡片上醒目标注 #1, #2, ...)
     const pushRankMap = useMemo(() => {
@@ -1577,11 +1763,11 @@ const List1_Selection: React.FC<Props> = ({
         return map;
     }, [list2PushCandidates, pushConfig?.enableTopN, isPushEffectivelyEnabled]);
 
-    const lastFilteredStrRef = useRef('');
+    const lastFilteredStrRef = useRef<string | null>(null);
 
     useEffect(() => {
         if (onFilteredUpdate) {
-            const str = list2PushCandidates.map(i => i.symbol).join(',');
+            const str = list2PushCandidates.map(i => `${i.symbol}_${i.price || 0}_${i.change || 0}_${i.change8am || 0}_${i.volume24h || 0}_${i.volume8am || 0}_${i.lowPrice || 0}_${i.highPrice || 0}`).join('|');
             if (str !== lastFilteredStrRef.current) {
                 lastFilteredStrRef.current = str;
                 onFilteredUpdate(list2PushCandidates);
@@ -1880,10 +2066,49 @@ const List1_Selection: React.FC<Props> = ({
                     </div>
 
                     {/* 立即开仓 */}
-                    <div className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800" title="有新币进入初筛列表时立即开仓">
+                    <div className="flex items-center gap-1.5 bg-slate-900 px-2 py-0.5 rounded border border-slate-800" title="有新币进入初筛列表时立即开仓（强制绑定定向推送至列表2的趋势门槛过滤条件）">
                         <span className="text-[8px] text-slate-400 font-bold">立即开</span>
                         <button
-                            onClick={() => setScanConfig(p => ({ ...p, instantOpenEnabled: !p.instantOpenEnabled }))}
+                            onClick={() => {
+                                setIsPushConfigOpen(true);
+                                setScanConfig(p => {
+                                    const nextInstantOpen = !p.instantOpenEnabled;
+                                    const prevPush = p.list2PushConfig;
+                                    const hasAnyTrendChecked = Boolean(
+                                        prevPush?.enableChg24h ||
+                                        prevPush?.enableChg8am ||
+                                        prevPush?.enableBounce24h ||
+                                        prevPush?.enableBounce8am
+                                    );
+                                    return { 
+                                        ...p, 
+                                        instantOpenEnabled: nextInstantOpen,
+                                        instantOpenUsePushFilter: nextInstantOpen ? true : p.instantOpenUsePushFilter,
+                                        list2PushConfig: nextInstantOpen
+                                            ? {
+                                                mode: prevPush?.mode || 'OR',
+                                                enableChg24h: prevPush?.enableChg24h ?? false,
+                                                minChg24h: (prevPush?.minChg24h && prevPush.minChg24h > 0) ? prevPush.minChg24h : 5.0,
+                                                // 若此前4项趋势涨跌幅门槛均未勾选，开启“立即开”时自动勾选 8AM 涨幅/跌幅 ≥ 3%
+                                                enableChg8am: hasAnyTrendChecked ? Boolean(prevPush?.enableChg8am) : true,
+                                                minChg8am: (prevPush?.minChg8am && prevPush.minChg8am > 0) ? prevPush.minChg8am : 3.0,
+                                                enableVol24h: prevPush?.enableVol24h ?? false,
+                                                minVol24h: prevPush?.minVol24h ?? 30.0,
+                                                enableVol8am: prevPush?.enableVol8am ?? false,
+                                                minVol8am: prevPush?.minVol8am ?? 15.0,
+                                                enableBounce24h: prevPush?.enableBounce24h ?? false,
+                                                minBounce24h: (prevPush?.minBounce24h && prevPush.minBounce24h > 0) ? prevPush.minBounce24h : 10.0,
+                                                enableBounce8am: prevPush?.enableBounce8am ?? false,
+                                                minBounce8am: (prevPush?.minBounce8am && prevPush.minBounce8am > 0) ? prevPush.minBounce8am : 10.0,
+                                                enableTopN: prevPush?.enableTopN ?? true,
+                                                topNCount: prevPush?.topNCount ?? 10,
+                                                topNSortKey: prevPush?.topNSortKey || 'CHG_8AM_ABS',
+                                                enabled: true,
+                                            }
+                                            : p.list2PushConfig
+                                    };
+                                });
+                            }}
                             className={`relative inline-flex h-3.5 w-7 shrink-0 cursor-pointer rounded-full border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${scanConfig.instantOpenEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
                         >
                             <span
@@ -1906,16 +2131,21 @@ const List1_Selection: React.FC<Props> = ({
                     </div>
 
                     {/* 🎯 按定向推送至列表2的规则条件精筛开仓 */}
-                    <div 
-                        className={`flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer transition-all ${scanConfig.instantOpenUsePushFilter ? 'bg-indigo-950/60 border-indigo-500/50 text-indigo-300' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'}`}
-                        onClick={() => setScanConfig(p => ({ ...p, instantOpenUsePushFilter: !p.instantOpenUsePushFilter }))}
-                        title="开启后，“立即开”与“平仓后续开”将严格经过‘定向推送至列表2’漏斗（如交易额、涨跌幅、Top N 截取等）规则精筛过滤后再触发开仓"
-                    >
-                        <span className="text-[8px] font-bold">🎯 按定向推送精筛开仓</span>
-                        <span className={`text-[8px] font-mono px-1 rounded ${scanConfig.instantOpenUsePushFilter ? 'bg-indigo-500 text-white font-bold' : 'bg-slate-800 text-slate-500'}`}>
-                            {scanConfig.instantOpenUsePushFilter ? '开启' : '关闭'}
-                        </span>
-                    </div>
+                    {(() => {
+                        const isPushActive = scanConfig.instantOpenUsePushFilter || scanConfig.instantOpenEnabled;
+                        return (
+                            <div 
+                                className={`flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer transition-all ${isPushActive ? 'bg-indigo-950/60 border-indigo-500/50 text-indigo-300' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+                                onClick={() => setScanConfig(p => ({ ...p, instantOpenUsePushFilter: !p.instantOpenUsePushFilter }))}
+                                title="开启后，“立即开”与“平仓后续开”将严格经过‘定向推送至列表2’漏斗（如交易额、涨跌幅、Top N 截取等）规则精筛过滤后再触发开仓"
+                            >
+                                <span className="text-[8px] font-bold">🎯 按定向推送精筛开仓</span>
+                                <span className={`text-[8px] font-mono px-1 rounded ${isPushActive ? 'bg-indigo-500 text-white font-bold' : 'bg-slate-800 text-slate-500'}`}>
+                                    {isPushActive ? '开启' : '关闭'}
+                                </span>
+                            </div>
+                        );
+                    })()}
 
                     {/* 数量提示 */}
                     <div 
@@ -1993,7 +2223,7 @@ const List1_Selection: React.FC<Props> = ({
                         <label className="flex items-center gap-1 cursor-pointer select-none">
                             <input 
                                 type="checkbox"
-                                checked={!!(pushConfig?.enabled || pushConfig?.enableTopN)}
+                                checked={isPushEffectivelyEnabled}
                                 onChange={(e) => {
                                     const checked = e.target.checked;
                                     setScanConfig(prev => ({
@@ -2009,6 +2239,10 @@ const List1_Selection: React.FC<Props> = ({
                                                 minVol24h: 30.0,
                                                 enableVol8am: false,
                                                 minVol8am: 15.0,
+                                                enableBounce24h: false,
+                                                minBounce24h: 10.0,
+                                                enableBounce8am: false,
+                                                minBounce8am: 10.0,
                                                 topNCount: 10,
                                                 topNSortKey: 'CHG_8AM_ABS',
                                             }),
@@ -2045,8 +2279,11 @@ const List1_Selection: React.FC<Props> = ({
                                                 enableChg8am: true, minChg8am: 3.0,
                                                 enableVol24h: false, minVol24h: 30.0,
                                                 enableVol8am: false, minVol8am: 15.0,
+                                                enableBounce24h: false, minBounce24h: 10.0,
+                                                enableBounce8am: false, minBounce8am: 10.0,
                                                 enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                             }),
+                                            enabled: true,
                                             mode: 'OR'
                                         }
                                     }))}
@@ -2066,8 +2303,11 @@ const List1_Selection: React.FC<Props> = ({
                                                 enableChg8am: true, minChg8am: 3.0,
                                                 enableVol24h: false, minVol24h: 30.0,
                                                 enableVol8am: false, minVol8am: 15.0,
+                                                enableBounce24h: false, minBounce24h: 10.0,
+                                                enableBounce8am: false, minBounce8am: 10.0,
                                                 enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                             }),
+                                            enabled: true,
                                             mode: 'AND'
                                         }
                                     }))}
@@ -2079,11 +2319,11 @@ const List1_Selection: React.FC<Props> = ({
                             </div>
                         </div>
 
-                        {/* 四项独立可配指标卡片 */}
+                        {/* 六项独立可配指标卡片 */}
                         <div className="grid grid-cols-2 gap-1.5">
-                            {/* 条件 1: 24H 涨跌幅 */}
-                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${pushConfig?.enableChg24h ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
-                                <label className="flex items-center gap-1 cursor-pointer select-none">
+                            {/* 条件 1: 24H 涨幅 (多) / 24H 跌幅 (空) [下限 ~ 上限] */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between gap-1 ${pushConfig?.enableChg24h ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none shrink-0" title="落在 [下限~上限] 范围内时列表1立即开仓；超出上限则列表1不开仓，交给列表2观察 (上限填0代表不封顶)">
                                     <input 
                                         type="checkbox"
                                         checked={!!pushConfig?.enableChg24h}
@@ -2093,20 +2333,24 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', minChg24h: 5.0, maxChg24h: 0, enableChg8am: true, minChg8am: 3.0, maxChg8am: 0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, maxBounce24h: 0, enableBounce8am: false, minBounce8am: 10.0, maxBounce8am: 0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: val ? true : (prev.list2PushConfig?.enabled ?? true),
                                                     enableChg24h: val
                                                 }
                                             }));
                                         }}
                                         className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
                                     />
-                                    <span className="text-[9px] font-bold text-slate-300">24H 涨跌幅 ≥</span>
+                                    <span className={`text-[8.5px] font-bold ${scanConfig.instantOpenDirection === 'SHORT' ? 'text-rose-300' : 'text-slate-300'}`}>
+                                        {scanConfig.instantOpenDirection === 'SHORT' ? '24H 跌幅:' : '24H 涨幅:'}
+                                    </span>
                                 </label>
-                                <div className="flex items-center gap-0.5">
+                                <div className="flex items-center gap-0.5 shrink-0">
                                     <input 
                                         type="number"
                                         step="0.5"
+                                        title="触发下限 (%)"
                                         value={pushConfig?.minChg24h ?? 5.0}
                                         onChange={(e) => {
                                             const v = parseFloat(e.target.value) || 0;
@@ -2114,21 +2358,44 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', enableChg24h: true, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', enableChg24h: true, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: true,
                                                     minChg24h: v
                                                 }
                                             }));
                                         }}
-                                        className="w-10 bg-slate-950 border border-slate-700 text-indigo-300 font-mono text-[9px] text-right px-1 py-0.5 rounded"
+                                        className="w-8 bg-slate-950 border border-slate-700 text-indigo-300 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
                                     />
-                                    <span className="text-[9px] text-slate-400 font-bold">%</span>
+                                    <span className="text-[8px] text-slate-500 font-bold">~</span>
+                                    <input 
+                                        type="number"
+                                        step="0.5"
+                                        placeholder="上限"
+                                        title="列表1直开上限 (%)：超出此上限则列表1不直开，直接交给列表2观察 (填0或不填代表不设上限)"
+                                        value={pushConfig?.maxChg24h || ''}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: true, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: true,
+                                                    maxChg24h: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-8 bg-slate-950 border border-slate-700 text-amber-300 placeholder-slate-600 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
+                                    />
+                                    <span className="text-[8.5px] text-slate-400 font-bold">%</span>
                                 </div>
                             </div>
 
-                            {/* 条件 2: 8AM 涨跌幅 */}
-                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between ${pushConfig?.enableChg8am ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
-                                <label className="flex items-center gap-1 cursor-pointer select-none">
+                            {/* 条件 2: 8AM 涨幅 (多) / 8AM 跌幅 (空) [下限 ~ 上限] */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between gap-1 ${pushConfig?.enableChg8am ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none shrink-0" title="落在 [下限~上限] 范围内时列表1立即开仓；超出上限则列表1不开仓，交给列表2观察 (上限填0代表不封顶)">
                                     <input 
                                         type="checkbox"
                                         checked={!!pushConfig?.enableChg8am}
@@ -2138,20 +2405,24 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, minChg8am: 3.0, maxChg8am: 0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: val ? true : (prev.list2PushConfig?.enabled ?? true),
                                                     enableChg8am: val
                                                 }
                                             }));
                                         }}
                                         className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
                                     />
-                                    <span className="text-[9px] font-bold text-blue-300">8AM 涨跌幅 ≥</span>
+                                    <span className={`text-[8.5px] font-bold ${scanConfig.instantOpenDirection === 'SHORT' ? 'text-rose-300' : 'text-blue-300'}`}>
+                                        {scanConfig.instantOpenDirection === 'SHORT' ? '8AM 跌幅:' : '8AM 涨幅:'}
+                                    </span>
                                 </label>
-                                <div className="flex items-center gap-0.5">
+                                <div className="flex items-center gap-0.5 shrink-0">
                                     <input 
                                         type="number"
                                         step="0.5"
+                                        title="触发下限 (%)"
                                         value={pushConfig?.minChg8am ?? 3.0}
                                         onChange={(e) => {
                                             const v = parseFloat(e.target.value) || 0;
@@ -2159,15 +2430,38 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: true,
                                                     minChg8am: v
                                                 }
                                             }));
                                         }}
-                                        className="w-10 bg-slate-950 border border-slate-700 text-blue-300 font-mono text-[9px] text-right px-1 py-0.5 rounded"
+                                        className="w-8 bg-slate-950 border border-slate-700 text-blue-300 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
                                     />
-                                    <span className="text-[9px] text-slate-400 font-bold">%</span>
+                                    <span className="text-[8px] text-slate-500 font-bold">~</span>
+                                    <input 
+                                        type="number"
+                                        step="0.5"
+                                        placeholder="上限"
+                                        title="列表1直开上限 (%)：超出此上限则列表1不直开，直接交给列表2观察 (填0或不填代表不设上限)"
+                                        value={pushConfig?.maxChg8am || ''}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: true,
+                                                    maxChg8am: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-8 bg-slate-950 border border-slate-700 text-amber-300 placeholder-slate-600 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
+                                    />
+                                    <span className="text-[8.5px] text-slate-400 font-bold">%</span>
                                 </div>
                             </div>
 
@@ -2183,8 +2477,9 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: val ? true : (prev.list2PushConfig?.enabled ?? true),
                                                     enableVol24h: val
                                                 }
                                             }));
@@ -2204,8 +2499,9 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: true, enableVol8am: false, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: true, enableVol8am: false, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: true,
                                                     minVol24h: v
                                                 }
                                             }));
@@ -2228,8 +2524,9 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, minVol8am: 15.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, minVol8am: 15.0, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: val ? true : (prev.list2PushConfig?.enabled ?? true),
                                                     enableVol8am: val
                                                 }
                                             }));
@@ -2249,8 +2546,9 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...prev,
                                                 list2PushConfig: {
                                                     ...(prev.list2PushConfig || {
-                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: true, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: true, enableBounce24h: false, minBounce24h: 10.0, enableBounce8am: false, minBounce8am: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                     }),
+                                                    enabled: true,
                                                     minVol8am: v
                                                 }
                                             }));
@@ -2258,6 +2556,150 @@ const List1_Selection: React.FC<Props> = ({
                                         className="w-10 bg-slate-950 border border-slate-700 text-blue-300 font-mono text-[9px] text-right px-1 py-0.5 rounded"
                                     />
                                     <span className="text-[9px] text-slate-400 font-bold">M</span>
+                                </div>
+                            </div>
+
+                            {/* 条件 5: 24H 最低点涨幅 (多) / 24H 最高点跌幅 (空) [下限 ~ 上限] */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between gap-1 ${pushConfig?.enableBounce24h ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none shrink-0" title="落在 [下限~上限] 范围内时列表1立即开仓；超出上限则列表1不开仓，交给列表2观察 (上限填0代表不封顶)">
+                                    <input 
+                                        type="checkbox"
+                                        checked={!!pushConfig?.enableBounce24h}
+                                        onChange={(e) => {
+                                            const val = e.target.checked;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce8am: false, minBounce8am: 10.0, maxBounce8am: 0, enableBounce24h: false, minBounce24h: 10.0, maxBounce24h: 0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: val ? true : (prev.list2PushConfig?.enabled ?? true),
+                                                    enableBounce24h: val
+                                                }
+                                            }));
+                                        }}
+                                        className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
+                                    />
+                                    <span className={`text-[8.5px] font-bold ${scanConfig.instantOpenDirection === 'SHORT' ? 'text-rose-300' : 'text-teal-300'}`}>
+                                        {scanConfig.instantOpenDirection === 'SHORT' ? '24H高点跌:' : '24H低点涨:'}
+                                    </span>
+                                </label>
+                                <div className="flex items-center gap-0.5 shrink-0">
+                                    <input 
+                                        type="number"
+                                        step="1"
+                                        title="触发下限 (%)"
+                                        value={pushConfig?.minBounce24h ?? 10.0}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce8am: false, minBounce8am: 10.0, enableBounce24h: true, minBounce24h: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: true,
+                                                    minBounce24h: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-8 bg-slate-950 border border-slate-700 text-teal-300 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
+                                    />
+                                    <span className="text-[8px] text-slate-500 font-bold">~</span>
+                                    <input 
+                                        type="number"
+                                        step="1"
+                                        placeholder="上限"
+                                        title="列表1直开上限 (%)：超出此上限则列表1不直开，直接交给列表2观察 (填0或不填代表不设上限)"
+                                        value={pushConfig?.maxBounce24h || ''}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce8am: false, minBounce8am: 10.0, enableBounce24h: true, minBounce24h: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: true,
+                                                    maxBounce24h: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-8 bg-slate-950 border border-slate-700 text-amber-300 placeholder-slate-600 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
+                                    />
+                                    <span className="text-[8.5px] text-slate-400 font-bold">%</span>
+                                </div>
+                            </div>
+
+                            {/* 条件 6: 8AM 最低点涨幅 (多) / 8AM 最高点跌幅 (空) [下限 ~ 上限] */}
+                            <div className={`p-1.5 rounded border transition-all flex items-center justify-between gap-1 ${pushConfig?.enableBounce8am ? 'bg-indigo-950/20 border-indigo-500/40' : 'bg-slate-900/50 border-slate-800/80'}`}>
+                                <label className="flex items-center gap-1 cursor-pointer select-none shrink-0" title="落在 [下限~上限] 范围内时列表1立即开仓；超出上限则列表1不开仓，交给列表2观察 (上限填0代表不封顶)">
+                                    <input 
+                                        type="checkbox"
+                                        checked={!!pushConfig?.enableBounce8am}
+                                        onChange={(e) => {
+                                            const val = e.target.checked;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce8am: false, minBounce8am: 10.0, maxBounce8am: 0, enableBounce24h: false, minBounce24h: 10.0, maxBounce24h: 0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: val ? true : (prev.list2PushConfig?.enabled ?? true),
+                                                    enableBounce8am: val
+                                                }
+                                            }));
+                                        }}
+                                        className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
+                                    />
+                                    <span className={`text-[8.5px] font-bold ${scanConfig.instantOpenDirection === 'SHORT' ? 'text-rose-300' : 'text-emerald-300'}`}>
+                                        {scanConfig.instantOpenDirection === 'SHORT' ? '8AM高点跌:' : '8AM低点涨:'}
+                                    </span>
+                                </label>
+                                <div className="flex items-center gap-0.5 shrink-0">
+                                    <input 
+                                        type="number"
+                                        step="1"
+                                        title="触发下限 (%)"
+                                        value={pushConfig?.minBounce8am ?? 10.0}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce8am: true, minBounce8am: 10.0, enableBounce24h: false, minBounce24h: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: true,
+                                                    minBounce8am: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-8 bg-slate-950 border border-slate-700 text-emerald-300 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
+                                    />
+                                    <span className="text-[8px] text-slate-500 font-bold">~</span>
+                                    <input 
+                                        type="number"
+                                        step="1"
+                                        placeholder="上限"
+                                        title="列表1直开上限 (%)：超出此上限则列表1不直开，直接交给列表2观察 (填0或不填代表不设上限)"
+                                        value={pushConfig?.maxBounce8am || ''}
+                                        onChange={(e) => {
+                                            const v = parseFloat(e.target.value) || 0;
+                                            setScanConfig(prev => ({
+                                                ...prev,
+                                                list2PushConfig: {
+                                                    ...(prev.list2PushConfig || {
+                                                        enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, enableBounce8am: true, minBounce8am: 10.0, enableBounce24h: false, minBounce24h: 10.0, enableTopN: true, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
+                                                    }),
+                                                    enabled: true,
+                                                    maxBounce8am: v
+                                                }
+                                            }));
+                                        }}
+                                        className="w-8 bg-slate-950 border border-slate-700 text-amber-300 placeholder-slate-600 font-mono text-[8.5px] text-right px-0.5 py-0.5 rounded"
+                                    />
+                                    <span className="text-[8.5px] text-slate-400 font-bold">%</span>
                                 </div>
                             </div>
                         </div>
@@ -2276,6 +2718,7 @@ const List1_Selection: React.FC<Props> = ({
                                                 ...(prev.list2PushConfig || {
                                                     enabled: true, mode: 'OR', enableChg24h: false, minChg24h: 5.0, enableChg8am: true, minChg8am: 3.0, enableVol24h: false, minVol24h: 30.0, enableVol8am: false, minVol8am: 15.0, topNCount: 10, topNSortKey: 'CHG_8AM_ABS'
                                                 }),
+                                                enabled: val ? true : (prev.list2PushConfig?.enabled ?? true),
                                                 enableTopN: val
                                             }
                                         }));
@@ -2303,6 +2746,8 @@ const List1_Selection: React.FC<Props> = ({
                                     className="bg-slate-950 border border-slate-700 text-slate-200 text-[9px] font-bold rounded px-1.5 py-0.5 outline-none"
                                 >
                                     <option value="CHG_8AM_ABS">8AM 涨跌幅绝对值 (动能)</option>
+                                    <option value="BOUNCE_8AM">{scanConfig.instantOpenDirection === 'SHORT' ? '8AM 最高点跌幅 (自日内高点回落)' : '8AM 最低点涨幅 (自日内底上涨)'}</option>
+                                    <option value="BOUNCE_24H">{scanConfig.instantOpenDirection === 'SHORT' ? '24H 最高点跌幅 (自24H高点回落)' : '24H 最低点涨幅 (自24H底上涨)'}</option>
                                     <option value="CHG_24H_ABS">24H 涨跌幅绝对值 (全天)</option>
                                     <option value="VOL_8AM">8AM 成交额 (今日热钱)</option>
                                     <option value="VOL_24H">24H 成交额 (全天流动性)</option>
@@ -2420,24 +2865,84 @@ const List1_Selection: React.FC<Props> = ({
                 </div>
             )}
 
-            {/* Top N 截取生效提示条 */}
+            {/* 定向推送与趋势门槛生效提示条 */}
             {(pushConfig?.enableTopN || isPushEffectivelyEnabled) && (
-                <div className="flex items-center justify-between px-3 py-1 bg-indigo-950/40 border-b border-indigo-500/30 text-[9px]">
-                    <div className="flex items-center gap-1 text-slate-300 font-mono">
-                        <span className="text-amber-300 font-bold">🎯 {pushConfig?.enableTopN ? `Top ${pushConfig?.topNCount || 10} 截取生效:` : '定向推送规则生效:'}</span>
+                <div className="flex items-center justify-between px-3 py-1 bg-indigo-950/40 border-b border-indigo-500/30 text-[9px] gap-2">
+                    <div className="flex items-center gap-1 text-slate-300 font-mono flex-wrap">
+                        <span className="text-amber-300 font-bold">
+                            🎯 {pushConfig?.enableTopN ? `Top ${pushConfig?.topNCount || 10} 截取生效:` : '定向推送规则生效:'}
+                        </span>
                         <span className="text-indigo-200 font-bold">
                             {(() => {
-                                switch (pushConfig?.topNSortKey) {
-                                    case 'CHG_8AM_ABS': return '8AM 涨跌幅绝对值 (动能)';
-                                    case 'CHG_24H_ABS': return '24H 涨跌幅绝对值 (全天)';
-                                    case 'VOL_8AM': return '8AM 成交额 (今日热钱)';
-                                    case 'VOL_24H': return '24H 成交额 (全天流动性)';
-                                    case 'CHG_8AM_DESC': return '8AM 纯涨幅 (多头最强)';
-                                    case 'CHG_8AM_ASC': return '8AM 纯跌幅 (空头最强)';
-                                    case 'CHG_24H_DESC': return '24H 纯涨幅 (涨幅榜)';
-                                    case 'CHG_24H_ASC': return '24H 纯跌幅 (跌幅榜)';
-                                    default: return '8AM 涨跌幅绝对值';
+                                const isShort = scanConfig.instantOpenDirection === 'SHORT';
+                                const dirTag = isShort ? '[空·跌幅]' : '[多·涨幅]';
+                                const activeRules: string[] = [];
+                                if (pushConfig?.enableChg24h && Number(pushConfig?.minChg24h) > 0) {
+                                    const maxV = Number(pushConfig?.maxChg24h) || 0;
+                                    activeRules.push(maxV >= Number(pushConfig.minChg24h)
+                                        ? `${isShort ? '24H跌幅' : '24H涨幅'}:${pushConfig.minChg24h}~${maxV}%(${isShort ? '仅下破直开/超限或反弹转L2' : '仅上穿直开/超限或回落转L2'})`
+                                        : `${isShort ? '24H跌幅' : '24H涨幅'}≥${pushConfig.minChg24h}%`);
                                 }
+                                if (pushConfig?.enableChg8am && Number(pushConfig?.minChg8am) > 0) {
+                                    const maxV = Number(pushConfig?.maxChg8am) || 0;
+                                    activeRules.push(maxV >= Number(pushConfig.minChg8am)
+                                        ? `${isShort ? '8AM跌幅' : '8AM涨幅'}:${pushConfig.minChg8am}~${maxV}%(${isShort ? '仅下破直开/超限或反弹转L2' : '仅上穿直开/超限或回落转L2'})`
+                                        : `${isShort ? '8AM跌幅' : '8AM涨幅'}≥${pushConfig.minChg8am}%`);
+                                }
+                                if (pushConfig?.enableBounce24h && Number(pushConfig?.minBounce24h) > 0) {
+                                    const maxV = Number(pushConfig?.maxBounce24h) || 0;
+                                    activeRules.push(maxV >= Number(pushConfig.minBounce24h)
+                                        ? `${isShort ? '24H高点跌幅' : '24H低点涨幅'}:${pushConfig.minBounce24h}~${maxV}%(${isShort ? '仅下破直开/超限或反弹转L2' : '仅上穿直开/超限或回落转L2'})`
+                                        : `${isShort ? '24H高点跌幅' : '24H低点涨幅'}≥${pushConfig.minBounce24h}%`);
+                                }
+                                if (pushConfig?.enableBounce8am && Number(pushConfig?.minBounce8am) > 0) {
+                                    const maxV = Number(pushConfig?.maxBounce8am) || 0;
+                                    activeRules.push(maxV >= Number(pushConfig.minBounce8am)
+                                        ? `${isShort ? '8AM高点跌幅' : '8AM低点涨幅'}:${pushConfig.minBounce8am}~${maxV}%(${isShort ? '仅下破直开/超限或反弹转L2' : '仅上穿直开/超限或回落转L2'})`
+                                        : `${isShort ? '8AM高点跌幅' : '8AM低点涨幅'}≥${pushConfig.minBounce8am}%`);
+                                }
+                                if (pushConfig?.enableVol24h && Number(pushConfig?.minVol24h) > 0) {
+                                    activeRules.push(`24H额≥${pushConfig.minVol24h}M`);
+                                }
+                                if (pushConfig?.enableVol8am && Number(pushConfig?.minVol8am) > 0) {
+                                    activeRules.push(`8AM额≥${pushConfig.minVol8am}M`);
+                                }
+
+                                const hasTrendRule = Boolean(
+                                    (pushConfig?.enableChg24h && Number(pushConfig?.minChg24h) > 0) ||
+                                    (pushConfig?.enableChg8am && Number(pushConfig?.minChg8am) > 0) ||
+                                    (pushConfig?.enableBounce24h && Number(pushConfig?.minBounce24h) > 0) ||
+                                    (pushConfig?.enableBounce8am && Number(pushConfig?.minBounce8am) > 0)
+                                );
+
+                                if (requireTrendThreshold && !hasTrendRule) {
+                                    return '⚠️ 立即开已开启：请至少勾选一项涨跌幅/极值涨跌幅门槛(>0%)，当前已硬性拦截自动开仓';
+                                }
+
+                                const joiner = pushConfig?.mode === 'AND' ? ' AND ' : ' OR ';
+                                const ruleText = activeRules.length > 0 ? `${dirTag} ${activeRules.join(joiner)}` : '';
+
+                                let sortLabel = '';
+                                if (pushConfig?.enableTopN) {
+                                    switch (pushConfig?.topNSortKey) {
+                                        case 'CHG_8AM_ABS': sortLabel = '8AM涨跌幅绝对值'; break;
+                                        case 'BOUNCE_8AM': sortLabel = isShort ? '8AM最高点跌幅' : '8AM最低点涨幅'; break;
+                                        case 'BOUNCE_24H': sortLabel = isShort ? '24H最高点跌幅' : '24H最低点涨幅'; break;
+                                        case 'CHG_24H_ABS': sortLabel = '24H涨跌幅绝对值'; break;
+                                        case 'VOL_8AM': sortLabel = '8AM成交额'; break;
+                                        case 'VOL_24H': sortLabel = '24H成交额'; break;
+                                        case 'CHG_8AM_DESC': sortLabel = '8AM纯涨幅'; break;
+                                        case 'CHG_8AM_ASC': sortLabel = '8AM纯跌幅'; break;
+                                        case 'CHG_24H_DESC': sortLabel = '24H纯涨幅'; break;
+                                        case 'CHG_24H_ASC': sortLabel = '24H纯跌幅'; break;
+                                        default: sortLabel = '8AM涨跌幅绝对值'; break;
+                                    }
+                                }
+
+                                if (ruleText && sortLabel) return `${ruleText} | 排序:${sortLabel}`;
+                                if (ruleText) return ruleText;
+                                if (sortLabel) return `按 ${sortLabel} 截取`;
+                                return '⚠️ 未勾选任何门槛或TopN条件 (0 币推送)';
                             })()}
                         </span>
                         <span className="text-slate-400 font-normal">({list2PushCandidates.length} 币命中推向列表2)</span>
@@ -2445,7 +2950,7 @@ const List1_Selection: React.FC<Props> = ({
                     <button
                         type="button"
                         onClick={() => setViewOnlyPushed(p => !p)}
-                        className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded border transition-colors cursor-pointer ${
+                        className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded border transition-colors cursor-pointer shrink-0 ${
                             viewOnlyPushed 
                                 ? 'bg-amber-600 text-white border-amber-400 shadow-sm' 
                                 : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
@@ -2458,20 +2963,20 @@ const List1_Selection: React.FC<Props> = ({
             )}
 
             {filteredList.length > 0 && (
-                <div className="px-3 py-1 bg-slate-900/60 border-b border-slate-800/80 flex items-center text-[9px] font-bold text-slate-400 font-mono">
-                    <div className="flex items-center gap-1.5 shrink-0">
-                        <div className="w-[30px] text-left shrink-0 text-slate-500">#</div>
-                        <div className="w-[52px] text-left shrink-0 text-slate-300">币种</div>
-                        <div className="flex items-center gap-1 shrink-0">
-                            <div className="w-[96px] text-center text-slate-400">24H (涨跌/额)</div>
-                            <span className="text-slate-700 font-normal px-0.5">|</span>
-                            <div className="w-[96px] text-center text-blue-300/80">8AM (涨跌/额)</div>
-                        </div>
+                <div className="px-[8px] py-1 bg-slate-900/60 border-b border-slate-800/80 flex items-center flex-nowrap whitespace-nowrap gap-0.5 text-[8.5px] font-bold text-slate-400 font-mono overflow-hidden">
+                    <div className="w-[26px] shrink-0 text-left text-slate-500">#</div>
+                    <div className="w-[42px] shrink-0 text-left text-slate-300">币种</div>
+                    <div className="w-[74px] shrink-0 text-center text-slate-300">24H(涨跌/额)</div>
+                    <span className="w-[10px] text-center text-slate-700 font-normal shrink-0">|</span>
+                    <div className="w-[74px] shrink-0 text-center text-blue-300/90">8AM(涨跌/额)</div>
+                    <span className="w-[10px] text-center text-slate-700 font-normal shrink-0">|</span>
+                    <div className="flex-1 min-w-[84px] text-center text-teal-300/90 tracking-tighter text-[8px] truncate" title="24H8AM最低/高到当前的涨跌幅">
+                        24H8AM最低/高到当前的涨跌幅
                     </div>
                 </div>
             )}
 
-            <div className="p-2 space-y-1.5 bg-slate-950/20">
+            <div className="p-1.5 space-y-1 bg-slate-950/20">
                 {filteredList.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-slate-500 gap-3 animate-in fade-in">
                         {isScanning ? (
@@ -2514,25 +3019,29 @@ const List1_Selection: React.FC<Props> = ({
                         return (
                             <>
                                 <div id="submodule-list1-items" className="contents">
-                                    {displayedItems.map((item, idx) => (
-                                        <List1Item 
-                                            key={`${item.symbol || 'item'}-${idx}`}
-                                            item={item}
-                                            idx={idx}
-                                            symbolList={currentSymbols}
-                                            scanConfig={scanConfig}
-                                            fixedModeView={fixedModeView}
-                                            customSymbolSet={customSymbolSet}
-                                            onToggleSymbol={onToggleSymbol}
-                                            onDeleteSymbol={onDeleteSymbol}
-                                            setChartData={setChartData}
-                                            mode={scannerMode || mode}
-                                            extremeMetrics={metricsCache[item.symbol]}
-                                            downloadProgress={downloadProgressMap[item.symbol]}
-                                            onDownload={onDownload}
-                                            pushRank={pushRankMap.get(item.symbol)}
-                                        />
-                                    ))}
+                                    {displayedItems.map((item, idx) => {
+                                        const norm = normalizeSym(item.symbol);
+                                        const livePrice = currentPrices?.[item.symbol] || currentPrices?.[`${norm}USDT`] || currentPrices?.[norm] || item.price;
+                                        return (
+                                            <List1Item 
+                                                key={`${item.symbol || 'item'}-${idx}`}
+                                                item={livePrice && livePrice > 0 ? { ...item, price: livePrice } : item}
+                                                idx={idx}
+                                                symbolList={currentSymbols}
+                                                scanConfig={scanConfig}
+                                                fixedModeView={fixedModeView}
+                                                customSymbolSet={customSymbolSet}
+                                                onToggleSymbol={onToggleSymbol}
+                                                onDeleteSymbol={onDeleteSymbol}
+                                                setChartData={setChartData}
+                                                mode={scannerMode || mode}
+                                                extremeMetrics={metricsCache[item.symbol]}
+                                                downloadProgress={downloadProgressMap[item.symbol]}
+                                                onDownload={onDownload}
+                                                pushRank={pushRankMap.get(item.symbol)}
+                                            />
+                                        );
+                                    })}
                                 </div>
 
                                 {currentItems.length > visibleCardLimit && (

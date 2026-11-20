@@ -10,6 +10,7 @@
 
 import { klineDailyStore } from './klineDailyStore';
 import { getProxyUrl } from './apiService';
+import { binanceRateLimiter } from './binanceRateLimiter';
 
 export interface Volume8amItem {
     symbol: string;
@@ -176,36 +177,34 @@ export async function fetchVolume8amBatch(
     let hasUpdates = false;
 
     for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+        const limiterStatus = binanceRateLimiter.getStatus();
+        if (limiterStatus.isFrozen || limiterStatus.isHighWeight) {
+            targets.slice(i).forEach(s => activeFetchSymbols.delete(s));
+            break;
+        }
         const batch = targets.slice(i, i + BATCH_SIZE);
+        let hitRateLimit = false;
         await Promise.all(batch.map(async (symbol) => {
             try {
                 const targetUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=1`;
                 let klines: any = null;
-                // 优先使用后端 /api/proxy (支持 file:// 协议与 http 统一寻址)
+                // 统一走受控网关 /api/proxy (严禁失败后直连币安制造二次穿透)
                 try {
                     const controller = new AbortController();
                     const timer = setTimeout(() => controller.abort(), 3500);
-                    const res = await fetch(getProxyUrl(targetUrl, 'high'), {
+                    const res = await fetch(getProxyUrl(targetUrl, 'normal'), {
                         signal: controller.signal
                     });
                     clearTimeout(timer);
+                    binanceRateLimiter.handleResponse(res.status, res.headers);
+                    if (res.status === 429 || res.status === 418) {
+                        hitRateLimit = true;
+                        return;
+                    }
                     if (res.ok) {
                         klines = await res.json();
                     }
                 } catch (_) {}
-
-                // 后端失败时直连币安兜底
-                if (!Array.isArray(klines) || klines.length === 0) {
-                    try {
-                        const controller2 = new AbortController();
-                        const timer2 = setTimeout(() => controller2.abort(), 3000);
-                        const res2 = await fetch(targetUrl, { signal: controller2.signal });
-                        clearTimeout(timer2);
-                        if (res2.ok) {
-                            klines = await res2.json();
-                        }
-                    } catch (_) {}
-                }
 
                 if (Array.isArray(klines) && klines.length > 0) {
                     const k = klines[0];
@@ -241,9 +240,14 @@ export async function fetchVolume8amBatch(
             }
         }));
 
-        // 微小让渡保证 UI 不卡顿
+        if (hitRateLimit) {
+            targets.slice(i + BATCH_SIZE).forEach(s => activeFetchSymbols.delete(s));
+            break;
+        }
+
+        // 平滑批次间隔，保护 API 权重
         if (i + BATCH_SIZE < targets.length) {
-            await new Promise(r => setTimeout(r, 40));
+            await new Promise(r => setTimeout(r, 150));
         }
     }
 

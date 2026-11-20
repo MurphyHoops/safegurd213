@@ -1952,6 +1952,9 @@ const AppContent: React.FC = () => {
                         return { success: false, error: "JSON parse error" };
                     }
                     if (data && data.success) {
+                        if (data.silentSkip || typeof data.marginBalance !== 'number') {
+                            return { success: true, silentSkip: true };
+                        }
                         const balance = data.marginBalance;
                         const realPositions = data.activePositions || [];
                         
@@ -1979,8 +1982,8 @@ const AppContent: React.FC = () => {
                         }
 
                         // --- 🔒 REAL TRADES RECONCILIATION FROM BINANCE (userTrades) ---
-                        // Fetch official executed trades from Binance (throttled to once per 180s in background to preserve rate limits, instant on force)
-                        const shouldFetchTrades = force || (Date.now() - lastUserTradesFetchTime > 180000);
+                        // Fetch official executed trades from Binance (throttled to once per 180s in background to preserve rate limits, instant on force, skipped if rateLimited fallback)
+                        const shouldFetchTrades = !data.rateLimited && (force || (Date.now() - lastUserTradesFetchTime > 180000));
                         if (shouldFetchTrades) {
                             lastUserTradesFetchTime = Date.now();
                             // 异步非阻塞执行流水核对，让基础持仓与资金状态先行秒级响应完成，彻底杜绝转圈卡死
@@ -4008,29 +4011,61 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                     if (typeof (window as any).triggerApiSync === "function") {
                         (window as any).triggerApiSync(true, cleanSymbol);
                     }
-                } else if (winner && winner.isTimeout) {
-                    if (simulatorRef.current) {
-                        simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络/超时异常: ${winner.error}，正在启动对账同步...`);
-                    }
-                    if (typeof (window as any).triggerApiSync === "function") {
-                        (window as any).triggerApiSync(true, cleanSymbol);
-                    }
-                    alert(`币安实盘平仓网络/超时异常:\n${winner.error}`);
                 } else {
-                    const errMsg = winner?.resData?.error || winner?.resData?.message || winner?.error || "未知交易所错误";
+                    // 🔓 单笔平仓超时或未获成功确认：立即解除本地墓地锁并回滚显示，随后触发实盘对账同步
+                    recentlyClosedPositionsRef.current.delete(lockKey);
+                    recentlyClosedPositionsRef.current.delete(cleanSymbol);
+                    pendingClosesRef.current.delete(lockKey);
+                    pendingClosesRef.current.delete(cleanSymbol);
                     if (simulatorRef.current) {
-                        simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓未获成功确认: ${errMsg}`);
+                        simulatorRef.current.unmarkPositionClosed(cleanSymbol, side);
                     }
-                    if (typeof (window as any).triggerApiSync === "function") {
-                        (window as any).triggerApiSync(true, cleanSymbol);
+                    const restoredPos = { ...posToClose, isClosing: false, isBeingClosed: false };
+                    const restoredList = [
+                        ...positionsRef.current.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)),
+                        restoredPos
+                    ];
+                    positionsRef.current = restoredList;
+                    setPositions(restoredList);
+                    setBinanceRealPositions(restoredList);
+
+                    if (winner && winner.isTimeout) {
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络/超时异常: ${winner.error}，已解除本地平仓锁并启动对账同步...`);
+                        }
+                        if (typeof (window as any).triggerApiSync === "function") {
+                            (window as any).triggerApiSync(true, cleanSymbol);
+                        }
+                        alert(`币安实盘平仓网络/超时异常:\n${winner.error}`);
+                    } else {
+                        const errMsg = winner?.resData?.error || winner?.resData?.message || winner?.error || "未知交易所错误";
+                        if (simulatorRef.current) {
+                            simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓未获成功确认: ${errMsg}，已在持仓列表回显该仓位`);
+                        }
+                        if (typeof (window as any).triggerApiSync === "function") {
+                            (window as any).triggerApiSync(true, cleanSymbol);
+                        }
+                        alert(`币安实盘平仓未获成功确认:\n${errMsg}`);
+                        audioService.speak("实盘平仓失败");
                     }
-                    alert(`币安实盘平仓未获成功确认:\n${errMsg}`);
-                    audioService.speak("实盘平仓失败");
                 }
             } catch (e: any) {
+                recentlyClosedPositionsRef.current.delete(lockKey);
+                recentlyClosedPositionsRef.current.delete(cleanSymbol);
+                pendingClosesRef.current.delete(lockKey);
+                pendingClosesRef.current.delete(cleanSymbol);
                 if (simulatorRef.current) {
-                    simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络/超时异常: ${e.message || e}`);
+                    simulatorRef.current.unmarkPositionClosed(cleanSymbol, side);
+                    simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络/超时异常: ${e.message || e}，已在持仓列表回显该仓位`);
                 }
+                const restoredPos = { ...posToClose, isClosing: false, isBeingClosed: false };
+                const restoredList = [
+                    ...positionsRef.current.filter(p => !(normalizeSymbol(p.symbol) === cleanSymbol && p.side === side)),
+                    restoredPos
+                ];
+                positionsRef.current = restoredList;
+                setPositions(restoredList);
+                setBinanceRealPositions(restoredList);
                 if (typeof (window as any).triggerApiSync === "function") {
                     (window as any).triggerApiSync(true, cleanSymbol);
                 }
@@ -4091,61 +4126,49 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
             const positionsToClose = combinedPositions.length > 0 ? combinedPositions : binanceRealPositions;
             const activePositionsToClose = positionsToClose.filter(p => p && p.amount > 0 && !p.isAmputatedToZero);
 
-            if (activePositionsToClose.length === 0) {
-                alert("没有当前持仓可以清仓。");
-                return;
-            }
-
             const now = Date.now();
-            activePositionsToClose.forEach(pos => {
-                const cleanSymbol = normalizeSymbol(pos.symbol);
-                const lockKey = `${cleanSymbol}_${pos.side}`;
-                recentlyClosedPositionsRef.current.set(lockKey, now);
-                recentlyClosedPositionsRef.current.set(cleanSymbol, now);
-                pendingClosesRef.current.add(lockKey);
-                pendingClosesRef.current.add(cleanSymbol);
-            });
+            if (activePositionsToClose.length > 0) {
+                activePositionsToClose.forEach(pos => {
+                    const cleanSymbol = normalizeSymbol(pos.symbol);
+                    const lockKey = `${cleanSymbol}_${pos.side}`;
+                    recentlyClosedPositionsRef.current.set(lockKey, now);
+                    recentlyClosedPositionsRef.current.set(cleanSymbol, now);
+                    pendingClosesRef.current.add(lockKey);
+                    pendingClosesRef.current.add(cleanSymbol);
+                });
 
-            setManuallyClosedSymbols(prev => {
-                const next = new Set(prev);
-                activePositionsToClose.forEach(p => next.add(normalizeSymbol(p.symbol)));
-                return next;
-            });
-            setTimeout(() => {
                 setManuallyClosedSymbols(prev => {
                     const next = new Set(prev);
-                    activePositionsToClose.forEach(p => next.delete(normalizeSymbol(p.symbol)));
+                    activePositionsToClose.forEach(p => next.add(normalizeSymbol(p.symbol)));
                     return next;
                 });
-            }, 20000);
+                setTimeout(() => {
+                    setManuallyClosedSymbols(prev => {
+                        const next = new Set(prev);
+                        activePositionsToClose.forEach(p => next.delete(normalizeSymbol(p.symbol)));
+                        return next;
+                    });
+                }, 20000);
 
-            if (simulatorRef.current) {
-                simulatorRef.current.addLog("INFO", `[实盘一键清仓] 启动全量极速平仓，共 ${activePositionsToClose.length} 个仓位，全并发实时平仓提交...`);
-            }
-
-            // 🔒 [平仓在途缓冲与自愈保护]：立即注册进入批量平仓缓冲池，并同步清空本地与服务端磁盘缓存
-            if (simulatorRef.current) {
-                simulatorRef.current.registerInFlightBatchClose(activePositionsToClose);
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("INFO", `[实盘一键清仓] 启动全量极速平仓，共 ${activePositionsToClose.length} 个仓位，全并发实时平仓提交...`);
+                    simulatorRef.current.registerInFlightBatchClose(activePositionsToClose);
+                }
+            } else {
+                if (simulatorRef.current) {
+                    simulatorRef.current.addLog("INFO", `[实盘一键清仓] 本地列表当前为空，正在直接穿透核验币安合约底层账本 (/fapi/v2/positionRisk) 并强制清剿任何残留仓位...`);
+                }
             }
             positionsRef.current = [];
             setBinanceRealPositions([]);
             setPositions([]);
             try {
-                localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
-                localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
-                localStorage.setItem('SAVIOR_POSITIONS', '[]');
-                localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(now));
-            } catch (e) {}
-            fetch('/api/daemon/save-state', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: 'positions', data: [], clearedAt: now })
-            }).catch(() => {});
-            try {
                 const clearedSyms = activePositionsToClose.map(p => normalizeSymbol(p.symbol));
                 window.dispatchEvent(new CustomEvent('SAVIOR_POSITIONS_CLEARED', { detail: { symbols: clearedSyms } }));
             } catch (_) {}
             audioService.speak("全部持仓平仓指令已发送");
+
+            const failedClosePositions: Position[] = [];
 
             // 🔒【分时段批量清仓与防拥塞引擎】：每批最多6个币，严格等待1秒间隔后再提交下一批6个币
             const BATCH_SIZE = 6;
@@ -4153,6 +4176,7 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 const batch = activePositionsToClose.slice(i, i + BATCH_SIZE);
                 await Promise.all(batch.map(async (pos) => {
                     const cleanSymbol = normalizeSymbol(pos.symbol);
+                    const lockKey = `${cleanSymbol}_${pos.side}`;
                     const isHedge = !!pos.isHedge || !!pos.mainPositionId;
                     const posTag = isHedge ? '【防爆对冲仓位】' : '【原主仓位】';
                     const posMarkEst = pos.markPrice || pos.entryPrice || 0;
@@ -4259,13 +4283,25 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                             }
                         } else {
                             const errMsg = winner?.resData?.error || winner?.resData?.message || winner?.error || "未知交易所错误";
+                            failedClosePositions.push({ ...pos, isClosing: false, isBeingClosed: false });
+                            recentlyClosedPositionsRef.current.delete(lockKey);
+                            recentlyClosedPositionsRef.current.delete(cleanSymbol);
+                            pendingClosesRef.current.delete(lockKey);
+                            pendingClosesRef.current.delete(cleanSymbol);
                             if (simulatorRef.current) {
-                                simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓未获成功确认: ${cleanSymbol} | 原因: ${errMsg}`);
+                                simulatorRef.current.unmarkPositionClosed(cleanSymbol, pos.side);
+                                simulatorRef.current.addLog("WARNING", `⚡ [币安实盘] 首轮平仓未获确认: ${cleanSymbol} (${errMsg})，即将由服务端权威全仓核验引擎二次追平...`);
                             }
                         }
                     } catch (e: any) {
+                        failedClosePositions.push({ ...pos, isClosing: false, isBeingClosed: false });
+                        recentlyClosedPositionsRef.current.delete(lockKey);
+                        recentlyClosedPositionsRef.current.delete(cleanSymbol);
+                        pendingClosesRef.current.delete(lockKey);
+                        pendingClosesRef.current.delete(cleanSymbol);
                         if (simulatorRef.current) {
-                            simulatorRef.current.addLog("DANGER", `⚡ [币安实盘] 平仓网络/超时异常: ${pos.symbol} | 原因: ${e.message || e}`);
+                            simulatorRef.current.unmarkPositionClosed(cleanSymbol, pos.side);
+                            simulatorRef.current.addLog("WARNING", `⚡ [币安实盘] 首轮平仓网络异常: ${pos.symbol} (${e.message || e})，即将由服务端权威全仓核验引擎二次追平...`);
                         }
                     }
                 }));
@@ -4274,26 +4310,95 @@ const [manuallyClosedSymbols, setManuallyClosedSymbols] = useState<Set<string>>(
                 }
             }
 
-            audioService.speak("实盘批量平仓完成");
-            
-            if (simulatorRef.current) {
-                simulatorRef.current.batchCloseAllPositions('一键全量批量平仓');
-            }
-            const clearDoneTs = Date.now();
+            // 🛡️ 【服务端权威全仓核验与兜底追平闭环】：直接读取币安 /fapi/v2/positionRisk 真实持仓，确保任何首轮漏平、数量偏差或手机 App 残留仓位被 100% 追平或真实回显！
+            let remainingOnBinance: Position[] | null = null;
             try {
-                localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
-                localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
-                localStorage.setItem('SAVIOR_POSITIONS', '[]');
-                localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(clearDoneTs));
-            } catch (e) {}
-            positionsRef.current = [];
-            setPositions([]);
-            setBinanceRealPositions([]);
-            fetch('/api/daemon/save-state', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: 'positions', data: [], clearedAt: clearDoneTs })
-            }).catch(() => {});
+                const sweepRes = await fetch("/api/binance/close-all-positions", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ apiKey, apiSecret }),
+                    signal: AbortSignal.timeout(25000)
+                });
+                if (sweepRes.ok) {
+                    const sweepJson = await sweepRes.json().catch(() => null);
+                    if (sweepJson && Array.isArray(sweepJson.closedPositions) && sweepJson.closedPositions.length > 0) {
+                        sweepJson.closedPositions.forEach((cp: any) => {
+                            if (simulatorRef.current && cp.orderId && cp.orderId !== "ALREADY_CLOSED") {
+                                simulatorRef.current.addLog(
+                                    "SUCCESS",
+                                    `🛡️ [服务端权威兜底追平成功] 币种: ${formatCoin(cp.symbol)} | 方向: ${cp.side} | 真实平仓数量: ${cp.qty} | 订单号: ${cp.orderId}`
+                                );
+                            }
+                        });
+                    }
+                    if (sweepJson && Array.isArray(sweepJson.remainingPositions)) {
+                        remainingOnBinance = sweepJson.remainingPositions;
+                    }
+                }
+            } catch (sweepErr: any) {
+                console.warn("[BatchClose] Authoritative close-all sweep warning:", sweepErr?.message || sweepErr);
+            }
+
+            const finalRemainingPositions = remainingOnBinance !== null ? remainingOnBinance : failedClosePositions;
+
+            if (finalRemainingPositions.length === 0) {
+                // ✅ 100% 权威确认币安合约账户已无任何残留持仓！
+                audioService.speak("实盘批量平仓全部完成");
+                if (simulatorRef.current) {
+                    simulatorRef.current.batchCloseAllPositions('一键全量批量平仓');
+                    simulatorRef.current.addLog("SUCCESS", "✅ [币安权威账本核验] 币安合约账户真实持仓已 100% 清零，与手机 App 完全一致！");
+                }
+                const clearDoneTs = Date.now();
+                try {
+                    localStorage.setItem('SAVIOR_POSITIONS_LIVE', '[]');
+                    localStorage.setItem('SAVIOR_POSITIONS_SIM', '[]');
+                    localStorage.setItem('SAVIOR_POSITIONS', '[]');
+                    localStorage.setItem('SAVIOR_LAST_BATCH_CLOSE_TS', String(clearDoneTs));
+                } catch (e) {}
+                positionsRef.current = [];
+                setPositions([]);
+                setBinanceRealPositions([]);
+                fetch('/api/daemon/save-state', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: 'positions', data: [], clearedAt: clearDoneTs })
+                }).catch(() => {});
+            } else {
+                // 🚨 仍有部分仓位在币安未能平掉：严禁假装已平仓！立即解除墓地锁并原样回显至“当前持仓”列表！
+                const remSyms = finalRemainingPositions.map(p => `${formatCoin(normalizeSymbol(p.symbol))}(${p.side})`).join(', ');
+                try {
+                    localStorage.removeItem('SAVIOR_LAST_BATCH_CLOSE_TS');
+                } catch (e) {}
+                finalRemainingPositions.forEach(rem => {
+                    const cleanSym = normalizeSymbol(rem.symbol);
+                    const lk = `${cleanSym}_${rem.side}`;
+                    recentlyClosedPositionsRef.current.delete(lk);
+                    recentlyClosedPositionsRef.current.delete(cleanSym);
+                    pendingClosesRef.current.delete(lk);
+                    pendingClosesRef.current.delete(cleanSym);
+                    simulatorRef.current?.unmarkPositionClosed(cleanSym, rem.side);
+                });
+                if (simulatorRef.current) {
+                    simulatorRef.current.setPositions(finalRemainingPositions);
+                    const activeRestored = simulatorRef.current.getPositions();
+                    positionsRef.current = activeRestored.length > 0 ? activeRestored : finalRemainingPositions;
+                    setPositions(positionsRef.current);
+                    setBinanceRealPositions(positionsRef.current);
+                    simulatorRef.current.addLog("DANGER", `🚨 [币安权威核验告警] 检测到币安账户仍有 ${finalRemainingPositions.length} 个仓位未能平掉: ${remSyms}！已自动解除屏蔽并在“当前持仓”列表回显，请立即检查或再次点击平仓！`);
+                } else {
+                    positionsRef.current = finalRemainingPositions;
+                    setPositions(finalRemainingPositions);
+                    setBinanceRealPositions(finalRemainingPositions);
+                }
+                saveState('SAVIOR_POSITIONS_LIVE', positionsRef.current);
+                saveState('SAVIOR_POSITIONS', positionsRef.current);
+                fetch('/api/daemon/save-state', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: 'positions', data: positionsRef.current })
+                }).catch(() => {});
+                audioService.speak(`注意，仍有 ${finalRemainingPositions.length} 个仓位未能平仓，已在持仓列表回显`);
+            }
 
             // Sync real-time positions instantly after order placement
             if (typeof (window as any).triggerApiSync === "function") {

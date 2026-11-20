@@ -1,0 +1,122 @@
+{
+  "title": "Savior 救世之星 - 黑匣子崩溃遥测报告",
+  "exportedAt": "2026/11/18 07:27:22",
+  "crashDetails": {
+    "id": "timeout_mwl18v4x_y7hf",
+    "timestamp": 1794940527777,
+    "timeStr": "11/17/2026, 6:35:27 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 15 秒)",
+    "memoryRssMB": 320,
+    "memoryHeapMB": 200,
+    "unacknowledged": true
+  },
+  "flightActionsTrail": [
+    {
+      "id": "fa_mwlbm3j0_ixkz",
+      "timestamp": 1794957941340,
+      "timeStr": "07:25:41",
+      "actionType": "STATE_PERSIST_START",
+      "details": "{\"key\":\"SCANNER_LIST2_CAPTURED_SIGNALS_strat-1\",\"sizeKB\":17}"
+    },
+    {
+      "id": "fa_mwlbman0_tv78",
+      "timestamp": 1794957950556,
+      "timeStr": "07:25:50",
+      "actionType": "RISK_RECONCILE_START",
+      "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":1,\"enableStrategies\":true}"
+    },
+    {
+      "id": "fa_mwlbmavl_eij0",
+      "timestamp": 1794957950865,
+      "timeStr": "07:25:50",
+      "actionType": "AUTO_MARKET_SCAN_START",
+      "details": "{\"stage\":\"major_trend_discovery\",\"strategyId\":\"strat-1\",\"isManual\":false}"
+    },
+    {
+      "id": "fa_mwlbmbjr_vd1o",
+      "timestamp": 1794957951735,
+      "timeStr": "07:25:51",
+      "actionType": "KLINE_CALC_START",
+      "details": "{\"source\":\"useMomentumAudit\",\"count\":2}"
+    },
+    {
+      "id": "fa_mwlbmr0w_ibf6",
+      "timestamp": 1794957971792,
+      "timeStr": "07:26:11",
+      "actionType": "STATE_PERSIST_START",
+      "details": "{\"key\":\"SCANNER_RAW_DATA_CACHE\",\"sizeKB\":209}"
+    },
+    {
+      "id": "fa_mwlbmxtp_w5ci",
+      "timestamp": 1794957980605,
+      "timeStr": "07:26:20",
+      "actionType": "RISK_RECONCILE_START",
+      "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":1,\"enableStrategies\":true}"
+    },
+    {
+      "id": "fa_mwlbmyx7_eygk",
+      "timestamp": 1794957982027,
+      "timeStr": "07:26:22",
+      "actionType": "KLINE_CALC_START",
+      "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"BCHUSDT\",\"tf\":\"10m\"}"
+    },
+    {
+      "id": "fa_mwlbn3px_g9vt",
+      "timestamp": 1794957988245,
+      "timeStr": "07:26:28",
+      "actionType": "AUTO_MARKET_SCAN_START",
+      "details": "{\"stage\":\"major_trend_discovery\",\"strategyId\":\"strat-1\",\"isManual\":false}"
+    },
+    {
+      "id": "fa_mwlbnel2_ho43",
+      "timestamp": 1794958002326,
+      "timeStr": "07:26:42",
+      "actionType": "STATE_PERSIST_START",
+      "details": "{\"key\":\"SCANNER_LIST2_CAPTURED_SIGNALS_strat-1\",\"sizeKB\":17}"
+    },
+    {
+      "id": "fa_mwlbnkzg_7ekm",
+      "timestamp": 1794958010620,
+      "timeStr": "07:26:50",
+      "actionType": "RISK_RECONCILE_START",
+      "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":1,\"enableStrategies\":true}"
+    },
+    {
+      "id": "fa_mwlbnmhz_biv2",
+      "timestamp": 1794958012583,
+      "timeStr": "07:26:52",
+      "actionType": "KLINE_CALC_START",
+      "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"UAIUSDT\",\"tf\":\"4h\"}"
+    },
+    {
+      "id": "fa_mwlbnylm_ihu7",
+      "timestamp": 1794958028266,
+      "timeStr": "07:27:08",
+      "actionType": "AUTO_MARKET_SCAN_START",
+      "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":false}"
+    },
+    {
+      "id": "fa_mwlbo372_en4h",
+      "timestamp": 1794958034222,
+      "timeStr": "07:27:14",
+      "actionType": "STATE_PERSIST_START",
+      "details": "{\"key\":\"SCANNER_MAJOR_TREND_LIMITS_strat-1\",\"sizeKB\":27}"
+    },
+    {
+      "id": "fa_mwlbo3ef_om9p",
+      "timestamp": 1794958034487,
+      "timeStr": "07:27:14",
+      "actionType": "AUTO_MARKET_SCAN_START",
+      "details": "{\"stage\":\"volume_pool_24h_sync\"}"
+    },
+    {
+      "id": "fa_mwlbo3kh_jrcz",
+      "timestamp": 1794958034705,
+      "timeStr": "07:27:14",
+      "actionType": "BOOT_INIT",
+      "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+    }
+  ]
+}

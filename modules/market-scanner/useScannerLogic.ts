@@ -1037,6 +1037,8 @@ export const useScannerLogic = (
         setScanStatusText("大行情发现已手动中止");
     }, []);
 
+    const lastMajorScanFinishedTimeRef = useRef<number>(0);
+
     const runMajorTrendDiscovery = useCallback(async (isManual: boolean = false) => {
         if (!isScanAllowedRef.current) {
             return;
@@ -1051,6 +1053,20 @@ export const useScannerLogic = (
             return;
         }
 
+        // 🛡️ [防重入与高频节流保护]: 防止自动律动定时器与底池完成事件并发触发多次 major_trend_discovery 抢占主线程
+        if (!isManual) {
+            if (isMajorScanningRef.current) {
+                return;
+            }
+            const globalMajorLockTime = (window as any).IS_MAJOR_TREND_SCANNING_TIME || 0;
+            if ((window as any).IS_MAJOR_TREND_SCANNING && (Date.now() - globalMajorLockTime < 120000)) {
+                return;
+            }
+            if (Date.now() - lastMajorScanFinishedTimeRef.current < 12000) {
+                return;
+            }
+        }
+
         // 🔒 [时间先后·互斥安全锁]: 若行情启动底池正在扫描，检查是否为超时僵尸锁(>180s)，若是则破锁自愈
         if ((window as any).IS_START_TREND_SCANNING) {
             const startTrendLockTime = (window as any).IS_START_TREND_SCANNING_TIME || 0;
@@ -1060,7 +1076,7 @@ export const useScannerLogic = (
                 (window as any).IS_START_TREND_SCANNING_TIME = 0;
             } else {
                 if (isManual) {
-                    alert('“行情启动底池”正在扫描中，系统严格按顺序由上到下逐级作业，请等待底池扫描完成后自动接力运行！');
+                    console.warn('“行情启动底池”正在扫描中，系统严格按顺序由上到下逐级作业，请等待底池扫描完成后自动接力运行！');
                 } else {
                     console.log("[MajorTrend] 行情启动底池正在扫描中，严格排队等待其扫描完成后接力启动...");
                 }
@@ -1654,6 +1670,8 @@ export const useScannerLogic = (
         } catch (err) {
             console.error("[MajorTrendDiscovery] Error:", err);
         } finally {
+            lastMajorScanFinishedTimeRef.current = Date.now();
+            isMajorScanningRef.current = false;
             (window as any).IS_MAJOR_TREND_SCANNING = false;
             (window as any).IS_MAJOR_TREND_SCANNING_TIME = 0;
             if (isMountedRef.current) {
