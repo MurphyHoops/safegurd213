@@ -10,6 +10,7 @@ import { BacktestMarketScannerModule } from '../backtester/mirrored/BacktestScan
 
 interface Props {
     onCandidatesUpdate: (candidates: ScannerItem[]) => void;
+    onInstantCandidatesUpdate?: (candidates: ScannerItem[]) => void;
     setChartData: (data: any) => void;
     directMode?: boolean;
     scanConfig: ScanConfig;
@@ -67,6 +68,7 @@ export const MarketScannerModule: React.FC<Props> = (props) => {
 
 const LiveMarketScannerModule: React.FC<Props> = ({ 
     onCandidatesUpdate, 
+    onInstantCandidatesUpdate,
     setChartData, 
     directMode = false,
     scanConfig,
@@ -269,6 +271,7 @@ const LiveMarketScannerModule: React.FC<Props> = ({
             cancelMajorScan={cancelMajorScan}
             majorTrendCandidates={majorTrendCandidates}
             onFilteredUpdate={onCandidatesUpdate}
+            onInstantCandidatesUpdate={onInstantCandidatesUpdate}
             directMode={directMode}
             backtestProps={backtestProps}
             strategies={strategies}

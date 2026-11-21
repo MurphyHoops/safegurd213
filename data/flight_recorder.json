@@ -1,173 +1,5 @@
 [
   {
-    "id": "fa_mwk22eco_nxtf",
-    "timestamp": 1794881439528,
-    "timeStr": "10:10:39",
-    "actionType": "KLINE_CALC_START",
-    "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"HEIUSDT\",\"tf\":\"2h\"}"
-  },
-  {
-    "id": "fa_mwk22o8e_km6x",
-    "timestamp": 1794881452334,
-    "timeStr": "10:10:52",
-    "actionType": "AUTO_MARKET_SCAN_START",
-    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":false}"
-  },
-  {
-    "id": "fa_mwk22q9g_17v2",
-    "timestamp": 1794881454964,
-    "timeStr": "10:10:54",
-    "actionType": "STATE_PERSIST_START",
-    "details": "{\"key\":\"SCANNER_LIST2_CAPTURED_SIGNALS_strat-1\",\"sizeKB\":17}"
-  },
-  {
-    "id": "fa_mwk22zi6_vjdz",
-    "timestamp": 1794881466942,
-    "timeStr": "10:11:06",
-    "actionType": "RISK_RECONCILE_START",
-    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":2,\"enableStrategies\":true}"
-  },
-  {
-    "id": "fa_mwk231op_z8ua",
-    "timestamp": 1794881469769,
-    "timeStr": "10:11:09",
-    "actionType": "KLINE_CALC_START",
-    "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"USARUSDT\",\"tf\":\"30m\"}"
-  },
-  {
-    "id": "fa_mwk23be2_2vll",
-    "timestamp": 1794881482346,
-    "timeStr": "10:11:22",
-    "actionType": "AUTO_MARKET_SCAN_START",
-    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":false}"
-  },
-  {
-    "id": "fa_mwk23dr3_gfvm",
-    "timestamp": 1794881485407,
-    "timeStr": "10:11:25",
-    "actionType": "STATE_PERSIST_START",
-    "details": "{\"key\":\"SCANNER_LIST2_CAPTURED_SIGNALS_strat-1\",\"sizeKB\":17}"
-  },
-  {
-    "id": "fa_mwk23mq5_wjlb",
-    "timestamp": 1794881497037,
-    "timeStr": "10:11:37",
-    "actionType": "RISK_RECONCILE_START",
-    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":2,\"enableStrategies\":true}"
-  },
-  {
-    "id": "fa_mwk23oww_wefd",
-    "timestamp": 1794881499872,
-    "timeStr": "10:11:39",
-    "actionType": "KLINE_CALC_START",
-    "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"CBRSUSDT\",\"tf\":\"3m\"}"
-  },
-  {
-    "id": "fa_mwk240x9_1arq",
-    "timestamp": 1794881515437,
-    "timeStr": "10:11:55",
-    "actionType": "STATE_PERSIST_START",
-    "details": "{\"key\":\"SCANNER_LIST2_CAPTURED_SIGNALS_strat-1\",\"sizeKB\":17}"
-  },
-  {
-    "id": "fa_mwk246af_9us8",
-    "timestamp": 1794881522391,
-    "timeStr": "10:12:02",
-    "actionType": "AUTO_MARKET_SCAN_START",
-    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":false}"
-  },
-  {
-    "id": "fa_mwk249zq_c09f",
-    "timestamp": 1794881527190,
-    "timeStr": "10:12:07",
-    "actionType": "RISK_RECONCILE_START",
-    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":2,\"enableStrategies\":true}"
-  },
-  {
-    "id": "fa_mwk24caw_s6ky",
-    "timestamp": 1794881530184,
-    "timeStr": "10:12:10",
-    "actionType": "KLINE_CALC_START",
-    "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"BERAUSDT\",\"tf\":\"3m\"}"
-  },
-  {
-    "id": "fa_mwk24oc5_ame8",
-    "timestamp": 1794881545781,
-    "timeStr": "10:12:25",
-    "actionType": "STATE_PERSIST_START",
-    "details": "{\"key\":\"SCANNER_LIST2_CAPTURED_SIGNALS_strat-1\",\"sizeKB\":17}"
-  },
-  {
-    "id": "fa_mwk24xda_0nyh",
-    "timestamp": 1794881557486,
-    "timeStr": "10:12:37",
-    "actionType": "RISK_RECONCILE_START",
-    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":2,\"enableStrategies\":true}"
-  },
-  {
-    "id": "fa_mwk24zlf_723h",
-    "timestamp": 1794881560371,
-    "timeStr": "10:12:40",
-    "actionType": "KLINE_CALC_START",
-    "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"UAIUSDT\",\"tf\":\"4h\"}"
-  },
-  {
-    "id": "fa_mwk2511i_s6o5",
-    "timestamp": 1794881562246,
-    "timeStr": "10:12:42",
-    "actionType": "AUTO_MARKET_SCAN_START",
-    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":false}"
-  },
-  {
-    "id": "fa_mwk25c07_xevq",
-    "timestamp": 1794881576455,
-    "timeStr": "10:12:56",
-    "actionType": "STATE_PERSIST_START",
-    "details": "{\"key\":\"SCANNER_LIST2_CAPTURED_SIGNALS_strat-1\",\"sizeKB\":17}"
-  },
-  {
-    "id": "fa_mwk25ko6_9rtu",
-    "timestamp": 1794881587686,
-    "timeStr": "10:13:07",
-    "actionType": "RISK_RECONCILE_START",
-    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":2,\"enableStrategies\":true}"
-  },
-  {
-    "id": "fa_mwk25myc_e0y2",
-    "timestamp": 1794881590644,
-    "timeStr": "10:13:10",
-    "actionType": "KLINE_CALC_START",
-    "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"PLAYUSDT\",\"tf\":\"5m\"}"
-  },
-  {
-    "id": "fa_mwk25ob3_jks0",
-    "timestamp": 1794881592399,
-    "timeStr": "10:13:12",
-    "actionType": "AUTO_MARKET_SCAN_START",
-    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":false}"
-  },
-  {
-    "id": "fa_mwk2600z_cqv1",
-    "timestamp": 1794881607587,
-    "timeStr": "10:13:27",
-    "actionType": "STATE_PERSIST_START",
-    "details": "{\"source\":\"App:periodicPersist\",\"posCount\":2,\"tradeLogCount\":200}"
-  },
-  {
-    "id": "fa_mwk267tp_32cl",
-    "timestamp": 1794881617693,
-    "timeStr": "10:13:37",
-    "actionType": "RISK_RECONCILE_START",
-    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":2,\"enableStrategies\":true}"
-  },
-  {
-    "id": "fa_mwk26aew_8gxl",
-    "timestamp": 1794881621048,
-    "timeStr": "10:13:41",
-    "actionType": "KLINE_CALC_START",
-    "details": "{\"source\":\"useGrandCrossing\",\"symbol\":\"SOXLUSDT\",\"tf\":\"10m\"}"
-  },
-  {
     "id": "fa_mwk26j1l_y6hf",
     "timestamp": 1794881632233,
     "timeStr": "10:13:52",
@@ -348,5 +180,173 @@
     "timeStr": "10:17:27",
     "actionType": "AUTO_MARKET_SCAN_START",
     "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":false}"
+  },
+  {
+    "id": "fa_mwoz73it_9zuc",
+    "timestamp": 1795178950805,
+    "timeStr": "12:49:10 PM",
+    "actionType": "AUTO_MARKET_SCAN_START",
+    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":true}"
+  },
+  {
+    "id": "fa_mwoz73m1_kgoo",
+    "timestamp": 1795178950921,
+    "timeStr": "12:49:10 PM",
+    "actionType": "BOOT_INIT",
+    "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+  },
+  {
+    "id": "fa_mwoz743d_7q1q",
+    "timestamp": 1795178951545,
+    "timeStr": "12:49:11 PM",
+    "actionType": "RISK_RECONCILE_START",
+    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":15,\"enableStrategies\":true}"
+  },
+  {
+    "id": "fa_mwoz75ou_bv7a",
+    "timestamp": 1795178953614,
+    "timeStr": "12:49:13 PM",
+    "actionType": "STATE_PERSIST_START",
+    "details": "{\"key\":\"SCANNER_LIST1_strat-1\",\"sizeKB\":84}"
+  },
+  {
+    "id": "fa_mwoz8l9e_k76j",
+    "timestamp": 1795179020450,
+    "timeStr": "12:50:20 PM",
+    "actionType": "AUTO_MARKET_SCAN_START",
+    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":true}"
+  },
+  {
+    "id": "fa_mwoz8lbw_og01",
+    "timestamp": 1795179020540,
+    "timeStr": "12:50:20 PM",
+    "actionType": "BOOT_INIT",
+    "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+  },
+  {
+    "id": "fa_mwoz8lwz_rkaa",
+    "timestamp": 1795179021299,
+    "timeStr": "12:50:21 PM",
+    "actionType": "RISK_RECONCILE_START",
+    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":18,\"enableStrategies\":true}"
+  },
+  {
+    "id": "fa_mwoz8nbj_52jt",
+    "timestamp": 1795179023119,
+    "timeStr": "12:50:23 PM",
+    "actionType": "STATE_PERSIST_START",
+    "details": "{\"key\":\"SCANNER_LIST1_strat-1\",\"sizeKB\":85}"
+  },
+  {
+    "id": "fa_mwozaud4_sww8",
+    "timestamp": 1795179125560,
+    "timeStr": "12:52:05 PM",
+    "actionType": "AUTO_MARKET_SCAN_START",
+    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":true}"
+  },
+  {
+    "id": "fa_mwozauen_hf8i",
+    "timestamp": 1795179125615,
+    "timeStr": "12:52:05 PM",
+    "actionType": "BOOT_INIT",
+    "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+  },
+  {
+    "id": "fa_mwozbjbw_o0fg",
+    "timestamp": 1795179157916,
+    "timeStr": "12:52:37 PM",
+    "actionType": "AUTO_MARKET_SCAN_START",
+    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":true}"
+  },
+  {
+    "id": "fa_mwozbjd3_qdkp",
+    "timestamp": 1795179157959,
+    "timeStr": "12:52:37 PM",
+    "actionType": "BOOT_INIT",
+    "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+  },
+  {
+    "id": "fa_mwozbjmy_t1wp",
+    "timestamp": 1795179158314,
+    "timeStr": "12:52:38 PM",
+    "actionType": "RISK_RECONCILE_START",
+    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":18,\"enableStrategies\":true}"
+  },
+  {
+    "id": "fa_mwozbleb_amka",
+    "timestamp": 1795179160595,
+    "timeStr": "12:52:40 PM",
+    "actionType": "STATE_PERSIST_START",
+    "details": "{\"key\":\"SCANNER_LIST1_strat-1\",\"sizeKB\":84}"
+  },
+  {
+    "id": "fa_mwozce6k_y075",
+    "timestamp": 1795179197900,
+    "timeStr": "12:53:17 PM",
+    "actionType": "AUTO_MARKET_SCAN_START",
+    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":true}"
+  },
+  {
+    "id": "fa_mwozce96_1jyh",
+    "timestamp": 1795179197994,
+    "timeStr": "12:53:17 PM",
+    "actionType": "BOOT_INIT",
+    "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+  },
+  {
+    "id": "fa_mwozcwwd_nfoc",
+    "timestamp": 1795179222157,
+    "timeStr": "12:53:42 PM",
+    "actionType": "AUTO_MARKET_SCAN_START",
+    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":true}"
+  },
+  {
+    "id": "fa_mwozcwyd_c0ou",
+    "timestamp": 1795179222229,
+    "timeStr": "12:53:42 PM",
+    "actionType": "BOOT_INIT",
+    "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+  },
+  {
+    "id": "fa_mwozcxiz_fimq",
+    "timestamp": 1795179222971,
+    "timeStr": "12:53:42 PM",
+    "actionType": "RISK_RECONCILE_START",
+    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":18,\"enableStrategies\":true}"
+  },
+  {
+    "id": "fa_mwozd0y1_wwds",
+    "timestamp": 1795179227401,
+    "timeStr": "12:53:47 PM",
+    "actionType": "STATE_PERSIST_START",
+    "details": "{\"source\":\"App:periodicPersist\",\"posCount\":18,\"tradeLogCount\":19}"
+  },
+  {
+    "id": "fa_mwozeaax_2w44",
+    "timestamp": 1795179286185,
+    "timeStr": "12:54:46 PM",
+    "actionType": "AUTO_MARKET_SCAN_START",
+    "details": "{\"stage\":\"list1_refresh\",\"strategyId\":\"strat-1\",\"forceFull\":true}"
+  },
+  {
+    "id": "fa_mwozeach_nqe4",
+    "timestamp": 1795179286241,
+    "timeStr": "12:54:46 PM",
+    "actionType": "BOOT_INIT",
+    "details": "主系统引导加载，黑匣子飞行记录仪已启动"
+  },
+  {
+    "id": "fa_mwozeasc_r529",
+    "timestamp": 1795179286812,
+    "timeStr": "12:54:46 PM",
+    "actionType": "RISK_RECONCILE_START",
+    "details": "{\"source\":\"marketSimulator:tick\",\"positionCount\":18,\"enableStrategies\":true}"
+  },
+  {
+    "id": "fa_mwozeeen_a9cm",
+    "timestamp": 1795179291503,
+    "timeStr": "12:54:51 PM",
+    "actionType": "STATE_PERSIST_START",
+    "details": "{\"source\":\"App:periodicPersist\",\"posCount\":18,\"tradeLogCount\":19}"
   }
 ]

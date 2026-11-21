@@ -1,5 +1,17 @@
 [
   {
+    "id": "timeout_mwozce3x_sv1n",
+    "timestamp": 1795179197805,
+    "timeStr": "11/20/2026, 12:53:17 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >25s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 37 秒)",
+    "memoryRssMB": 294,
+    "memoryHeapMB": 51,
+    "unacknowledged": false,
+    "autoRecoveredAt": 1795179197924
+  },
+  {
     "id": "timeout_mwh4uvnh_dn8d",
     "timestamp": 1794704729021,
     "timeStr": "11/15/2026, 1:05:29 AM",

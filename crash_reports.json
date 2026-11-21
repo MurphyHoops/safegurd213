@@ -1,1 +1,69 @@
-[]
+[
+  {
+    "id": "timeout_mwozce3x_sv1n",
+    "timestamp": 1795179197805,
+    "timeStr": "11/20/2026, 12:53:17 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >25s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 37 秒)",
+    "memoryRssMB": 294,
+    "memoryHeapMB": 51,
+    "unacknowledged": false,
+    "autoRecoveredAt": 1795179197924
+  },
+  {
+    "id": "timeout_mwh4uvnh_dn8d",
+    "timestamp": 1794704729021,
+    "timeStr": "11/15/2026, 1:05:29 AM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 16 秒)",
+    "memoryRssMB": 304,
+    "memoryHeapMB": 164,
+    "unacknowledged": false
+  },
+  {
+    "id": "timeout_mwgoznxf_weow",
+    "timestamp": 1794678078435,
+    "timeStr": "11/14/2026, 5:41:18 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 17 秒)",
+    "memoryRssMB": 287,
+    "memoryHeapMB": 170,
+    "unacknowledged": false
+  },
+  {
+    "id": "timeout_mwgkgp6o_xxqj",
+    "timestamp": 1794670475136,
+    "timeStr": "11/14/2026, 3:34:35 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 15 秒)",
+    "memoryRssMB": 300,
+    "memoryHeapMB": 183,
+    "unacknowledged": false
+  },
+  {
+    "id": "timeout_mwggh1l7_q56m",
+    "timestamp": 1794663772747,
+    "timeStr": "11/14/2026, 1:42:52 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 16 秒)",
+    "memoryRssMB": 303,
+    "memoryHeapMB": 139,
+    "unacknowledged": false
+  },
+  {
+    "id": "timeout_mwgfpe1w_58ic",
+    "timestamp": 1794662482532,
+    "timeStr": "11/14/2026, 1:21:22 PM",
+    "type": "RENDERER_HEARTBEAT_TIMEOUT",
+    "reason": "Renderer Unresponsive / Frozen / Dead (No heartbeat for >15s)",
+    "message": "前端渲染进程无响应/死锁/非正常暴毙 (心跳中断超 16 秒)",
+    "memoryRssMB": 316,
+    "memoryHeapMB": 175,
+    "unacknowledged": false
+  }
+]

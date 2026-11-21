@@ -2543,6 +2543,9 @@ const AppContent: React.FC = () => {
                         const finalCost = resData.cumQuote || amount || (resData.qty * finalPrice);
                         const finalQty = resData.qty || (amount / (finalPrice || 1));
 
+                        const openReasonText = (extraProps as any)?.reason || (extraProps as any)?.triggerReason || '列表1批量/立即开仓成交';
+                        const openSignalDetails = (extraProps as any)?.signalDetails || (openReasonText ? { reason: openReasonText } : undefined);
+
                         const openLogItem: TradeLog = {
                             symbol: cleanSymbol,
                             entry_id: positionEntryId,
@@ -2554,12 +2557,14 @@ const AppContent: React.FC = () => {
                             cost_usdt: amount,
                             entry_price: finalPrice,
                             timeframe: signalTf || '5m',
+                            exit_reason: openReasonText,
+                            signal_details: openSignalDetails,
                             events: [{
                                 timestamp: tradeTime,
                                 action: '实盘开仓下单成功',
                                 price: finalPrice,
                                 amount: resData.qty || (amount / (finalPrice || 1)),
-                                reason: (extraProps as any)?.reason || '列表1批量/立即开仓成交'
+                                reason: openReasonText
                             }]
                         };
 
@@ -2598,6 +2603,17 @@ const AppContent: React.FC = () => {
                             if (finalPrice > 0) existingOpenLog.entry_price = finalPrice;
                             if (finalQty > 0) existingOpenLog.current_amount = finalQty;
                             existingOpenLog.cost_usdt = finalCost;
+                            if (openSignalDetails) {
+                                existingOpenLog.signal_details = openSignalDetails;
+                            }
+                            if (openReasonText && (openSignalDetails?.type === 'LIST1_INSTANT_OPEN' || !existingOpenLog.exit_reason)) {
+                                existingOpenLog.exit_reason = openReasonText;
+                            }
+                            if (openReasonText && existingOpenLog.events && existingOpenLog.events.length > 0) {
+                                if (openSignalDetails?.type === 'LIST1_INSTANT_OPEN' || !existingOpenLog.events[0].reason) {
+                                    existingOpenLog.events[0].reason = openReasonText;
+                                }
+                            }
                         } else {
                             simulatorRef.current.tradeLogs.unshift(openLogItem);
                         }

@@ -1874,11 +1874,87 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                 const displayReason = isClosed 
                                                     ? (log.exit_reason || log.events?.[0]?.reason || (log.profit_usdt !== undefined && log.profit_usdt >= 0 ? '止盈平仓' : '止损平仓'))
                                                     : (log.exit_reason || log.events?.[0]?.reason || (isHedgeSide ? '防爆对冲开仓' : '初始开仓进场'));
+
+                                                const rawSignal = log.signal_details;
+                                                const structuredOpen = (rawSignal && typeof rawSignal === 'object' && rawSignal.type === 'LIST1_INSTANT_OPEN')
+                                                    ? rawSignal as {
+                                                        type: 'LIST1_INSTANT_OPEN';
+                                                        sourceLabel: string;
+                                                        direction: 'LONG' | 'SHORT';
+                                                        mode: 'AND' | 'OR';
+                                                        triggerPrice?: number;
+                                                        conditions?: Array<{ category: 'TREND' | 'VOLUME' | 'UPSTREAM'; label: string; actualText: string; ruleText: string }>;
+                                                        upstreamConditions?: Array<{ category: 'TREND' | 'VOLUME' | 'UPSTREAM'; label: string; actualText: string; ruleText: string }>;
+                                                        reason?: string;
+                                                    }
+                                                    : null;
+                                                const isList1TextReason = !structuredOpen && typeof displayReason === 'string' && (
+                                                    displayReason.startsWith('[列表1·') || displayReason.startsWith('[List1 立即开]')
+                                                );
+
+                                                const renderStructuredChips = (compact: boolean) => {
+                                                    if (!structuredOpen) return null;
+                                                    const conds = Array.isArray(structuredOpen.conditions) ? structuredOpen.conditions : [];
+                                                    const upstreams = Array.isArray(structuredOpen.upstreamConditions) ? structuredOpen.upstreamConditions : [];
+                                                    if (conds.length === 0 && upstreams.length === 0) {
+                                                        return structuredOpen.reason ? (
+                                                            <div className="text-[10px] text-slate-300 leading-snug max-w-[300px] whitespace-normal break-words" title={structuredOpen.reason}>
+                                                                {structuredOpen.reason}
+                                                            </div>
+                                                        ) : null;
+                                                    }
+                                                    if (compact) {
+                                                        const previewText = [...conds, ...upstreams]
+                                                            .map(c => `${c.label} ${c.actualText}(${c.ruleText})`)
+                                                            .join(' · ');
+                                                        return (
+                                                            <div
+                                                                className="text-[10px] text-cyan-300/90 bg-cyan-950/30 border border-cyan-500/20 rounded px-1.5 py-0.5 max-w-[300px] whitespace-normal break-words leading-snug"
+                                                                title={structuredOpen.reason || previewText}
+                                                            >
+                                                                <span className="text-cyan-400 font-semibold mr-1">{structuredOpen.sourceLabel}:</span>
+                                                                <span>{previewText}</span>
+                                                            </div>
+                                                        );
+                                                    }
+                                                    return (
+                                                        <div className="flex flex-wrap items-center gap-1 max-w-[320px]" title={structuredOpen.reason || displayReason}>
+                                                            {conds.map((c, idx) => {
+                                                                const actualStr = String(c?.actualText ?? '');
+                                                                const valColor = actualStr.startsWith('+')
+                                                                    ? 'text-emerald-300'
+                                                                    : actualStr.startsWith('-')
+                                                                        ? 'text-rose-300'
+                                                                        : 'text-cyan-300';
+                                                                return (
+                                                                    <span
+                                                                        key={`c-${idx}`}
+                                                                        className="inline-flex items-center gap-1 text-[10px] bg-slate-800/90 border border-cyan-500/30 rounded px-1.5 py-0.5 leading-tight"
+                                                                    >
+                                                                        <span className="text-slate-300 font-medium">{c?.label}</span>
+                                                                        <span className={`font-mono font-bold ${valColor}`}>{actualStr}</span>
+                                                                        <span className="text-slate-400 font-mono text-[9px]">({c?.ruleText})</span>
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                            {upstreams.map((u, idx) => (
+                                                                <span
+                                                                    key={`u-${idx}`}
+                                                                    className="inline-flex items-center gap-1 text-[10px] bg-indigo-950/60 border border-indigo-500/30 rounded px-1.5 py-0.5 leading-tight"
+                                                                >
+                                                                    <span className="text-indigo-300">{u.label}</span>
+                                                                    <span className="text-indigo-200 font-mono font-semibold">{u.actualText}</span>
+                                                                    <span className="text-slate-400 font-mono text-[9px]">({u.ruleText})</span>
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    );
+                                                };
                                                 
                                                 if (isClosed) {
                                                     return (
                                                         <div className="flex flex-col gap-1">
-                                                            <div className="flex items-center gap-1">
+                                                            <div className="flex items-center gap-1 flex-wrap">
                                                                 {isGrouped && <Link size={10} className="text-indigo-400" />}
                                                                 {recoveryInfo !== null && (
                                                                     <span className="text-[10px] bg-amber-900/40 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap font-bold">
@@ -1889,33 +1965,56 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                                                     {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
                                                                 </span>
                                                             </div>
+                                                            {structuredOpen && renderStructuredChips(true)}
                                                             <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
                                                         </div>
                                                     );
                                                 } else if (hasActivePosition) {
                                                     return (
                                                         <div className="flex flex-col gap-1">
-                                                            <div className="flex items-center gap-1">
+                                                            <div className="flex items-center gap-1 flex-wrap">
                                                                 <span className="bg-emerald-900/30 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold text-[10px] animate-pulse whitespace-nowrap">
                                                                     运行中
                                                                 </span>
-                                                                <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
-                                                                    {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
-                                                                </span>
+                                                                {structuredOpen ? (
+                                                                    <span className="bg-cyan-950/70 text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-500/40 font-semibold text-[10px] whitespace-nowrap">
+                                                                        {structuredOpen.sourceLabel}
+                                                                    </span>
+                                                                ) : isList1TextReason ? (
+                                                                    <span className="text-cyan-200 bg-cyan-950/40 px-1.5 py-0.5 rounded border border-cyan-500/30 font-medium max-w-[300px] whitespace-normal break-words leading-snug" title={displayReason}>
+                                                                        {displayReason}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
+                                                                        {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
+                                                                    </span>
+                                                                )}
                                                             </div>
+                                                            {structuredOpen && renderStructuredChips(false)}
                                                         </div>
                                                     );
                                                 } else {
                                                     return (
                                                         <div className="flex flex-col gap-1">
-                                                            <div className="flex items-center gap-1">
+                                                            <div className="flex items-center gap-1 flex-wrap">
                                                                 <span className="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded border border-slate-700 text-[10px] whitespace-nowrap">
                                                                     历史开仓
                                                                 </span>
-                                                                <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
-                                                                    {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
-                                                                </span>
+                                                                {structuredOpen ? (
+                                                                    <span className="bg-cyan-950/70 text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-500/40 font-semibold text-[10px] whitespace-nowrap">
+                                                                        {structuredOpen.sourceLabel}
+                                                                    </span>
+                                                                ) : isList1TextReason ? (
+                                                                    <span className="text-cyan-200 bg-cyan-950/40 px-1.5 py-0.5 rounded border border-cyan-500/30 font-medium max-w-[300px] whitespace-normal break-words leading-snug" title={displayReason}>
+                                                                        {displayReason}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="text-slate-300 bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-700/60 font-medium" title={displayReason}>
+                                                                        {displayReason ? (displayReason.length > 20 ? displayReason.substring(0, 20) + '...' : displayReason) : '-'}
+                                                                    </span>
+                                                                )}
                                                             </div>
+                                                            {structuredOpen && renderStructuredChips(false)}
                                                             <span className="text-[9px] text-emerald-400 font-medium">【已完结仓位】</span>
                                                         </div>
                                                     );
@@ -2292,15 +2391,95 @@ const TradeLogModal: React.FC<Props> = ({ tradeLogs: rawTradeLogs, positions: ra
                                 </div>
                             );
                         })()}
-                        <div className="bg-slate-800/30 p-2 rounded border border-slate-700">
-                            <span className="text-xs text-slate-500 block mb-1">开仓原因</span>
-                            <p className="text-sm text-slate-300">
-                                {selectedLog.signal_details ? (
-                                    typeof selectedLog.signal_details === 'string' 
-                                        ? selectedLog.signal_details 
-                                        : selectedLog.signal_details.reason || selectedLog.signal_details.type || '系统信号触发'
-                                ) : '系统信号触发'}
-                            </p>
+                        <div className="bg-slate-800/30 p-3 rounded border border-slate-700">
+                            <span className="text-xs text-slate-500 block mb-1.5">开仓原因</span>
+                            {(() => {
+                                const sd = selectedLog.signal_details;
+                                if (sd && typeof sd === 'object' && sd.type === 'LIST1_INSTANT_OPEN') {
+                                    const conds: Array<{ category: 'TREND' | 'VOLUME' | 'UPSTREAM'; label: string; actualText: string; ruleText: string }> = Array.isArray(sd.conditions) ? sd.conditions : [];
+                                    const upstreams: Array<{ category: 'TREND' | 'VOLUME' | 'UPSTREAM'; label: string; actualText: string; ruleText: string }> = Array.isArray(sd.upstreamConditions) ? sd.upstreamConditions : [];
+                                    return (
+                                        <div className="space-y-2">
+                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                <span className="text-xs font-bold text-cyan-300 bg-cyan-950/70 border border-cyan-500/40 px-2 py-0.5 rounded">
+                                                    {sd.sourceLabel || '列表1 · 立即开'}
+                                                </span>
+                                                <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded border ${
+                                                    sd.direction === 'LONG'
+                                                        ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+                                                        : 'bg-rose-950/60 text-rose-300 border-rose-500/40'
+                                                }`}>
+                                                    {sd.direction === 'LONG' ? '做多 LONG' : '做空 SHORT'}
+                                                </span>
+                                                <span className="text-[11px] text-slate-300 bg-slate-800 border border-slate-600/70 px-1.5 py-0.5 rounded">
+                                                    {sd.mode === 'AND' ? '全部满足 (AND)' : '满足任一 (OR)'}
+                                                </span>
+                                                {typeof sd.triggerPrice === 'number' && sd.triggerPrice > 0 && (
+                                                    <span className="text-[11px] font-mono text-slate-400 ml-auto">
+                                                        触发价: {sd.triggerPrice}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {conds.length > 0 ? (
+                                                <div className="space-y-1">
+                                                    <div className="text-[11px] text-slate-400 font-medium">命中趋势门槛过滤条件:</div>
+                                                    <div className="grid grid-cols-1 gap-1">
+                                                        {conds.map((c, idx) => {
+                                                            const actualStr = String(c?.actualText ?? '');
+                                                            const valColor = actualStr.startsWith('+')
+                                                                ? 'text-emerald-300'
+                                                                : actualStr.startsWith('-')
+                                                                    ? 'text-rose-300'
+                                                                    : 'text-cyan-300';
+                                                            return (
+                                                                <div
+                                                                    key={`detail-c-${idx}`}
+                                                                    className="flex items-center justify-between gap-2 bg-slate-900/70 border border-slate-700/80 rounded px-2.5 py-1.5 text-xs"
+                                                                >
+                                                                    <span className="text-slate-200 font-semibold">{c?.label}</span>
+                                                                    <div className="flex items-center gap-2 font-mono">
+                                                                        <span className={`font-bold ${valColor}`}>实测 {actualStr}</span>
+                                                                        <span className="text-slate-400 text-[11px]">设定区间: {c?.ruleText}</span>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <p className="text-sm text-slate-300">{sd.reason || '列表1趋势门槛触发开仓'}</p>
+                                            )}
+                                            {upstreams.length > 0 && (
+                                                <div className="space-y-1 pt-1 border-t border-slate-700/60">
+                                                    <div className="text-[11px] text-indigo-300/90 font-medium">同步通过的上游初筛条件:</div>
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {upstreams.map((u, idx) => (
+                                                            <span
+                                                                key={`detail-u-${idx}`}
+                                                                className="inline-flex items-center gap-1.5 text-[11px] bg-indigo-950/50 border border-indigo-500/30 rounded px-2 py-1"
+                                                            >
+                                                                <span className="text-indigo-200 font-medium">{u.label}</span>
+                                                                <span className="text-indigo-300 font-mono font-bold">{u.actualText}</span>
+                                                                <span className="text-slate-400 font-mono text-[10px]">({u.ruleText})</span>
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                }
+                                const fallbackOpenReason = sd
+                                    ? (typeof sd === 'string' ? sd : sd.reason || sd.type)
+                                    : null;
+                                const eventOpenReason = selectedLog.events?.[0]?.reason;
+                                const openStatusReason = selectedLog.status !== 'CLOSED' ? selectedLog.exit_reason : undefined;
+                                return (
+                                    <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">
+                                        {fallbackOpenReason || eventOpenReason || openStatusReason || '系统信号触发'}
+                                    </p>
+                                );
+                            })()}
                         </div>
                         {selectedLog.status === 'CLOSED' && (
                             <div className="bg-slate-800/30 p-2 rounded border border-slate-700">

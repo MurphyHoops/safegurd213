@@ -82,6 +82,7 @@ interface Props {
     onChangeRotationInterval?: (minutes: number) => void;
     majorTrendCandidates?: Set<string>;
     onFilteredUpdate?: (list: ScannerItem[]) => void;
+    onInstantCandidatesUpdate?: (list: ScannerItem[]) => void;
     directMode?: boolean;
     list2Results?: ScannerItem[];
     list3Results?: ScannerItem[];
@@ -122,6 +123,7 @@ const List1_Selection: React.FC<Props> = ({
     onChangeRotationInterval = () => {},
     majorTrendCandidates = new Set(),
     onFilteredUpdate,
+    onInstantCandidatesUpdate,
     directMode,
     list2Results = [],
     list3Results = [],
@@ -1438,16 +1440,16 @@ const List1_Selection: React.FC<Props> = ({
         scanConfig.instantReopenEnabled
     );
 
-    const list2PushCandidates = useMemo(() => {
+    const { list2PushCandidates, list2InstantPoolCandidates } = useMemo(() => {
         // 🔒 [固定选币直通放行]: 固定选币模式下（且未开启立即开精筛时），市场初筛中的币种直接进入列表2进行扫描
         if (scanConfig.useCustomOnly && fixedModeView === 'MONITOR' && !scanConfig.instantOpenEnabled && !scanConfig.instantReopenEnabled && !scanConfig.instantOpenUsePushFilter) {
-            return filteredList;
+            return { list2PushCandidates: filteredList, list2InstantPoolCandidates: filteredList };
         }
 
         if (!pushConfig || !isPushEffectivelyEnabled) {
-            if (requireTrendThreshold) return [];
+            if (requireTrendThreshold) return { list2PushCandidates: [], list2InstantPoolCandidates: [] };
             // 未启用定向推送时，默认初筛列表全量直接进入列表2
-            return filteredList;
+            return { list2PushCandidates: filteredList, list2InstantPoolCandidates: filteredList };
         }
 
         const isShortMode = scanConfig.instantOpenDirection === 'SHORT';
@@ -1468,7 +1470,7 @@ const List1_Selection: React.FC<Props> = ({
 
         // 🔒 核心铁律：只要开启“立即开”或“平仓后续开”，必须绑定并启用至少一项有效的【趋势涨跌幅/极值涨跌幅】过滤条件
         if (requireTrendThreshold && !hasValidTrendRule) {
-            return [];
+            return { list2PushCandidates: [], list2InstantPoolCandidates: [] };
         }
 
         // 读取全量行情缓存中的 24H 最高/最低价兜底映射，与 ScannerDashboard 保持 100% 一致
@@ -1687,7 +1689,10 @@ const List1_Selection: React.FC<Props> = ({
             }
         });
 
-        // 第二步：根据头部排序规则进行 Top N 排名截取
+        // 保留 TopN 截取前的完整初筛门槛池，供“立即开”按 [下限~上限] 区间精筛（避免被超高涨幅币占满 TopN 后挤出区间币种）
+        const preTopNCandidates = candidates;
+
+        // 第二步：根据头部排序规则进行 Top N 排名截取（供列表 2 观察池使用）
         if (pushConfig.enableTopN && candidates.length > 0) {
             const sortKey = pushConfig.topNSortKey || 'CHG_8AM_ABS';
             const count = Math.max(1, Number(pushConfig.topNCount) || 10);
@@ -1749,7 +1754,7 @@ const List1_Selection: React.FC<Props> = ({
             candidates = sorted.slice(0, count);
         }
 
-        return candidates;
+        return { list2PushCandidates: candidates, list2InstantPoolCandidates: preTopNCandidates };
     }, [filteredList, pushConfig, isPushEffectivelyEnabled, requireTrendThreshold, _8amUpdateTick, scanConfig.useCustomOnly, scanConfig.instantOpenDirection, fixedModeView, currentPrices]);
 
     // 映射 Top N 排名 (用于在初筛卡片上醒目标注 #1, #2, ...)
@@ -1764,6 +1769,7 @@ const List1_Selection: React.FC<Props> = ({
     }, [list2PushCandidates, pushConfig?.enableTopN, isPushEffectivelyEnabled]);
 
     const lastFilteredStrRef = useRef<string | null>(null);
+    const lastInstantPoolStrRef = useRef<string | null>(null);
 
     useEffect(() => {
         if (onFilteredUpdate) {
@@ -1773,7 +1779,14 @@ const List1_Selection: React.FC<Props> = ({
                 onFilteredUpdate(list2PushCandidates);
             }
         }
-    }, [list2PushCandidates, onFilteredUpdate]);
+        if (onInstantCandidatesUpdate) {
+            const instantStr = list2InstantPoolCandidates.map(i => `${i.symbol}_${i.price || 0}_${i.change || 0}_${i.change8am || 0}_${i.volume24h || 0}_${i.volume8am || 0}_${i.lowPrice || 0}_${i.highPrice || 0}`).join('|');
+            if (instantStr !== lastInstantPoolStrRef.current) {
+                lastInstantPoolStrRef.current = instantStr;
+                onInstantCandidatesUpdate(list2InstantPoolCandidates);
+            }
+        }
+    }, [list2PushCandidates, list2InstantPoolCandidates, onFilteredUpdate, onInstantCandidatesUpdate]);
 
     return (
         <div className={`flex flex-col h-full bg-slate-900 border-r border-slate-800 flex-1 min-w-[380px] overflow-y-auto custom-scrollbar`}>

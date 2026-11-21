@@ -1442,6 +1442,7 @@ export class MarketSimulator {
             reopenCount: newPos.reopenCount,
             timeframe: signalTf,
             exit_reason: initialReason,
+            signal_details: (extraProps as any)?.signalDetails || (initialReason ? { reason: initialReason } : undefined),
             events: [{
                 timestamp: newPos.entryTime,
                 action: extraProps?.isReopened ? '解套复开' : '主仓开仓',
